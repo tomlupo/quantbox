@@ -17,6 +17,7 @@ def test_trading_bridge(tmp_path):
     cfg2 = yaml.safe_load(Path("configs/run_trade_from_allocations.yaml").read_text(encoding="utf-8"))
     cfg2["artifacts"]["root"] = str(tmp_path)
     cfg2["plugins"]["pipeline"]["params"]["allocations_path"] = str(alloc_path)
+    cfg2["plugins"]["pipeline"]["params"]["instrument_map"] = "configs/instruments.yaml"
     cfg2["plugins"]["broker"]["name"] = "ibkr.paper.stub.v1"
     res2 = run_from_config(cfg2, reg)
     # validate manifest and key artifacts exist

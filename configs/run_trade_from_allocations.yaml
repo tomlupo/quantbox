@@ -12,6 +12,7 @@ plugins:
     params:
       # Set this after you run fund_selection and have a real run_id
       allocations_path: "./artifacts/<FUND_RUN_ID>/allocations.parquet"
+      instrument_map: \"./configs/instruments.yaml\"
       prices:
         lookback_days: 5
       round_lot: 1
@@ -21,6 +22,7 @@ plugins:
     name: "eod.duckdb_parquet.v1"
     params_init:
       prices_path: "./data/curated/prices.parquet"
+      fx_path: "./data/curated/fx.parquet"
 
   broker:
     name: "ibkr.paper.stub.v1"

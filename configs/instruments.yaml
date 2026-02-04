@@ -1,0 +1,22 @@
+instruments:
+  - symbol: SPY
+    asset_type: equity
+    currency: USD
+    multiplier: 1
+    lot_size: 1
+    min_notional: 0
+
+  - symbol: QQQ
+    asset_type: equity
+    currency: USD
+    multiplier: 1
+    lot_size: 1
+    min_notional: 0
+
+  # Example futures contract
+  - symbol: ES
+    asset_type: future
+    currency: USD
+    multiplier: 50
+    lot_size: 1
+    min_notional: 0

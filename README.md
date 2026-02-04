@@ -69,3 +69,9 @@ quantbox run -c configs/run_fund_selection.yaml
 quantbox run -c configs/run_trade_from_allocations.yaml
 ```
 This writes `targets/orders/fills/portfolio_daily`.
+
+
+## Advanced sizing & FX
+- Add `instrument_map: ./configs/instruments.yaml` to the trading pipeline params.
+- Data plugin can load FX if you set `fx_path: ./data/curated/fx.parquet`.
+- Trading pipeline writes extra debug artifact: `targets_ext.parquet` and `llm_notes.json`.

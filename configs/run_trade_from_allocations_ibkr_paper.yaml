@@ -11,6 +11,7 @@ plugins:
     name: "trade.allocations_to_orders.v1"
     params:
       allocations_path: "./artifacts/<FUND_RUN_ID>/allocations.parquet"
+      instrument_map: \"./configs/instruments.yaml\"
       prices:
         lookback_days: 5
 
@@ -18,6 +19,7 @@ plugins:
     name: "eod.duckdb_parquet.v1"
     params_init:
       prices_path: "./data/curated/prices.parquet"
+      fx_path: "./data/curated/fx.parquet"
 
   broker:
     name: "ibkr.paper.v1"

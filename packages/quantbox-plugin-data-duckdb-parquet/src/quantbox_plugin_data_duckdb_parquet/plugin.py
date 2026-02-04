@@ -9,6 +9,7 @@ from quantbox.contracts import PluginMeta
 @dataclass
 class DuckDBParquetData:
     prices_path: str = "./data/curated/prices.parquet"
+    fx_path: str | None = None
     meta = PluginMeta(
         name="eod.duckdb_parquet.v1",
         kind="data",
@@ -54,4 +55,18 @@ class DuckDBParquetData:
         return df
 
     def load_fx(self, asof: str, params: Dict[str, Any]) -> Optional[pd.DataFrame]:
-        return None
+        # Optional FX rates parquet with columns: date, pair, rate
+        if not self.fx_path:
+            return None
+        con = duckdb.connect(database=':memory:')
+        con.execute('SET enable_progress_bar=false;')
+        con.execute('CREATE VIEW fx AS SELECT * FROM read_parquet(?)', [self.fx_path])
+        q = """
+        SELECT date, pair, rate
+        FROM fx
+        WHERE CAST(date AS DATE) <= CAST(? AS DATE)
+        ORDER BY CAST(date AS DATE) DESC
+        LIMIT 2000
+        """
+        df = con.execute(q, [asof]).fetchdf()
+        return df if len(df) else None
