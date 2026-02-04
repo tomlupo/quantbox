@@ -55,7 +55,7 @@ def cmd_plugins_info(reg: PluginRegistry, name: str, as_json: bool = False):
             return
     raise SystemExit(f"plugin_not_found: {name}")
 
-def cmd_plugins_doctor(as_json: bool = False):
+def cmd_plugins_doctor(as_json: bool = False, strict: bool = False):
     import importlib.metadata
     from .registry import ENTRYPOINT_GROUPS
     from .plugins.builtins import builtins as builtin_plugins
@@ -203,12 +203,16 @@ def cmd_plugins_doctor(as_json: bool = False):
 
     if as_json:
         print(_as_json(results))
+        if strict and any(r["status"] in ("warn", "error") for r in results):
+            raise SystemExit(2)
         return
 
     print("Plugins doctor:")
     for r in results:
         msg = f" ({r['message']})" if r["message"] else ""
         print(f"- {r['source']} {r['group']} {r['name']}: {r['status']}{msg}")
+    if strict and any(r["status"] in ("warn", "error") for r in results):
+        raise SystemExit(2)
 
 def main():
     ap = argparse.ArgumentParser(prog="quantbox")
@@ -218,6 +222,7 @@ def main():
     sp.add_argument("action", choices=["list","info","doctor"])
     sp.add_argument("--json", action="store_true")
     sp.add_argument("--name", default=None)
+    sp.add_argument("--strict", action="store_true")
     vp = sub.add_parser("validate")
     vp.add_argument("-c","--config", required=True)
     vp.add_argument("--json", action="store_true")
@@ -239,7 +244,7 @@ def main():
         cmd_plugins_info(reg, args.name, as_json=args.json)
         return
     if args.cmd == "plugins" and args.action == "doctor":
-        cmd_plugins_doctor(as_json=args.json)
+        cmd_plugins_doctor(as_json=args.json, strict=args.strict)
         return
 
     if args.cmd == "validate":

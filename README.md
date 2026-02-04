@@ -50,6 +50,12 @@ plugins:
   profile: research
 ```
 
+Validate manifest:
+
+```bash
+python -m jsonschema plugins/manifest.yaml plugins/manifest.schema.json
+```
+
 ## Run the example pipeline
 
 ```bash

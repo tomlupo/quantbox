@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QuantBox Plugin Manifest",
+  "type": "object",
+  "properties": {
+    "plugins": {
+      "type": "object",
+      "properties": {
+        "builtins": {
+          "type": "object",
+          "properties": {
+            "pipelines": {"type": "array", "items": {"type": "string"}},
+            "data": {"type": "array", "items": {"type": "string"}},
+            "brokers": {"type": "array", "items": {"type": "string"}},
+            "publishers": {"type": "array", "items": {"type": "string"}},
+            "risk": {"type": "array", "items": {"type": "string"}}
+          },
+          "additionalProperties": false
+        },
+        "external": {
+          "type": "object",
+          "properties": {
+            "pipelines": {"type": "array", "items": {"type": "string"}},
+            "data": {"type": "array", "items": {"type": "string"}},
+            "brokers": {"type": "array", "items": {"type": "string"}},
+            "publishers": {"type": "array", "items": {"type": "string"}},
+            "risk": {"type": "array", "items": {"type": "string"}}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "pipeline": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"], "additionalProperties": true},
+          "data": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"], "additionalProperties": true},
+          "broker": {"type": "object", "properties": {"name": {"type": "string"}}, "additionalProperties": true},
+          "publishers": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"], "additionalProperties": true}},
+          "risk": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"], "additionalProperties": true}}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
