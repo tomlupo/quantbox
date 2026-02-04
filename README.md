@@ -20,6 +20,8 @@ pip install -e packages/quantbox-plugin-broker-sim
 pip install -e packages/quantbox-plugin-pipeline-alloc2orders
 pip install -e packages/quantbox-plugin-broker-ibkr-stub
 pip install -e packages/quantbox-plugin-broker-binance-stub
+pip install -e packages/quantbox-plugin-broker-ibkr
+pip install -e packages/quantbox-plugin-broker-binance
 ```
 
 ## Generate sample data

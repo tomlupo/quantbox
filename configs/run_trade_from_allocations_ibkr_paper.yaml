@@ -1,0 +1,32 @@
+run:
+  mode: paper
+  asof: "2026-01-31"
+  pipeline: "trade.allocations_to_orders.v1"
+
+artifacts:
+  root: "./artifacts"
+
+plugins:
+  pipeline:
+    name: "trade.allocations_to_orders.v1"
+    params:
+      allocations_path: "./artifacts/<FUND_RUN_ID>/allocations.parquet"
+      prices:
+        lookback_days: 5
+
+  data:
+    name: "eod.duckdb_parquet.v1"
+    params_init:
+      prices_path: "./data/curated/prices.parquet"
+
+  broker:
+    name: "ibkr.paper.v1"
+    params_init:
+      host: "127.0.0.1"
+      port: 7497
+      client_id: 7
+      account: "DUXXXX"
+      readonly: true   # switch to false to enable orders
+
+  publishers: []
+  risk: []
