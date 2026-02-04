@@ -1,0 +1,31 @@
+run:
+  mode: paper
+  asof: "2026-01-31"
+  pipeline: "trade.allocations_to_orders.v1"
+
+artifacts:
+  root: "./artifacts"
+
+plugins:
+  pipeline:
+    name: "trade.allocations_to_orders.v1"
+    params:
+      # Set this after you run fund_selection and have a real run_id
+      allocations_path: "./artifacts/<FUND_RUN_ID>/allocations.parquet"
+      prices:
+        lookback_days: 5
+      round_lot: 1
+      min_abs_qty: 0.0
+
+  data:
+    name: "eod.duckdb_parquet.v1"
+    params_init:
+      prices_path: "./data/curated/prices.parquet"
+
+  broker:
+    name: "ibkr.paper.stub.v1"
+    params_init:
+      starting_cash_usd: 100000
+
+  publishers: []
+  risk: []

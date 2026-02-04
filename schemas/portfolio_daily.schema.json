@@ -1,0 +1,25 @@
+{
+  "title": "portfolio_daily",
+  "type": "object",
+  "properties": {
+    "columns": {
+      "const": [
+        {
+          "name": "asof",
+          "type": "string"
+        },
+        {
+          "name": "cash_usd",
+          "type": "number"
+        },
+        {
+          "name": "portfolio_value_usd",
+          "type": "number"
+        }
+      ]
+    }
+  },
+  "required": [
+    "columns"
+  ]
+}

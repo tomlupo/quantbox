@@ -17,6 +17,9 @@ pip install -e packages/quantbox-core
 pip install -e packages/quantbox-plugin-data-duckdb-parquet
 pip install -e packages/quantbox-plugin-pipeline-fundselection
 pip install -e packages/quantbox-plugin-broker-sim
+pip install -e packages/quantbox-plugin-pipeline-alloc2orders
+pip install -e packages/quantbox-plugin-broker-ibkr-stub
+pip install -e packages/quantbox-plugin-broker-binance-stub
 ```
 
 ## Generate sample data
@@ -51,3 +54,16 @@ Artifacts are written to `./artifacts/<run_id>/`.
 - `quantbox validate` and `quantbox run --dry-run`
 - `quantbox plugins list --json` and `quantbox plugins info --name <id> --json`
 - artifact schema checks via `/schemas/*.schema.json`
+
+
+## Trading bridge pipeline (research → paper)
+1) Run fund selection to produce allocations:
+```bash
+quantbox run -c configs/run_fund_selection.yaml
+```
+2) Copy the produced RUN_ID and edit `configs/run_trade_from_allocations.yaml` to point `allocations_path` to that run.
+3) Run trading bridge:
+```bash
+quantbox run -c configs/run_trade_from_allocations.yaml
+```
+This writes `targets/orders/fills/portfolio_daily`.

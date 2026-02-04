@@ -1,0 +1,33 @@
+{
+  "title": "orders",
+  "type": "object",
+  "properties": {
+    "columns": {
+      "const": [
+        {
+          "name": "symbol",
+          "type": "string"
+        },
+        {
+          "name": "side",
+          "type": "string"
+        },
+        {
+          "name": "qty",
+          "type": "number"
+        },
+        {
+          "name": "price",
+          "type": "number"
+        },
+        {
+          "name": "asof",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "required": [
+    "columns"
+  ]
+}

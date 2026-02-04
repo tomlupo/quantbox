@@ -13,3 +13,9 @@ Current v1 artifacts (starter):
 - allocations
 
 JSON schemas live in `/schemas/*.schema.json`.
+
+Additional v1 trading artifacts:
+- targets
+- orders
+- fills
+- portfolio_daily

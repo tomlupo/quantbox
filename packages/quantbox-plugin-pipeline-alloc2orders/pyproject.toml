@@ -1,0 +1,11 @@
+[project]
+name = "quantbox-plugin-pipeline-alloc2orders"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+  "quantbox==0.1.0",
+  "pandas>=2.0",
+]
+
+[project.entry-points."quantbox.pipelines"]
+"trade.allocations_to_orders.v1" = "quantbox_plugin_alloc2orders.pipeline:AllocationsToOrdersPipeline"
