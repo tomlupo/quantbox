@@ -1,0 +1,25 @@
+{
+  "title": "scores",
+  "type": "object",
+  "properties": {
+    "columns": {
+      "const": [
+        {
+          "name": "symbol",
+          "type": "string"
+        },
+        {
+          "name": "score",
+          "type": "number"
+        },
+        {
+          "name": "asof",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "required": [
+    "columns"
+  ]
+}

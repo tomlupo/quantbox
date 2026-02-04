@@ -5,6 +5,7 @@ from typing import Any, Dict
 import pandas as pd
 
 class FileArtifactStore:
+
     def __init__(self, root: str, run_id: str):
         self._run_id = run_id
         self.root = Path(root) / run_id
@@ -26,3 +27,10 @@ class FileArtifactStore:
         path = self.root / f"{name}.json"
         path.write_text(json.dumps(obj, ensure_ascii=False, indent=2))
         return str(path)
+
+    def append_event(self, line: str) -> str:
+        path = self.root / "events.jsonl"
+        with path.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+        return str(path)
+

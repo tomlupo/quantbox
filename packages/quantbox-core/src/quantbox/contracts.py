@@ -17,6 +17,13 @@ class PluginMeta:
     tags: tuple[str, ...] = ()
     capabilities: tuple[str, ...] = ()
     schema_version: str = "v1"
+    # LLM-friendly: machine-readable plugin parameter schema (JSON Schema)
+    params_schema: Optional[Dict[str, Any]] = None
+    # LLM-friendly: what artifacts this plugin expects/produces
+    inputs: tuple[str, ...] = ()
+    outputs: tuple[str, ...] = ()
+    # LLM-friendly: minimal config snippets
+    examples: tuple[str, ...] = ()
 
 @dataclass
 class RunResult:

@@ -16,6 +16,19 @@ class FundSelectionPipeline:
         tags=("research","ranking"),
         capabilities=("research",),
         schema_version="v1",
+        params_schema={
+            "type": "object",
+            "properties": {
+                "top_n": {"type": "integer", "minimum": 1, "default": 5},
+                "universe": {"type": "object", "properties": {"symbols": {"type":"array","items":{"type":"string"}}}, "required":["symbols"]},
+                "prices": {"type": "object", "properties": {"lookback_days": {"type":"integer","minimum": 30, "default": 365}}},
+            },
+            "required": ["universe"]
+        },
+        outputs=("scores","rankings","allocations"),
+        examples=(
+            "plugins:\n  pipeline:\n    name: fund_selection.simple.v1\n    params:\n      top_n: 5\n      universe:\n        symbols: [SPY, QQQ]\n      prices:\n        lookback_days: 365",
+        ),
     )
     kind = "research"
 

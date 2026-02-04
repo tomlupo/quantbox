@@ -1,0 +1,25 @@
+{
+  "title": "prices",
+  "type": "object",
+  "properties": {
+    "columns": {
+      "const": [
+        {
+          "name": "date",
+          "type": "string"
+        },
+        {
+          "name": "symbol",
+          "type": "string"
+        },
+        {
+          "name": "close",
+          "type": "number"
+        }
+      ]
+    }
+  },
+  "required": [
+    "columns"
+  ]
+}

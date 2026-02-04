@@ -44,3 +44,10 @@ Artifacts are written to `./artifacts/<run_id>/`.
 ## Next steps
 - Add a **trading pipeline** plugin that consumes `allocations.parquet` and emits `targets/orders/fills`.
 - Implement `broker.ibkr.*` and `broker.binance.*` plugins using the same `BrokerPlugin` interface.
+
+
+## LLM-friendly additions
+- `run_manifest.json` and `events.jsonl` written per run
+- `quantbox validate` and `quantbox run --dry-run`
+- `quantbox plugins list --json` and `quantbox plugins info --name <id> --json`
+- artifact schema checks via `/schemas/*.schema.json`

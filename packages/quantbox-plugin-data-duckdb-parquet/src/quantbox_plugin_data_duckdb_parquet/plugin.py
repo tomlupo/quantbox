@@ -18,6 +18,16 @@ class DuckDBParquetData:
         tags=("duckdb","parquet","eod"),
         capabilities=("prices",),
         schema_version="v1",
+        params_schema={
+            "type":"object",
+            "properties":{
+                "universe": {"type":"object","properties":{"symbols":{"type":"array","items":{"type":"string"}}},"required":["symbols"]},
+                "prices": {"type":"object","properties":{"lookback_days":{"type":"integer","minimum":30}}}
+            }
+        },
+        examples=(
+            "plugins:\n  data:\n    name: eod.duckdb_parquet.v1\n    params_init:\n      prices_path: ./data/curated/prices.parquet",
+        ),
     )
 
     def load_universe(self, params: Dict[str, Any]) -> pd.DataFrame:

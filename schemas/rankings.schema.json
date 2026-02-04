@@ -1,0 +1,29 @@
+{
+  "title": "rankings",
+  "type": "object",
+  "properties": {
+    "columns": {
+      "const": [
+        {
+          "name": "symbol",
+          "type": "string"
+        },
+        {
+          "name": "score",
+          "type": "number"
+        },
+        {
+          "name": "asof",
+          "type": "string"
+        },
+        {
+          "name": "rank",
+          "type": "integer"
+        }
+      ]
+    }
+  },
+  "required": [
+    "columns"
+  ]
+}

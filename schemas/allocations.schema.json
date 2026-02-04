@@ -1,0 +1,33 @@
+{
+  "title": "allocations",
+  "type": "object",
+  "properties": {
+    "columns": {
+      "const": [
+        {
+          "name": "symbol",
+          "type": "string"
+        },
+        {
+          "name": "score",
+          "type": "number"
+        },
+        {
+          "name": "asof",
+          "type": "string"
+        },
+        {
+          "name": "rank",
+          "type": "integer"
+        },
+        {
+          "name": "weight",
+          "type": "number"
+        }
+      ]
+    }
+  },
+  "required": [
+    "columns"
+  ]
+}

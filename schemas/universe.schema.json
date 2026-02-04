@@ -1,0 +1,17 @@
+{
+  "title": "universe",
+  "type": "object",
+  "properties": {
+    "columns": {
+      "const": [
+        {
+          "name": "symbol",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "required": [
+    "columns"
+  ]
+}
