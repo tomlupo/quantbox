@@ -4,6 +4,7 @@ from typing import Any, Dict, Type
 import importlib.metadata
 
 from .contracts import PipelinePlugin, BrokerPlugin, DataPlugin, PublisherPlugin, RiskPlugin
+from .plugins.builtins import builtins as builtin_plugins
 
 ENTRYPOINT_GROUPS = {
     "pipeline": "quantbox.pipelines",
@@ -30,10 +31,11 @@ class PluginRegistry:
 
     @staticmethod
     def discover() -> "PluginRegistry":
+        builtins = builtin_plugins()
         return PluginRegistry(
-            pipelines=_load_group(ENTRYPOINT_GROUPS["pipeline"]),
-            brokers=_load_group(ENTRYPOINT_GROUPS["broker"]),
-            data=_load_group(ENTRYPOINT_GROUPS["data"]),
-            publishers=_load_group(ENTRYPOINT_GROUPS["publisher"]),
-            risk=_load_group(ENTRYPOINT_GROUPS["risk"]),
+            pipelines={**builtins["pipeline"], **_load_group(ENTRYPOINT_GROUPS["pipeline"])},
+            brokers={**builtins["broker"], **_load_group(ENTRYPOINT_GROUPS["broker"])},
+            data={**builtins["data"], **_load_group(ENTRYPOINT_GROUPS["data"])},
+            publishers={**builtins["publisher"], **_load_group(ENTRYPOINT_GROUPS["publisher"])},
+            risk={**builtins["risk"], **_load_group(ENTRYPOINT_GROUPS["risk"])},
         )

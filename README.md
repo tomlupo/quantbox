@@ -1,10 +1,11 @@
-# QuantBox — full working starter repo (core + plugins)
+# QuantBox — full working starter repo (core + built-in plugins)
 
 This repo is a **working minimal** QuantBox implementation:
 - `quantbox` core (plugin registry + runner + artifacts)
-- `eod.duckdb_parquet.v1` data plugin (DuckDB over Parquet)
-- `fund_selection.simple.v1` pipeline plugin (research)
-- `sim.paper.v1` broker plugin (paper simulator; not needed for research)
+- built-in plugins under `quantbox.plugins.*`
+  - `eod.duckdb_parquet.v1` data plugin (DuckDB over Parquet)
+  - `fund_selection.simple.v1` pipeline plugin (research)
+  - `sim.paper.v1` broker plugin (paper simulator; not needed for research)
 
 ## Install (editable)
 
@@ -14,14 +15,10 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -U pip
 
 pip install -e packages/quantbox-core
-pip install -e packages/quantbox-plugin-data-duckdb-parquet
-pip install -e packages/quantbox-plugin-pipeline-fundselection
-pip install -e packages/quantbox-plugin-broker-sim
-pip install -e packages/quantbox-plugin-pipeline-alloc2orders
-pip install -e packages/quantbox-plugin-broker-ibkr-stub
-pip install -e packages/quantbox-plugin-broker-binance-stub
-pip install -e packages/quantbox-plugin-broker-ibkr
-pip install -e packages/quantbox-plugin-broker-binance
+
+# Optional deps for live broker adapters:
+pip install ib_insync
+pip install python-binance
 ```
 
 ## Generate sample data
@@ -48,7 +45,7 @@ Artifacts are written to `./artifacts/<run_id>/`.
 
 ## Next steps
 - Add a **trading pipeline** plugin that consumes `allocations.parquet` and emits `targets/orders/fills`.
-- Implement `broker.ibkr.*` and `broker.binance.*` plugins using the same `BrokerPlugin` interface.
+- Implement external plugins via entry points if you want separate repos/packages.
 
 
 ## LLM-friendly additions
