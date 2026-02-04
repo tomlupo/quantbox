@@ -1,0 +1,25 @@
+run:
+  mode: backtest
+  asof: "2026-01-31"
+  pipeline: "fund_selection.simple.v1"
+
+artifacts:
+  root: "./artifacts"
+
+plugins:
+  pipeline:
+    name: "fund_selection.simple.v1"
+    params:
+      top_n: 5
+      universe:
+        symbols: ["SPY","QQQ","IWM","EEM","TLT","GLD"]
+      prices:
+        lookback_days: 365
+
+  data:
+    name: "eod.duckdb_parquet.v1"
+    params_init:
+      prices_path: "./data/curated/prices.parquet"
+
+  publishers: []
+  risk: []

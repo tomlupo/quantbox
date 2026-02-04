@@ -1,0 +1,13 @@
+[project]
+name = "quantbox-plugin-data-duckdb-parquet"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+  "quantbox==0.1.0",
+  "pandas>=2.0",
+  "duckdb>=0.10.0",
+  "pyarrow>=14.0",
+]
+
+[project.entry-points."quantbox.data"]
+"eod.duckdb_parquet.v1" = "quantbox_plugin_data_duckdb_parquet.plugin:DuckDBParquetData"

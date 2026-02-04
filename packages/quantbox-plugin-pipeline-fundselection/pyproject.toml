@@ -1,0 +1,11 @@
+[project]
+name = "quantbox-plugin-pipeline-fundselection"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+  "quantbox==0.1.0",
+  "pandas>=2.0",
+]
+
+[project.entry-points."quantbox.pipelines"]
+"fund_selection.simple.v1" = "quantbox_plugin_fundselection.pipeline:FundSelectionPipeline"

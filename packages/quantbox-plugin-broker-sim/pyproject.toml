@@ -1,0 +1,11 @@
+[project]
+name = "quantbox-plugin-broker-sim"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+  "quantbox==0.1.0",
+  "pandas>=2.0",
+]
+
+[project.entry-points."quantbox.brokers"]
+"sim.paper.v1" = "quantbox_plugin_broker_sim.broker:SimPaperBroker"

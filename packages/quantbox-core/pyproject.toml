@@ -1,0 +1,13 @@
+[project]
+name = "quantbox"
+version = "0.1.0"
+description = "Quant research & trading core with plugin marketplace (entry points)."
+requires-python = ">=3.10"
+dependencies = [
+  "pandas>=2.0",
+  "pyyaml>=6.0",
+  "pyarrow>=14.0",
+]
+
+[project.scripts]
+quantbox = "quantbox.cli:main"
