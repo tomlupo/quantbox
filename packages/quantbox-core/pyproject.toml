@@ -11,5 +11,13 @@ dependencies = [
   "jsonschema>=4.19",
 ]
 
+[project.optional-dependencies]
+ibkr = ["ib_insync"]
+binance = ["python-binance"]
+
 [project.scripts]
 quantbox = "quantbox.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.9.18,<0.10.0"]
+build-backend = "uv_build"

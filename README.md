@@ -7,18 +7,15 @@ This repo is a **working minimal** QuantBox implementation:
   - `fund_selection.simple.v1` pipeline plugin (research)
   - `sim.paper.v1` broker plugin (paper simulator; not needed for research)
 
-## Install (editable)
+## Install (uv)
 
 ```bash
-python -m venv .venv
+uv venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -U pip
-
-pip install -e packages/quantbox-core
+uv sync
 
 # Optional deps for live broker adapters:
-pip install ib_insync
-pip install python-binance
+uv sync --extra ibkr --extra binance
 ```
 
 ## Generate sample data
