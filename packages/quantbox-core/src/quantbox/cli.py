@@ -54,12 +54,93 @@ def cmd_plugins_info(reg: PluginRegistry, name: str, as_json: bool = False):
             return
     raise SystemExit(f"plugin_not_found: {name}")
 
+def cmd_plugins_doctor(as_json: bool = False):
+    import importlib.metadata
+    from .registry import ENTRYPOINT_GROUPS
+    from .plugins.builtins import builtins as builtin_plugins
+
+    results = []
+
+    builtins = builtin_plugins()
+    for group, mapping in builtins.items():
+        for name in sorted(mapping.keys()):
+            results.append({
+                "source": "builtin",
+                "group": group,
+                "name": name,
+                "status": "ok",
+                "message": "",
+            })
+
+    # Optional dependency checks for built-in live brokers
+    try:
+        from .plugins.broker import ibkr as _ibkr_mod
+        if getattr(_ibkr_mod, "IB", None) is None:
+            results.append({
+                "source": "builtin",
+                "group": "broker",
+                "name": "ibkr.live.v1",
+                "status": "warn",
+                "message": "optional dependency missing: ib_insync",
+            })
+    except Exception:
+        pass
+
+    try:
+        from .plugins.broker import binance as _binance_mod
+        if getattr(_binance_mod, "Client", None) is None:
+            results.append({
+                "source": "builtin",
+                "group": "broker",
+                "name": "binance.live.v1",
+                "status": "warn",
+                "message": "optional dependency missing: python-binance",
+            })
+    except Exception:
+        pass
+
+    # External entry points
+    for group_name, ep_group in ENTRYPOINT_GROUPS.items():
+        eps = importlib.metadata.entry_points(group=ep_group)
+        for ep in eps:
+            status = "ok"
+            message = ""
+            try:
+                ep.load()
+            except Exception as e:  # pragma: no cover
+                status = "error"
+                message = f"entrypoint_load_failed: {e}"
+
+            if ep.name in builtins.get(group_name, {}):
+                if status == "ok":
+                    status = "warn"
+                if message:
+                    message = message + "; "
+                message = message + "overrides built-in"
+
+            results.append({
+                "source": "entrypoint",
+                "group": group_name,
+                "name": ep.name,
+                "status": status,
+                "message": message,
+            })
+
+    if as_json:
+        print(_as_json(results))
+        return
+
+    print("Plugins doctor:")
+    for r in results:
+        msg = f" ({r['message']})" if r["message"] else ""
+        print(f"- {r['source']} {r['group']} {r['name']}: {r['status']}{msg}")
+
 def main():
     ap = argparse.ArgumentParser(prog="quantbox")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("plugins")
-    sp.add_argument("action", choices=["list","info"])
+    sp.add_argument("action", choices=["list","info","doctor"])
     sp.add_argument("--json", action="store_true")
     sp.add_argument("--name", default=None)
     vp = sub.add_parser("validate")
@@ -81,6 +162,9 @@ def main():
         if not args.name:
             raise SystemExit("--name is required for plugins info")
         cmd_plugins_info(reg, args.name, as_json=args.json)
+        return
+    if args.cmd == "plugins" and args.action == "doctor":
+        cmd_plugins_doctor(as_json=args.json)
         return
 
     if args.cmd == "validate":
