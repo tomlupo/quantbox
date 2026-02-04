@@ -7,6 +7,7 @@ from .contracts import Mode, RunResult, PipelinePlugin, BrokerPlugin, DataPlugin
 from .store import FileArtifactStore
 from .llm_utils import event_line, validate_table, load_schema
 from .validate import validate_config
+from .plugin_manifest import load_manifest, resolve_profile, repo_root
 
 def _hash_config(cfg: Dict[str, Any]) -> str:
     b = json.dumps(cfg, sort_keys=True).encode("utf-8")
@@ -19,6 +20,14 @@ def _run_id(asof: str, pipeline_name: str, cfg_hash: str) -> str:
 
 def run_from_config(cfg: Dict[str, Any], registry) -> RunResult:
     run_cfg = cfg["run"]
+    if "plugins" in cfg and cfg["plugins"].get("profile"):
+        profile_name = str(cfg["plugins"]["profile"])
+        prof = resolve_profile(profile_name, load_manifest())
+        if prof:
+            # Fill missing plugin blocks from profile, without overwriting explicit config
+            for key in ("pipeline", "data", "broker", "publishers", "risk"):
+                if key in prof and key not in cfg["plugins"]:
+                    cfg["plugins"][key] = prof[key]
     # Basic config validation (LLM-friendly)
     findings = validate_config(cfg)
     if any(f.level == "error" for f in findings):
@@ -100,9 +109,7 @@ def run_from_config(cfg: Dict[str, Any], registry) -> RunResult:
     }
 
     # Validate artifacts against JSON schemas when available (best-effort)
-    from pathlib import Path
-    repo_root = Path(__file__).resolve().parents[3]
-    schema_dir = repo_root / "schemas"
+    schema_dir = repo_root() / "schemas"
     for logical, path in (result.artifacts or {}).items():
         schema_path = schema_dir / f"{logical}.schema.json"
         if schema_path.exists() and path.endswith(".parquet"):
@@ -117,4 +124,3 @@ def run_from_config(cfg: Dict[str, Any], registry) -> RunResult:
     store.put_json("run_manifest", manifest)
     store.append_event(event_line("RUN_END", run_id=run_id, metrics=result.metrics, warnings=len(manifest["warnings"])))
     return result
-

@@ -1,0 +1,33 @@
+plugins:
+  builtins:
+    pipelines:
+      - fund_selection.simple.v1
+      - trade.allocations_to_orders.v1
+    data:
+      - eod.duckdb_parquet.v1
+    brokers:
+      - sim.paper.v1
+      - ibkr.paper.stub.v1
+      - binance.paper.stub.v1
+      - ibkr.live.v1
+      - binance.live.v1
+  external:
+    pipelines: []
+    data: []
+    brokers: []
+    publishers: []
+    risk: []
+
+profiles:
+  research:
+    pipeline:
+      name: fund_selection.simple.v1
+    data:
+      name: eod.duckdb_parquet.v1
+  trading:
+    pipeline:
+      name: trade.allocations_to_orders.v1
+    data:
+      name: eod.duckdb_parquet.v1
+    broker:
+      name: sim.paper.v1

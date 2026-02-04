@@ -5,6 +5,7 @@ import yaml
 from .registry import PluginRegistry
 from .runner import run_from_config
 from .validate import validate_config
+from .plugin_manifest import load_manifest, resolve_profile
 
 def _as_json(obj):
     import json
@@ -58,6 +59,7 @@ def cmd_plugins_doctor(as_json: bool = False):
     import importlib.metadata
     from .registry import ENTRYPOINT_GROUPS
     from .plugins.builtins import builtins as builtin_plugins
+    from .plugin_manifest import repo_root
 
     results = []
 
@@ -126,6 +128,79 @@ def cmd_plugins_doctor(as_json: bool = False):
                 "message": message,
             })
 
+    # Schemas for built-in plugins
+    schema_dir = repo_root() / "schemas"
+    for group, mapping in builtins.items():
+        for name, cls in mapping.items():
+            meta = getattr(cls, "meta", None)
+            if not meta:
+                continue
+            logicals = list(getattr(meta, "outputs", ()) or ()) + list(getattr(meta, "inputs", ()) or ())
+            for logical in logicals:
+                schema_path = schema_dir / f"{logical}.schema.json"
+                if not schema_path.exists():
+                    results.append({
+                        "source": "schema",
+                        "group": group,
+                        "name": name,
+                        "status": "warn",
+                        "message": f"missing_schema:{logical}",
+                    })
+
+    # Config references
+    try:
+        reg = PluginRegistry.discover()
+    except Exception:
+        reg = None
+    manifest = load_manifest()
+    config_dir = repo_root() / "configs"
+    if config_dir.exists():
+        for cfg_path in sorted(config_dir.glob("*.yaml")):
+            try:
+                cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+                plugins = cfg.get("plugins", {}) or {}
+                profile = plugins.get("profile")
+                prof = resolve_profile(str(profile), manifest) if profile else {}
+                merged = dict(plugins)
+                for key in ("pipeline", "data", "broker", "publishers", "risk"):
+                    if key not in merged and key in prof:
+                        merged[key] = prof[key]
+
+                def _check(group: str, name: str | None):
+                    if not name or not reg:
+                        return
+                    registry_map = {
+                        "pipeline": reg.pipelines,
+                        "data": reg.data,
+                        "broker": reg.brokers,
+                        "publisher": reg.publishers,
+                        "risk": reg.risk,
+                    }[group]
+                    if name not in registry_map:
+                        results.append({
+                            "source": "config",
+                            "group": group,
+                            "name": name,
+                            "status": "error",
+                            "message": f"config_ref_not_found:{cfg_path.name}",
+                        })
+
+                _check("pipeline", (merged.get("pipeline") or {}).get("name"))
+                _check("data", (merged.get("data") or {}).get("name"))
+                _check("broker", (merged.get("broker") or {}).get("name"))
+                for pub in (merged.get("publishers") or []):
+                    _check("publisher", pub.get("name"))
+                for rk in (merged.get("risk") or []):
+                    _check("risk", rk.get("name"))
+            except Exception as e:  # pragma: no cover
+                results.append({
+                    "source": "config",
+                    "group": "config",
+                    "name": cfg_path.name,
+                    "status": "error",
+                    "message": f"config_parse_failed:{e}",
+                })
+
     if as_json:
         print(_as_json(results))
         return
@@ -188,9 +263,16 @@ def main():
             cfg = yaml.safe_load(f)
         if args.dry_run:
             # resolve plugins + show plan
-            pipe = cfg["plugins"]["pipeline"]["name"]
-            data = cfg["plugins"]["data"]["name"]
-            broker = cfg["plugins"].get("broker", {}).get("name")
+            plugins = cfg.get("plugins", {}) or {}
+            profile = plugins.get("profile")
+            prof = resolve_profile(str(profile), load_manifest()) if profile else {}
+            merged = dict(plugins)
+            for key in ("pipeline", "data", "broker"):
+                if key not in merged and key in prof:
+                    merged[key] = prof[key]
+            pipe = (merged.get("pipeline") or {}).get("name")
+            data = (merged.get("data") or {}).get("name")
+            broker = (merged.get("broker") or {}).get("name")
             plan = {"pipeline": pipe, "data": data, "broker": broker, "mode": cfg["run"]["mode"], "asof": cfg["run"]["asof"]}
             import json
             print(json.dumps(plan, ensure_ascii=False, indent=2))

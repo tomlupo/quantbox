@@ -18,6 +18,14 @@ uv sync
 uv sync --extra ibkr --extra binance
 ```
 
+## Dev install (one command)
+
+```bash
+make dev
+# or
+make dev-full
+```
+
 ## Generate sample data
 
 ```bash
@@ -30,6 +38,16 @@ Creates: `data/curated/prices.parquet` with columns: `date, symbol, close`.
 
 ```bash
 quantbox plugins list
+```
+
+## Plugin manifest + profiles
+
+- Manifest: `plugins/manifest.yaml`
+- Use profiles to avoid repeating plugin blocks in configs:
+
+```yaml
+plugins:
+  profile: research
 ```
 
 ## Run the example pipeline
