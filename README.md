@@ -75,3 +75,20 @@ This writes `targets/orders/fills/portfolio_daily`.
 - Add `instrument_map: ./configs/instruments.yaml` to the trading pipeline params.
 - Data plugin can load FX if you set `fx_path: ./data/curated/fx.parquet`.
 - Trading pipeline writes extra debug artifact: `targets_ext.parquet` and `llm_notes.json`.
+
+
+## Auto-resolve latest allocations
+In the trading config you can auto-use the latest research run:
+
+- `allocations_path: null`
+- `allocations_ref: "latest:fund_selection.simple.v1"`
+
+## Approval gate
+To require approval before paper/live execution:
+
+1) Run trade config once (fills will be empty until approved)
+2) Create approval file:
+```bash
+python scripts/approve_orders.py --run-dir ./artifacts/<TRADE_RUN_ID>/ --who tom
+```
+3) Rerun the same trade config (now it can execute if `readonly: false` on the broker).

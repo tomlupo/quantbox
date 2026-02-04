@@ -19,6 +19,7 @@ def test_trading_bridge(tmp_path):
     cfg2["plugins"]["pipeline"]["params"]["allocations_path"] = str(alloc_path)
     cfg2["plugins"]["pipeline"]["params"]["instrument_map"] = "configs/instruments.yaml"
     cfg2["plugins"]["broker"]["name"] = "ibkr.paper.stub.v1"
+    cfg2["plugins"]["pipeline"]["params"]["approval_required"] = False
     res2 = run_from_config(cfg2, reg)
     # validate manifest and key artifacts exist
     run_dir = Path(tmp_path) / res2.run_id

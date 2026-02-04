@@ -11,12 +11,16 @@ plugins:
     name: "trade.allocations_to_orders.v1"
     params:
       # Set this after you run fund_selection and have a real run_id
-      allocations_path: "./artifacts/<FUND_RUN_ID>/allocations.parquet"
+      allocations_path: null
+      allocations_ref: "latest:fund_selection.simple.v1"
+      allocations_artifact: "allocations.parquet"
       instrument_map: \"./configs/instruments.yaml\"
       prices:
         lookback_days: 5
       round_lot: 1
       min_abs_qty: 0.0
+      approval_required: true
+      approval_path: null
 
   data:
     name: "eod.duckdb_parquet.v1"

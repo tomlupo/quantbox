@@ -6,8 +6,11 @@ from pathlib import Path
 import pandas as pd
 import yaml
 import numpy as np
+import hashlib
+import json
 
 from quantbox.contracts import PluginMeta, RunResult, Mode, DataPlugin, ArtifactStore, BrokerPlugin, RiskPlugin
+from quantbox.run_history import resolve_latest_artifact
 
 # --------------------------
 # Helpers
@@ -106,7 +109,11 @@ class AllocationsToOrdersPipeline:
         params_schema={
             "type":"object",
             "properties":{
-                "allocations_path":{"type":"string"},
+                "allocations_path":{"type":["string","null"], "description":"Explicit path to allocations.parquet"},
+                "allocations_ref":{"type":["string","null"], "description":"Auto-resolve: latest:<pipeline_id> (e.g. latest:fund_selection.simple.v1)"},
+                "allocations_artifact":{"type":"string","default":"allocations.parquet"},
+                "approval_required":{"type":"boolean","default":False},
+                "approval_path":{"type":["string","null"], "description":"Path to approval JSON. If null, defaults to ./approvals/<orders_digest>.json"},
                 "instrument_map":{"type":["string","null"], "description":"YAML/CSV with symbol metadata"},
                 "prices":{"type":"object","properties":{"lookback_days":{"type":"integer","minimum":1,"default":5}}},
                 "base_currency":{"type":"string","default":"USD"},
@@ -143,7 +150,16 @@ class AllocationsToOrdersPipeline:
             # keep artifact contracts stable (portfolio_daily is USD-based)
             base_ccy = "USD"
 
-        alloc = pd.read_parquet(params["allocations_path"])
+        alloc_path = params.get("allocations_path")
+        ref = params.get("allocations_ref")
+        artifact_file = str(params.get("allocations_artifact", "allocations.parquet"))
+        if (not alloc_path) and ref and str(ref).startswith("latest:"):
+            pipe = str(ref).split("latest:", 1)[1].strip()
+            artifacts_root = Path(store.root).parent
+            alloc_path = str(resolve_latest_artifact(artifacts_root, pipe, artifact_file))
+        if not alloc_path:
+            raise ValueError("Must provide allocations_path or allocations_ref=latest:<pipeline>")
+        alloc = pd.read_parquet(alloc_path)
         if "symbol" not in alloc.columns or "weight" not in alloc.columns:
             raise ValueError("allocations_path must contain columns: symbol, weight")
 
@@ -261,7 +277,11 @@ class AllocationsToOrdersPipeline:
 
         fills = pd.DataFrame(columns=["symbol","side","qty","price"])
         if mode in ("paper","live") and broker is not None and len(orders):
-            fills = broker.place_orders(orders[["symbol","side","qty","price"]])
+            if bool(params.get("approval_required", False)) and not approval_ok:
+                # Approval missing/mismatch -> do not execute
+                pass
+            else:
+                fills = broker.place_orders(orders[["symbol","side","qty","price"]])
         a_fills = store.put_parquet("fills", fills)
 
         # after snapshot
@@ -306,6 +326,8 @@ class AllocationsToOrdersPipeline:
 - fills: {len(fills)}
 - fx_loaded: {fx is not None}
 - instrument_map: {bool(params.get("instrument_map"))}
+- approval_required: {bool(params.get("approval_required", False))}
+- approval_ok: {approval_ok if "approval_ok" in locals() else True}
 """
         store.put_json("llm_notes", {"markdown": llm_notes_md})
 
@@ -328,5 +350,5 @@ class AllocationsToOrdersPipeline:
                 "portfolio_daily": a_port,
             },
             metrics=metrics,
-            notes={"kind":"trading", "risk_findings": findings, "extra_artifacts": ["targets_ext.parquet","llm_notes.json"]},
+            notes={"kind":"trading", "risk_findings": findings, "extra_artifacts": ["targets_ext.parquet","llm_notes.json","orders_digest.json","approval_status.json"]},
         )
