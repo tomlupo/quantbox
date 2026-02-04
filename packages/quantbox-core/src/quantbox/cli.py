@@ -11,8 +11,7 @@ def _as_json(obj):
     return json.dumps(obj, ensure_ascii=False, indent=2)
 
 def cmd_plugins_list(reg: PluginRegistry, as_json: bool = False):
-
-        if as_json:
+    if as_json:
         payload = {
             "pipelines": sorted(list(reg.pipelines.keys())),
             "brokers": sorted(list(reg.brokers.keys())),
@@ -56,7 +55,6 @@ def cmd_plugins_info(reg: PluginRegistry, name: str, as_json: bool = False):
     raise SystemExit(f"plugin_not_found: {name}")
 
 def main():
-
     ap = argparse.ArgumentParser(prog="quantbox")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -64,9 +62,6 @@ def main():
     sp.add_argument("action", choices=["list","info"])
     sp.add_argument("--json", action="store_true")
     sp.add_argument("--name", default=None)
-    
-
-    
     vp = sub.add_parser("validate")
     vp.add_argument("-c","--config", required=True)
     vp.add_argument("--json", action="store_true")
