@@ -1,4 +1,4 @@
-# Trading bridge advanced upgrade (v0.2)
+# Trading bridge (advanced, v0.2)
 
 `trade.allocations_to_orders.v1` now supports (best-effort) while keeping contracts stable:
 - Futures multipliers (via `instrument_map`)
@@ -6,6 +6,7 @@
 - Multi-currency cash + FX conversion into USD base (via `fx_path`)
 
 ## Instrument map
+
 Provide YAML/CSV. Example: `configs/instruments.yaml`
 
 Fields:
@@ -19,6 +20,7 @@ Fields:
 - min_notional (default 0) in USD
 
 ## FX data
+
 Provide `data/curated/fx.parquet` with columns:
 - date
 - pair (e.g. EURUSD or USDJPY)
