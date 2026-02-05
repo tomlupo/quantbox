@@ -1,3 +1,4 @@
+# Workspace root. The installable package for downstreams is packages/quantbox-core (name: quantbox).
 [project]
 name = "quantbox-workspace"
 version = "0.0.0"
