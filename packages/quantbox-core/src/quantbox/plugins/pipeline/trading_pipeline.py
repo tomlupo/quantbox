@@ -243,12 +243,17 @@ class TradingPipeline:
                 token_policy.mode,
             )
 
-        prices = data.load_prices(universe, asof, prices_params)
+        market_data_dict = data.load_market_data(universe, asof, prices_params)
         store.put_parquet("universe", universe)
-        store.put_parquet("prices", prices)
+        # Store prices as wide-format parquet
+        prices_wide = market_data_dict.get("prices", pd.DataFrame())
+        if not prices_wide.empty:
+            store.put_parquet("prices", prices_wide.reset_index() if isinstance(prices_wide.index, pd.DatetimeIndex) else prices_wide)
+        else:
+            store.put_parquet("prices", pd.DataFrame())
 
         # Build data dict for strategies (quantlab convention)
-        market_data = self._build_market_data(prices, universe, params)
+        market_data = self._build_market_data(market_data_dict, universe)
 
         # --- Stage 2: Strategy Execution ---
         if strategies:
@@ -546,58 +551,19 @@ class TradingPipeline:
     # ==================================================================
     def _build_market_data(
         self,
-        prices: pd.DataFrame,
+        market_data_dict: Dict[str, pd.DataFrame],
         universe: pd.DataFrame,
-        params: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Build the data dict that strategies expect.
 
-        Strategies expect ``data['prices']`` as a DataFrame of shape
-        (dates, tickers) and optionally ``data['volume']`` and
-        ``data['market_cap']``.
+        Takes the wide-format dict from ``DataPlugin.load_market_data()``
+        and adds universe + defaults for missing keys.
         """
-        market_data: Dict[str, Any] = {"universe": universe}
-
-        if prices.empty:
-            market_data["prices"] = pd.DataFrame()
-            market_data["volume"] = pd.DataFrame()
-            return market_data
-
-        # Convert long-format prices (symbol, date, close, ...) to wide-format
-        if "symbol" in prices.columns and "date" in prices.columns:
-            prices_sorted = prices.sort_values(["symbol", "date"])
-
-            if "close" in prices.columns:
-                wide_prices = prices_sorted.pivot_table(
-                    index="date", columns="symbol", values="close"
-                )
-                market_data["prices"] = wide_prices
-
-            if "volume" in prices.columns:
-                wide_volume = prices_sorted.pivot_table(
-                    index="date", columns="symbol", values="volume"
-                )
-                market_data["volume"] = wide_volume
-            else:
-                market_data["volume"] = pd.DataFrame()
-
-            if "market_cap" in prices.columns:
-                wide_mc = prices_sorted.pivot_table(
-                    index="date", columns="symbol", values="market_cap"
-                )
-                market_data["market_cap"] = wide_mc
-
-            if "funding_rate" in prices.columns:
-                wide_fr = prices_sorted.pivot_table(
-                    index="date", columns="symbol", values="funding_rate"
-                )
-                market_data["funding_rates"] = wide_fr
-        else:
-            # Already wide format
-            market_data["prices"] = prices
-            market_data["volume"] = pd.DataFrame()
-
-        return market_data
+        result: Dict[str, Any] = {"universe": universe}
+        result.update(market_data_dict)
+        for key in ("prices", "volume", "market_cap", "funding_rates"):
+            result.setdefault(key, pd.DataFrame())
+        return result
 
     # ==================================================================
     # Stage 2: Strategy execution

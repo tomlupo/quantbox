@@ -47,17 +47,15 @@ class FundSelectionPipeline:
         universe = data.load_universe(params.get("universe", {}))
         store.put_parquet("universe", universe)
 
-        prices = data.load_prices(universe, asof, params.get("prices", {}))
-        store.put_parquet("prices", prices)
+        market_data = data.load_market_data(universe, asof, params.get("prices", {}))
+        prices_wide = market_data["prices"]
+        store.put_parquet("prices", prices_wide.reset_index() if hasattr(prices_wide.index, 'name') else prices_wide)
 
-        px = prices.sort_values(["symbol", "date"]).copy()
-        px["ret"] = px.groupby("symbol")["close"].pct_change()
-
-        scores = (
-            px.groupby("symbol", as_index=False)["ret"]
-              .mean()
-              .rename(columns={"ret": "score"})
-        )
+        returns = prices_wide.pct_change()
+        scores = pd.DataFrame({
+            "symbol": returns.columns,
+            "score": returns.mean().values,
+        })
         scores["asof"] = asof
 
         rankings = scores.sort_values("score", ascending=False).reset_index(drop=True)

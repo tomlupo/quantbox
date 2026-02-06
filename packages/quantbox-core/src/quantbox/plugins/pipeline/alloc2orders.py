@@ -17,8 +17,11 @@ from quantbox.run_history import resolve_latest_artifact
 # --------------------------
 
 def _latest_prices(prices: pd.DataFrame) -> pd.DataFrame:
-    px = prices.sort_values(["symbol", "date"]).groupby("symbol", as_index=False).tail(1)
-    return px[["symbol", "close"]].rename(columns={"close": "price"})
+    """Extract latest price per symbol from wide-format DataFrame."""
+    if prices.empty:
+        return pd.DataFrame(columns=["symbol", "price"])
+    latest = prices.iloc[-1]
+    return pd.DataFrame({"symbol": latest.index, "price": latest.values})
 
 def _read_instrument_map(path: str | None) -> pd.DataFrame:
     if not path:
@@ -184,9 +187,10 @@ class AllocationsToOrdersPipeline:
         universe = pd.DataFrame({"symbol": alloc["symbol"].tolist()})
         store.put_parquet("universe", universe)
 
-        prices = data.load_prices(universe, asof, params.get("prices", {"lookback_days": 5}))
-        latest = _latest_prices(prices)
-        store.put_parquet("prices", prices)
+        market_data = data.load_market_data(universe, asof, params.get("prices", {"lookback_days": 5}))
+        prices_wide = market_data["prices"]
+        latest = _latest_prices(prices_wide)
+        store.put_parquet("prices", prices_wide.reset_index() if isinstance(prices_wide.index, pd.DatetimeIndex) else prices_wide)
 
         alloc = alloc.merge(latest, on="symbol", how="left")
         if alloc["price"].isna().any():

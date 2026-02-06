@@ -65,10 +65,12 @@ def test_data_loading():
     # ---- A) Via DataPlugin protocol (what TradingPipeline uses) ----
     dp = BinanceDataPlugin()
     universe = dp.load_universe({"symbols": SYMBOLS})
-    prices_long = dp.load_prices(universe, ASOF, {"lookback_days": LOOKBACK_DAYS})
-    print(f"\n[DataPlugin] Prices long: {prices_long.shape}, cols={list(prices_long.columns)}")
-    print(f"  Date range: {prices_long['date'].min()} → {prices_long['date'].max()}")
-    print(f"  NaN in close: {prices_long['close'].isna().sum()}")
+    plugin_data = dp.load_market_data(universe, ASOF, {"lookback_days": LOOKBACK_DAYS})
+    plugin_prices = plugin_data["prices"]
+    print(f"\n[DataPlugin] Prices wide: {plugin_prices.shape}")
+    if not plugin_prices.empty:
+        print(f"  Date range: {plugin_prices.index.min()} → {plugin_prices.index.max()}")
+        print(f"  NaN in prices: {plugin_prices.isna().sum().sum()}")
 
     # ---- B) Via BinanceDataFetcher directly (what quantlab uses) ----
     fetcher = BinanceDataFetcher(quote_asset="USDT")
@@ -85,9 +87,8 @@ def test_data_loading():
     print("\nLast 3 rows of wide prices:")
     print(prices_wide.tail(3).to_string())
 
-    # ---- C) Compare: DataPlugin long → wide should match fetcher wide ----
-    plugin_wide = prices_long.pivot_table(index="date", columns="symbol", values="close")
-    diff = (plugin_wide - prices_wide).abs()
+    # ---- C) Compare: DataPlugin wide should match fetcher wide ----
+    diff = (plugin_prices - prices_wide).abs()
     max_diff = diff.max().max() if not diff.empty else 0
     print(f"\nDataPlugin vs Fetcher price diff: max={max_diff:.2e}")
 
@@ -98,7 +99,7 @@ def test_data_loading():
         "market_cap": market_cap_wide,
         "universe": universe,
     }
-    return market_data, prices_long
+    return market_data
 
 
 # ==================================================================
@@ -284,7 +285,7 @@ def main():
     print(f"Strategies: {[s['name'] for s in STRATEGIES]}")
     print(f"Risk: {RISK_CFG}")
 
-    market_data, prices_long = test_data_loading()
+    market_data = test_data_loading()
     strategy_results = test_strategies(market_data)
     ql_agg, qb_agg = test_aggregation(strategy_results)
     ql_risk, qb_risk = test_risk_transforms(strategy_results, ql_agg)

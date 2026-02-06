@@ -5,7 +5,7 @@ plugins:
       - trade.allocations_to_orders.v1
       - trade.full_pipeline.v1
     data:
-      - duckdb_parquet
+      - local_file_data
       - binance.live_data.v1
     brokers:
       - sim.paper.v1
@@ -42,12 +42,12 @@ profiles:
     pipeline:
       name: fund_selection.simple.v1
     data:
-      name: duckdb_parquet
+      name: local_file_data
   trading:
     pipeline:
       name: trade.allocations_to_orders.v1
     data:
-      name: duckdb_parquet
+      name: local_file_data
     broker:
       name: sim.paper.v1
   trading_full:

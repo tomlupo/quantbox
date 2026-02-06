@@ -2,7 +2,10 @@ from .binance_data import BinanceDataFetcher, MarketDataSnapshot
 from .binance_data_plugin import BinanceDataPlugin
 from .binance_futures_data import BinanceFuturesDataFetcher
 from .binance_futures_data_plugin import BinanceFuturesDataPlugin
-from .duckdb_parquet import DuckDBParquetData
+from .local_file_data import LocalFileDataPlugin
+
+# Backward compat alias
+DuckDBParquetData = LocalFileDataPlugin
 
 __all__ = [
     "BinanceDataFetcher",
@@ -10,5 +13,6 @@ __all__ = [
     "BinanceFuturesDataFetcher",
     "BinanceFuturesDataPlugin",
     "DuckDBParquetData",
+    "LocalFileDataPlugin",
     "MarketDataSnapshot",
 ]

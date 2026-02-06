@@ -20,17 +20,6 @@ from .binance_data import BinanceDataFetcher
 logger = logging.getLogger(__name__)
 
 
-def _wide_to_long(wide: pd.DataFrame, value_name: str) -> pd.DataFrame:
-    """Convert a wide DataFrame (date index, ticker columns) to long format.
-
-    Uses ``melt`` instead of ``stack`` so the behaviour is identical on
-    pandas 2.x **and** 3.0 (where ``stack(dropna=…)`` was removed).
-    """
-    df = wide.rename_axis("date").reset_index()
-    long = df.melt(id_vars="date", var_name="symbol", value_name=value_name)
-    return long
-
-
 @dataclass
 class BinanceDataPlugin:
     """DataPlugin adapter around BinanceDataFetcher.
@@ -59,7 +48,7 @@ class BinanceDataPlugin:
                 "quote_asset": {"type": "string", "default": "USDT"},
             },
         },
-        outputs=("universe", "prices"),
+        outputs=("universe", "prices", "volume", "market_cap"),
         examples=(
             "plugins:\n  data:\n    name: binance.live_data.v1\n    params_init:\n      quote_asset: USDT",
         ),
@@ -96,19 +85,23 @@ class BinanceDataPlugin:
 
         return pd.DataFrame(columns=["symbol"])
 
-    def load_prices(
+    def load_market_data(
         self,
         universe: pd.DataFrame,
         asof: str,
         params: Dict[str, Any],
-    ) -> pd.DataFrame:
-        """Fetch historical OHLCV from Binance and return in long format.
+    ) -> Dict[str, pd.DataFrame]:
+        """Fetch historical OHLCV from Binance and return wide-format dict.
 
-        Returns DataFrame with columns: ``date``, ``symbol``, ``close``,
-        ``volume`` (and optionally ``market_cap``).
+        Returns dict with keys: ``prices``, ``volume``, ``market_cap``
+        (DataFrames with date index, ticker columns).
         """
         if universe.empty or "symbol" not in universe.columns:
-            return pd.DataFrame(columns=["date", "symbol", "close", "volume"])
+            return {
+                "prices": pd.DataFrame(),
+                "volume": pd.DataFrame(),
+                "market_cap": pd.DataFrame(),
+            }
 
         tickers = universe["symbol"].tolist()
         lookback = int(params.get("lookback_days", 365))
@@ -119,34 +112,11 @@ class BinanceDataPlugin:
             end_date=asof,
         )
 
-        prices_wide: pd.DataFrame = data.get("prices", pd.DataFrame())
-        volume_wide: pd.DataFrame = data.get("volume", pd.DataFrame())
-        market_cap_wide: pd.DataFrame = data.get("market_cap", pd.DataFrame())
-
-        if prices_wide.empty:
-            return pd.DataFrame(columns=["date", "symbol", "close", "volume"])
-
-        # Wide → long via melt (works identically across pandas 2.x and 3.0,
-        # unlike stack() whose dropna semantics changed in pandas 3.0).
-        long = _wide_to_long(prices_wide, "close")
-
-        if not volume_wide.empty:
-            vol_long = _wide_to_long(volume_wide, "volume")
-            long = long.merge(vol_long, on=["date", "symbol"], how="left")
-        else:
-            long["volume"] = 0.0
-
-        if not market_cap_wide.empty:
-            mc_long = _wide_to_long(market_cap_wide, "market_cap")
-            long = long.merge(mc_long, on=["date", "symbol"], how="left")
-
-        long = long.dropna(subset=["close"]).reset_index(drop=True)
         logger.info(
-            "Loaded %d price rows for %d symbols from Binance",
-            len(long),
-            long["symbol"].nunique(),
+            "Loaded market data for %d symbols from Binance",
+            len(data.get("prices", pd.DataFrame()).columns),
         )
-        return long
+        return data
 
     def load_fx(self, asof: str, params: Dict[str, Any]) -> Optional[pd.DataFrame]:
         """Not applicable for crypto (all USD-denominated)."""
