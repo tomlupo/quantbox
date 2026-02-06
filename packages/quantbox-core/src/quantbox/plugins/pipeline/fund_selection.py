@@ -42,6 +42,7 @@ class FundSelectionPipeline:
         store: ArtifactStore,
         broker: Optional[BrokerPlugin],
         risk: List[RiskPlugin],
+        **kwargs,
     ) -> RunResult:
         universe = data.load_universe(params.get("universe", {}))
         store.put_parquet("universe", universe)

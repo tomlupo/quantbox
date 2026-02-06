@@ -141,6 +141,7 @@ class AllocationsToOrdersPipeline:
         store: ArtifactStore,
         broker: Optional[BrokerPlugin],
         risk: List[RiskPlugin],
+        **kwargs,
     ) -> RunResult:
         if mode in ("paper","live") and broker is None:
             raise ValueError("broker_required_for_paper_or_live")

@@ -3,20 +3,35 @@ plugins:
     pipelines:
       - fund_selection.simple.v1
       - trade.allocations_to_orders.v1
+      - trade.full_pipeline.v1
     data:
       - eod.duckdb_parquet.v1
+      - binance.live_data.v1
     brokers:
       - sim.paper.v1
       - ibkr.paper.stub.v1
       - binance.paper.stub.v1
       - ibkr.live.v1
       - binance.live.v1
+    publishers:
+      - telegram.publisher.v1
+    risk:
+      - risk.trading_basic.v1
+    strategies:
+      - strategy.crypto_trend.v1
+      - strategy.carver_trend.v1
+      - strategy.momentum_long_short.v1
+      - strategy.weighted_avg.v1
+    rebalancing:
+      - rebalancing.standard.v1
   external:
     pipelines: []
     data: []
     brokers: []
     publishers: []
     risk: []
+    strategies: []
+    rebalancing: []
 
 profiles:
   research:
@@ -31,3 +46,14 @@ profiles:
       name: eod.duckdb_parquet.v1
     broker:
       name: sim.paper.v1
+  trading_full:
+    pipeline:
+      name: trade.full_pipeline.v1
+    data:
+      name: binance.live_data.v1
+    broker:
+      name: binance.live.v1
+    publishers:
+      - name: telegram.publisher.v1
+    risk:
+      - name: risk.trading_basic.v1

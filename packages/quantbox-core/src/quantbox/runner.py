@@ -3,7 +3,7 @@ import hashlib, json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from .contracts import Mode, RunResult, PipelinePlugin, BrokerPlugin, DataPlugin, PublisherPlugin, RiskPlugin
+from .contracts import Mode, RunResult, PipelinePlugin, BrokerPlugin, DataPlugin, PublisherPlugin, RiskPlugin, StrategyPlugin, RebalancingPlugin
 from .store import FileArtifactStore
 from .llm_utils import event_line, validate_table, load_schema
 from .validate import validate_config
@@ -52,7 +52,6 @@ def run_from_config(cfg: Dict[str, Any], registry) -> RunResult:
     data_name = cfg["plugins"]["data"]["name"]
     data_cls = registry.data[data_name]
     data: DataPlugin = data_cls(**cfg["plugins"]["data"].get("params_init", {}))
-    store.append_event(event_line("PLUGINS_RESOLVED", pipeline=pipe_name, data=data_name, broker=(broker_block["name"] if broker_block else None)))
 
     broker: Optional[BrokerPlugin] = None
     broker_block = cfg["plugins"].get("broker")
@@ -60,19 +59,56 @@ def run_from_config(cfg: Dict[str, Any], registry) -> RunResult:
         broker_cls = registry.brokers[broker_block["name"]]
         broker = broker_cls(**broker_block.get("params_init", {}))
 
+    store.append_event(event_line("PLUGINS_RESOLVED", pipeline=pipe_name, data=data_name, broker=(broker_block["name"] if broker_block else None)))
+
     risk_plugins: List[RiskPlugin] = []
     for r in cfg["plugins"].get("risk", []) or []:
         risk_cls = registry.risk[r["name"]]
         risk_plugins.append(risk_cls(**r.get("params_init", {})))
 
+    # --- Strategy plugins (new) ---
+    strategy_plugins: Optional[List[StrategyPlugin]] = None
+    strategies_cfg = cfg["plugins"].get("strategies", [])
+    if strategies_cfg:
+        strategy_plugins = []
+        for s in strategies_cfg:
+            cls = registry.strategies[s["name"]]
+            strategy_plugins.append(cls(**s.get("params_init", {})))
+
+    # --- Aggregator (it's a strategy plugin) ---
+    aggregator: Optional[StrategyPlugin] = None
+    agg_cfg = cfg["plugins"].get("aggregator")
+    if agg_cfg:
+        agg_cls = registry.strategies[agg_cfg["name"]]
+        aggregator = agg_cls(**agg_cfg.get("params_init", {}))
+
+    # --- Rebalancer ---
+    rebalancer: Optional[RebalancingPlugin] = None
+    rebal_cfg = cfg["plugins"].get("rebalancing")
+    if rebal_cfg:
+        rebal_cls = registry.rebalancing[rebal_cfg["name"]]
+        rebalancer = rebal_cls(**rebal_cfg.get("params_init", {}))
+
+    # Build pipeline params, merging in strategy/aggregator/rebalancer config
+    pipeline_params = dict(cfg["plugins"]["pipeline"].get("params", {}))
+    if strategies_cfg:
+        pipeline_params["_strategies_cfg"] = strategies_cfg
+    if agg_cfg:
+        pipeline_params["_aggregator_cfg"] = agg_cfg
+    if rebal_cfg:
+        pipeline_params["_rebalancer_cfg"] = rebal_cfg
+
     result = pipeline.run(
         mode=mode,
         asof=asof,
-        params=cfg["plugins"]["pipeline"].get("params", {}),
+        params=pipeline_params,
         data=data,
         store=store,
         broker=broker,
         risk=risk_plugins,
+        strategies=strategy_plugins,
+        rebalancer=rebalancer,
+        aggregator=aggregator,
     )
 
     store.put_json("run_meta", {

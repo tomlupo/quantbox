@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional, Protocol, Literal
 import pandas as pd
 
 Mode = Literal["backtest", "paper", "live"]
-PluginKind = Literal["pipeline", "broker", "data", "publisher", "risk"]
+PluginKind = Literal["pipeline", "broker", "data", "publisher", "risk", "strategy", "rebalancing"]
 PipelineKind = Literal["research", "trading"]
 
 @dataclass(frozen=True)
@@ -65,6 +65,20 @@ class RiskPlugin(Protocol):
     def check_targets(self, targets: pd.DataFrame, params: Dict[str, Any]) -> List[Dict[str, Any]]: ...
     def check_orders(self, orders: pd.DataFrame, params: Dict[str, Any]) -> List[Dict[str, Any]]: ...
 
+class StrategyPlugin(Protocol):
+    meta: PluginMeta
+    def run(self, data: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]: ...
+
+class RebalancingPlugin(Protocol):
+    meta: PluginMeta
+    def generate_orders(
+        self,
+        *,
+        weights: Dict[str, float],
+        broker: BrokerPlugin,
+        params: Dict[str, Any],
+    ) -> Dict[str, Any]: ...
+
 class PipelinePlugin(Protocol):
     meta: PluginMeta
     kind: PipelineKind
@@ -78,4 +92,7 @@ class PipelinePlugin(Protocol):
         store: ArtifactStore,
         broker: Optional[BrokerPlugin],
         risk: List[RiskPlugin],
+        strategies: Optional[List["StrategyPlugin"]] = None,
+        rebalancer: Optional["RebalancingPlugin"] = None,
+        **kwargs,
     ) -> RunResult: ...

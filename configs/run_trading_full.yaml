@@ -1,0 +1,70 @@
+run:
+  mode: paper
+  asof: "2026-02-06"
+  pipeline: "trade.full_pipeline.v1"
+
+artifacts:
+  root: "./artifacts"
+
+plugins:
+  profile: "trading_full"
+
+  pipeline:
+    name: "trade.full_pipeline.v1"
+    params:
+      capital_at_risk: 1.0
+      stable_coin_symbol: USDC
+      trading_enabled: true
+
+      universe:
+        symbols: []
+        token_policy_file: "config/accounts/binance.yaml"
+
+      prices:
+        lookback_days: 365
+
+  strategies:
+    - name: "strategy.crypto_trend.v1"
+      weight: 1.0
+      params:
+        lookback_days: 365
+
+  aggregator:
+    name: "strategy.weighted_avg.v1"
+    params: {}
+
+  rebalancing:
+    name: "rebalancing.standard.v1"
+    params:
+      tranches: 1
+      max_leverage: 1
+      allow_short: false
+      min_trade_size: 0.01
+      min_notional: 1.0
+      scaling_factor_min: 0.9
+
+  data:
+    name: "binance.live_data.v1"
+    params_init:
+      quote_asset: USDT
+
+  broker:
+    name: "binance.live.v1"
+    params_init:
+      api_key_env: BINANCE_API_KEY
+      api_secret_env: BINANCE_API_SECRET
+      testnet: false
+
+  publishers:
+    - name: "telegram.publisher.v1"
+      params:
+        telegram_token_env: TELEGRAM_TOKEN
+        telegram_chat_id_env: TELEGRAM_CHAT_ID
+
+  risk:
+    - name: "risk.trading_basic.v1"
+      params:
+        max_leverage: 1.0
+        max_concentration: 0.30
+        allow_negative_weights: false
+        min_notional: 1.0
