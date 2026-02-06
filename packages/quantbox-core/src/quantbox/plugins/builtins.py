@@ -13,7 +13,10 @@ from .pipeline import AllocationsToOrdersPipeline, FundSelectionPipeline, Tradin
 from .data import BinanceDataPlugin, DuckDBParquetData
 from .broker import (
     BinanceBroker,
+    BinanceFuturesBroker,
     BinancePaperBrokerStub,
+    FuturesPaperBroker,
+    HyperliquidBroker,
     IBKRBroker,
     IBKRPaperBrokerStub,
     SimPaperBroker,
@@ -22,7 +25,7 @@ from .publisher import TelegramPublisher
 from .risk import TradingRiskManager
 from .strategies import CryptoTrendStrategy, CarverTrendStrategy, MomentumLongShortStrategy
 from .strategies.weighted_avg_aggregator import WeightedAverageAggregator
-from .rebalancing import StandardRebalancer
+from .rebalancing import StandardRebalancer, FuturesRebalancer
 
 
 def _map(*classes):
@@ -35,10 +38,13 @@ def builtins() -> Dict[str, Dict[str, Type]]:
         "data": _map(DuckDBParquetData, BinanceDataPlugin),
         "broker": _map(
             SimPaperBroker,
+            FuturesPaperBroker,
             IBKRPaperBrokerStub,
             BinancePaperBrokerStub,
             IBKRBroker,
             BinanceBroker,
+            BinanceFuturesBroker,
+            HyperliquidBroker,
         ),
         "publisher": _map(TelegramPublisher),
         "risk": _map(TradingRiskManager),
@@ -48,5 +54,5 @@ def builtins() -> Dict[str, Dict[str, Type]]:
             MomentumLongShortStrategy,
             WeightedAverageAggregator,
         ),
-        "rebalancing": _map(StandardRebalancer),
+        "rebalancing": _map(StandardRebalancer, FuturesRebalancer),
     }
