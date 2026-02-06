@@ -10,7 +10,7 @@ from typing import Dict, Type
 
 from ..contracts import PipelinePlugin, BrokerPlugin, DataPlugin, PublisherPlugin, RiskPlugin
 from .pipeline import AllocationsToOrdersPipeline, FundSelectionPipeline, TradingPipeline
-from .data import BinanceDataPlugin, BinanceFuturesDataPlugin, DuckDBParquetData
+from .datasources import BinanceDataPlugin, BinanceFuturesDataPlugin, DuckDBParquetData
 from .broker import (
     BinanceBroker,
     BinanceFuturesBroker,

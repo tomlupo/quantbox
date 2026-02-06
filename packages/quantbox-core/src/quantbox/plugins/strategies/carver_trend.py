@@ -17,7 +17,7 @@ NOT market-neutral - goes with the trend. Long when bullish, flat/short when bea
 ### Quick Start
 ```python
 from quantbox.plugins.strategies import CarverTrendStrategy
-from quantbox.plugins.data import BinanceDataFetcher
+from quantbox.plugins.datasources import BinanceDataFetcher
 
 fetcher = BinanceDataFetcher()
 data = fetcher.get_market_data(['BTC', 'ETH', 'SOL'], lookback_days=400)

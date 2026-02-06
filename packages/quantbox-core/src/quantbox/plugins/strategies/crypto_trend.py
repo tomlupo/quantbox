@@ -11,7 +11,7 @@ Based on SSRN paper "Catching Crypto Trends".
 ### Quick Start
 ```python
 from quantbox.plugins.strategies import CryptoTrendStrategy
-from quantbox.plugins.data import BinanceDataFetcher
+from quantbox.plugins.datasources import BinanceDataFetcher
 
 # Fetch data
 fetcher = BinanceDataFetcher()
