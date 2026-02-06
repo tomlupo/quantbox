@@ -1,25 +1,50 @@
 {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "prices",
+  "description": "Wide-format price data artifact. Rows are dates, columns are asset symbols, values are closing prices. Stored as Parquet with a 'date' column followed by one column per symbol.",
   "type": "object",
   "properties": {
+    "format": {
+      "const": "wide",
+      "description": "DataFrame layout: date rows x symbol columns"
+    },
     "columns": {
-      "const": [
+      "type": "array",
+      "description": "First column is 'date' (string/datetime), remaining columns are symbol tickers with numeric close prices.",
+      "prefixItems": [
         {
-          "name": "date",
-          "type": "string"
-        },
-        {
-          "name": "symbol",
-          "type": "string"
-        },
-        {
-          "name": "close",
-          "type": "number"
+          "type": "object",
+          "properties": {
+            "name": { "const": "date" },
+            "type": { "const": "string" }
+          },
+          "required": ["name", "type"]
         }
-      ]
+      ],
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "description": "Symbol ticker (e.g. 'BTC', 'ETH', 'SPY')" },
+          "type": { "const": "number" }
+        },
+        "required": ["name", "type"]
+      },
+      "minItems": 2
     }
   },
-  "required": [
-    "columns"
+  "required": ["columns"],
+  "examples": [
+    {
+      "description": "3 days of BTC+ETH prices",
+      "columns": [
+        { "name": "date", "type": "string" },
+        { "name": "BTC", "type": "number" },
+        { "name": "ETH", "type": "number" }
+      ],
+      "sample_rows": [
+        { "date": "2026-01-01", "BTC": 95000.0, "ETH": 3200.0 },
+        { "date": "2026-01-02", "BTC": 95500.0, "ETH": 3250.0 }
+      ]
+    }
   ]
 }

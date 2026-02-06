@@ -39,8 +39,8 @@ print("Data:", list(registry.data.keys()))
 print("Brokers:", list(registry.brokers.keys()))
 
 # Use a plugin
-DataLoader = registry.data["duckdb_parquet"]
-loader = DataLoader()
+DataLoader = registry.data["local_file_data"]
+loader = DataLoader(prices_path="./data/prices.parquet")
 ```
 
 ---
@@ -128,14 +128,20 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 import pandas as pd
 
-from quantbox.contracts import PluginMeta, DataPlugin
+from quantbox.contracts import PluginMeta
 
 
 @dataclass
 class MyDataSource:
-    """Custom data source implementation."""
+    """Custom data source implementation.
 
-    meta: PluginMeta = PluginMeta(
+    Must implement the DataPlugin protocol:
+    - load_universe() → DataFrame with 'symbol' column
+    - load_market_data() → Dict of wide DataFrames (date index x symbol columns)
+    - load_fx() → FX DataFrame or None
+    """
+
+    meta = PluginMeta(
         name="my_data_source",
         kind="data",
         version="0.1.0",
@@ -144,22 +150,27 @@ class MyDataSource:
     )
 
     def load_universe(self, params: Dict[str, Any]) -> pd.DataFrame:
-        """Load trading universe."""
-        # Your implementation
-        pass
+        """Load trading universe. Returns DataFrame with 'symbol' column."""
+        symbols = params.get("symbols", [])
+        return pd.DataFrame({"symbol": symbols})
 
-    def load_prices(
+    def load_market_data(
         self,
         universe: pd.DataFrame,
         asof: str,
         params: Dict[str, Any],
-    ) -> pd.DataFrame:
-        """Load price data."""
-        # Your implementation
-        pass
+    ) -> Dict[str, pd.DataFrame]:
+        """Load market data as wide-format DataFrames.
+
+        Returns:
+            Dict with keys: "prices" (required), "volume", "market_cap" (optional).
+            Each value is a DataFrame with DatetimeIndex and one column per symbol.
+        """
+        # Your implementation — must return at least {"prices": wide_df}
+        return {"prices": pd.DataFrame(), "volume": pd.DataFrame(), "market_cap": pd.DataFrame()}
 
     def load_fx(self, asof: str, params: Dict[str, Any]) -> Optional[pd.DataFrame]:
-        """Load FX rates (optional)."""
+        """Load FX rates (optional). Return None if not applicable."""
         return None
 ```
 
@@ -193,7 +204,7 @@ my_data_source = "tools.quantbox_plugins.data.my_data_source:MyDataSource"
 uv run quantbox plugins list
 
 # Get plugin info
-uv run quantbox plugins info --name duckdb_parquet
+uv run quantbox plugins info --name local_file_data
 
 # Run a pipeline
 uv run quantbox run fund_selection.simple.v1 --mode backtest --asof 2024-01-01
@@ -236,13 +247,14 @@ registry = get_registry()
 store = create_artifact_store("momentum-backtest")
 
 # Get plugins
-DataLoader = registry.data["duckdb_parquet"]
+DataLoader = registry.data["local_file_data"]
 Pipeline = registry.pipelines["fund_selection.simple.v1"]
 
 # Load data
-data = DataLoader()
+data = DataLoader(prices_path="data/prices.parquet")
 universe = data.load_universe({"path": "data/universe.parquet"})
-prices = data.load_prices(universe, "2024-01-01", {"path": "data/prices.parquet"})
+market = data.load_market_data(universe, "2024-01-01", {"lookback_days": 365})
+# market["prices"] → wide DataFrame (date index x symbol columns)
 
 # Run pipeline
 pipeline = Pipeline()

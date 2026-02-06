@@ -44,11 +44,15 @@ broker.generate_rebalancing(weights) # Preview trades (no execution)
 broker.execute_rebalancing(weights)  # Execute trades
 ```
 
-### DataPlugin  
-Loads market data (prices, universe, FX).
+### DataPlugin
+Loads market data (prices, universe, FX). Returns **wide-format** DataFrames
+(date index, symbol columns).
 ```python
-data.load_universe(params)           # Get tradeable assets
-data.load_prices(universe, asof)     # Historical/current prices
+data.load_universe(params)                      # Get tradeable assets → DataFrame[symbol]
+market = data.load_market_data(universe, asof, params)
+# Returns: {"prices": wide_df, "volume": wide_df, "market_cap": wide_df, ...}
+# Only "prices" is required; others may be empty DataFrames
+data.load_fx(asof, params)                      # FX rates (or None for crypto)
 ```
 
 ### PipelinePlugin
