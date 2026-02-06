@@ -1,0 +1,41 @@
+# Backtest crypto trend strategy — same params as trading config.
+# Swap pipeline.name to "trade.full_pipeline.v1" to go live.
+run:
+  mode: backtest
+  asof: "2026-02-06"
+  pipeline: "backtest.pipeline.v1"
+
+artifacts:
+  root: "./artifacts"
+
+plugins:
+  pipeline:
+    name: "backtest.pipeline.v1"
+    params:
+      engine: vectorbt          # "vectorbt" or "rsims"
+      fees: 0.001
+      rebalancing_freq: 1       # daily (int=every Nth day, or "1W", "1M", etc.)
+      # threshold: 0.05         # uncomment for rebalancing-bands mode
+      trading_days: 365
+
+      universe:
+        top_n: 100
+
+      prices:
+        lookback_days: 365
+
+      risk:
+        tranches: 1
+        max_leverage: 1
+        allow_short: false
+
+  strategies:
+    - name: "strategy.crypto_trend.v1"
+      weight: 1.0
+      params:
+        lookback_days: 365
+
+  data:
+    name: "binance.live_data.v1"
+    params_init:
+      quote_asset: USDT

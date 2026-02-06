@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Dict, Type
 
 from ..contracts import PipelinePlugin, BrokerPlugin, DataPlugin, PublisherPlugin, RiskPlugin
-from .pipeline import AllocationsToOrdersPipeline, FundSelectionPipeline, TradingPipeline
+from .pipeline import AllocationsToOrdersPipeline, BacktestPipeline, FundSelectionPipeline, TradingPipeline
 from .datasources import BinanceDataPlugin, BinanceFuturesDataPlugin, LocalFileDataPlugin
 from .broker import (
     BinanceBroker,
@@ -23,7 +23,13 @@ from .broker import (
 )
 from .publisher import TelegramPublisher
 from .risk import TradingRiskManager
-from .strategies import CryptoTrendStrategy, CarverTrendStrategy, MomentumLongShortStrategy
+from .strategies import (
+    CryptoTrendStrategy,
+    CarverTrendStrategy,
+    MomentumLongShortStrategy,
+    CrossAssetMomentumStrategy,
+    CryptoRegimeTrendStrategy,
+)
 from .strategies.weighted_avg_aggregator import WeightedAverageAggregator
 from .rebalancing import StandardRebalancer, FuturesRebalancer
 
@@ -34,7 +40,7 @@ def _map(*classes):
 
 def builtins() -> Dict[str, Dict[str, Type]]:
     return {
-        "pipeline": _map(FundSelectionPipeline, AllocationsToOrdersPipeline, TradingPipeline),
+        "pipeline": _map(FundSelectionPipeline, AllocationsToOrdersPipeline, TradingPipeline, BacktestPipeline),
         "data": _map(LocalFileDataPlugin, BinanceDataPlugin, BinanceFuturesDataPlugin),
         "broker": _map(
             SimPaperBroker,
@@ -52,6 +58,8 @@ def builtins() -> Dict[str, Dict[str, Type]]:
             CryptoTrendStrategy,
             CarverTrendStrategy,
             MomentumLongShortStrategy,
+            CrossAssetMomentumStrategy,
+            CryptoRegimeTrendStrategy,
             WeightedAverageAggregator,
         ),
         "rebalancing": _map(StandardRebalancer, FuturesRebalancer),

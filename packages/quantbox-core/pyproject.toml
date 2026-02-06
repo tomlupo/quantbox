@@ -13,6 +13,8 @@ dependencies = [
   "httpx>=0.27",
   "pycoingecko>=3.0",
   "typer>=0.9",
+  "vectorbt>=0.26",
+  "numba>=0.59",
 ]
 
 [project.optional-dependencies]

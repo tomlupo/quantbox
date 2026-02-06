@@ -491,7 +491,7 @@ class CryptoTrendStrategy:
 
     # Strategy parameters
     lookback_windows: List[int] = field(default_factory=lambda: DEFAULT_LOOKBACK_WINDOWS.copy())
-    vol_targets: List[float] = field(default_factory=lambda: DEFAULT_VOL_TARGETS.copy())
+    vol_targets: List[Any] = field(default_factory=lambda: DEFAULT_VOL_TARGETS.copy())
     tranches: List[int] = field(default_factory=lambda: DEFAULT_TRANCHES.copy())
     
     # Universe parameters
@@ -599,11 +599,18 @@ class CryptoTrendStrategy:
         )
         
         # 3. Volatility scalers
-        scalers = compute_volatility_scalers(
-            prices,
-            self.vol_targets,
-            self.vol_lookback,
-        )
+        numeric_targets = [vt for vt in self.vol_targets if isinstance(vt, (int, float))]
+        has_off = any(vt == "off" for vt in self.vol_targets if isinstance(vt, str))
+
+        scalers = {}
+        if numeric_targets:
+            scalers = compute_volatility_scalers(
+                prices,
+                numeric_targets,
+                self.vol_lookback,
+            )
+        if has_off:
+            scalers["off"] = pd.DataFrame(1.0, index=prices.index, columns=prices.columns)
         
         # 4. Portfolio construction
         weights = construct_weights(
