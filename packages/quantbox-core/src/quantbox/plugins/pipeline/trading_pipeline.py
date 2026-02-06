@@ -293,6 +293,32 @@ class TradingPipeline:
         a_agg_w = store.put_parquet("aggregated_weights", pd.DataFrame(agg_records))
         logger.info("Aggregated weights: %d assets", len(final_weights))
 
+        # --- Inject latest prices into paper broker (if supported) ---
+        if broker is not None and hasattr(broker, "set_prices"):
+            wide_prices = market_data.get("prices", pd.DataFrame())
+            if not wide_prices.empty:
+                latest = wide_prices.iloc[-1].dropna()
+                broker.set_prices({str(k): float(v) for k, v in latest.items()})
+                logger.info("Injected %d prices into broker", len(latest))
+
+        # --- Inject funding rates into broker (if supported) ---
+        wide_funding = market_data.get("funding_rates", pd.DataFrame())
+        if broker is not None and not wide_funding.empty and hasattr(broker, "set_funding_rates"):
+            latest_funding = wide_funding.iloc[-1].dropna()
+            broker.set_funding_rates({str(k): float(v) for k, v in latest_funding.items()})
+            logger.info("Injected %d funding rates into broker", len(latest_funding))
+
+        # --- Inject position limits into broker (if supported) ---
+        if broker is not None and hasattr(broker, "set_position_limits") and hasattr(data, "_fetcher"):
+            fetcher = data._fetcher
+            if hasattr(fetcher, "get_position_limits"):
+                limit_symbols = universe["symbol"].tolist() if not universe.empty else []
+                if limit_symbols:
+                    limits = fetcher.get_position_limits(limit_symbols)
+                    if limits:
+                        broker.set_position_limits(limits)
+                        logger.info("Injected %d position limits into broker", len(limits))
+
         # --- Stage 4: Risk Transforms + Stage 5: Order Generation ---
         if rebalancer is not None and mode not in ("backtest",) and broker is not None:
             # Use injected rebalancer for risk transforms + order generation
@@ -414,6 +440,12 @@ class TradingPipeline:
         fills = pd.DataFrame(fills_data) if fills_data else pd.DataFrame(columns=["symbol", "side", "qty", "price"])
         a_fills = store.put_parquet("fills", fills)
 
+        # Apply funding rates to open positions (if broker supports it)
+        funding_charge = 0.0
+        if broker is not None and hasattr(broker, "apply_funding"):
+            funding_charge = broker.apply_funding()
+            logger.info("Applied funding charge: %.2f", funding_charge)
+
         # Portfolio snapshot
         portfolio_value_post = total_value
         cash_usd_post = 0.0
@@ -442,7 +474,19 @@ class TradingPipeline:
         }])
         a_port = store.put_parquet("portfolio_daily", portfolio_daily)
 
+        # Collect fee/funding metrics from broker
+        cumulative_fees = 0.0
+        if broker is not None and hasattr(broker, "_cumulative_fees"):
+            cumulative_fees = float(broker._cumulative_fees)
+
         # --- Stage 8: Artifacts ---
+        # Collect broker cost config for artifact
+        broker_costs: Dict[str, Any] = {}
+        if broker is not None:
+            for attr in ("spread_bps", "slippage_bps", "maker_fee_bps", "taker_fee_bps"):
+                if hasattr(broker, attr):
+                    broker_costs[attr] = float(getattr(broker, attr))
+
         artifact_payload = self._build_artifact_payload(
             rebalancing_df=rebalancing_df,
             orders_df=orders_df,
@@ -450,6 +494,9 @@ class TradingPipeline:
             final_weights=final_weights,
             total_value=total_value,
             mode=mode,
+            funding_charge=funding_charge,
+            cumulative_fees=cumulative_fees,
+            broker_costs=broker_costs,
         )
         a_trade = store.put_json("trade_history", {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -466,6 +513,8 @@ class TradingPipeline:
             "n_fills": float(len(fills)),
             "total_executed": float(execution_report.get("summary", {}).get("total_executed", 0)),
             "total_failed": float(execution_report.get("summary", {}).get("total_failed", 0)),
+            "funding_charge": float(funding_charge),
+            "cumulative_fees": cumulative_fees,
         }
 
         return RunResult(
@@ -533,8 +582,16 @@ class TradingPipeline:
                 market_data["volume"] = pd.DataFrame()
 
             if "market_cap" in prices.columns:
-                mc = prices_sorted.groupby("symbol")["market_cap"].last()
-                market_data["market_cap"] = mc
+                wide_mc = prices_sorted.pivot_table(
+                    index="date", columns="symbol", values="market_cap"
+                )
+                market_data["market_cap"] = wide_mc
+
+            if "funding_rate" in prices.columns:
+                wide_fr = prices_sorted.pivot_table(
+                    index="date", columns="symbol", values="funding_rate"
+                )
+                market_data["funding_rates"] = wide_fr
         else:
             # Already wide format
             market_data["prices"] = prices
@@ -1182,6 +1239,7 @@ class TradingPipeline:
                     "side": str(fill_row.get("side", "")),
                     "executed_quantity": float(fill_row.get("qty", 0)),
                     "executed_price": float(fill_row.get("price", 0)),
+                    "fee": float(fill_row.get("fee", 0) or 0),
                     "status": "FILLED",
                 }
                 # Find reference price
@@ -1218,6 +1276,9 @@ class TradingPipeline:
         final_weights: Dict[str, float],
         total_value: float,
         mode: str,
+        funding_charge: float = 0.0,
+        cumulative_fees: float = 0.0,
+        broker_costs: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Build structured artifact payload for publishers.
 
@@ -1250,8 +1311,11 @@ class TradingPipeline:
         summary = execution_report.get("summary", {})
         executed_orders: List[Dict[str, Any]] = []
         failed_orders: List[Dict[str, Any]] = []
+        total_order_fees = 0.0
         for detail in execution_report.get("orders_details", []):
             if detail.get("status") == "FILLED":
+                order_fee = float(detail.get("fee", 0) or 0)
+                total_order_fees += order_fee
                 executed_orders.append({
                     "symbol": str(detail.get("symbol", "")),
                     "action": str(detail.get("action", "")),
@@ -1259,6 +1323,7 @@ class TradingPipeline:
                     "executed_price": detail.get("executed_price"),
                     "reference_price": detail.get("reference_price"),
                     "spread_bps": round(float(detail.get("spread_pct", 0) or 0) * 10000, 1),
+                    "fee": round(order_fee, 4),
                     "status": "FILLED",
                 })
             elif detail.get("status") == "FAILED":
@@ -1281,6 +1346,12 @@ class TradingPipeline:
                 "total_cost": round(float(summary.get("total_cost", 0)), 4),
                 "executed_orders": executed_orders,
                 "failed_orders": failed_orders,
+            },
+            "trading_costs": {
+                "fees_this_run": round(total_order_fees, 4),
+                "cumulative_fees": round(cumulative_fees, 4),
+                "funding_charge": round(funding_charge, 4),
+                **(broker_costs or {}),
             },
         }
 

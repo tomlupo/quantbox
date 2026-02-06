@@ -45,6 +45,20 @@ class FuturesPaperBroker:
     quote_currency: str = "USDT"
     leverage: int = 1
 
+    # Slippage model
+    spread_bps: float = 2.0     # half-spread in basis points (0.02%)
+    slippage_bps: float = 5.0   # market impact in basis points (0.05%)
+
+    # Trading fees
+    maker_fee_bps: float = 2.0   # 0.02%
+    taker_fee_bps: float = 4.0   # 0.04%
+    assume_taker: bool = True
+    _cumulative_fees: float = field(default=0.0, repr=False)
+
+    # Position limits: symbol -> max notional USD
+    position_limits: Dict[str, float] = field(default_factory=dict)
+    default_max_notional: float = 1_000_000.0
+
     # Positions: symbol -> signed qty (+ long, - short)
     positions: Dict[str, float] = field(default_factory=dict)
     # Entry prices: symbol -> avg entry price
@@ -69,6 +83,10 @@ class FuturesPaperBroker:
     def set_funding_rates(self, rates: Dict[str, float]) -> None:
         """Inject per-symbol funding rates."""
         self.funding_rates.update(rates)
+
+    def set_position_limits(self, limits: Dict[str, float]) -> None:
+        """Inject per-symbol max-notional position limits."""
+        self.position_limits.update(limits)
 
     # ------------------------------------------------------------------
     # BrokerPlugin protocol
@@ -117,22 +135,45 @@ class FuturesPaperBroker:
             sym = str(o["symbol"])
             side = str(o["side"]).lower()
             qty = float(o["qty"])
-            price = self.prices.get(sym, float(o.get("price", 0.0) or 0.0))
+            mid_price = self.prices.get(sym, float(o.get("price", 0.0) or 0.0))
 
-            if price <= 0:
+            if mid_price <= 0:
                 logger.warning("No price for %s, skipping order", sym)
                 continue
 
+            # Slippage model: fill away from mid
+            direction = 1 if side == "buy" else -1
+            cost_bps = (self.spread_bps + self.slippage_bps) / 10_000
+            fill_price = mid_price * (1 + direction * cost_bps)
+
             signed = qty if side == "buy" else -qty
 
-            # Update position with weighted-average entry price
+            # Position-limit check
             old_qty = self.positions.get(sym, 0.0)
+            max_notional = self.position_limits.get(sym, self.default_max_notional)
+            new_notional = abs(old_qty + signed) * fill_price
+            if new_notional > max_notional:
+                # Cap to stay within limit
+                allowed_qty = max_notional / fill_price
+                if abs(old_qty + signed) > allowed_qty:
+                    capped_signed = allowed_qty * (1 if signed > 0 else -1) - old_qty
+                    if abs(capped_signed) < 1e-12:
+                        logger.warning("Position limit reached for %s, skipping", sym)
+                        continue
+                    logger.info(
+                        "Position limit: capped %s qty from %.4f to %.4f",
+                        sym, abs(signed), abs(capped_signed),
+                    )
+                    signed = capped_signed
+                    qty = abs(signed)
+
+            # Update position with weighted-average entry price
             old_entry = self.entry_prices.get(sym, 0.0)
             new_qty = old_qty + signed
 
             if abs(new_qty) < 1e-12:
                 # Flat — realise PnL
-                realised = old_qty * (price - old_entry) if old_entry else 0.0
+                realised = old_qty * (fill_price - old_entry) if old_entry else 0.0
                 self.margin_balance += realised
                 self.positions.pop(sym, None)
                 self.entry_prices.pop(sym, None)
@@ -140,39 +181,46 @@ class FuturesPaperBroker:
                 # Adding to position — weighted average entry
                 if abs(old_qty) + abs(signed) > 0:
                     self.entry_prices[sym] = (
-                        (abs(old_qty) * old_entry + abs(signed) * price)
+                        (abs(old_qty) * old_entry + abs(signed) * fill_price)
                         / (abs(old_qty) + abs(signed))
                     )
                 self.positions[sym] = new_qty
             else:
                 # Partial close or flip
                 close_qty = min(abs(signed), abs(old_qty))
-                realised = close_qty * (price - old_entry) * (1 if old_qty > 0 else -1)
+                realised = close_qty * (fill_price - old_entry) * (1 if old_qty > 0 else -1)
                 self.margin_balance += realised
 
                 remainder = abs(signed) - close_qty
                 if remainder < 1e-12:
                     self.positions[sym] = new_qty
-                    # entry stays the same for the remaining original-direction position
                 else:
                     # Flipped direction
                     self.positions[sym] = new_qty
-                    self.entry_prices[sym] = price
+                    self.entry_prices[sym] = fill_price
 
-            notional = abs(signed) * price
+            notional = abs(signed) * fill_price
+
+            # Trading fee
+            fee_bps = self.taker_fee_bps if self.assume_taker else self.maker_fee_bps
+            fee = notional * fee_bps / 10_000
+            self.margin_balance -= fee
+            self._cumulative_fees += fee
+
             fill = {
                 "symbol": sym,
                 "side": side,
                 "qty": qty,
-                "price": price,
+                "price": fill_price,
                 "notional": notional,
+                "fee": fee,
                 "timestamp": now,
             }
             fills.append(fill)
             self._fill_log.append(fill)
 
         return pd.DataFrame(fills) if fills else pd.DataFrame(
-            columns=["symbol", "side", "qty", "price", "notional", "timestamp"]
+            columns=["symbol", "side", "qty", "price", "notional", "fee", "timestamp"]
         )
 
     def fetch_fills(self, since: str) -> pd.DataFrame:

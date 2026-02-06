@@ -24,18 +24,11 @@ plugins:
         lookback_days: 365
 
   strategies:
-    - name: "strategy.crypto_trend.v1"
-      weight: 0.34
-      params:
-        lookback_days: 365
     - name: "strategy.carver_trend.v1"
-      weight: 0.33
+      weight: 1.0
       params:
         lookback_days: 365
-    - name: "strategy.momentum_long_short.v1"
-      weight: 0.33
-      params:
-        lookback_days: 365
+        target_vol: 0.50
 
   aggregator:
     name: "strategy.weighted_avg.v1"
