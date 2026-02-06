@@ -5,12 +5,16 @@ Simulates a perpetual-futures account with:
 - Margin accounting (initial capital is the portfolio value)
 - Optional funding rate simulation
 - Configurable leverage
+- Volume-dependent price impact
+- JSON state persistence across runs
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -49,11 +53,18 @@ class FuturesPaperBroker:
     spread_bps: float = 2.0     # half-spread in basis points (0.02%)
     slippage_bps: float = 5.0   # market impact in basis points (0.05%)
 
+    # Volume-dependent price impact
+    impact_factor: float = 0.01   # bps per $10k notional
+    max_impact_bps: float = 20.0  # cap on price impact
+
     # Trading fees
     maker_fee_bps: float = 2.0   # 0.02%
     taker_fee_bps: float = 4.0   # 0.04%
     assume_taker: bool = True
     _cumulative_fees: float = field(default=0.0, repr=False)
+
+    # State persistence
+    state_file: Optional[str] = None  # Path to JSON state file
 
     # Position limits: symbol -> max notional USD
     position_limits: Dict[str, float] = field(default_factory=dict)
@@ -71,6 +82,11 @@ class FuturesPaperBroker:
 
     # Internal fill log
     _fill_log: List[Dict[str, Any]] = field(default_factory=list, repr=False)
+
+    def __post_init__(self) -> None:
+        """Load persisted state if state_file exists."""
+        if self.state_file:
+            self._load_state()
 
     # ------------------------------------------------------------------
     # Price / funding injection
@@ -141,9 +157,11 @@ class FuturesPaperBroker:
                 logger.warning("No price for %s, skipping order", sym)
                 continue
 
-            # Slippage model: fill away from mid
+            # Slippage model: spread + slippage + volume-dependent impact
             direction = 1 if side == "buy" else -1
-            cost_bps = (self.spread_bps + self.slippage_bps) / 10_000
+            notional_est = qty * mid_price
+            impact_bps = min(notional_est * self.impact_factor / 10_000, self.max_impact_bps)
+            cost_bps = (self.spread_bps + self.slippage_bps + impact_bps) / 10_000
             fill_price = mid_price * (1 + direction * cost_bps)
 
             signed = qty if side == "buy" else -qty
@@ -219,6 +237,9 @@ class FuturesPaperBroker:
             fills.append(fill)
             self._fill_log.append(fill)
 
+        # Persist state after order execution
+        self._save_state()
+
         return pd.DataFrame(fills) if fills else pd.DataFrame(
             columns=["symbol", "side", "qty", "price", "notional", "fee", "timestamp"]
         )
@@ -245,4 +266,54 @@ class FuturesPaperBroker:
             funding = -qty * price * rate
             self.margin_balance += funding
             total += funding
+        self._save_state()
         return total
+
+    # ------------------------------------------------------------------
+    # State persistence
+    # ------------------------------------------------------------------
+
+    def _save_state(self) -> None:
+        """Persist broker state to JSON file."""
+        if not self.state_file:
+            return
+        state = {
+            "margin_balance": self.margin_balance,
+            "quote_currency": self.quote_currency,
+            "positions": self.positions,
+            "entry_prices": self.entry_prices,
+            "cumulative_fees": self._cumulative_fees,
+            "fill_log": self._fill_log[-1000:],  # Keep last 1000 fills
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+        }
+        path = Path(self.state_file)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.write_text(json.dumps(state, indent=2, default=str))
+        except Exception as exc:
+            logger.warning("Failed to save futures broker state: %s", exc)
+
+    def _load_state(self) -> None:
+        """Load broker state from JSON file if it exists."""
+        if not self.state_file:
+            return
+        path = Path(self.state_file)
+        if not path.exists():
+            return
+        try:
+            state = json.loads(path.read_text())
+            self.margin_balance = float(state.get("margin_balance", self.margin_balance))
+            self.positions = {
+                str(k): float(v) for k, v in state.get("positions", {}).items()
+            }
+            self.entry_prices = {
+                str(k): float(v) for k, v in state.get("entry_prices", {}).items()
+            }
+            self._cumulative_fees = float(state.get("cumulative_fees", 0.0))
+            self._fill_log = state.get("fill_log", [])
+            logger.info(
+                "Loaded futures broker state: margin=%.2f, %d positions, %d fills",
+                self.margin_balance, len(self.positions), len(self._fill_log),
+            )
+        except Exception as exc:
+            logger.warning("Failed to load futures broker state: %s", exc)

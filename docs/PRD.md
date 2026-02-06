@@ -124,7 +124,7 @@ Data (Parquet) → DuckDB (data plugin) → Pipeline plugin → Artifacts (alloc
 - Point-in-time correctness via `asof` in run config
 - Reproducible snapshots (same data path + asof → same inputs)
 
-**Current implementation:** `eod.duckdb_parquet.v1` data plugin (DuckDB over Parquet). Supports `prices_path`, optional `fx_path`.
+**Current implementation:** `duckdb_parquet` data plugin (DuckDB over Parquet). Supports `prices_path`, optional `fx_path`.
 
 **Tables / artifacts (examples):** `prices.parquet`, optional `fx.parquet` (date, pair, rate).
 

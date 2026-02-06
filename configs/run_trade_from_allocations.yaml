@@ -23,7 +23,7 @@ plugins:
       approval_path: null
 
   data:
-    name: "eod.duckdb_parquet.v1"
+    name: "duckdb_parquet"
     params_init:
       prices_path: "./data/curated/prices.parquet"
       fx_path: "./data/curated/fx.parquet"

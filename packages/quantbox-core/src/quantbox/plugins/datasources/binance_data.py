@@ -51,13 +51,21 @@ Only private endpoints (account, orders) need API keys.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Union
 from datetime import datetime, timedelta
+from pathlib import Path
 import pandas as pd
 import numpy as np
 import logging
 import time
-import requests
+import httpx
+
+from quantbox.plugins.datasources._utils import (
+    validate_ohlcv,
+    retry_transient,
+    OHLCVCache,
+    MarketCapProvider,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -174,20 +182,42 @@ class BinanceDataFetcher:
     
     # Caching
     cache_ttl_seconds: int = 60
+    cache_dir: Optional[str] = None  # Path to DuckDB Parquet cache directory
+    cache_fresh_ttl_hours: float = 4.0
     _price_cache: Dict[str, Tuple[float, float]] = field(default_factory=dict, repr=False)
     _exchange_info_cache: Optional[Dict] = field(default=None, repr=False)
     _exchange_info_time: float = field(default=0.0, repr=False)
-    
+    _ohlcv_cache: Optional[OHLCVCache] = field(default=None, repr=False)
+
+    # CoinMarketCap integration
+    cmc_api_key: Optional[str] = None  # Falls back to CMC_API_KEY env var
+    _cmc_provider: Optional[MarketCapProvider] = field(default=None, repr=False)
+
     # CCXT exchange instance
     _exchange: Any = field(default=None, repr=False)
-    
+
     def __post_init__(self):
-        """Initialize CCXT exchange if available."""
+        """Initialize CCXT exchange, OHLCV cache, and CMC provider."""
         if CCXT_AVAILABLE and self._exchange is None:
             self._exchange = ccxt.binance({
                 'enableRateLimit': True,
                 'options': {'defaultType': 'spot'},
             })
+
+        # Initialize DuckDB Parquet cache if cache_dir is provided
+        if self.cache_dir and self._ohlcv_cache is None:
+            self._ohlcv_cache = OHLCVCache(
+                cache_dir=self.cache_dir,
+                fresh_ttl_hours=self.cache_fresh_ttl_hours,
+            )
+
+        # Initialize CMC provider
+        if self._cmc_provider is None:
+            self._cmc_provider = MarketCapProvider(
+                api_key=self.cmc_api_key,
+                cache_dir=self.cache_dir,
+                fresh_ttl_hours=self.cache_fresh_ttl_hours,
+            )
     
     def describe(self) -> Dict[str, Any]:
         """
@@ -225,6 +255,13 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
     def _rate_limit(self):
         """Apply rate limiting delay."""
         time.sleep(self.request_delay_ms / 1000)
+
+    @retry_transient
+    def _fetch_all_prices(self) -> Dict[str, float]:
+        """Fetch all ticker prices from Binance with retry on transient errors."""
+        resp = httpx.get(BINANCE_TICKER_PRICE, timeout=10)
+        resp.raise_for_status()
+        return {item['symbol']: float(item['price']) for item in resp.json()}
     
     def _get_exchange_info(self, force_refresh: bool = False) -> Dict:
         """Get Binance exchange info (cached)."""
@@ -235,7 +272,7 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
             return self._exchange_info_cache
         
         try:
-            resp = requests.get(BINANCE_EXCHANGE_INFO, timeout=10)
+            resp = httpx.get(BINANCE_EXCHANGE_INFO, timeout=10)
             resp.raise_for_status()
             self._exchange_info_cache = resp.json()
             self._exchange_info_time = now
@@ -322,11 +359,9 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
         # Get valid pairs
         pairs = self.get_valid_pairs(tickers_to_fetch)
         
-        # Fetch all prices at once
+        # Fetch all prices at once (with retry)
         try:
-            resp = requests.get(BINANCE_TICKER_PRICE, timeout=10)
-            resp.raise_for_status()
-            all_prices = {item['symbol']: float(item['price']) for item in resp.json()}
+            all_prices = self._fetch_all_prices()
         except Exception as e:
             logger.error(f"Failed to fetch prices: {e}")
             return prices
@@ -374,7 +409,7 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
         
         # Fetch 24h ticker stats
         try:
-            resp = requests.get(BINANCE_TICKER_24H, timeout=15)
+            resp = httpx.get(BINANCE_TICKER_24H, timeout=15)
             resp.raise_for_status()
             all_stats = {item['symbol']: item for item in resp.json()}
         except Exception as e:
@@ -421,82 +456,150 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
         interval: str = '1d',
     ) -> Optional[pd.DataFrame]:
         """
-        Fetch OHLCV data for a single ticker.
-        
+        Fetch OHLCV data for a single ticker with caching and validation.
+
+        Uses DuckDB Parquet cache (if ``cache_dir`` is set) for incremental
+        fetching: only requests candles not already cached.  Validates the
+        resulting DataFrame for data quality.
+
         Args:
             ticker: Base asset symbol (e.g., 'BTC')
             start_date: Start date as 'YYYY-MM-DD'
             end_date: End date as 'YYYY-MM-DD'
             interval: Candle interval ('1d', '1h', '4h', etc.)
-            
+
         Returns:
-            DataFrame with columns: date, open, high, low, close, volume
-            
-        Example:
-            >>> df = fetcher.get_ohlcv('BTC', '2024-01-01', '2024-03-01')
-            >>> df.head()
-                      date     open     high      low    close      volume
-            0   2024-01-01  42000.0  42500.0  41500.0  42200.0  25000000.0
+            DataFrame with columns: date, open, high, low, close, volume, ticker
         """
         if not CCXT_AVAILABLE:
             logger.error("ccxt not installed - cannot fetch OHLCV data")
             return None
-        
+
+        # --- Check cache for a complete hit ---
+        if self._ohlcv_cache is not None and interval == "1d":
+            cached = self._ohlcv_cache.get_cached(ticker, start_date, end_date)
+            if cached is not None and not cached.empty:
+                last_cached = cached["date"].max()
+                target_end = pd.Timestamp(end_date)
+                if last_cached >= target_end - timedelta(hours=self.cache_fresh_ttl_hours * 24):
+                    # Cache is fresh enough
+                    cached["ticker"] = ticker
+                    try:
+                        cached = validate_ohlcv(cached, ticker)
+                    except ValueError as exc:
+                        logger.warning("Cached OHLCV invalid for %s: %s", ticker, exc)
+                    else:
+                        cached["ticker"] = ticker
+                        return cached.reset_index(drop=True)
+
         # Get valid pair
         pairs = self.get_valid_pairs([ticker])
         pair = pairs.get(ticker)
         if not pair:
             logger.warning(f"No valid Binance pair for {ticker}")
             return None
-        
+
+        # Determine fetch start: use cache to do incremental fetching
+        fetch_start = start_date
+        if self._ohlcv_cache is not None and interval == "1d":
+            last_cached_date = self._ohlcv_cache.get_last_date(ticker)
+            if last_cached_date is not None:
+                # Fetch from the day after last cached date
+                next_day = (last_cached_date + timedelta(days=1)).strftime("%Y-%m-%d")
+                if next_day > start_date:
+                    fetch_start = next_day
+
         # Format pair for ccxt (BTC/USDT not BTCUSDT)
         ccxt_symbol = f"{ticker}/{self.quote_asset}"
-        
+
         try:
-            since = int(pd.Timestamp(start_date).timestamp() * 1000)
-            end_ts = int(pd.Timestamp(end_date).timestamp() * 1000)
-            
-            all_ohlcv = []
-            limit = 1000
-            
-            while since < end_ts:
-                self._rate_limit()
-                ohlcv = self._exchange.fetch_ohlcv(
-                    ccxt_symbol, 
-                    timeframe=interval, 
-                    since=since, 
-                    limit=limit
-                )
-                
-                if not ohlcv:
-                    break
-                    
-                all_ohlcv.extend(ohlcv)
-                last_ts = ohlcv[-1][0]
-                
-                if last_ts == since:
-                    break
-                since = last_ts + 1
-                
-                if len(ohlcv) < limit:
-                    break
-            
-            if not all_ohlcv:
+            df = self._fetch_ohlcv_with_retry(ccxt_symbol, fetch_start, end_date, interval)
+
+            if df is not None and not df.empty:
+                # Store new data in cache
+                if self._ohlcv_cache is not None and interval == "1d":
+                    self._ohlcv_cache.store(ticker, df)
+
+            # Merge with cached data for the full range
+            if self._ohlcv_cache is not None and interval == "1d":
+                full = self._ohlcv_cache.get_cached(ticker, start_date, end_date)
+                if full is not None and not full.empty:
+                    df = full
+
+            if df is None or df.empty:
                 return None
-            
-            df = pd.DataFrame(
-                all_ohlcv,
-                columns=['date', 'open', 'high', 'low', 'close', 'volume']
-            )
-            df['date'] = pd.to_datetime(df['date'], unit='ms')
-            df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
-            df['ticker'] = ticker
-            
+
+            # Validate
+            try:
+                df = validate_ohlcv(df, ticker)
+            except ValueError as exc:
+                logger.error("OHLCV validation failed for %s: %s", ticker, exc)
+                return None
+
+            df["ticker"] = ticker
             return df.reset_index(drop=True)
-            
+
         except Exception as e:
             logger.error(f"Error fetching OHLCV for {ticker}: {e}")
+            # Try to serve from cache even on failure
+            if self._ohlcv_cache is not None and interval == "1d":
+                cached = self._ohlcv_cache.get_cached(ticker, start_date, end_date)
+                if cached is not None and not cached.empty:
+                    logger.info("Serving stale cache for %s after fetch failure", ticker)
+                    cached["ticker"] = ticker
+                    return cached.reset_index(drop=True)
             return None
+
+    @retry_transient
+    def _fetch_ohlcv_with_retry(
+        self,
+        ccxt_symbol: str,
+        start_date: str,
+        end_date: str,
+        interval: str,
+    ) -> Optional[pd.DataFrame]:
+        """Fetch OHLCV from the exchange with automatic retry on transient errors."""
+        since = int(pd.Timestamp(start_date).timestamp() * 1000)
+        end_ts = int(pd.Timestamp(end_date).timestamp() * 1000)
+
+        if since >= end_ts:
+            return None
+
+        all_ohlcv = []
+        limit = 1000
+
+        while since < end_ts:
+            self._rate_limit()
+            ohlcv = self._exchange.fetch_ohlcv(
+                ccxt_symbol,
+                timeframe=interval,
+                since=since,
+                limit=limit,
+            )
+
+            if not ohlcv:
+                break
+
+            all_ohlcv.extend(ohlcv)
+            last_ts = ohlcv[-1][0]
+
+            if last_ts == since:
+                break
+            since = last_ts + 1
+
+            if len(ohlcv) < limit:
+                break
+
+        if not all_ohlcv:
+            return None
+
+        df = pd.DataFrame(
+            all_ohlcv,
+            columns=['date', 'open', 'high', 'low', 'close', 'volume'],
+        )
+        df['date'] = pd.to_datetime(df['date'], unit='ms')
+        df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
+        return df.reset_index(drop=True)
     
     def get_market_data(
         self,
@@ -584,43 +687,13 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
         prices: pd.DataFrame,
         volume: pd.DataFrame,
     ) -> pd.DataFrame:
+        """Estimate market cap using CoinMarketCap data with hardcoded fallback.
+
+        If ``CMC_API_KEY`` is set (or passed via ``cmc_api_key``), fetches live
+        rankings from CoinMarketCap and caches them as Parquet.  Falls back to
+        hardcoded circulating-supply estimates for coins not covered by CMC.
         """
-        Estimate market cap from price and volume.
-        
-        This is a rough estimate - for accurate market cap, use CoinGecko/CMC APIs.
-        Uses circulating supply estimates for major coins.
-        """
-        # Approximate circulating supplies (as of 2024)
-        circulating_supply = {
-            'BTC': 19.6e6,
-            'ETH': 120e6,
-            'SOL': 440e6,
-            'BNB': 150e6,
-            'XRP': 55e9,
-            'DOGE': 143e9,
-            'ADA': 35e9,
-            'AVAX': 390e6,
-            'LINK': 600e6,
-            'DOT': 1.4e9,
-            'MATIC': 10e9,
-            'SHIB': 589e12,
-            'LTC': 74e6,
-            'TRX': 89e9,
-            'ATOM': 390e6,
-            'UNI': 600e6,
-            'APT': 470e6,
-            'NEAR': 1.1e9,
-            'INJ': 93e6,
-            'FIL': 530e6,
-        }
-        
-        market_cap = pd.DataFrame(index=prices.index)
-        
-        for ticker in prices.columns:
-            supply = circulating_supply.get(ticker.upper(), 1e9)  # Default 1B supply
-            market_cap[ticker] = prices[ticker] * supply
-        
-        return market_cap
+        return self._cmc_provider.estimate_market_cap(prices, volume)
     
     def get_tradable_tickers(self, min_volume_usd: float = 1e6) -> List[str]:
         """
@@ -635,7 +708,7 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
             List of ticker symbols
         """
         try:
-            resp = requests.get(BINANCE_TICKER_24H, timeout=15)
+            resp = httpx.get(BINANCE_TICKER_24H, timeout=15)
             resp.raise_for_status()
             all_stats = resp.json()
         except Exception as e:

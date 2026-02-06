@@ -54,7 +54,7 @@ class IBKRBroker:
             },
         },
         examples=(
-            "plugins:\n  broker:\n    name: ibkr.paper.v1\n    params_init:\n      host: 127.0.0.1\n      port: 7497\n      client_id: 7\n      account: DUXXXX",
+            "plugins:\n  broker:\n    name: ibkr.live.v1\n    params_init:\n      host: 127.0.0.1\n      port: 7497\n      client_id: 7\n      account: DUXXXX",
         )
     )
 

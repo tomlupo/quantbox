@@ -1,11 +1,14 @@
 from __future__ import annotations
-import argparse
 import yaml
+import typer
 
 from .registry import PluginRegistry
 from .runner import run_from_config
 from .validate import validate_config
 from .plugin_manifest import load_manifest, resolve_profile
+
+app = typer.Typer(name="quantbox", help="Quant research & trading CLI")
+
 
 def _as_json(obj):
     import json
@@ -214,78 +217,85 @@ def cmd_plugins_doctor(as_json: bool = False, strict: bool = False):
     if strict and any(r["status"] in ("warn", "error") for r in results):
         raise SystemExit(2)
 
-def main():
-    ap = argparse.ArgumentParser(prog="quantbox")
-    sub = ap.add_subparsers(dest="cmd", required=True)
 
-    sp = sub.add_parser("plugins")
-    sp.add_argument("action", choices=["list","info","doctor"])
-    sp.add_argument("--json", action="store_true")
-    sp.add_argument("--name", default=None)
-    sp.add_argument("--strict", action="store_true")
-    vp = sub.add_parser("validate")
-    vp.add_argument("-c","--config", required=True)
-    vp.add_argument("--json", action="store_true")
-
-    rp = sub.add_parser("run")
-    rp.add_argument("-c", "--config", required=True)
-    rp.add_argument("--dry-run", action="store_true")
-
-    args = ap.parse_args()
+@app.command()
+def plugins(
+    action: str = typer.Argument(help="Action: list, info, or doctor"),
+    name: str = typer.Option(None, help="Plugin name (required for 'info')"),
+    json: bool = typer.Option(False, "--json", help="Output as JSON"),
+    strict: bool = typer.Option(False, help="Exit non-zero on warnings (doctor only)"),
+):
+    """List, inspect, or diagnose plugins."""
     reg = PluginRegistry.discover()
+    if action == "list":
+        cmd_plugins_list(reg, as_json=json)
+    elif action == "info":
+        if not name:
+            raise typer.BadParameter("--name is required for 'plugins info'")
+        cmd_plugins_info(reg, name, as_json=json)
+    elif action == "doctor":
+        cmd_plugins_doctor(as_json=json, strict=strict)
+    else:
+        raise typer.BadParameter(f"Unknown action: {action}. Use list, info, or doctor.")
 
-    if args.cmd == "plugins" and args.action == "list":
-        cmd_plugins_list(reg, as_json=args.json)
+
+@app.command()
+def validate(
+    config: str = typer.Option(..., "-c", "--config", help="Path to config YAML"),
+    json: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Validate a run config file."""
+    with open(config, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    findings = validate_config(cfg)
+    payload = [f.__dict__ for f in findings]
+    if json:
+        print(_as_json(payload))
+    else:
+        for f in findings:
+            print(f.level.upper() + ":", f.message)
+    if any(f.level == "error" for f in findings):
+        raise SystemExit(2)
+
+
+@app.command()
+def run(
+    config: str = typer.Option(..., "-c", "--config", help="Path to config YAML"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show plan without executing"),
+):
+    """Run a trading pipeline from config."""
+    import json as json_mod
+
+    with open(config, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+
+    if dry_run:
+        plugins_cfg = cfg.get("plugins", {}) or {}
+        profile = plugins_cfg.get("profile")
+        prof = resolve_profile(str(profile), load_manifest()) if profile else {}
+        merged = dict(plugins_cfg)
+        for key in ("pipeline", "data", "broker"):
+            if key not in merged and key in prof:
+                merged[key] = prof[key]
+        plan = {
+            "pipeline": (merged.get("pipeline") or {}).get("name"),
+            "data": (merged.get("data") or {}).get("name"),
+            "broker": (merged.get("broker") or {}).get("name"),
+            "mode": cfg["run"]["mode"],
+            "asof": cfg["run"]["asof"],
+        }
+        print(json_mod.dumps(plan, ensure_ascii=False, indent=2))
         return
 
-    if args.cmd == "plugins" and args.action == "info":
-        if not args.name:
-            raise SystemExit("--name is required for plugins info")
-        cmd_plugins_info(reg, args.name, as_json=args.json)
-        return
-    if args.cmd == "plugins" and args.action == "doctor":
-        cmd_plugins_doctor(as_json=args.json, strict=args.strict)
-        return
+    reg = PluginRegistry.discover()
+    result = run_from_config(cfg, reg)
+    print("RUN_ID:", result.run_id)
+    print("PIPELINE:", result.pipeline_name)
+    print("METRICS:", result.metrics)
 
-    if args.cmd == "validate":
-        with open(args.config, "r", encoding="utf-8") as f:
-            cfg = yaml.safe_load(f)
-        findings = validate_config(cfg)
-        payload = [f.__dict__ for f in findings]
-        if args.json:
-            import json
-            print(json.dumps(payload, ensure_ascii=False, indent=2))
-        else:
-            for f in findings:
-                print(f.level.upper() + ":", f.message)
-        # non-zero exit on error
-        if any(f.level == "error" for f in findings):
-            raise SystemExit(2)
-        return
 
-    if args.cmd == "run":
-        with open(args.config, "r", encoding="utf-8") as f:
-            cfg = yaml.safe_load(f)
-        if args.dry_run:
-            # resolve plugins + show plan
-            plugins = cfg.get("plugins", {}) or {}
-            profile = plugins.get("profile")
-            prof = resolve_profile(str(profile), load_manifest()) if profile else {}
-            merged = dict(plugins)
-            for key in ("pipeline", "data", "broker"):
-                if key not in merged and key in prof:
-                    merged[key] = prof[key]
-            pipe = (merged.get("pipeline") or {}).get("name")
-            data = (merged.get("data") or {}).get("name")
-            broker = (merged.get("broker") or {}).get("name")
-            plan = {"pipeline": pipe, "data": data, "broker": broker, "mode": cfg["run"]["mode"], "asof": cfg["run"]["asof"]}
-            import json
-            print(json.dumps(plan, ensure_ascii=False, indent=2))
-            return
-        result = run_from_config(cfg, reg)
-        print("RUN_ID:", result.run_id)
-        print("PIPELINE:", result.pipeline_name)
-        print("METRICS:", result.metrics)
+def main():
+    app()
 
 if __name__ == "__main__":
     main()

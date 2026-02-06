@@ -3,7 +3,7 @@
 This repo is a **working minimal** QuantBox implementation:
 - `quantbox` core (plugin registry + runner + artifacts)
 - built-in plugins under `quantbox.plugins.*`
-  - `eod.duckdb_parquet.v1` data plugin (DuckDB over Parquet)
+  - `duckdb_parquet` data plugin (DuckDB over Parquet)
   - `fund_selection.simple.v1` pipeline plugin (research)
   - `sim.paper.v1` broker plugin (paper simulator; not needed for research)
 

@@ -16,13 +16,13 @@ plugins:
         lookback_days: 5
 
   data:
-    name: "eod.duckdb_parquet.v1"
+    name: "duckdb_parquet"
     params_init:
       prices_path: "./data/curated/prices.parquet"
       fx_path: "./data/curated/fx.parquet"
 
   broker:
-    name: "ibkr.paper.v1"
+    name: "ibkr.paper.stub.v1"
     params_init:
       host: "127.0.0.1"
       port: 7497

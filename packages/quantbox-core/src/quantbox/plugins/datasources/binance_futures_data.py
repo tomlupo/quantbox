@@ -14,9 +14,17 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pandas as pd
+
+from quantbox.plugins.datasources._utils import (
+    validate_ohlcv,
+    retry_transient,
+    OHLCVCache,
+    MarketCapProvider,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +59,15 @@ class BinanceFuturesDataFetcher:
     request_delay_ms: int = DEFAULT_REQUEST_DELAY_MS
     max_retries: int = 3
 
+    # Caching
+    cache_dir: Optional[str] = None
+    cache_fresh_ttl_hours: float = 4.0
+    _ohlcv_cache: Optional[OHLCVCache] = field(default=None, repr=False)
+
+    # CoinMarketCap integration
+    cmc_api_key: Optional[str] = None
+    _cmc_provider: Optional[MarketCapProvider] = field(default=None, repr=False)
+
     _exchange: Any = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -59,6 +76,19 @@ class BinanceFuturesDataFetcher:
                 "enableRateLimit": True,
                 "options": {"defaultType": "future"},
             })
+
+        if self.cache_dir and self._ohlcv_cache is None:
+            self._ohlcv_cache = OHLCVCache(
+                cache_dir=self.cache_dir,
+                fresh_ttl_hours=self.cache_fresh_ttl_hours,
+            )
+
+        if self._cmc_provider is None:
+            self._cmc_provider = MarketCapProvider(
+                api_key=self.cmc_api_key,
+                cache_dir=self.cache_dir,
+                fresh_ttl_hours=self.cache_fresh_ttl_hours,
+            )
 
     # ------------------------------------------------------------------
     # Helpers
@@ -138,9 +168,24 @@ class BinanceFuturesDataFetcher:
         end_date: str,
         interval: str = "1d",
     ) -> Optional[pd.DataFrame]:
-        """Fetch futures OHLCV for a single ticker with pagination."""
+        """Fetch futures OHLCV with caching, retry, and validation."""
         if not CCXT_AVAILABLE:
             return None
+
+        # Check cache first
+        if self._ohlcv_cache is not None and interval == "1d":
+            cached = self._ohlcv_cache.get_cached(ticker, start_date, end_date)
+            if cached is not None and not cached.empty:
+                last_cached = cached["date"].max()
+                target_end = pd.Timestamp(end_date)
+                if last_cached >= target_end - timedelta(hours=self.cache_fresh_ttl_hours * 24):
+                    cached["ticker"] = ticker
+                    try:
+                        cached = validate_ohlcv(cached, ticker)
+                        cached["ticker"] = ticker
+                        return cached.reset_index(drop=True)
+                    except ValueError as exc:
+                        logger.warning("Cached OHLCV invalid for %s: %s", ticker, exc)
 
         symbol = self._ccxt_symbol(ticker)
         pairs = self.get_valid_pairs([ticker])
@@ -148,43 +193,92 @@ class BinanceFuturesDataFetcher:
             logger.warning("No futures pair for %s", ticker)
             return None
 
+        # Incremental fetch start
+        fetch_start = start_date
+        if self._ohlcv_cache is not None and interval == "1d":
+            last_cached_date = self._ohlcv_cache.get_last_date(ticker)
+            if last_cached_date is not None:
+                next_day = (last_cached_date + timedelta(days=1)).strftime("%Y-%m-%d")
+                if next_day > start_date:
+                    fetch_start = next_day
+
         try:
-            since = int(pd.Timestamp(start_date).timestamp() * 1000)
-            end_ts = int(pd.Timestamp(end_date).timestamp() * 1000)
+            df = self._fetch_ohlcv_with_retry(symbol, fetch_start, end_date, interval)
 
-            all_ohlcv: List[list] = []
-            limit = 1000
+            if df is not None and not df.empty:
+                if self._ohlcv_cache is not None and interval == "1d":
+                    self._ohlcv_cache.store(ticker, df)
 
-            while since < end_ts:
-                self._rate_limit()
-                ohlcv = self._exchange.fetch_ohlcv(
-                    symbol, timeframe=interval, since=since, limit=limit,
-                )
-                if not ohlcv:
-                    break
+            # Merge with cached data
+            if self._ohlcv_cache is not None and interval == "1d":
+                full = self._ohlcv_cache.get_cached(ticker, start_date, end_date)
+                if full is not None and not full.empty:
+                    df = full
 
-                all_ohlcv.extend(ohlcv)
-                last_ts = ohlcv[-1][0]
-                if last_ts == since:
-                    break
-                since = last_ts + 1
-                if len(ohlcv) < limit:
-                    break
-
-            if not all_ohlcv:
+            if df is None or df.empty:
                 return None
 
-            df = pd.DataFrame(
-                all_ohlcv, columns=["date", "open", "high", "low", "close", "volume"],
-            )
-            df["date"] = pd.to_datetime(df["date"], unit="ms")
-            df = df[(df["date"] >= start_date) & (df["date"] <= end_date)]
+            try:
+                df = validate_ohlcv(df, ticker)
+            except ValueError as exc:
+                logger.error("OHLCV validation failed for %s: %s", ticker, exc)
+                return None
+
             df["ticker"] = ticker
             return df.reset_index(drop=True)
 
         except Exception as exc:
             logger.error("Error fetching OHLCV for %s: %s", ticker, exc)
+            if self._ohlcv_cache is not None and interval == "1d":
+                cached = self._ohlcv_cache.get_cached(ticker, start_date, end_date)
+                if cached is not None and not cached.empty:
+                    logger.info("Serving stale cache for %s after fetch failure", ticker)
+                    cached["ticker"] = ticker
+                    return cached.reset_index(drop=True)
             return None
+
+    @retry_transient
+    def _fetch_ohlcv_with_retry(
+        self,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        interval: str,
+    ) -> Optional[pd.DataFrame]:
+        """Fetch OHLCV from exchange with retry on transient errors."""
+        since = int(pd.Timestamp(start_date).timestamp() * 1000)
+        end_ts = int(pd.Timestamp(end_date).timestamp() * 1000)
+
+        if since >= end_ts:
+            return None
+
+        all_ohlcv: List[list] = []
+        limit = 1000
+
+        while since < end_ts:
+            self._rate_limit()
+            ohlcv = self._exchange.fetch_ohlcv(
+                symbol, timeframe=interval, since=since, limit=limit,
+            )
+            if not ohlcv:
+                break
+            all_ohlcv.extend(ohlcv)
+            last_ts = ohlcv[-1][0]
+            if last_ts == since:
+                break
+            since = last_ts + 1
+            if len(ohlcv) < limit:
+                break
+
+        if not all_ohlcv:
+            return None
+
+        df = pd.DataFrame(
+            all_ohlcv, columns=["date", "open", "high", "low", "close", "volume"],
+        )
+        df["date"] = pd.to_datetime(df["date"], unit="ms")
+        df = df[(df["date"] >= start_date) & (df["date"] <= end_date)]
+        return df.reset_index(drop=True)
 
     # ------------------------------------------------------------------
     # Funding rates
@@ -375,8 +469,8 @@ class BinanceFuturesDataFetcher:
         if not funding_rates.empty:
             funding_rates = funding_rates.reindex(prices.index).ffill().fillna(0.0)
 
-        # Rough market cap estimate (same approach as spot fetcher)
-        market_cap = prices * 1e9  # placeholder multiplier
+        # Market cap via CMC with hardcoded fallback
+        market_cap = self._cmc_provider.estimate_market_cap(prices, volume)
 
         logger.info(
             "Fetched futures data: %d tickers, %d days", len(prices.columns), len(prices),
