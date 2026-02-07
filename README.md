@@ -1,112 +1,173 @@
-# QuantBox — full working starter repo (core + built-in plugins)
+# QuantBox
 
-This repo is a **working minimal** QuantBox implementation:
-- `quantbox` core (plugin registry + runner + artifacts)
-- built-in plugins under `quantbox.plugins.*`
-  - `duckdb_parquet` data plugin (DuckDB over Parquet)
-  - `fund_selection.simple.v1` pipeline plugin (research)
-  - `sim.paper.v1` broker plugin (paper simulator; not needed for research)
+Quant research and trading framework with a plugin architecture. Config-driven pipelines for backtesting, paper trading, and live execution.
 
-## Install (uv)
+## Repositories
+
+| Repo | Purpose | Quantbox pin |
+|---|---|---|
+| **quantbox** (this) | Library: strategies, plugins, protocols, core runtime | (source) |
+| [quantbox-live](https://github.com/tomlupo/quantbox-live) | Production: daily automated trading | `@v0.1.0` (stable tag) |
+| [quantbox-lab](https://github.com/tomlupo/quantbox-lab) | Research: backtesting, notebooks, experiments | `@dev` (latest) |
+
+See [multi-repo workflow](docs/guides/multi-repo-workflow.md) for versioning and promotion.
+
+## Install
 
 ```bash
-uv venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+uv venv && source .venv/bin/activate
 uv sync
 
-# Optional deps for live broker adapters:
-uv sync --extra ibkr --extra binance
+# Optional extras for broker adapters:
+uv sync --extra ccxt      # Binance, Hyperliquid (via ccxt)
+uv sync --extra ibkr      # Interactive Brokers
+uv sync --extra binance   # python-binance
+uv sync --extra full      # all of the above
 ```
 
-## Dev install (one command)
+## Quick start
+
+### Research (fund selection)
 
 ```bash
-make dev
-# or
-make dev-full
+quantbox run -c configs/run_fund_selection.yaml
 ```
 
-## Generate sample data
+### Backtest
 
 ```bash
-python scripts/make_sample_data.py
+quantbox run -c configs/run_backtest_crypto_trend.yaml
 ```
 
-Creates: `data/curated/prices.parquet` with columns: `date, symbol, close`.
+See [backtesting guide](docs/guides/backtesting.md) for engine options and parameters.
 
-## List plugins
+### Paper trading
+
+```bash
+quantbox run -c configs/run_futures_paper_crypto_trend.yaml
+```
+
+### Live trading
+
+Configured via [quantbox-live](https://github.com/tomlupo/quantbox-live).
+
+## Plugins
+
+All plugins are config-driven and discovered automatically. List registered plugins:
 
 ```bash
 quantbox plugins list
 ```
 
-## Plugin manifest + profiles
+### Pipelines
 
-- Manifest: `plugins/manifest.yaml`
-- Use profiles to avoid repeating plugin blocks in configs:
+| Name | Description |
+|---|---|
+| `fund_selection.simple.v1` | Research pipeline: universe screening and allocation |
+| `trade.allocations_to_orders.v1` | Converts allocations to broker orders |
+| `trade.full_pipeline.v1` | End-to-end trading: strategy → rebalance → execute |
+| `backtest.pipeline.v1` | Historical simulation with vectorbt or rsims engine |
+
+### Strategies
+
+| Name | Description |
+|---|---|
+| `strategy.crypto_trend.v1` | Momentum trend-following for crypto |
+| `strategy.carver_trend.v1` | Rob Carver-style trend with vol targeting |
+| `strategy.momentum_long_short.v1` | Cross-sectional momentum, long/short |
+| `strategy.cross_asset_momentum.v1` | Multi-asset momentum |
+| `strategy.crypto_regime_trend.v1` | Regime-aware crypto trend |
+| `strategy.weighted_avg.v1` | Meta-strategy aggregator (weighted blend) |
+
+### Data
+
+| Name | Description |
+|---|---|
+| `local_file_data` | Local Parquet files via DuckDB |
+| `binance.live_data.v1` | Binance spot OHLCV + market data |
+| `binance.futures_data.v1` | Binance USDM futures + funding rates |
+
+### Brokers
+
+| Name | Description |
+|---|---|
+| `sim.paper.v1` | Paper simulator (spot) |
+| `sim.futures_paper.v1` | Paper simulator (futures, with funding) |
+| `ibkr.paper.stub.v1` | IBKR paper trading stub |
+| `ibkr.live.v1` | IBKR live execution |
+| `binance.paper.stub.v1` | Binance paper trading stub |
+| `binance.live.v1` | Binance spot live execution |
+| `binance.futures.v1` | Binance USDM futures execution |
+| `hyperliquid.perps.v1` | Hyperliquid perpetual futures |
+
+### Rebalancing
+
+| Name | Description |
+|---|---|
+| `rebalancing.standard.v1` | Standard portfolio rebalancer (spot) |
+| `rebalancing.futures.v1` | Futures rebalancer with leverage and margin |
+
+### Risk
+
+| Name | Description |
+|---|---|
+| `risk.trading_basic.v1` | Leverage, concentration, and notional limits |
+
+### Publishers
+
+| Name | Description |
+|---|---|
+| `telegram.publisher.v1` | Trade notifications via Telegram |
+
+## Plugin manifest and profiles
+
+The manifest at `plugins/manifest.yaml` defines available profiles:
 
 ```yaml
 plugins:
-  profile: research
+  profile: research       # or: trading, trading_full, futures_paper
 ```
 
-Validate manifest:
+Profiles bundle a set of plugins so you don't repeat them in every config.
+
+## CLI reference
 
 ```bash
-python -m jsonschema plugins/manifest.yaml plugins/manifest.schema.json
+quantbox plugins list              # list all registered plugins
+quantbox plugins list --json       # JSON output
+quantbox plugins info --name <id>  # plugin details
+quantbox validate -c <config>      # validate config without running
+quantbox run -c <config>           # run a pipeline
+quantbox run --dry-run -c <config> # dry run (no side effects)
 ```
 
-## Run the example pipeline
+## Artifacts
+
+Each run writes to `artifacts/<run_id>/`:
+- `run_manifest.json` — run metadata
+- `events.jsonl` — structured event log
+- Strategy-specific outputs (weights, orders, fills, metrics)
+
+Artifact schemas are in `/schemas/*.schema.json`.
+
+## Development
 
 ```bash
-quantbox run -c configs/run_fund_selection.yaml
+make dev       # install dev deps
+make dev-full  # install all extras + dev deps
+pytest -q      # run tests
 ```
 
-Artifacts are written to `./artifacts/<run_id>/`.
+See [CONTRIBUTING_LLM.md](CONTRIBUTING_LLM.md) for LLM development guidelines.
 
-## Next steps
-- Add a **trading pipeline** plugin that consumes `allocations.parquet` and emits `targets/orders/fills`.
-- Implement external plugins via entry points if you want separate repos/packages.
+## Documentation
 
-
-## LLM-friendly additions
-- `run_manifest.json` and `events.jsonl` written per run
-- `quantbox validate` and `quantbox run --dry-run`
-- `quantbox plugins list --json` and `quantbox plugins info --name <id> --json`
-- artifact schema checks via `/schemas/*.schema.json`
-
-
-## Trading bridge pipeline (research → paper)
-1) Run fund selection to produce allocations:
-```bash
-quantbox run -c configs/run_fund_selection.yaml
-```
-2) Copy the produced RUN_ID and edit `configs/run_trade_from_allocations.yaml` to point `allocations_path` to that run.
-3) Run trading bridge:
-```bash
-quantbox run -c configs/run_trade_from_allocations.yaml
-```
-This writes `targets/orders/fills/portfolio_daily`.
-
-
-## Advanced sizing & FX
-- Add `instrument_map: ./configs/instruments.yaml` to the trading pipeline params.
-- Data plugin can load FX if you set `fx_path: ./data/curated/fx.parquet`.
-- Trading pipeline writes extra debug artifact: `targets_ext.parquet` and `llm_notes.json`.
-
-
-## Auto-resolve latest allocations
-In the trading config you can auto-use the latest research run:
-
-- `allocations_path: null`
-- `allocations_ref: "latest:fund_selection.simple.v1"`
-
-## Approval gate
-To require approval before paper/live execution:
-
-1) Run trade config once (fills will be empty until approved)
-2) Create approval file:
-```bash
-python scripts/approve_orders.py --run-dir ./artifacts/<TRADE_RUN_ID>/ --who tom
-```
-3) Rerun the same trade config (now it can execute if `readonly: false` on the broker).
+See [docs/](docs/) for full documentation:
+- [Product requirements (PRD)](docs/PRD.md)
+- [Backtesting guide](docs/guides/backtesting.md)
+- [Multi-repo workflow](docs/guides/multi-repo-workflow.md)
+- [Trading bridge](docs/guides/trading-bridge.md)
+- [Approval gate](docs/guides/approval-gate.md)
+- [Integration guide](docs/guides/quantbox-integration-guide.md)
+- [LLM operations reference](docs/reference/llm-operations.md)
+- [Broker secrets](docs/reference/broker-secrets.md)

@@ -56,10 +56,39 @@ data.load_fx(asof, params)                      # FX rates (or None for crypto)
 ```
 
 ### PipelinePlugin
-Implements trading strategies.
+Orchestrates a full run: loads data, runs strategies, rebalances, executes.
 ```python
 pipeline.run(mode, asof, params, data, store, broker, risk)
 # Returns RunResult with artifacts and metrics
+```
+
+### StrategyPlugin
+Computes target weights from market data.
+```python
+strategy.compute_weights(market_data, universe, asof, params)
+# Returns: DataFrame with symbol columns and weight values
+```
+
+### RebalancingPlugin
+Converts target weights into orders respecting leverage and position limits.
+```python
+rebalancer.rebalance(targets, current_positions, params)
+# Returns: List[Dict] of orders
+```
+
+### RiskPlugin
+Pre-trade validation of targets and orders.
+```python
+risk.check_targets(targets, params)   # Validate weight targets
+risk.check_orders(orders, params)     # Validate generated orders
+# Both return: List[Dict] of violations (empty = all clear)
+```
+
+### PublisherPlugin
+Post-trade notifications and reporting.
+```python
+publisher.publish(result, params)
+# Sends notifications (e.g. Telegram) after a run completes
 ```
 
 ## LLM Workflow Example
