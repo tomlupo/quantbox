@@ -1,0 +1,25 @@
+{
+  "title": "strategy_weights",
+  "type": "object",
+  "properties": {
+    "columns": {
+      "const": [
+        {
+          "name": "strategy",
+          "type": "string"
+        },
+        {
+          "name": "symbol",
+          "type": "string"
+        },
+        {
+          "name": "weight",
+          "type": "number"
+        }
+      ]
+    }
+  },
+  "required": [
+    "columns"
+  ]
+}

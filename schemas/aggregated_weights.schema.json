@@ -1,0 +1,21 @@
+{
+  "title": "aggregated_weights",
+  "type": "object",
+  "properties": {
+    "columns": {
+      "const": [
+        {
+          "name": "symbol",
+          "type": "string"
+        },
+        {
+          "name": "weight",
+          "type": "number"
+        }
+      ]
+    }
+  },
+  "required": [
+    "columns"
+  ]
+}

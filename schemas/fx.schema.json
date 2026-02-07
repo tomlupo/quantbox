@@ -1,0 +1,25 @@
+{
+  "title": "fx",
+  "type": "object",
+  "properties": {
+    "columns": {
+      "const": [
+        {
+          "name": "date",
+          "type": "string"
+        },
+        {
+          "name": "pair",
+          "type": "string"
+        },
+        {
+          "name": "rate",
+          "type": "number"
+        }
+      ]
+    }
+  },
+  "required": [
+    "columns"
+  ]
+}

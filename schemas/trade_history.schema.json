@@ -1,0 +1,23 @@
+{
+  "title": "trade_history",
+  "type": "object",
+  "properties": {
+    "trades": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "symbol": { "type": "string" },
+          "side": { "type": "string" },
+          "qty": { "type": "number" },
+          "price": { "type": "number" },
+          "timestamp": { "type": "string" }
+        },
+        "required": ["symbol", "side", "qty", "price"]
+      }
+    }
+  },
+  "required": [
+    "trades"
+  ]
+}

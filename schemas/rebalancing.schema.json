@@ -1,0 +1,33 @@
+{
+  "title": "rebalancing",
+  "type": "object",
+  "properties": {
+    "columns": {
+      "const": [
+        {
+          "name": "symbol",
+          "type": "string"
+        },
+        {
+          "name": "current_weight",
+          "type": "number"
+        },
+        {
+          "name": "target_weight",
+          "type": "number"
+        },
+        {
+          "name": "weight_delta",
+          "type": "number"
+        },
+        {
+          "name": "action",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "required": [
+    "columns"
+  ]
+}
