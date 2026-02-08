@@ -499,8 +499,13 @@ class HyperliquidBroker:
             return None
         
         # Adjust quantity to precision
+        # ccxt may return precision as a float step size (e.g. 0.001)
+        # or as an int number of decimals (e.g. 3)
         precision = market.get('precision', {}).get('amount', 8)
-        quantity = round(quantity, precision)
+        if isinstance(precision, float) and precision < 1:
+            import math
+            precision = max(0, -int(math.floor(math.log10(precision))))
+        quantity = round(quantity, int(precision))
         
         if quantity <= 0:
             logger.warning(f"Quantity too small for {symbol}")
