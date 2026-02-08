@@ -396,27 +396,38 @@ class HyperliquidBroker:
     
     def get_price(self, symbol: str) -> Optional[float]:
         """Get current price for symbol."""
-        try:
-            # Try different market formats
-            for market_symbol in [
-                f"{symbol}/USDC:USDC",
-                f"{symbol}/USD:USDC",
-                f"{symbol}USDC",
-            ]:
-                if market_symbol in self._markets:
-                    ticker = self._exchange.fetch_ticker(market_symbol)
-                    return float(ticker['last'])
-            
-            logger.warning(f"Market not found for {symbol}")
-            return None
-        except Exception as e:
-            logger.warning(f"Error fetching price for {symbol}: {e}")
-            return None
-    
+        for attempt in range(MAX_RETRIES):
+            try:
+                for market_symbol in [
+                    f"{symbol}/USDC:USDC",
+                    f"{symbol}/USD:USDC",
+                    f"{symbol}USDC",
+                ]:
+                    if market_symbol in self._markets:
+                        ticker = self._exchange.fetch_ticker(market_symbol)
+                        return float(ticker['last'])
+
+                logger.warning(f"Market not found for {symbol}")
+                return None
+            except Exception as e:
+                if attempt < MAX_RETRIES - 1:
+                    backoff = RETRY_DELAY_SECONDS * (2 ** attempt)
+                    logger.warning(
+                        "Rate limited fetching %s, retry %d/%d in %ds: %s",
+                        symbol, attempt + 1, MAX_RETRIES, backoff, e,
+                    )
+                    time.sleep(backoff)
+                else:
+                    logger.warning(f"Error fetching price for {symbol}: {e}")
+                    return None
+        return None
+
     def get_prices(self, symbols: List[str]) -> Dict[str, float]:
         """Get prices for multiple symbols."""
         prices = {}
-        for symbol in symbols:
+        for i, symbol in enumerate(symbols):
+            if i > 0:
+                time.sleep(0.1)  # 100ms between API calls
             price = self.get_price(symbol)
             if price:
                 prices[symbol] = price
