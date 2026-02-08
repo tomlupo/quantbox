@@ -1,3 +1,5 @@
 # Architecture & design
 
-Place design docs and contract details here when added (e.g. data flow, plugin contract, run lifecycle).
+| Document | Description |
+|----------|-------------|
+| [Pipeline design](pipeline-design.md) | Why imperative orchestration over declarative pipelines |

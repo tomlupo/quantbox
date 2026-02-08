@@ -6,7 +6,7 @@
 | [specs/](specs/) | Feature and capability specs (active development) |
 | [guides/](guides/) | How-to: backtesting, multi-repo workflow, trading bridge, approval gate |
 | [reference/](reference/) | Operations: LLM/agent CLI, broker secrets and safety |
-| [architecture/](architecture/) | Design and contracts (when added) |
+| [architecture/](architecture/) | Design decisions: [pipeline design](architecture/pipeline-design.md) |
 
 ## Guides
 
