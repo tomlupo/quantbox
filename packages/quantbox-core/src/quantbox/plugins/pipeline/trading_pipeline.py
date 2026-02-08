@@ -417,9 +417,10 @@ class TradingPipeline:
         risk_findings: List[Dict[str, Any]] = []
         for rp in risk:
             try:
-                risk_findings.extend(rp.check_targets(targets, params.get("risk", {})))
+                risk_params = params.get("_risk_cfg", params.get("risk", {}))
+                risk_findings.extend(rp.check_targets(targets, risk_params))
                 exec_orders = orders_df[orders_df.get("Executable", pd.Series(dtype=bool))].copy() if "Executable" in orders_df.columns else orders_df
-                risk_findings.extend(rp.check_orders(exec_orders, params.get("risk", {})))
+                risk_findings.extend(rp.check_orders(exec_orders, risk_params))
             except Exception as exc:
                 logger.warning("Risk check failed: %s", exc)
 

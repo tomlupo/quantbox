@@ -97,6 +97,12 @@ def run_from_config(cfg: Dict[str, Any], registry) -> RunResult:
         pipeline_params["_aggregator_cfg"] = agg_cfg
     if rebal_cfg:
         pipeline_params["_rebalancer_cfg"] = rebal_cfg
+    risk_cfg_list = cfg["plugins"].get("risk", []) or []
+    if risk_cfg_list:
+        merged_risk_params: Dict[str, Any] = {}
+        for r in risk_cfg_list:
+            merged_risk_params.update(r.get("params", {}))
+        pipeline_params["_risk_cfg"] = merged_risk_params
 
     result = pipeline.run(
         mode=mode,
