@@ -214,6 +214,7 @@ class HyperliquidBroker:
             'enableRateLimit': True,
             'options': {
                 'defaultType': 'swap',  # perpetual swaps
+                'defaultSlippage': 0.05,  # 5% max slippage for market orders
             }
         })
         
