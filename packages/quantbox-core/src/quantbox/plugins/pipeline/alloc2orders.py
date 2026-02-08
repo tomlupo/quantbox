@@ -222,7 +222,7 @@ class AllocationsToOrdersPipeline:
         pos["price"] = pos["price"].fillna(0.0).astype(float)
         pos["multiplier"] = pos["multiplier"].fillna(1.0).astype(float)
         pos["currency"] = pos["currency"].fillna("USD").astype(str)
-        pos["fx_to_usd"] = pos["currency"].apply(lambda c: _fx_rate_to_usd(fx, c))
+        pos["fx_to_usd"] = pos["currency"].apply(lambda c: _fx_rate_to_usd(fx, c)).astype(float)
         pos["value_usd"] = pos["qty"] * pos["price"] * pos["multiplier"] * pos["fx_to_usd"]
         current_value_usd = float(pos["value_usd"].sum())
 
@@ -310,7 +310,7 @@ class AllocationsToOrdersPipeline:
             pos2["price"] = pos2["price"].fillna(0.0).astype(float)
             pos2["multiplier"] = pos2["multiplier"].fillna(1.0).astype(float)
             pos2["currency"] = pos2["currency"].fillna("USD").astype(str)
-            pos2["fx_to_usd"] = pos2["currency"].apply(lambda c: _fx_rate_to_usd(fx, c))
+            pos2["fx_to_usd"] = pos2["currency"].apply(lambda c: _fx_rate_to_usd(fx, c)).astype(float)
             pos2["value_usd"] = pos2["qty"] * pos2["price"] * pos2["multiplier"] * pos2["fx_to_usd"]
             portfolio_value_usd_post = float(cash_usd_post + pos2["value_usd"].sum())
 
