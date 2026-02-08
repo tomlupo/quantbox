@@ -466,9 +466,33 @@ class CarverTrendStrategy:
         # Filter tickers
         valid_tickers = [t for t in prices.columns if t not in self.exclude_tickers]
         prices = prices[valid_tickers]
-        
-        logger.info(f"Running CarverTrend on {len(valid_tickers)} instruments")
-        
+
+        # 0. Universe selection — BEFORE forecasting so N is correct
+        #    Carver formula: position = forecast × vol_scalar × IDM / N
+        #    N must equal the number of instruments we actually trade.
+        if self.use_universe_selection:
+            from quantbox.plugins.strategies._universe import select_universe
+
+            volume = data.get("volume", pd.DataFrame())
+            market_cap = data.get("market_cap", pd.DataFrame())
+            universe_mask = select_universe(
+                prices,
+                volume.reindex(index=prices.index, columns=prices.columns).fillna(0.0),
+                market_cap if not market_cap.empty else None,
+                self.top_by_mcap,
+                self.top_by_volume,
+                self.exclude_tickers,
+            )
+            latest_mask = universe_mask.iloc[-1]
+            selected = latest_mask[latest_mask > 0].index.tolist()
+            logger.info(
+                "Universe selection: top %d by volume from %d available",
+                len(selected), len(valid_tickers),
+            )
+            prices = prices[selected]
+
+        logger.info(f"Running CarverTrend on {len(prices.columns)} instruments")
+
         # 1. Generate forecasts for each instrument
         forecasts = {}
         for ticker in prices.columns:
@@ -504,29 +528,6 @@ class CarverTrendStrategy:
             max_position=self.max_position,
             max_gross=self.max_gross,
         )
-
-        # 5b. Universe selection (optional)
-        if self.use_universe_selection:
-            from quantbox.plugins.strategies._universe import select_universe
-
-            volume = data.get("volume", pd.DataFrame())
-            market_cap = data.get("market_cap", pd.DataFrame())
-            universe_mask = select_universe(
-                prices,
-                volume.reindex(index=prices.index, columns=prices.columns).fillna(0.0),
-                market_cap if not market_cap.empty else None,
-                self.top_by_mcap,
-                self.top_by_volume,
-                self.exclude_tickers,
-            )
-            positions = positions * universe_mask.reindex(
-                index=positions.index, columns=positions.columns,
-            ).fillna(0.0)
-            n_in = int(universe_mask.iloc[-1].sum()) if not universe_mask.empty else 0
-            logger.info(
-                "Universe selection: top %d by volume from %d available",
-                n_in, len(prices.columns),
-            )
 
         # 6. Calculate exposure
         latest = positions.iloc[-1].dropna()
