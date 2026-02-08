@@ -254,18 +254,30 @@ class HyperliquidBroker:
     def get_balance(self) -> Dict[str, float]:
         """
         Get account balance.
-        
+
+        Checks both swap (perps) and spot balances to support
+        Hyperliquid unified accounts where USDC may sit on
+        the spot side.
+
         Returns:
             Dict with 'total', 'free', 'used' in USDC
         """
         try:
             balance = self._exchange.fetch_balance()
             usdc = balance.get(QUOTE_CURRENCY, balance.get('USDC', {}))
-            return {
-                'total': float(usdc.get('total', 0) or 0),
-                'free': float(usdc.get('free', 0) or 0),
-                'used': float(usdc.get('used', 0) or 0),
-            }
+            total = float(usdc.get('total', 0) or 0)
+            free = float(usdc.get('free', 0) or 0)
+            used = float(usdc.get('used', 0) or 0)
+
+            # Unified accounts: USDC may be on the spot side
+            if total == 0:
+                spot_balance = self._exchange.fetch_balance({'type': 'spot'})
+                spot_usdc = spot_balance.get(QUOTE_CURRENCY, spot_balance.get('USDC', {}))
+                total = float(spot_usdc.get('total', 0) or 0)
+                free = float(spot_usdc.get('free', 0) or 0)
+                used = float(spot_usdc.get('used', 0) or 0)
+
+            return {'total': total, 'free': free, 'used': used}
         except Exception as e:
             logger.error(f"Error fetching balance: {e}")
             return {'total': 0, 'free': 0, 'used': 0}
