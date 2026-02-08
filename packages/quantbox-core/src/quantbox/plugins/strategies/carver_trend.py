@@ -407,7 +407,12 @@ class CarverTrendStrategy:
     max_position: float = 1.0
     max_gross: float = 2.0
     allow_shorts: bool = True  # Set False for long-only
-    
+
+    # Universe selection (set use_universe_selection=True to enable)
+    use_universe_selection: bool = False
+    top_by_mcap: int = 30
+    top_by_volume: int = 10
+
     # Output
     output_periods: int = 30
     exclude_tickers: List[str] = field(default_factory=lambda: DEFAULT_STABLECOINS.copy())
@@ -499,7 +504,30 @@ class CarverTrendStrategy:
             max_position=self.max_position,
             max_gross=self.max_gross,
         )
-        
+
+        # 5b. Universe selection (optional)
+        if self.use_universe_selection:
+            from quantbox.plugins.strategies._universe import select_universe
+
+            volume = data.get("volume", pd.DataFrame())
+            market_cap = data.get("market_cap", pd.DataFrame())
+            universe_mask = select_universe(
+                prices,
+                volume.reindex(index=prices.index, columns=prices.columns).fillna(0.0),
+                market_cap if not market_cap.empty else None,
+                self.top_by_mcap,
+                self.top_by_volume,
+                self.exclude_tickers,
+            )
+            positions = positions * universe_mask.reindex(
+                index=positions.index, columns=positions.columns,
+            ).fillna(0.0)
+            n_in = int(universe_mask.iloc[-1].sum()) if not universe_mask.empty else 0
+            logger.info(
+                "Universe selection: top %d by volume from %d available",
+                n_in, len(prices.columns),
+            )
+
         # 6. Calculate exposure
         latest = positions.iloc[-1].dropna()
         long_exp = latest[latest > 0].sum()

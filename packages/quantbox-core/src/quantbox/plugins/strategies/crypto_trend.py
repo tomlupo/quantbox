@@ -76,24 +76,16 @@ except ImportError:
     vbt = None
     VECTORBT_AVAILABLE = False
 
+from quantbox.plugins.strategies._universe import (
+    select_universe as select_universe_vectorized,
+    select_universe_duckdb,
+    DEFAULT_STABLECOINS,
+)
+
 
 # ============================================================================
 # Constants
 # ============================================================================
-
-DEFAULT_STABLECOINS = [
-    # USD stablecoins
-    'USDT', 'USDC', 'BUSD', 'TUSD', 'DAI', 'MIM', 'USTC', 'FDUSD',
-    'USDP', 'GUSD', 'FRAX', 'LUSD', 'USDD', 'PYUSD', 'USD1', 'USDJ',
-    # EUR stablecoins
-    'EUR', 'EURC', 'EURT', 'EURS', 'EUROC',
-    # Gold/commodity tokens
-    'PAXG', 'XAUT',
-    # Wrapped tokens
-    'WBTC', 'WETH', 'BETH', 'ETHW', 'CBBTC', 'CBETH',
-    # Other non-tradeable
-    'BFUSD', 'AEUR',
-]
 
 DEFAULT_LOOKBACK_WINDOWS = [5, 10, 20, 30, 60, 90, 150, 250, 360]
 DEFAULT_VOL_TARGETS = [0.25, 0.50]
@@ -200,144 +192,6 @@ def generate_ensemble_signals(
         signals[ticker] = window_signals.mean(axis=1)
     
     return pd.DataFrame(signals, index=prices.index)
-
-
-# ============================================================================
-# Universe Selection (DuckDB accelerated when available)
-# ============================================================================
-
-def select_universe_vectorized(
-    prices: pd.DataFrame,
-    volume: pd.DataFrame,
-    market_cap: pd.DataFrame,
-    top_by_mcap: int = 30,
-    top_by_volume: int = 10,
-    exclude_tickers: Optional[List[str]] = None,
-) -> pd.DataFrame:
-    """
-    Select tradable universe - vectorized pandas operations.
-    
-    1. Exclude stablecoins
-    2. Rank by market cap, keep top N
-    3. Within those, rank by dollar volume, keep top M
-    
-    Args:
-        prices: Price DataFrame
-        volume: Volume DataFrame  
-        market_cap: Market cap DataFrame
-        top_by_mcap: Top N by market cap to consider
-        top_by_volume: Top M by volume to trade
-        exclude_tickers: Tickers to exclude (stablecoins, etc.)
-        
-    Returns:
-        DataFrame of 0/1 universe flags
-    """
-    if exclude_tickers is None:
-        exclude_tickers = DEFAULT_STABLECOINS
-    
-    # Filter columns
-    valid_tickers = [t for t in prices.columns if t not in exclude_tickers]
-    
-    if not valid_tickers:
-        return pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
-    
-    # Market cap rank (lower = larger)
-    mc = market_cap[valid_tickers]
-    mc_rank = mc.rank(axis=1, ascending=False, method='min')
-    mc_mask = mc_rank <= top_by_mcap
-    
-    # Dollar volume within MC-filtered
-    dollar_vol = prices[valid_tickers] * volume[valid_tickers]
-    vol_masked = dollar_vol.where(mc_mask)
-    vol_rank = vol_masked.rank(axis=1, ascending=False, method='min')
-    
-    # Universe = top by volume within MC filter
-    universe_valid = (vol_rank <= top_by_volume).astype(float)
-    
-    # Expand to full columns
-    universe = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
-    universe[valid_tickers] = universe_valid
-    
-    return universe
-
-
-def select_universe_duckdb(
-    prices: pd.DataFrame,
-    volume: pd.DataFrame,
-    market_cap: pd.DataFrame,
-    top_by_mcap: int = 30,
-    top_by_volume: int = 10,
-    exclude_tickers: Optional[List[str]] = None,
-) -> pd.DataFrame:
-    """
-    Select universe using DuckDB for large datasets.
-    
-    Converts wide DataFrames to long format, runs SQL, converts back.
-    Faster for very large datasets (1000+ tickers).
-    """
-    if not DUCKDB_AVAILABLE:
-        return select_universe_vectorized(
-            prices, volume, market_cap, top_by_mcap, top_by_volume, exclude_tickers
-        )
-    
-    if exclude_tickers is None:
-        exclude_tickers = DEFAULT_STABLECOINS
-    
-    # Convert to long format
-    def to_long(df: pd.DataFrame, value_name: str) -> pd.DataFrame:
-        df = df.reset_index().melt(id_vars='date', var_name='ticker', value_name=value_name)
-        return df
-    
-    prices_long = to_long(prices, 'price')
-    volume_long = to_long(volume, 'volume')
-    mc_long = to_long(market_cap, 'market_cap')
-    
-    # Merge
-    data = prices_long.merge(volume_long, on=['date', 'ticker'])
-    data = data.merge(mc_long, on=['date', 'ticker'])
-    data['dollar_volume'] = data['price'] * data['volume']
-    
-    # Filter exclusions
-    exclude_str = "', '".join(exclude_tickers)
-    
-    # Run DuckDB query
-    con = duckdb.connect()
-    con.register('data', data)
-    
-    query = f"""
-    WITH ranked AS (
-        SELECT 
-            date,
-            ticker,
-            price,
-            market_cap,
-            dollar_volume,
-            RANK() OVER (PARTITION BY date ORDER BY market_cap DESC) as mc_rank
-        FROM data
-        WHERE ticker NOT IN ('{exclude_str}')
-    ),
-    mc_filtered AS (
-        SELECT *,
-            RANK() OVER (PARTITION BY date ORDER BY dollar_volume DESC) as vol_rank
-        FROM ranked
-        WHERE mc_rank <= {top_by_mcap}
-    )
-    SELECT 
-        date,
-        ticker,
-        CASE WHEN vol_rank <= {top_by_volume} THEN 1.0 ELSE 0.0 END as in_universe
-    FROM mc_filtered
-    """
-    
-    result = con.execute(query).df()
-    con.close()
-    
-    # Pivot back to wide format
-    universe = result.pivot(index='date', columns='ticker', values='in_universe')
-    universe = universe.reindex(columns=prices.columns, fill_value=0.0)
-    universe = universe.reindex(index=prices.index, fill_value=0.0)
-    
-    return universe
 
 
 # ============================================================================
