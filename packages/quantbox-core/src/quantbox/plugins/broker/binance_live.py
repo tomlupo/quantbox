@@ -308,7 +308,7 @@ def _is_transient_error(e: Exception) -> bool:
 
 
 def format_quantity_for_binance(qty: float) -> str:
-    """
+    r"""
     Format quantity for Binance API (no scientific notation).
     Binance requires: ^([0-9]{1,20})(\.[0-9]{1,20})?$
     """
