@@ -298,6 +298,107 @@ def run(
     print("METRICS:", result.metrics)
 
 
+@app.command()
+def warehouse(
+    action: str = typer.Argument(
+        help="Action: init, tables, query, describe, ingest, register-dataset"
+    ),
+    root: str = typer.Option("./warehouse", "-r", "--root", help="Warehouse root directory"),
+    sql: str = typer.Option(None, "-q", "--query", help="SQL query (for 'query' action)"),
+    table: str = typer.Option(None, "-t", "--table", help="Table name (for 'describe')"),
+    run_dir: str = typer.Option(None, "--run-dir", help="Artifact run directory (for 'ingest')"),
+    name: str = typer.Option(None, "-n", "--name", help="Dataset name (for 'register-dataset')"),
+    path: str = typer.Option(None, "-p", "--path", help="Dataset path (for 'register-dataset')"),
+    output: str = typer.Option(None, "-o", "--output", help="Output file (for 'query')"),
+    json_out: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Interact with the warehouse (query, ingest, manage)."""
+    import json as json_mod
+    from .warehouse import Warehouse
+
+    if action == "init":
+        wh = Warehouse(root)
+        wh.close()
+        print(f"Warehouse initialized at {root}")
+        return
+
+    wh = Warehouse(root)
+    try:
+        if action == "tables":
+            all_tables = wh.list_tables()
+            if json_out:
+                print(_as_json(all_tables))
+            else:
+                for section, items in all_tables.items():
+                    print(f"{section}:")
+                    for item in items:
+                        print(f"  - {item}")
+            return
+
+        if action == "query":
+            if not sql:
+                raise typer.BadParameter("--query/-q is required for 'query' action")
+            result = wh.query(sql)
+            if output:
+                result.to_parquet(output, index=False)
+                print(f"Written {len(result)} rows to {output}")
+            elif json_out:
+                print(result.to_json(orient="records", indent=2))
+            else:
+                print(result.to_string())
+            return
+
+        if action == "describe":
+            if not table:
+                raise typer.BadParameter("--table/-t is required for 'describe' action")
+            desc = wh.describe(table)
+            if json_out:
+                print(_as_json(desc))
+            else:
+                for col in desc:
+                    print(f"  {col['column_name']:30s} {col['column_type']:15s} null={col['null']}")
+            return
+
+        if action == "ingest":
+            if not run_dir:
+                raise typer.BadParameter("--run-dir is required for 'ingest' action")
+            from pathlib import Path
+            from .store import FileArtifactStore
+            from .warehouse.ingestion import ingest_run
+            run_path = Path(run_dir)
+            store = FileArtifactStore(
+                str(run_path.parent), run_path.name, _readonly=True
+            )
+            results = ingest_run(wh, store)
+            if json_out:
+                print(_as_json(results))
+            else:
+                for tbl, rows in results.items():
+                    print(f"  {tbl}: {rows} rows")
+            return
+
+        if action == "register-dataset":
+            if not name or not path:
+                raise typer.BadParameter(
+                    "--name/-n and --path/-p are required for 'register-dataset'"
+                )
+            views = wh.register_dataset(name, path)
+            if json_out:
+                print(_as_json({"views": views}))
+            else:
+                print(f"Registered {len(views)} view(s):")
+                for v in views:
+                    print(f"  - {v}")
+            return
+
+        raise typer.BadParameter(
+            f"Unknown action: {action}. "
+            "Use init, tables, query, describe, ingest, or register-dataset."
+        )
+    finally:
+        wh.close()
+
+
 def main():
     app()
 

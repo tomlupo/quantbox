@@ -170,4 +170,17 @@ def run_from_config(cfg: Dict[str, Any], registry) -> RunResult:
 
     store.put_json("run_manifest", manifest)
     store.append_event(event_line("RUN_END", run_id=run_id, metrics=result.metrics, warnings=len(manifest["warnings"])))
+
+    # Optional: ingest artifacts into warehouse
+    wh_cfg = cfg.get("warehouse")
+    if wh_cfg and wh_cfg.get("auto_ingest"):
+        try:
+            from .warehouse import Warehouse
+            from .warehouse.ingestion import ingest_run
+            with Warehouse(wh_cfg["root"], wh_cfg.get("database")) as wh:
+                ingest_run(wh, store, tables=wh_cfg.get("ingest_tables"))
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Warehouse auto-ingest failed: %s", exc)
+
     return result
