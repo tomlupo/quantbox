@@ -4,6 +4,7 @@ plugins:
       - fund_selection.simple.v1
       - trade.allocations_to_orders.v1
       - trade.full_pipeline.v1
+      - backtest.pipeline.v1
     data:
       - local_file_data
       - binance.live_data.v1
@@ -24,6 +25,11 @@ plugins:
       - strategy.crypto_trend.v1
       - strategy.carver_trend.v1
       - strategy.momentum_long_short.v1
+      - strategy.cross_asset_momentum.v1
+      - strategy.crypto_regime_trend.v1
+      - strategy.beglobal.v1
+      - strategy.portfolio_optimizer.v1
+      - strategy.ml_prediction.v1
       - strategy.weighted_avg.v1
     rebalancing:
       - rebalancing.standard.v1

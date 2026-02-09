@@ -1,0 +1,51 @@
+# Backtest ML prediction strategy — gradient boosting on crypto.
+# Requires scikit-learn: uv sync --extra ml
+run:
+  mode: backtest
+  asof: "2026-02-06"
+  pipeline: "backtest.pipeline.v1"
+
+artifacts:
+  root: "./artifacts"
+
+plugins:
+  pipeline:
+    name: "backtest.pipeline.v1"
+    params:
+      engine: vectorbt
+      fees: 0.001
+      rebalancing_freq: 1
+      trading_days: 365
+
+      universe:
+        top_n: 50
+
+      prices:
+        lookback_days: 756
+
+      risk:
+        tranches: 1
+        max_leverage: 1
+        allow_short: false
+
+  strategies:
+    - name: "strategy.ml_prediction.v1"
+      weight: 1.0
+      params:
+        task: classification
+        model_name: gradient_boosting
+        prediction_horizon: 5
+        lookback_periods: [5, 10, 20, 60]
+        n_splits: 5
+        scaler: standard
+        train_lookback: 504
+        retrain_frequency: 21
+        weight_method: rank
+        top_n: 10
+        max_symbols: 50
+        output_periods: 30
+
+  data:
+    name: "binance.live_data.v1"
+    params_init:
+      quote_asset: USDT

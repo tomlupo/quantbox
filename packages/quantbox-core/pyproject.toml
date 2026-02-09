@@ -21,7 +21,8 @@ dependencies = [
 ibkr = ["ib_insync"]
 binance = ["python-binance"]
 ccxt = ["ccxt>=4.0"]
-full = ["python-binance", "ccxt>=4.0", "ib_insync"]
+ml = ["scikit-learn>=1.3"]
+full = ["python-binance", "ccxt>=4.0", "ib_insync", "scikit-learn>=1.3"]
 
 [project.scripts]
 quantbox = "quantbox.cli:main"

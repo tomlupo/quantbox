@@ -24,11 +24,14 @@ from .broker import (
 from .publisher import TelegramPublisher
 from .risk import TradingRiskManager
 from .strategies import (
+    BeGlobalStrategy,
     CryptoTrendStrategy,
     CarverTrendStrategy,
     MomentumLongShortStrategy,
     CrossAssetMomentumStrategy,
     CryptoRegimeTrendStrategy,
+    MLPredictionStrategy,
+    PortfolioOptimizerStrategy,
 )
 from .strategies.weighted_avg_aggregator import WeightedAverageAggregator
 from .rebalancing import StandardRebalancer, FuturesRebalancer
@@ -55,11 +58,14 @@ def builtins() -> Dict[str, Dict[str, Type]]:
         "publisher": _map(TelegramPublisher),
         "risk": _map(TradingRiskManager),
         "strategy": _map(
+            BeGlobalStrategy,
             CryptoTrendStrategy,
             CarverTrendStrategy,
             MomentumLongShortStrategy,
             CrossAssetMomentumStrategy,
             CryptoRegimeTrendStrategy,
+            MLPredictionStrategy,
+            PortfolioOptimizerStrategy,
             WeightedAverageAggregator,
         ),
         "rebalancing": _map(StandardRebalancer, FuturesRebalancer),

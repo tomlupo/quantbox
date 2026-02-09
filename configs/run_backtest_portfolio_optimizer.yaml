@@ -1,0 +1,48 @@
+# Backtest portfolio optimizer strategy — rolling max Sharpe.
+# Swap method to "min_variance", "risk_parity", etc. for alternatives.
+run:
+  mode: backtest
+  asof: "2026-02-06"
+  pipeline: "backtest.pipeline.v1"
+
+artifacts:
+  root: "./artifacts"
+
+plugins:
+  pipeline:
+    name: "backtest.pipeline.v1"
+    params:
+      engine: vectorbt
+      fees: 0.001
+      rebalancing_freq: 21     # monthly rebalance
+      trading_days: 252
+
+      universe:
+        top_n: 50
+
+      prices:
+        lookback_days: 756
+
+      risk:
+        tranches: 1
+        max_leverage: 1
+        allow_short: false
+
+  strategies:
+    - name: "strategy.portfolio_optimizer.v1"
+      weight: 1.0
+      params:
+        method: max_sharpe
+        lookback: 252
+        risk_free_rate: 0.04
+        trading_days: 252
+        min_weight: 0.0
+        max_weight: 0.25
+        rolling: true
+        rebalance_every: 21
+        output_periods: 30
+
+  data:
+    name: "local_file_data"
+    params_init:
+      data_dir: "./data/etf-daily"

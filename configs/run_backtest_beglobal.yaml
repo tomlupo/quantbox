@@ -1,0 +1,48 @@
+# Backtest BeGlobal multi-asset strategy with ETF data.
+# Uses 5 risk profiles and dual-momentum satellite allocation.
+run:
+  mode: backtest
+  asof: "2026-02-06"
+  pipeline: "backtest.pipeline.v1"
+
+artifacts:
+  root: "./artifacts"
+
+plugins:
+  pipeline:
+    name: "backtest.pipeline.v1"
+    params:
+      engine: vectorbt
+      fees: 0.001
+      rebalancing_freq: 1
+      trading_days: 252
+
+      universe:
+        top_n: 14
+
+      prices:
+        lookback_days: 504
+
+      risk:
+        tranches: 1
+        max_leverage: 1
+        allow_short: false
+
+  strategies:
+    - name: "strategy.beglobal.v1"
+      weight: 1.0
+      params:
+        risk_profile: mixed
+        core_weight: 0.70
+        momentum_lookback: 252
+        strength_top_n: 3
+        trend_short_ma: 50
+        trend_long_ma: 200
+        target_volatility: 0.10
+        rebalance_threshold: 0.025
+        output_periods: 30
+
+  data:
+    name: "local_file_data"
+    params_init:
+      data_dir: "./data/etf-daily"

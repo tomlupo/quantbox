@@ -2663,9 +2663,15 @@ full = [
     { name = "ccxt" },
     { name = "ib-insync" },
     { name = "python-binance" },
+    { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "scikit-learn", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
 ibkr = [
     { name = "ib-insync" },
+]
+ml = [
+    { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "scikit-learn", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
 
 [package.metadata]
@@ -2684,11 +2690,13 @@ requires-dist = [
     { name = "python-binance", marker = "extra == 'binance'" },
     { name = "python-binance", marker = "extra == 'full'" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "scikit-learn", marker = "extra == 'full'", specifier = ">=1.3" },
+    { name = "scikit-learn", marker = "extra == 'ml'", specifier = ">=1.3" },
     { name = "tenacity", specifier = ">=8.0" },
     { name = "typer", specifier = ">=0.9" },
     { name = "vectorbt", specifier = ">=0.26" },
 ]
-provides-extras = ["ibkr", "binance", "ccxt", "full"]
+provides-extras = ["ibkr", "binance", "ccxt", "ml", "full"]
 
 [[package]]
 name = "quantbox-workspace"
