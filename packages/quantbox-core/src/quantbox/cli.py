@@ -4,13 +4,14 @@ import typer
 
 from .registry import PluginRegistry
 from .runner import run_from_config
+from .exceptions import PluginNotFoundError
 from .validate import validate_config
 from .plugin_manifest import load_manifest, resolve_profile
 
 app = typer.Typer(name="quantbox", help="Quant research & trading CLI")
 
 
-def _as_json(obj):
+def _as_json(obj) -> str:
     import json
     return json.dumps(obj, ensure_ascii=False, indent=2)
 
@@ -56,7 +57,10 @@ def cmd_plugins_info(reg: PluginRegistry, name: str, as_json: bool = False):
             }
             print(_as_json(payload) if as_json else payload)
             return
-    raise SystemExit(f"plugin_not_found: {name}")
+    all_names = sorted(set(
+        k for d in groups.values() for k in d
+    ))
+    raise PluginNotFoundError(name, "any", all_names)
 
 def cmd_plugins_doctor(as_json: bool = False, strict: bool = False):
     import importlib.metadata

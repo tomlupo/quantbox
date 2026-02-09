@@ -15,7 +15,7 @@
 | [Backtesting](guides/backtesting.md) | Vectorbt and rsims engines, configuration, outputs |
 | [Multi-repo workflow](guides/multi-repo-workflow.md) | Versioning, branching, and promotion across quantbox / quantbox-live / quantbox-lab |
 | [Trading bridge](guides/trading-bridge.md) | Research-to-trading pipeline, instrument maps, FX |
-| [Pipeline chaining](guides/pipeline-chaining.md) | Manual pipeline chaining |
+| [Pipeline chaining](guides/pipeline-chaining.md) | Manual pipeline chaining (planned: meta-pipeline) |
 | [Approval gate](guides/approval-gate.md) | Pre-trade approval mechanism |
 | [Integration guide](guides/quantbox-integration-guide.md) | Using quantbox in external projects |
 

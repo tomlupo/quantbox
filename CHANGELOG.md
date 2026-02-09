@@ -1,48 +1,43 @@
 # Changelog
 
-Ordered by import (oldest to newest).
+All notable changes to this project will be documented in this file.
+Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+versioned per [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Import quantbox_repo.zip (6918dd0)
-- Packages: packages/quantbox-core/README.md, packages/quantbox-core/pyproject.toml, packages/quantbox-core/src/quantbox/__init__.py, packages/quantbox-core/src/quantbox/cli.py, packages/quantbox-core/src/quantbox/contracts.py, packages/quantbox-core/src/quantbox/registry.py, (+11 more)
-- Configs: configs/run_fund_selection.yaml
-- Scripts: scripts/make_sample_data.py
-- Other: .gitignore, README.md
+## [Unreleased]
 
-## Import quantbox_repo_llm_friendly.zip (f4781e2)
-- Packages: packages/quantbox-core/pyproject.toml, packages/quantbox-core/src/quantbox/cli.py, packages/quantbox-core/src/quantbox/contracts.py, packages/quantbox-core/src/quantbox/llm_utils.py, packages/quantbox-core/src/quantbox/runner.py, packages/quantbox-core/src/quantbox/store.py, (+3 more)
-- Docs: docs/LLM_OPERATIONS.md
-- Schemas: schemas/allocations.schema.json, schemas/prices.schema.json, schemas/rankings.schema.json, schemas/scores.schema.json, schemas/universe.schema.json
-- Tests: tests/test_plugin_discovery.py, tests/test_run_manifest.py
-- Recipes: recipes/add_broker_plugin.md, recipes/add_pipeline_plugin.md
-- Other: CONTRIBUTING_LLM.md, README.md, contracts/ARTIFACTS.md
+### Added
+- Custom exception hierarchy (`quantbox.exceptions`): `QuantboxError`, `ConfigValidationError`, `PluginNotFoundError`, `PluginLoadError`, `DataLoadError`, `BrokerExecutionError`
+- Ruff linting config + GitHub Actions CI (`ci.yml`)
+- `examples/` folder with 3 runnable scripts
+- `.env.example` template for environment variables
+- Environment variables and error handling docs in `CLAUDE.md`
 
-## Import quantbox_repo_llm_trading_bridge.zip (08ce148)
-- Packages: packages/quantbox-plugin-broker-binance-stub/pyproject.toml, packages/quantbox-plugin-broker-binance-stub/src/quantbox_plugin_broker_binance_stub/__init__.py, packages/quantbox-plugin-broker-binance-stub/src/quantbox_plugin_broker_binance_stub/broker.py, packages/quantbox-plugin-broker-ibkr-stub/pyproject.toml, packages/quantbox-plugin-broker-ibkr-stub/src/quantbox_plugin_broker_ibkr_stub/__init__.py, packages/quantbox-plugin-broker-ibkr-stub/src/quantbox_plugin_broker_ibkr_stub/broker.py, (+4 more)
-- Docs: docs/LLM_OPERATIONS.md, docs/PIPELINE_CHAINING.md
-- Configs: configs/run_trade_from_allocations.yaml
-- Schemas: schemas/fills.schema.json, schemas/orders.schema.json, schemas/portfolio_daily.schema.json, schemas/targets.schema.json
-- Tests: tests/test_plugin_discovery.py, tests/test_trading_bridge.py
-- Other: README.md, contracts/ARTIFACTS.md
+### Changed
+- `runner.py` raises `ConfigValidationError` and `PluginNotFoundError` instead of bare `ValueError`/`KeyError`
+- `cli.py` raises `PluginNotFoundError` instead of `SystemExit` for missing plugins
 
-## Import quantbox_repo_llm_trading_bridge_real_brokers.zip (3665ae9)
-- Packages: packages/quantbox-plugin-broker-binance/README.md, packages/quantbox-plugin-broker-binance/pyproject.toml, packages/quantbox-plugin-broker-binance/src/quantbox_plugin_broker_binance/__init__.py, packages/quantbox-plugin-broker-binance/src/quantbox_plugin_broker_binance/broker.py, packages/quantbox-plugin-broker-ibkr/README.md, packages/quantbox-plugin-broker-ibkr/pyproject.toml, (+2 more)
-- Docs: docs/BROKER_SECRETS.md
-- Configs: configs/run_trade_from_allocations_binance_live.yaml, configs/run_trade_from_allocations_ibkr_paper.yaml
-- Tests: tests/test_plugin_discovery.py
-- Other: README.md
+## [0.1.0] — 2026-02-07
 
-## Import quantbox_repo_llm_full_upgrade.zip (28502e0)
-- Packages: packages/quantbox-plugin-data-duckdb-parquet/README.md, packages/quantbox-plugin-data-duckdb-parquet/src/quantbox_plugin_data_duckdb_parquet/plugin.py, packages/quantbox-plugin-pipeline-alloc2orders/src/quantbox_plugin_alloc2orders/pipeline.py
-- Docs: docs/TRADING_BRIDGE_ADVANCED.md
-- Configs: configs/instruments.yaml, configs/run_fund_selection.yaml, configs/run_trade_from_allocations.yaml, configs/run_trade_from_allocations_binance_live.yaml, configs/run_trade_from_allocations_ibkr_paper.yaml
-- Scripts: scripts/make_sample_data.py
-- Tests: tests/test_trading_bridge.py
-- Other: README.md
+First tagged release. Core framework with full plugin architecture.
 
-## Import quantbox_repo_llm_full_upgrade_auto_latest_approval.zip (b90ff61)
-- Packages: packages/quantbox-core/src/quantbox/run_history.py, packages/quantbox-plugin-pipeline-alloc2orders/src/quantbox_plugin_alloc2orders/pipeline.py
-- Docs: docs/APPROVAL_GATE.md
-- Configs: configs/run_trade_from_allocations.yaml
-- Scripts: scripts/approve_orders.py
-- Tests: tests/test_trading_bridge.py
-- Other: README.md
+### Added
+- **Core**: Protocol-based plugin contracts (`contracts.py`), config runner, artifact store, plugin registry with entry-point discovery
+- **Strategies**: `crypto_trend.v1`, `momentum_long_short.v1`, `carver_trend.v1`, `cross_asset_momentum.v1`, `crypto_regime_trend.v1`, `weighted_average_aggregator.v1`
+- **Pipelines**: `fund_selection.simple.v1`, `trade.full_pipeline.v1`, `trade.allocations_to_orders.v1`, `backtest.pipeline.v1`
+- **Data plugins**: `local_file_data`, `binance.live_data.v1`, `binance.futures_data.v1` with DuckDB caching, OHLCV validation, retry
+- **Brokers**: `sim.paper.v1`, `sim.futures_paper.v1`, `binance.live.v1`, `binance.futures.v1`, `hyperliquid.perps.v1`, `ibkr.live.v1` (stub)
+- **Rebalancing**: `rebalancing.standard.v1`, `rebalancing.futures.v1`
+- **Risk**: `risk.trading_basic.v1` (concentration, leverage, drawdown limits)
+- **Publisher**: `telegram.publisher.v1`
+- **Backtesting**: vectorbt engine (Numba-accelerated) and rsims engine (daily with funding/margin)
+- **CLI**: `quantbox plugins list|info|doctor`, `quantbox validate`, `quantbox run`
+- **Schemas**: 14 JSON schemas for artifact validation
+- **Docs**: CLAUDE.md, CONTRIBUTING_LLM.md, backtesting guide, multi-repo workflow guide
+
+### Breaking changes
+- `DataPlugin.load_prices()` replaced by `load_market_data()` returning `Dict[str, DataFrame]`
+- `DuckDBParquetData` renamed to `LocalFileDataPlugin` (alias kept for backward compat)
+
+[Unreleased]: https://github.com/tomlupo/quantbox/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0

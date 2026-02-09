@@ -98,6 +98,33 @@ plugins:
       params: { ... }
 ```
 
+## Environment variables
+
+| Variable | Required for | Default |
+|---|---|---|
+| `API_KEY_BINANCE` | Binance spot/futures brokers | — |
+| `API_SECRET_BINANCE` | Binance spot/futures brokers | — |
+| `HYPERLIQUID_WALLET` | Hyperliquid perps broker | — |
+| `HYPERLIQUID_PRIVATE_KEY` | Hyperliquid perps broker | — |
+| `TELEGRAM_TOKEN` | Telegram publisher | — |
+| `TELEGRAM_CHAT_ID` | Telegram publisher | — |
+| `QUANTBOX_MANIFEST` | Custom manifest path | `plugins/manifest.yaml` |
+
+None are needed for backtesting or paper trading with simulated brokers.
+Copy `.env.example` to `.env` and fill in only what you need.
+
+## Error handling
+
+Quantbox uses custom exceptions (see `quantbox.exceptions`):
+
+| Exception | When | Recovery |
+|---|---|---|
+| `ConfigValidationError` | YAML config fails validation | Check `.findings` list for details |
+| `PluginNotFoundError` | Plugin name not in registry | Check `.available` for valid names |
+| `PluginLoadError` | Entry point import failed | Check dependencies (`uv sync --extra full`) |
+| `DataLoadError` | Data plugin can't fetch data | Check API keys, network, date range |
+| `BrokerExecutionError` | Order placement failed | Check broker credentials and balances |
+
 ## Development rules
 
 - Use `uv` as package manager, `uv run` to execute

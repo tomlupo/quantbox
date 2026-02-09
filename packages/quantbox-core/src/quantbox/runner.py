@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .contracts import Mode, RunResult, PipelinePlugin, BrokerPlugin, DataPlugin, PublisherPlugin, RiskPlugin, StrategyPlugin, RebalancingPlugin
+from .exceptions import ConfigValidationError, PluginNotFoundError
 from .store import FileArtifactStore
 from .llm_utils import event_line, validate_table, load_schema
 from .validate import validate_config
@@ -32,7 +33,7 @@ def run_from_config(cfg: Dict[str, Any], registry) -> RunResult:
     findings = validate_config(cfg)
     if any(f.level == "error" for f in findings):
         msgs = "; ".join(f.message for f in findings)
-        raise ValueError(f"config_validation_failed: {msgs}")
+        raise ConfigValidationError(f"config_validation_failed: {msgs}", findings=findings)
 
 
     mode: Mode = run_cfg["mode"]
@@ -46,10 +47,14 @@ def run_from_config(cfg: Dict[str, Any], registry) -> RunResult:
     store.append_event(event_line("RUN_START", run_id=run_id, asof=asof, mode=mode, pipeline=pipeline_key))
 
     pipe_name = cfg["plugins"]["pipeline"]["name"]
+    if pipe_name not in registry.pipelines:
+        raise PluginNotFoundError(pipe_name, "pipeline", list(registry.pipelines.keys()))
     pipeline_cls = registry.pipelines[pipe_name]
     pipeline: PipelinePlugin = pipeline_cls(**cfg["plugins"]["pipeline"].get("params_init", {}))
 
     data_name = cfg["plugins"]["data"]["name"]
+    if data_name not in registry.data:
+        raise PluginNotFoundError(data_name, "data", list(registry.data.keys()))
     data_cls = registry.data[data_name]
     data: DataPlugin = data_cls(**cfg["plugins"]["data"].get("params_init", {}))
 
