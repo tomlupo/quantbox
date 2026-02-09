@@ -23,7 +23,15 @@ from typing import Any, Dict, Optional, Union
 
 import pandas as pd
 
-from .metrics import compute_backtest_metrics, compute_drawdown_series, compute_rolling_sharpe
+from .metrics import (
+    compute_backtest_metrics,
+    compute_cvar,
+    compute_drawdown_series,
+    compute_portfolio_cvar,
+    compute_portfolio_var,
+    compute_rolling_sharpe,
+    compute_var,
+)
 from .optimizer import optimize
 from .rsims_engine import fixed_commission_backtest_with_funding, positions_from_no_trade_buffer
 from .vectorbt_engine import run as run_vectorbt
@@ -35,8 +43,12 @@ __all__ = [
     "fixed_commission_backtest_with_funding",
     "positions_from_no_trade_buffer",
     "compute_backtest_metrics",
+    "compute_cvar",
     "compute_drawdown_series",
+    "compute_portfolio_cvar",
+    "compute_portfolio_var",
     "compute_rolling_sharpe",
+    "compute_var",
 ]
 
 

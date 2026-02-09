@@ -10,7 +10,7 @@ from typing import Dict, Type
 
 from ..contracts import PipelinePlugin, BrokerPlugin, DataPlugin, PublisherPlugin, RiskPlugin
 from .pipeline import AllocationsToOrdersPipeline, BacktestPipeline, FundSelectionPipeline, TradingPipeline
-from .datasources import BinanceDataPlugin, BinanceFuturesDataPlugin, LocalFileDataPlugin
+from .datasources import BinanceDataPlugin, BinanceFuturesDataPlugin, LocalFileDataPlugin, SyntheticDataPlugin
 from .broker import (
     BinanceBroker,
     BinanceFuturesBroker,
@@ -22,7 +22,7 @@ from .broker import (
     SimPaperBroker,
 )
 from .publisher import TelegramPublisher
-from .risk import TradingRiskManager
+from .risk import TradingRiskManager, StressTestRiskManager
 from .strategies import (
     BeGlobalStrategy,
     CryptoTrendStrategy,
@@ -44,7 +44,7 @@ def _map(*classes):
 def builtins() -> Dict[str, Dict[str, Type]]:
     return {
         "pipeline": _map(FundSelectionPipeline, AllocationsToOrdersPipeline, TradingPipeline, BacktestPipeline),
-        "data": _map(LocalFileDataPlugin, BinanceDataPlugin, BinanceFuturesDataPlugin),
+        "data": _map(LocalFileDataPlugin, BinanceDataPlugin, BinanceFuturesDataPlugin, SyntheticDataPlugin),
         "broker": _map(
             SimPaperBroker,
             FuturesPaperBroker,
@@ -56,7 +56,7 @@ def builtins() -> Dict[str, Dict[str, Type]]:
             HyperliquidBroker,
         ),
         "publisher": _map(TelegramPublisher),
-        "risk": _map(TradingRiskManager),
+        "risk": _map(TradingRiskManager, StressTestRiskManager),
         "strategy": _map(
             BeGlobalStrategy,
             CryptoTrendStrategy,

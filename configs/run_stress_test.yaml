@@ -1,0 +1,52 @@
+# Backtest with stress-test risk checks.
+# Uses real data + stress test risk plugin to validate targets
+# against historical crisis scenarios before execution.
+#
+# Usage: quantbox run -c configs/run_stress_test.yaml
+
+run:
+  mode: backtest
+  asof: "2026-02-01"
+
+plugins:
+  pipeline:
+    name: backtest.pipeline.v1
+    params:
+      engine: vectorbt
+      fees: 0.001
+      rebalancing_freq: "1W"
+      trading_days: 365
+
+  strategies:
+    - name: strategy.crypto_trend.v1
+      weight: 1.0
+      params:
+        ema_short: 12
+        ema_long: 26
+        top_by_mcap: 50
+        top_by_volume: 20
+
+  data:
+    name: local_file_data
+    params_init:
+      base_path: data/crypto-spot-daily
+
+  broker:
+    name: sim.paper.v1
+    params_init: {}
+
+  risk:
+    - name: risk.trading_basic.v1
+      params:
+        max_leverage: 1.0
+        max_concentration: 0.15
+    - name: risk.stress_test.v1
+      params:
+        scenarios:
+          - 2008_financial_crisis
+          - 2020_covid_crash
+          - 2018_volmageddon
+        max_var_95: -0.20
+        max_cvar_95: -0.30
+        max_stress_drawdown: -0.40
+        n_simulations: 500

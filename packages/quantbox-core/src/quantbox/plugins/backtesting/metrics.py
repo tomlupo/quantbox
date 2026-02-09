@@ -73,6 +73,10 @@ def compute_backtest_metrics(
     win_rate = len(wins) / len(returns) if len(returns) > 0 else 0.0
     profit_factor = (wins.sum() / abs(losses.sum())) if losses.sum() != 0 else float("inf")
 
+    var_95 = float(np.percentile(returns, 5))
+    tail = returns[returns <= var_95]
+    cvar_95 = float(np.mean(tail)) if len(tail) > 0 else var_95
+
     return {
         "total_return": float(total_ret),
         "cagr": float(cagr),
@@ -84,6 +88,8 @@ def compute_backtest_metrics(
         "calmar": float(calmar),
         "win_rate": float(win_rate),
         "profit_factor": float(profit_factor),
+        "var_95": var_95,
+        "cvar_95": cvar_95,
     }
 
 
@@ -151,6 +157,163 @@ def _extract_returns(pf_or_returns: Any) -> pd.Series:
             "Pass a vbt.Portfolio, pd.Series, or single-column pd.DataFrame."
         )
 
+
+# ---------------------------------------------------------------------------
+# VaR / CVaR
+# ---------------------------------------------------------------------------
+
+def compute_var(
+    returns: pd.Series,
+    confidence_level: float = 0.95,
+    horizon_days: int = 1,
+    method: str = "historical",
+) -> float:
+    """Value at Risk.
+
+    Parameters
+    ----------
+    returns : pd.Series
+        Period returns.
+    confidence_level : float
+        e.g. 0.95 or 0.99.
+    horizon_days : int
+        Holding period (1 = single-period).
+    method : str
+        ``'historical'``, ``'parametric'``, or ``'monte_carlo'``.
+
+    Returns
+    -------
+    float
+        VaR as a negative float (loss).
+    """
+    if horizon_days > 1:
+        scaled = returns.rolling(horizon_days).sum().dropna()
+    else:
+        scaled = returns
+
+    alpha = 1 - confidence_level
+
+    if method == "historical":
+        return float(np.percentile(scaled, alpha * 100))
+    elif method == "parametric":
+        from scipy.stats import norm
+        mu = float(np.mean(scaled))
+        sigma = float(np.std(scaled))
+        return mu + sigma * norm.ppf(alpha)
+    elif method == "monte_carlo":
+        rng = np.random.default_rng(42)
+        mu = float(np.mean(scaled))
+        sigma = float(np.std(scaled))
+        simulated = rng.normal(mu, sigma, 10000)
+        return float(np.percentile(simulated, alpha * 100))
+    else:
+        raise ValueError(f"Unknown VaR method: {method}")
+
+
+def compute_cvar(
+    returns: pd.Series,
+    confidence_level: float = 0.95,
+    horizon_days: int = 1,
+) -> float:
+    """Conditional VaR (Expected Shortfall).
+
+    Parameters
+    ----------
+    returns : pd.Series
+        Period returns.
+    confidence_level : float
+        e.g. 0.95 or 0.99.
+    horizon_days : int
+        Holding period.
+
+    Returns
+    -------
+    float
+        CVaR as a negative float (loss).
+    """
+    if horizon_days > 1:
+        scaled = returns.rolling(horizon_days).sum().dropna().values
+    else:
+        scaled = returns.values
+
+    alpha = 1 - confidence_level
+    var_threshold = np.percentile(scaled, alpha * 100)
+    tail = scaled[scaled <= var_threshold]
+    return float(np.mean(tail)) if len(tail) > 0 else float(var_threshold)
+
+
+def compute_portfolio_var(
+    returns: pd.DataFrame,
+    weights: Dict[str, float],
+    confidence_levels: list | None = None,
+    horizon_days: int = 1,
+    method: str = "historical",
+) -> Dict[float, float]:
+    """Portfolio VaR with asset weights.
+
+    Parameters
+    ----------
+    returns : pd.DataFrame
+        Wide DataFrame (date x symbols).
+    weights : dict
+        ``{symbol: weight}`` dict.
+    confidence_levels : list[float]
+        Confidence levels.
+    horizon_days : int
+        Holding period.
+    method : str
+        ``'historical'``, ``'parametric'``, or ``'monte_carlo'``.
+
+    Returns
+    -------
+    dict
+        ``{confidence_level: var_value}``.
+    """
+    if confidence_levels is None:
+        confidence_levels = [0.95, 0.99]
+
+    weight_arr = np.array([weights.get(c, 0.0) for c in returns.columns])
+    port_returns = pd.Series((returns.values * weight_arr).sum(axis=1), index=returns.index)
+
+    return {level: compute_var(port_returns, level, horizon_days, method) for level in confidence_levels}
+
+
+def compute_portfolio_cvar(
+    returns: pd.DataFrame,
+    weights: Dict[str, float],
+    confidence_levels: list | None = None,
+    horizon_days: int = 1,
+) -> Dict[float, float]:
+    """Portfolio CVaR (Expected Shortfall) with asset weights.
+
+    Parameters
+    ----------
+    returns : pd.DataFrame
+        Wide DataFrame (date x symbols).
+    weights : dict
+        ``{symbol: weight}`` dict.
+    confidence_levels : list[float]
+        Confidence levels.
+    horizon_days : int
+        Holding period.
+
+    Returns
+    -------
+    dict
+        ``{confidence_level: cvar_value}``.
+    """
+    if confidence_levels is None:
+        confidence_levels = [0.95, 0.99]
+
+    weight_arr = np.array([weights.get(c, 0.0) for c in returns.columns])
+    port_returns = pd.Series((returns.values * weight_arr).sum(axis=1), index=returns.index)
+
+    return {level: compute_cvar(port_returns, level, horizon_days) for level in confidence_levels}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _max_drawdown_duration(dd: pd.Series) -> int:
     """Return the longest drawdown duration in calendar days."""

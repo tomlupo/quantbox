@@ -8,6 +8,7 @@ plugins:
     data:
       - local_file_data
       - binance.live_data.v1
+      - data.synthetic.v1
     brokers:
       - sim.paper.v1
       - sim.futures_paper.v1
@@ -21,6 +22,7 @@ plugins:
       - telegram.publisher.v1
     risk:
       - risk.trading_basic.v1
+      - risk.stress_test.v1
     strategies:
       - strategy.crypto_trend.v1
       - strategy.carver_trend.v1
@@ -67,6 +69,16 @@ profiles:
       - name: telegram.publisher.v1
     risk:
       - name: risk.trading_basic.v1
+  stress_test:
+    pipeline:
+      name: backtest.pipeline.v1
+    data:
+      name: data.synthetic.v1
+    broker:
+      name: sim.paper.v1
+    risk:
+      - name: risk.trading_basic.v1
+      - name: risk.stress_test.v1
   futures_paper:
     pipeline:
       name: trade.full_pipeline.v1
