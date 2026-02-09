@@ -1,0 +1,98 @@
+# ============================================================
+# Minimal QuantBox config — every field explained
+# ============================================================
+# Copy this file, adjust params, and run:
+#   uv run quantbox run -c configs/example_minimal.yaml
+# Validate before running:
+#   uv run quantbox validate -c configs/example_minimal.yaml
+# Preview without executing:
+#   uv run quantbox run --dry-run -c configs/example_minimal.yaml
+# ============================================================
+
+# --- Run settings ---
+run:
+  # Mode: "backtest" (historical), "paper" (simulated live), or "live" (real money)
+  mode: backtest
+
+  # Reference date for the run (strategies look back from this date)
+  asof: "2026-01-31"
+
+  # Which pipeline plugin to execute (must match a registered pipeline name)
+  pipeline: "fund_selection.simple.v1"
+
+# --- Artifact storage ---
+artifacts:
+  # Directory where outputs (parquet, JSON) are written
+  # Each run creates a timestamped subdirectory
+  root: "./artifacts"
+
+# --- Plugin wiring ---
+# Each section selects a plugin by `name` (must match a registered plugin ID)
+# and passes configuration via `params` (runtime) or `params_init` (constructor)
+plugins:
+
+  # Optional: load a preset from plugins/manifest.yaml
+  # Presets fill in defaults for data, broker, risk, etc.
+  # profile: "research"
+
+  # -- Pipeline: orchestrates the full run --
+  pipeline:
+    # Plugin ID (see: uv run quantbox plugins list)
+    name: "fund_selection.simple.v1"
+    # Runtime params passed to pipeline.run()
+    params:
+      top_n: 5                          # Number of top assets to select
+      universe:
+        symbols: ["SPY", "QQQ", "IWM", "EEM", "TLT", "GLD"]
+      prices:
+        lookback_days: 365              # Days of history to load
+
+  # -- Data: where market data comes from --
+  data:
+    # Plugin ID for data source
+    name: "local_file_data"
+    # Constructor params (used when instantiating the plugin)
+    params_init:
+      prices_path: "./data/curated/prices.parquet"   # Wide-format parquet (date x symbols)
+
+  # -- Strategies: compute target weights --
+  # List of strategies; each gets a weight for blending
+  # (Only used by pipelines that support multi-strategy, e.g. trade.full_pipeline.v1)
+  # strategies:
+  #   - name: "strategy.crypto_trend.v1"
+  #     weight: 1.0                     # Blend weight (weights are normalized)
+  #     params:
+  #       lookback_days: 90
+
+  # -- Broker: executes trades --
+  # (Not needed for research/backtest pipelines; required for paper/live)
+  # broker:
+  #   name: "sim.paper.v1"             # Paper broker for testing
+  #   params_init:
+  #     cash: 100000                    # Starting capital
+  #     quote_currency: "USDT"
+
+  # -- Rebalancing: converts weights to orders --
+  # (Only used by trading pipelines)
+  # rebalancing:
+  #   name: "rebalancing.standard.v1"
+  #   params:
+  #     min_trade_pct: 0.01             # Skip trades smaller than 1%
+
+  # -- Risk: pre-trade validation --
+  # List of risk plugins; all must pass before orders execute
+  risk: []
+  # risk:
+  #   - name: "risk.trading_basic.v1"
+  #     params:
+  #       max_position_pct: 0.25        # No single position > 25%
+  #       max_leverage: 1.0             # No leverage
+
+  # -- Publishers: post-trade notifications --
+  # List of publishers; all run after pipeline completes
+  publishers: []
+  # publishers:
+  #   - name: "publisher.telegram.v1"
+  #     params_init:
+  #       token_env: "TELEGRAM_TOKEN"     # Env var name (not the token itself!)
+  #       chat_id_env: "TELEGRAM_CHAT_ID"

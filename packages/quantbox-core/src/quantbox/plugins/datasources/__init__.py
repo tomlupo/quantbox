@@ -5,7 +5,9 @@ from .binance_futures_data_plugin import BinanceFuturesDataPlugin
 from .local_file_data import LocalFileDataPlugin
 from .synthetic_data import SyntheticDataPlugin
 
-# Backward compat alias
+# Backward-compat alias: the old DuckDBParquetData class was replaced by
+# LocalFileDataPlugin (same functionality, better name). This alias keeps
+# existing configs and imports working. Use LocalFileDataPlugin for new code.
 DuckDBParquetData = LocalFileDataPlugin
 
 __all__ = [

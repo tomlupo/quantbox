@@ -19,8 +19,10 @@ def cmd_plugins_list(reg: PluginRegistry, as_json: bool = False):
     if as_json:
         payload = {
             "pipelines": sorted(list(reg.pipelines.keys())),
+            "strategies": sorted(list(reg.strategies.keys())),
             "brokers": sorted(list(reg.brokers.keys())),
             "data": sorted(list(reg.data.keys())),
+            "rebalancing": sorted(list(reg.rebalancing.keys())),
             "publishers": sorted(list(reg.publishers.keys())),
             "risk": sorted(list(reg.risk.keys())),
         }
@@ -31,8 +33,10 @@ def cmd_plugins_list(reg: PluginRegistry, as_json: bool = False):
         print(title + ":")
         for k in sorted(d): print("  -", k)
     show("Pipelines", reg.pipelines)
+    show("Strategies", reg.strategies)
     show("Brokers", reg.brokers)
     show("Data", reg.data)
+    show("Rebalancing", reg.rebalancing)
     show("Publishers", reg.publishers)
     show("Risk", reg.risk)
 
@@ -40,8 +44,10 @@ def cmd_plugins_info(reg: PluginRegistry, name: str, as_json: bool = False):
     # name can match any group
     groups = {
         "pipeline": reg.pipelines,
+        "strategy": reg.strategies,
         "broker": reg.brokers,
         "data": reg.data,
+        "rebalancing": reg.rebalancing,
         "publisher": reg.publishers,
         "risk": reg.risk,
     }
