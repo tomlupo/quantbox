@@ -69,14 +69,14 @@ def _format_portfolio_rebalancing(
         curr_w = float(entry.get("current_weight", 0))
         tgt_w = float(entry.get("target_weight", 0))
         delta_w = float(entry.get("weight_delta", 0))
-        if curr_w > 0 or tgt_w > 0:
+        if curr_w != 0 or tgt_w != 0:
             asset = str(entry.get("asset", ""))[:6].ljust(6)
             rows.append(
                 f"{asset}{curr_w * 100:6.1f}%{tgt_w * 100:7.1f}%{delta_w * 100:+7.1f}%"
             )
-        total_curr += curr_w
-        total_tgt += tgt_w
-        total_delta += delta_w
+            total_curr += curr_w
+            total_tgt += tgt_w
+            total_delta += delta_w
 
     total_row = f"TOTAL  {total_curr * 100:6.1f}%  {total_tgt * 100:7.1f}%{total_delta * 100:+7.1f}%"
     sep = "-------------------------------\n"

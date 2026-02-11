@@ -255,9 +255,10 @@ class HyperliquidBroker:
         """
         Get account balance.
 
-        Checks both swap (perps) and spot balances to support
-        Hyperliquid unified accounts where USDC may sit on
-        the spot side.
+        Always checks both swap (perps) and spot balances for
+        Hyperliquid unified accounts where USDC collateral sits
+        on the spot side while the perps side shows only a small
+        residual amount.
 
         Returns:
             Dict with 'total', 'free', 'used' in USDC
@@ -269,13 +270,22 @@ class HyperliquidBroker:
             free = float(usdc.get('free', 0) or 0)
             used = float(usdc.get('used', 0) or 0)
 
-            # Unified accounts: USDC may be on the spot side
-            if total == 0:
+            # Unified accounts: always check spot side — the real USDC
+            # collateral lives there even when perps shows a small non-zero
+            # residual balance.
+            try:
                 spot_balance = self._exchange.fetch_balance({'type': 'spot'})
                 spot_usdc = spot_balance.get(QUOTE_CURRENCY, spot_balance.get('USDC', {}))
-                total = float(spot_usdc.get('total', 0) or 0)
-                free = float(spot_usdc.get('free', 0) or 0)
-                used = float(spot_usdc.get('used', 0) or 0)
+                spot_total = float(spot_usdc.get('total', 0) or 0)
+                spot_free = float(spot_usdc.get('free', 0) or 0)
+                spot_used = float(spot_usdc.get('used', 0) or 0)
+
+                if spot_total > total:
+                    total = spot_total
+                    free = spot_free
+                    used = spot_used
+            except Exception:
+                pass
 
             return {'total': total, 'free': free, 'used': used}
         except Exception as e:
@@ -334,9 +344,13 @@ class HyperliquidBroker:
         )
 
     def get_cash(self) -> Dict[str, float]:
-        """BrokerPlugin-compliant cash."""
+        """BrokerPlugin-compliant cash.
+
+        Returns total equity (not just withdrawable) because the futures
+        rebalancer uses this as portfolio value for position sizing.
+        """
         bal = self.get_balance()
-        return {QUOTE_CURRENCY: bal.get("free", 0.0)}
+        return {QUOTE_CURRENCY: bal.get("total", 0.0)}
 
     def get_market_snapshot(self, symbols: List[str]) -> pd.DataFrame:
         """BrokerPlugin-compliant market snapshot."""
