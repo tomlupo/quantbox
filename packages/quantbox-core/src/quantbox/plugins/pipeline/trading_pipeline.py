@@ -452,24 +452,30 @@ class TradingPipeline:
             funding_charge = broker.apply_funding()
             logger.info("Applied funding charge: %.2f", funding_charge)
 
-        # Portfolio snapshot
+        # Portfolio snapshot -- prefer broker.get_equity() for derivatives
+        # brokers where cash + sum(qty * price) is wrong for short positions.
         portfolio_value_post = total_value
         cash_usd_post = 0.0
         try:
-            cash2 = broker.get_cash() or {}
-            cash_usd_post = sum(float(v) for v in cash2.values())
-            pos2 = broker.get_positions()
-            if pos2 is not None and len(pos2) > 0:
-                snap = broker.get_market_snapshot(pos2["symbol"].tolist())
-                if snap is not None and "mid" in snap.columns:
-                    merged = pos2.merge(snap[["symbol", "mid"]], on="symbol", how="left")
-                    merged["mid"] = merged["mid"].fillna(0).astype(float)
-                    merged["qty"] = merged["qty"].astype(float)
-                    portfolio_value_post = cash_usd_post + (merged["qty"] * merged["mid"]).sum()
+            if hasattr(broker, "get_equity"):
+                portfolio_value_post = float(broker.get_equity())
+                cash2 = broker.get_cash() or {}
+                cash_usd_post = sum(float(v) for v in cash2.values())
+            else:
+                cash2 = broker.get_cash() or {}
+                cash_usd_post = sum(float(v) for v in cash2.values())
+                pos2 = broker.get_positions()
+                if pos2 is not None and len(pos2) > 0:
+                    snap = broker.get_market_snapshot(pos2["symbol"].tolist())
+                    if snap is not None and "mid" in snap.columns:
+                        merged = pos2.merge(snap[["symbol", "mid"]], on="symbol", how="left")
+                        merged["mid"] = merged["mid"].fillna(0).astype(float)
+                        merged["qty"] = merged["qty"].astype(float)
+                        portfolio_value_post = cash_usd_post + (merged["qty"] * merged["mid"]).sum()
+                    else:
+                        portfolio_value_post = cash_usd_post
                 else:
                     portfolio_value_post = cash_usd_post
-            else:
-                portfolio_value_post = cash_usd_post
         except Exception:
             pass
 
@@ -847,15 +853,19 @@ class TradingPipeline:
         def get_price(asset: str) -> Optional[float]:
             return price_map.get(asset)
 
-        # Portfolio value
-        total_value = max(0, cash_available)
-        for asset, qty in current_holdings.items():
-            if asset == stable_coin:
-                total_value += max(0, qty)
-            elif asset not in exclusions:
-                p = get_price(asset)
-                if p is not None and qty > 0:
-                    total_value += qty * p
+        # Portfolio value -- prefer broker.get_equity() for derivatives
+        # brokers where cash + sum(qty * price) is wrong for shorts.
+        if hasattr(broker, "get_equity"):
+            total_value = float(broker.get_equity())
+        else:
+            total_value = max(0, cash_available)
+            for asset, qty in current_holdings.items():
+                if asset == stable_coin:
+                    total_value += max(0, qty)
+                elif asset not in exclusions:
+                    p = get_price(asset)
+                    if p is not None and qty > 0:
+                        total_value += qty * p
 
         if total_value <= 0:
             logger.error("Portfolio value is zero or negative")

@@ -352,6 +352,16 @@ class HyperliquidBroker:
         bal = self.get_balance()
         return {QUOTE_CURRENCY: bal.get("total", 0.0)}
 
+    def get_equity(self) -> float:
+        """Total account equity in USD (margin + unrealized PnL).
+
+        For perpetual futures, this is the authoritative portfolio value.
+        Pipelines should use this instead of cash + sum(qty * price), which
+        gives incorrect results for short positions.
+        """
+        bal = self.get_balance()
+        return float(bal.get("total", 0.0))
+
     def get_market_snapshot(self, symbols: List[str]) -> pd.DataFrame:
         """BrokerPlugin-compliant market snapshot."""
         prices = self.get_prices(symbols)

@@ -136,6 +136,12 @@ class BrokerPlugin(Protocol):
         get_market_snapshot: Current prices/info for symbols.
         place_orders: Submit orders, returns fills DataFrame.
         fetch_fills: Historical fills since a timestamp.
+
+    Optional methods (checked via hasattr):
+        get_equity: Total account value in USD. For derivatives brokers
+            this is the authoritative portfolio value (margin + unrealized PnL).
+            Pipelines prefer this over cash + sum(qty * price) when available,
+            since the latter is incorrect for short/futures positions.
     """
     meta: PluginMeta
     def get_positions(self) -> pd.DataFrame: ...

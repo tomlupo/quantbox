@@ -226,7 +226,12 @@ class AllocationsToOrdersPipeline:
         pos["value_usd"] = pos["qty"] * pos["price"] * pos["multiplier"] * pos["fx_to_usd"]
         current_value_usd = float(pos["value_usd"].sum())
 
-        portfolio_value_usd_pre = float(cash_usd + current_value_usd)
+        # Prefer broker.get_equity() for derivatives brokers where
+        # cash + sum(qty * price) is wrong for short positions.
+        if broker is not None and hasattr(broker, "get_equity"):
+            portfolio_value_usd_pre = float(broker.get_equity())
+        else:
+            portfolio_value_usd_pre = float(cash_usd + current_value_usd)
 
         # targets
         alloc["fx_to_usd"] = alloc["currency"].apply(lambda c: _fx_rate_to_usd(fx, c))
@@ -289,30 +294,38 @@ class AllocationsToOrdersPipeline:
                 fills = broker.place_orders(orders[["symbol","side","qty","price"]])
         a_fills = store.put_parquet("fills", fills)
 
-        # after snapshot
+        # after snapshot -- prefer broker.get_equity() for derivatives
+        # brokers where cash + sum(qty * price) is wrong for short positions.
         portfolio_value_usd_post = portfolio_value_usd_pre
         cash_usd_post = cash_usd
 
         if broker is not None and mode in ("paper","live"):
-            cash2 = broker.get_cash() or {}
-            cash_usd_post = 0.0
-            for ccy, amt in cash2.items():
-                cash_usd_post += float(amt) * _fx_rate_to_usd(fx, str(ccy))
+            if hasattr(broker, "get_equity"):
+                portfolio_value_usd_post = float(broker.get_equity())
+                cash2 = broker.get_cash() or {}
+                cash_usd_post = 0.0
+                for ccy, amt in cash2.items():
+                    cash_usd_post += float(amt) * _fx_rate_to_usd(fx, str(ccy))
+            else:
+                cash2 = broker.get_cash() or {}
+                cash_usd_post = 0.0
+                for ccy, amt in cash2.items():
+                    cash_usd_post += float(amt) * _fx_rate_to_usd(fx, str(ccy))
 
-            pos2 = broker.get_positions()
-            if pos2 is None or len(pos2) == 0:
-                pos2 = pd.DataFrame({"symbol": [], "qty": []})
-            pos2 = pos2.copy()
-            pos2["symbol"] = pos2["symbol"].astype(str)
-            pos2["qty"] = pos2["qty"].astype(float)
+                pos2 = broker.get_positions()
+                if pos2 is None or len(pos2) == 0:
+                    pos2 = pd.DataFrame({"symbol": [], "qty": []})
+                pos2 = pos2.copy()
+                pos2["symbol"] = pos2["symbol"].astype(str)
+                pos2["qty"] = pos2["qty"].astype(float)
 
-            pos2 = pos2.merge(alloc[["symbol","price","multiplier","currency"]], on="symbol", how="left")
-            pos2["price"] = pos2["price"].fillna(0.0).astype(float)
-            pos2["multiplier"] = pos2["multiplier"].fillna(1.0).astype(float)
-            pos2["currency"] = pos2["currency"].fillna("USD").astype(str)
-            pos2["fx_to_usd"] = pos2["currency"].apply(lambda c: _fx_rate_to_usd(fx, c)).astype(float)
-            pos2["value_usd"] = pos2["qty"] * pos2["price"] * pos2["multiplier"] * pos2["fx_to_usd"]
-            portfolio_value_usd_post = float(cash_usd_post + pos2["value_usd"].sum())
+                pos2 = pos2.merge(alloc[["symbol","price","multiplier","currency"]], on="symbol", how="left")
+                pos2["price"] = pos2["price"].fillna(0.0).astype(float)
+                pos2["multiplier"] = pos2["multiplier"].fillna(1.0).astype(float)
+                pos2["currency"] = pos2["currency"].fillna("USD").astype(str)
+                pos2["fx_to_usd"] = pos2["currency"].apply(lambda c: _fx_rate_to_usd(fx, c)).astype(float)
+                pos2["value_usd"] = pos2["qty"] * pos2["price"] * pos2["multiplier"] * pos2["fx_to_usd"]
+                portfolio_value_usd_post = float(cash_usd_post + pos2["value_usd"].sum())
 
         portfolio_daily = pd.DataFrame([{
             "asof": asof,
