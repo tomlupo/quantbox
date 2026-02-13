@@ -10,7 +10,7 @@ from typing import Dict, Type
 
 from ..contracts import PipelinePlugin, BrokerPlugin, DataPlugin, PublisherPlugin, RiskPlugin
 from .pipeline import AllocationsToOrdersPipeline, BacktestPipeline, FundSelectionPipeline, TradingPipeline
-from .datasources import BinanceDataPlugin, BinanceFuturesDataPlugin, LocalFileDataPlugin, SyntheticDataPlugin
+from .datasources import BinanceDataPlugin, BinanceFuturesDataPlugin, HyperliquidDataPlugin, LocalFileDataPlugin, SyntheticDataPlugin
 from .broker import (
     BinanceBroker,
     BinanceFuturesBroker,
@@ -44,7 +44,7 @@ def _map(*classes):
 def builtins() -> Dict[str, Dict[str, Type]]:
     return {
         "pipeline": _map(FundSelectionPipeline, AllocationsToOrdersPipeline, TradingPipeline, BacktestPipeline),
-        "data": _map(LocalFileDataPlugin, BinanceDataPlugin, BinanceFuturesDataPlugin, SyntheticDataPlugin),
+        "data": _map(LocalFileDataPlugin, BinanceDataPlugin, BinanceFuturesDataPlugin, HyperliquidDataPlugin, SyntheticDataPlugin),
         "broker": _map(
             SimPaperBroker,
             FuturesPaperBroker,
