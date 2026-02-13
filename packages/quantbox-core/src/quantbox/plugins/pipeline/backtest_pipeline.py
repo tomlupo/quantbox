@@ -39,10 +39,9 @@ from __future__ import annotations
 
 import importlib
 import logging
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any
 
-import numpy as np
 import pandas as pd
 
 from quantbox.contracts import (
@@ -175,13 +174,13 @@ class BacktestPipeline:
         *,
         mode: Mode,
         asof: str,
-        params: Dict[str, Any],
+        params: dict[str, Any],
         data: DataPlugin,
         store: ArtifactStore,
-        broker: Optional[BrokerPlugin],
-        risk: List[RiskPlugin],
-        strategies: Optional[List[StrategyPlugin]] = None,
-        rebalancer: Optional[RebalancingPlugin] = None,
+        broker: BrokerPlugin | None,
+        risk: list[RiskPlugin],
+        strategies: list[StrategyPlugin] | None = None,
+        rebalancer: RebalancingPlugin | None = None,
         **kwargs,
     ) -> RunResult:
         engine = str(params.get("engine", "vectorbt")).lower()
@@ -200,7 +199,7 @@ class BacktestPipeline:
 
         store.put_parquet("universe", universe)
 
-        market_data: Dict[str, Any] = {"universe": universe}
+        market_data: dict[str, Any] = {"universe": universe}
         market_data.update(market_data_dict)
         for key in ("prices", "volume", "market_cap", "funding_rates"):
             market_data.setdefault(key, pd.DataFrame())
@@ -217,25 +216,19 @@ class BacktestPipeline:
         # --- Stage 2: Strategy Execution ---
         strategies_cfg = params.get("_strategies_cfg", params.get("strategies", []))
         if strategies:
-            strategy_results = self._run_strategy_plugins(
-                strategies, strategies_cfg, market_data
-            )
+            strategy_results = self._run_strategy_plugins(strategies, strategies_cfg, market_data)
         else:
             strategy_results = self._run_strategies(market_data, strategies_cfg, params)
 
         # Save per-strategy weights snapshot (last row, same as TradingPipeline)
-        strat_weights_records: List[Dict[str, Any]] = []
+        strat_weights_records: list[dict[str, Any]] = []
         for sname, sinfo in strategy_results.items():
             w = sinfo["result"].get("weights")
             if w is not None and not w.empty:
                 last_row = w.iloc[-1] if isinstance(w, pd.DataFrame) else w
                 for ticker, wt in last_row.items():
-                    strat_weights_records.append(
-                        {"strategy": sname, "symbol": str(ticker), "weight": float(wt)}
-                    )
-        a_strat_w = store.put_parquet(
-            "strategy_weights", pd.DataFrame(strat_weights_records)
-        )
+                    strat_weights_records.append({"strategy": sname, "symbol": str(ticker), "weight": float(wt)})
+        a_strat_w = store.put_parquet("strategy_weights", pd.DataFrame(strat_weights_records))
 
         # --- Stage 3: Aggregate weights → full time series ---
         weights_history = self._aggregate_weights_history(strategy_results, params)
@@ -247,32 +240,22 @@ class BacktestPipeline:
 
         # Save latest aggregated weights (same as TradingPipeline)
         latest_weights = weights_history.iloc[-1]
-        agg_records = [
-            {"symbol": str(k), "weight": float(v)}
-            for k, v in latest_weights.items()
-            if v != 0
-        ]
+        agg_records = [{"symbol": str(k), "weight": float(v)} for k, v in latest_weights.items() if v != 0]
         a_agg_w = store.put_parquet("aggregated_weights", pd.DataFrame(agg_records))
 
         # Save full weights history
         wh_save = weights_history.copy()
         wh_save.index.name = "date"
-        a_wh = store.put_parquet(
-            "weights_history", wh_save.reset_index()
-        )
+        a_wh = store.put_parquet("weights_history", wh_save.reset_index())
 
         # --- Stage 4: Risk transforms on the full time series ---
         risk_cfg = params.get("risk", {})
-        weights_history = self._apply_risk_transforms_ts(
-            weights_history, risk_cfg
-        )
+        weights_history = self._apply_risk_transforms_ts(weights_history, risk_cfg)
 
         # --- Stage 5: Run backtest engine ---
         # Align prices and weights to the same index & columns
         common_idx = prices_wide.index.intersection(weights_history.index)
-        common_cols = [
-            c for c in weights_history.columns if c in prices_wide.columns
-        ]
+        common_cols = [c for c in weights_history.columns if c in prices_wide.columns]
         if not common_cols:
             raise ValueError("No overlapping tickers between prices and weights")
 
@@ -307,9 +290,7 @@ class BacktestPipeline:
             if funding_wide.empty:
                 bt_funding = pd.DataFrame(0.0, index=bt_prices.index, columns=bt_prices.columns)
             else:
-                bt_funding = funding_wide.reindex(
-                    index=bt_prices.index, columns=bt_prices.columns
-                ).fillna(0.0)
+                bt_funding = funding_wide.reindex(index=bt_prices.index, columns=bt_prices.columns).fillna(0.0)
 
             result_data = self._run_rsims(
                 bt_prices,
@@ -337,7 +318,7 @@ class BacktestPipeline:
 
         # --- Risk checks on latest targets ---
         targets = pd.DataFrame(agg_records)
-        risk_findings: List[Dict[str, Any]] = []
+        risk_findings: list[dict[str, Any]] = []
         for rp in risk:
             try:
                 risk_findings.extend(rp.check_targets(targets, risk_cfg))
@@ -382,20 +363,18 @@ class BacktestPipeline:
     # ==================================================================
     def _run_strategies(
         self,
-        market_data: Dict[str, Any],
-        strategies_cfg: List[Dict[str, Any]],
-        pipeline_params: Dict[str, Any],
-    ) -> Dict[str, Dict[str, Any]]:
-        results: Dict[str, Dict[str, Any]] = {}
+        market_data: dict[str, Any],
+        strategies_cfg: list[dict[str, Any]],
+        pipeline_params: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
+        results: dict[str, dict[str, Any]] = {}
         for strat_cfg in strategies_cfg:
             name = strat_cfg["name"]
             weight = float(strat_cfg.get("weight", 1.0))
             strat_params = strat_cfg.get("params", {})
 
             try:
-                module = importlib.import_module(
-                    f"quantbox.plugins.strategies.{name}"
-                )
+                module = importlib.import_module(f"quantbox.plugins.strategies.{name}")
             except ImportError:
                 logger.error("Could not import strategy '%s'", name)
                 raise
@@ -415,11 +394,11 @@ class BacktestPipeline:
 
     def _run_strategy_plugins(
         self,
-        strategy_plugins: List[StrategyPlugin],
-        strategies_cfg: List[Dict[str, Any]],
-        market_data: Dict[str, Any],
-    ) -> Dict[str, Dict[str, Any]]:
-        results: Dict[str, Dict[str, Any]] = {}
+        strategy_plugins: list[StrategyPlugin],
+        strategies_cfg: list[dict[str, Any]],
+        market_data: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
+        results: dict[str, dict[str, Any]] = {}
         for i, strat in enumerate(strategy_plugins):
             strat_cfg = strategies_cfg[i] if i < len(strategies_cfg) else {}
             weight = float(strat_cfg.get("weight", 1.0))
@@ -442,16 +421,16 @@ class BacktestPipeline:
     # ==================================================================
     def _aggregate_weights_history(
         self,
-        strategy_results: Dict[str, Dict[str, Any]],
-        params: Dict[str, Any],
+        strategy_results: dict[str, dict[str, Any]],
+        params: dict[str, Any],
     ) -> pd.DataFrame:
         """Aggregate multi-strategy weights into a single DataFrame over
         the full historical period (not just the last row)."""
         weight_overrides = params.get("strategy_weights", {})
         names = list(strategy_results.keys())
 
-        weight_dfs: List[pd.DataFrame] = []
-        account_weights: List[float] = []
+        weight_dfs: list[pd.DataFrame] = []
+        account_weights: list[float] = []
 
         for sname in names:
             sinfo = strategy_results[sname]
@@ -459,9 +438,7 @@ class BacktestPipeline:
             if w_df is None or (isinstance(w_df, pd.DataFrame) and w_df.empty):
                 continue
             weight_dfs.append(w_df)
-            account_weights.append(
-                float(weight_overrides.get(sname, sinfo["weight"]))
-            )
+            account_weights.append(float(weight_overrides.get(sname, sinfo["weight"])))
 
         if not weight_dfs:
             return pd.DataFrame()
@@ -495,7 +472,7 @@ class BacktestPipeline:
                 all_idx = all_idx.union(df.index)
                 all_cols.update(df.columns.tolist())
             result = pd.DataFrame(0.0, index=all_idx, columns=sorted(all_cols))
-            for df, w in zip(weight_dfs, account_weights):
+            for df, w in zip(weight_dfs, account_weights, strict=False):
                 aligned = df.reindex(index=all_idx, columns=sorted(all_cols)).fillna(0)
                 result += aligned * w
             return result
@@ -506,7 +483,7 @@ class BacktestPipeline:
     def _apply_risk_transforms_ts(
         self,
         weights: pd.DataFrame,
-        risk_cfg: Dict[str, Any],
+        risk_cfg: dict[str, Any],
     ) -> pd.DataFrame:
         """Apply tranching, leverage cap, and short clamping to the full
         weights time series."""
@@ -545,8 +522,8 @@ class BacktestPipeline:
         rebalancing_freq,
         threshold,
         trading_days: int,
-    ) -> Dict[str, Any]:
-        from quantbox.plugins.backtesting import run_vectorbt, compute_backtest_metrics
+    ) -> dict[str, Any]:
+        from quantbox.plugins.backtesting import compute_backtest_metrics, run_vectorbt
 
         pf = run_vectorbt(
             prices,
@@ -565,10 +542,12 @@ class BacktestPipeline:
         equity = pf.value()
         if isinstance(equity, pd.DataFrame):
             equity = equity.iloc[:, 0]
-        portfolio_daily = pd.DataFrame({
-            "date": equity.index,
-            "portfolio_value": equity.values,
-        }).set_index("date")
+        portfolio_daily = pd.DataFrame(
+            {
+                "date": equity.index,
+                "portfolio_value": equity.values,
+            }
+        ).set_index("date")
 
         return {
             "returns": returns,
@@ -590,10 +569,10 @@ class BacktestPipeline:
         capitalise_profits: bool,
         equity_basis: str,
         trading_days: int,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         from quantbox.plugins.backtesting import (
-            fixed_commission_backtest_with_funding,
             compute_backtest_metrics,
+            fixed_commission_backtest_with_funding,
         )
 
         results_df = fixed_commission_backtest_with_funding(
@@ -610,9 +589,7 @@ class BacktestPipeline:
 
         # Build equity curve (same as quantlab validation script)
         margin_totals = results_df.groupby(results_df.index)["Margin"].sum().to_frame("TotalMargin")
-        cash_balance = results_df[results_df["ticker"] == "Cash"][["Value"]].rename(
-            columns={"Value": "Cash"}
-        )
+        cash_balance = results_df[results_df["ticker"] == "Cash"][["Value"]].rename(columns={"Value": "Cash"})
         equity_curve = cash_balance.join(margin_totals, how="left")
         equity_curve["TotalMargin"] = equity_curve["TotalMargin"].fillna(0)
         equity_curve["portfolio_value"] = equity_curve["Cash"] + equity_curve["TotalMargin"]

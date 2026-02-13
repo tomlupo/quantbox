@@ -6,15 +6,17 @@ data without pre-existing parquet files.
 
 No API key required — uses public Binance endpoints.
 """
+
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+
 from .binance_data import BinanceDataFetcher
 
 logger = logging.getLogger(__name__)
@@ -49,9 +51,7 @@ class BinanceDataPlugin:
             },
         },
         outputs=("universe", "prices", "volume", "market_cap"),
-        examples=(
-            "plugins:\n  data:\n    name: binance.live_data.v1\n    params_init:\n      quote_asset: USDT",
-        ),
+        examples=("plugins:\n  data:\n    name: binance.live_data.v1\n    params_init:\n      quote_asset: USDT",),
     )
 
     quote_asset: str = "USDT"
@@ -64,7 +64,7 @@ class BinanceDataPlugin:
     # DataPlugin protocol
     # ------------------------------------------------------------------
 
-    def load_universe(self, params: Dict[str, Any]) -> pd.DataFrame:
+    def load_universe(self, params: dict[str, Any]) -> pd.DataFrame:
         """Return the trading universe.
 
         Params:
@@ -72,7 +72,7 @@ class BinanceDataPlugin:
             top_n (int): Auto-discover top N liquid tickers from Binance.
             min_volume_usd (float): Min 24h volume for auto-discovery (default 1M).
         """
-        symbols: Optional[List[str]] = params.get("symbols")
+        symbols: list[str] | None = params.get("symbols")
         if symbols:
             return pd.DataFrame({"symbol": symbols})
 
@@ -89,8 +89,8 @@ class BinanceDataPlugin:
         self,
         universe: pd.DataFrame,
         asof: str,
-        params: Dict[str, Any],
-    ) -> Dict[str, pd.DataFrame]:
+        params: dict[str, Any],
+    ) -> dict[str, pd.DataFrame]:
         """Fetch historical OHLCV from Binance and return wide-format dict.
 
         Returns dict with keys: ``prices``, ``volume``, ``market_cap``
@@ -118,6 +118,6 @@ class BinanceDataPlugin:
         )
         return data
 
-    def load_fx(self, asof: str, params: Dict[str, Any]) -> Optional[pd.DataFrame]:
+    def load_fx(self, asof: str, params: dict[str, Any]) -> pd.DataFrame | None:
         """Not applicable for crypto (all USD-denominated)."""
         return None

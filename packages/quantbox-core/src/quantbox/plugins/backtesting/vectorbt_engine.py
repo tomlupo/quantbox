@@ -35,17 +35,15 @@ from __future__ import annotations
 import logging
 import os
 import warnings
-from typing import Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
 import vectorbt as vbt
 from numba import njit
-from vectorbt.portfolio.enums import Direction, NoOrder, Order, SizeType
+from vectorbt.portfolio.enums import Direction, SizeType
 from vectorbt.portfolio.nb import (
     get_col_elem_nb,
     get_elem_nb,
-    get_group_value_ctx_nb,
     order_nb,
     order_nothing_nb,
     sort_call_seq_nb,
@@ -57,6 +55,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def create_labels(index: pd.MultiIndex, drop_levels: int = -1) -> pd.Index:
     """Create labels from a MultiIndex by concatenating remaining levels.
@@ -77,8 +76,7 @@ def create_labels(index: pd.MultiIndex, drop_levels: int = -1) -> pd.Index:
     labels = []
     for values in index_dropped:
         label = "_".join(
-            f"{level_name}-{value}"
-            for level_name, value in zip(index_dropped.names, values)
+            f"{level_name}-{value}" for level_name, value in zip(index_dropped.names, values, strict=False)
         )
         labels.append(label)
     return pd.Index(labels)
@@ -86,7 +84,7 @@ def create_labels(index: pd.MultiIndex, drop_levels: int = -1) -> pd.Index:
 
 def get_rebalancing_dates(
     dates: pd.DatetimeIndex,
-    rebalancing_freq: Optional[Union[int, str, list]],
+    rebalancing_freq: int | str | list | None,
 ) -> pd.DatetimeIndex:
     """Compute rebalancing dates from a frequency spec.
 
@@ -152,7 +150,7 @@ def validate_prices(prices: pd.DataFrame, weights: pd.DataFrame) -> bool:
 
     bad_mask = (weights != 0) & prices_aligned.isna()
     if bad_mask.any().any():
-        bad_locs = [(i, c) for i, c in zip(*np.where(bad_mask))]
+        bad_locs = list(zip(*np.where(bad_mask), strict=False))
         for row, col in bad_locs:
             logger.warning(
                 "Weight != 0 but no price: date=%s, ticker=%s",
@@ -167,18 +165,19 @@ def validate_prices(prices: pd.DataFrame, weights: pd.DataFrame) -> bool:
 # Main entry point
 # ---------------------------------------------------------------------------
 
+
 def run(
     prices: pd.DataFrame,
-    weights: Union[Dict[str, pd.DataFrame], pd.DataFrame],
-    rebalancing_freq: Optional[Union[int, str, list]] = 1,
-    threshold: Optional[float] = None,
+    weights: dict[str, pd.DataFrame] | pd.DataFrame,
+    rebalancing_freq: int | str | list | None = 1,
+    threshold: float | None = None,
     fees: float = 0.0,
     fixed_fees: float = 0.0,
     slippage: float = 0.0,
-    use_order_func: Optional[bool] = None,
+    use_order_func: bool | None = None,
     use_numba: bool = True,
     create_strategy_label: bool = True,
-) -> "vbt.Portfolio":
+) -> vbt.Portfolio:
     """Run a vectorbt backtest.
 
     Parameters
@@ -220,9 +219,8 @@ def run(
     if isinstance(weights, pd.DataFrame):
         if not weights.columns.get_level_values(-1).isin(prices.columns).all():
             raise ValueError("All tickers in weights must be present in prices")
-    elif isinstance(weights, dict):
-        if not set().union(*(v.columns for v in weights.values())).issubset(prices.columns):
-            raise ValueError("All tickers in weights must be present in prices")
+    elif isinstance(weights, dict) and not set().union(*(v.columns for v in weights.values())).issubset(prices.columns):
+        raise ValueError("All tickers in weights must be present in prices")
 
     # ------------------------------------------------------------------
     # Numba callback functions (defined here so njit is applied once)
@@ -255,9 +253,7 @@ def run(
 
         if rebalancing_flag:
             order_value_out = np.empty(c.group_len, dtype=np.float64)
-            sort_call_seq_nb(
-                c, size, size_type=size_type, direction=direction, order_value_out=order_value_out
-            )
+            sort_call_seq_nb(c, size, size_type=size_type, direction=direction, order_value_out=order_value_out)
             return (target_weights,)
         return (None,)
 
@@ -284,9 +280,7 @@ def run(
     # ------------------------------------------------------------------
     if threshold is not None:
         if use_order_func is False:
-            warnings.warn(
-                "use_order_func is False but threshold is set — overriding to True."
-            )
+            warnings.warn("use_order_func is False but threshold is set — overriding to True.", stacklevel=2)
         use_order_func = True
     else:
         if use_order_func is None:
@@ -326,12 +320,11 @@ def run(
             else:
                 group_by = None
         else:
-            if create_strategy_label:
-                if "strategy" not in weights_df.columns.names:
-                    labels = create_labels(weights_df.columns)
-                    cols = weights_df.columns.to_frame()
-                    cols.insert(0, "strategy", labels)
-                    weights_df.columns = pd.MultiIndex.from_frame(cols)
+            if create_strategy_label and "strategy" not in weights_df.columns.names:
+                labels = create_labels(weights_df.columns)
+                cols = weights_df.columns.to_frame()
+                cols.insert(0, "strategy", labels)
+                weights_df.columns = pd.MultiIndex.from_frame(cols)
             group_by = list(weights_df.columns.names[:-1])
     else:
         weights_df = pd.concat(weights, axis=1, names=["strategy"])

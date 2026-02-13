@@ -19,7 +19,7 @@ Quick start::
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Union
+from typing import Any
 
 import pandas as pd
 
@@ -54,16 +54,16 @@ __all__ = [
 
 def backtest(
     prices: pd.DataFrame,
-    weights: Union[Dict[str, pd.DataFrame], pd.DataFrame],
+    weights: dict[str, pd.DataFrame] | pd.DataFrame,
     *,
     fees: float = 0.001,
     fixed_fees: float = 0.0,
     slippage: float = 0.0,
-    rebalancing_freq: Optional[Union[int, str, list]] = 1,
-    threshold: Optional[float] = None,
+    rebalancing_freq: int | str | list | None = 1,
+    threshold: float | None = None,
     use_numba: bool = True,
     trading_days: int = 365,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """High-level backtest using the vectorbt engine.
 
     Parameters

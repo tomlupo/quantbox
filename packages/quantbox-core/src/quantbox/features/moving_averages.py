@@ -1,12 +1,12 @@
 from __future__ import annotations
-from typing import Dict, List
+
 import pandas as pd
 
 
 def compute_sma(
     prices: pd.DataFrame,
-    windows: List[int],
-) -> Dict[str, pd.DataFrame]:
+    windows: list[int],
+) -> dict[str, pd.DataFrame]:
     """Compute simple moving averages.
 
     Args:
@@ -21,8 +21,8 @@ def compute_sma(
 
 def compute_ema(
     prices: pd.DataFrame,
-    spans: List[int],
-) -> Dict[str, pd.DataFrame]:
+    spans: list[int],
+) -> dict[str, pd.DataFrame]:
     """Compute exponential moving averages.
 
     Args:

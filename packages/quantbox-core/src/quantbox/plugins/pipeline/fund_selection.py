@@ -1,9 +1,12 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 import pandas as pd
 
-from quantbox.contracts import PluginMeta, RunResult, Mode, DataPlugin, ArtifactStore, BrokerPlugin, RiskPlugin
+from quantbox.contracts import ArtifactStore, BrokerPlugin, DataPlugin, Mode, PluginMeta, RiskPlugin, RunResult
+
 
 @dataclass
 class FundSelectionPipeline:
@@ -13,19 +16,26 @@ class FundSelectionPipeline:
         version="0.1.0",
         core_compat=">=0.1,<0.2",
         description="Simple ranking pipeline (research)",
-        tags=("research","ranking"),
+        tags=("research", "ranking"),
         capabilities=("research",),
         schema_version="v1",
         params_schema={
             "type": "object",
             "properties": {
                 "top_n": {"type": "integer", "minimum": 1, "default": 5},
-                "universe": {"type": "object", "properties": {"symbols": {"type":"array","items":{"type":"string"}}}, "required":["symbols"]},
-                "prices": {"type": "object", "properties": {"lookback_days": {"type":"integer","minimum": 30, "default": 365}}},
+                "universe": {
+                    "type": "object",
+                    "properties": {"symbols": {"type": "array", "items": {"type": "string"}}},
+                    "required": ["symbols"],
+                },
+                "prices": {
+                    "type": "object",
+                    "properties": {"lookback_days": {"type": "integer", "minimum": 30, "default": 365}},
+                },
             },
-            "required": ["universe"]
+            "required": ["universe"],
         },
-        outputs=("scores","rankings","allocations"),
+        outputs=("scores", "rankings", "allocations"),
         examples=(
             "plugins:\n  pipeline:\n    name: fund_selection.simple.v1\n    params:\n      top_n: 5\n      universe:\n        symbols: [SPY, QQQ]\n      prices:\n        lookback_days: 365",
         ),
@@ -37,11 +47,11 @@ class FundSelectionPipeline:
         *,
         mode: Mode,
         asof: str,
-        params: Dict[str, Any],
+        params: dict[str, Any],
         data: DataPlugin,
         store: ArtifactStore,
-        broker: Optional[BrokerPlugin],
-        risk: List[RiskPlugin],
+        broker: BrokerPlugin | None,
+        risk: list[RiskPlugin],
         **kwargs,
     ) -> RunResult:
         universe = data.load_universe(params.get("universe", {}))
@@ -49,13 +59,15 @@ class FundSelectionPipeline:
 
         market_data = data.load_market_data(universe, asof, params.get("prices", {}))
         prices_wide = market_data["prices"]
-        store.put_parquet("prices", prices_wide.reset_index() if hasattr(prices_wide.index, 'name') else prices_wide)
+        store.put_parquet("prices", prices_wide.reset_index() if hasattr(prices_wide.index, "name") else prices_wide)
 
         returns = prices_wide.pct_change()
-        scores = pd.DataFrame({
-            "symbol": returns.columns,
-            "score": returns.mean().values,
-        })
+        scores = pd.DataFrame(
+            {
+                "symbol": returns.columns,
+                "score": returns.mean().values,
+            }
+        )
         scores["asof"] = asof
 
         rankings = scores.sort_values("score", ascending=False).reset_index(drop=True)

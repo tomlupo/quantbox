@@ -1,13 +1,14 @@
 """Tests for quantbox.simulation.forecasting — ReturnForecaster."""
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from quantbox.simulation.forecasting import (
-    ReturnForecaster,
-    Horizon,
     ForecastResult,
+    Horizon,
     MultiHorizonForecast,
+    ReturnForecaster,
 )
 
 
@@ -15,11 +16,14 @@ from quantbox.simulation.forecasting import (
 def sample_returns():
     rng = np.random.default_rng(42)
     dates = pd.bdate_range("2020-01-01", periods=500)
-    return pd.DataFrame({
-        "SPY": rng.normal(0.0003, 0.012, 500),
-        "TLT": rng.normal(0.0001, 0.005, 500),
-        "GLD": rng.normal(0.0002, 0.008, 500),
-    }, index=dates)
+    return pd.DataFrame(
+        {
+            "SPY": rng.normal(0.0003, 0.012, 500),
+            "TLT": rng.normal(0.0001, 0.005, 500),
+            "GLD": rng.normal(0.0002, 0.008, 500),
+        },
+        index=dates,
+    )
 
 
 @pytest.fixture
@@ -47,14 +51,19 @@ class TestForecastSingleHorizon:
 
     def test_bootstrap(self, forecaster):
         result = forecaster.forecast_single_horizon(
-            "SPY", 21, method="bootstrap", n_simulations=1000,
+            "SPY",
+            21,
+            method="bootstrap",
+            n_simulations=1000,
         )
         assert result.method == "bootstrap"
         assert result.volatility > 0
 
     def test_confidence_intervals(self, forecaster):
         result = forecaster.forecast_single_horizon(
-            "TLT", Horizon.QUARTERLY, method="historical",
+            "TLT",
+            Horizon.QUARTERLY,
+            method="historical",
         )
         assert 0.95 in result.confidence_intervals
         lower, upper = result.confidence_intervals[0.95]
@@ -91,13 +100,16 @@ class TestForecastMultiHorizon:
 
     def test_custom_horizons(self, forecaster):
         mhf = forecaster.forecast_multi_horizon(
-            "TLT", horizons=[Horizon.WEEKLY, Horizon.MONTHLY], method="historical",
+            "TLT",
+            horizons=[Horizon.WEEKLY, Horizon.MONTHLY],
+            method="historical",
         )
         assert len(mhf.forecasts) == 2
 
     def test_term_structure(self, forecaster):
         mhf = forecaster.forecast_multi_horizon(
-            "SPY", horizons=[Horizon.DAILY, Horizon.MONTHLY, Horizon.ANNUAL],
+            "SPY",
+            horizons=[Horizon.DAILY, Horizon.MONTHLY, Horizon.ANNUAL],
             method="historical",
         )
         ts = mhf.term_structure
@@ -108,7 +120,9 @@ class TestForecastMultiHorizon:
 
     def test_get_horizon(self, forecaster):
         mhf = forecaster.forecast_multi_horizon(
-            "SPY", horizons=[Horizon.MONTHLY], method="historical",
+            "SPY",
+            horizons=[Horizon.MONTHLY],
+            method="historical",
         )
         f = mhf.get_horizon(Horizon.MONTHLY)
         assert f.horizon == 21
@@ -117,7 +131,8 @@ class TestForecastMultiHorizon:
 class TestForecastAllAssets:
     def test_all_assets(self, forecaster):
         results = forecaster.forecast_all_assets(
-            horizons=[Horizon.MONTHLY], method="historical",
+            horizons=[Horizon.MONTHLY],
+            method="historical",
         )
         assert "SPY" in results
         assert "TLT" in results
@@ -127,7 +142,10 @@ class TestForecastAllAssets:
 class TestFanChart:
     def test_fan_chart_data(self, forecaster):
         data = forecaster.generate_fan_chart_data(
-            "SPY", max_horizon=50, step=5, n_simulations=1000,
+            "SPY",
+            max_horizon=50,
+            step=5,
+            n_simulations=1000,
         )
         assert isinstance(data, pd.DataFrame)
         assert "horizon" in data.columns
@@ -143,7 +161,9 @@ class TestParametricForecast:
     def test_requires_scipy(self, forecaster):
         try:
             result = forecaster.forecast_single_horizon(
-                "SPY", 21, method="parametric",
+                "SPY",
+                21,
+                method="parametric",
             )
             assert result.method == "parametric"
         except ImportError:
@@ -154,7 +174,10 @@ class TestMeanReversionForecast:
     def test_mean_reversion(self, forecaster):
         try:
             result = forecaster.expected_return_with_mean_reversion(
-                "SPY", horizon=63, long_term_return=0.08, mean_reversion_speed=0.3,
+                "SPY",
+                horizon=63,
+                long_term_return=0.08,
+                mean_reversion_speed=0.3,
             )
             assert result.method == "mean_reversion"
             assert isinstance(result.expected_return, float)
@@ -166,7 +189,10 @@ class TestBayesianShrinkage:
     def test_bayesian(self, forecaster):
         try:
             result = forecaster.bayesian_shrinkage_forecast(
-                "SPY", horizon=63, prior_return=0.06, prior_weight=0.5,
+                "SPY",
+                horizon=63,
+                prior_return=0.06,
+                prior_weight=0.5,
             )
             assert result.method == "bayesian_shrinkage"
             # Result should be between pure prior and pure historical

@@ -1,18 +1,18 @@
 """Tests for schema validation."""
-import pytest
-import numpy as np
+
 import pandas as pd
+
 from quantbox.schemas import (
-    SchemaField,
-    DataFrameSchema,
-    validate_wide_prices,
-    OHLCV_SCHEMA,
-    STRATEGY_WEIGHTS_SCHEMA,
     AGGREGATED_WEIGHTS_SCHEMA,
-    ORDERS_SCHEMA,
     FILLS_SCHEMA,
+    OHLCV_SCHEMA,
+    ORDERS_SCHEMA,
     PORTFOLIO_DAILY_SCHEMA,
     SCHEMA_REGISTRY,
+    STRATEGY_WEIGHTS_SCHEMA,
+    DataFrameSchema,
+    SchemaField,
+    validate_wide_prices,
 )
 
 
@@ -137,22 +137,26 @@ class TestValidateWidePrices:
 
 class TestBuiltinSchemas:
     def test_ohlcv_valid(self):
-        df = pd.DataFrame({
-            "date": pd.to_datetime(["2026-01-01"]),
-            "open": [100.0],
-            "high": [105.0],
-            "low": [95.0],
-            "close": [102.0],
-            "volume": [1000.0],
-        })
+        df = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-01-01"]),
+                "open": [100.0],
+                "high": [105.0],
+                "low": [95.0],
+                "close": [102.0],
+                "volume": [1000.0],
+            }
+        )
         assert OHLCV_SCHEMA.validate(df) == []
 
     def test_strategy_weights_valid(self):
-        df = pd.DataFrame({
-            "strategy": ["momentum"],
-            "symbol": ["BTC"],
-            "weight": [0.5],
-        })
+        df = pd.DataFrame(
+            {
+                "strategy": ["momentum"],
+                "symbol": ["BTC"],
+                "weight": [0.5],
+            }
+        )
         assert STRATEGY_WEIGHTS_SCHEMA.validate(df) == []
 
     def test_aggregated_weights_valid(self):
@@ -160,34 +164,44 @@ class TestBuiltinSchemas:
         assert AGGREGATED_WEIGHTS_SCHEMA.validate(df) == []
 
     def test_orders_valid(self):
-        df = pd.DataFrame({
-            "symbol": ["BTC"],
-            "side": ["buy"],
-            "qty": [0.1],
-            "order_type": ["market"],
-        })
+        df = pd.DataFrame(
+            {
+                "symbol": ["BTC"],
+                "side": ["buy"],
+                "qty": [0.1],
+                "order_type": ["market"],
+            }
+        )
         assert ORDERS_SCHEMA.validate(df) == []
 
     def test_fills_valid(self):
-        df = pd.DataFrame({
-            "symbol": ["BTC"],
-            "side": ["buy"],
-            "qty": [0.1],
-            "price": [50000.0],
-            "fee": [5.0],
-        })
+        df = pd.DataFrame(
+            {
+                "symbol": ["BTC"],
+                "side": ["buy"],
+                "qty": [0.1],
+                "price": [50000.0],
+                "fee": [5.0],
+            }
+        )
         assert FILLS_SCHEMA.validate(df) == []
 
     def test_portfolio_daily_valid(self):
-        df = pd.DataFrame({
-            "date": pd.to_datetime(["2026-01-01"]),
-            "value": [100000.0],
-            "cash": [10000.0],
-        })
+        df = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-01-01"]),
+                "value": [100000.0],
+                "cash": [10000.0],
+            }
+        )
         assert PORTFOLIO_DAILY_SCHEMA.validate(df) == []
 
     def test_registry_has_all(self):
         assert set(SCHEMA_REGISTRY.keys()) == {
-            "ohlcv", "strategy_weights", "aggregated_weights",
-            "orders", "fills", "portfolio_daily",
+            "ohlcv",
+            "strategy_weights",
+            "aggregated_weights",
+            "orders",
+            "fills",
+            "portfolio_daily",
         }

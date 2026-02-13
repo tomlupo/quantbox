@@ -9,9 +9,8 @@ and as module-level convenience functions::
 All functions accept a ``pd.Series`` and return a ``pd.Series``
 (or tuple of Series for multi-output indicators like MACD and Bollinger Bands).
 """
-from __future__ import annotations
 
-from typing import Tuple
+from __future__ import annotations
 
 import numpy as np
 import pandas as pd
@@ -45,7 +44,7 @@ class TechnicalIndicators:
         fast_period: int = 12,
         slow_period: int = 26,
         signal_period: int = 9,
-    ) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    ) -> tuple[pd.Series, pd.Series, pd.Series]:
         """MACD: returns (macd_line, signal_line, histogram)."""
         fast_ema = data.ewm(span=fast_period, adjust=False).mean()
         slow_ema = data.ewm(span=slow_period, adjust=False).mean()
@@ -57,7 +56,7 @@ class TechnicalIndicators:
     @staticmethod
     def bollinger_bands(
         data: pd.Series, period: int = 20, std_dev: float = 2.0
-    ) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    ) -> tuple[pd.Series, pd.Series, pd.Series]:
         """Bollinger Bands: returns (upper, middle, lower)."""
         middle = data.rolling(window=period).mean()
         std = data.rolling(window=period).std()
@@ -66,9 +65,7 @@ class TechnicalIndicators:
         return upper, middle, lower
 
     @staticmethod
-    def atr(
-        high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14
-    ) -> pd.Series:
+    def atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
         """Average True Range."""
         prev_close = close.shift(1)
         tr1 = high - low

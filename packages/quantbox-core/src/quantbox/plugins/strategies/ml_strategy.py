@@ -9,11 +9,12 @@ features are included when available.
 Ported from quantlabnew ml_pipeline.py, adapted to the quantbox
 StrategyPlugin interface (wide-format DataFrames, no OHLCV requirement).
 """
+
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -43,16 +44,17 @@ except ImportError:
 # Feature engineering (private)
 # ---------------------------------------------------------------------------
 
+
 class _FeatureEngineer:
     """Build ML features from a single-asset close price series."""
 
-    def __init__(self, lookback_periods: List[int]) -> None:
+    def __init__(self, lookback_periods: list[int]) -> None:
         self.lookback_periods = lookback_periods
 
     def compute(
         self,
         close: pd.Series,
-        volume: Optional[pd.Series] = None,
+        volume: pd.Series | None = None,
     ) -> pd.DataFrame:
         features = pd.DataFrame(index=close.index)
 
@@ -134,6 +136,7 @@ def _create_target(
 # Model factory (private)
 # ---------------------------------------------------------------------------
 
+
 def _make_model(model_name: str, task: str) -> Any:
     """Instantiate an sklearn estimator with sensible defaults."""
     if not HAS_SKLEARN:
@@ -158,10 +161,7 @@ def _make_model(model_name: str, task: str) -> Any:
     models = regression_models if task == "regression" else classification_models
     if model_name not in models:
         available = sorted(models.keys())
-        raise ValueError(
-            f"Unknown model '{model_name}' for task '{task}'. "
-            f"Available: {available}"
-        )
+        raise ValueError(f"Unknown model '{model_name}' for task '{task}'. Available: {available}")
 
     cls, defaults = models[model_name]
     return cls(**defaults)
@@ -178,10 +178,11 @@ def _make_scaler(scaler_name: str) -> Any:
 # Weight conversion helpers (private)
 # ---------------------------------------------------------------------------
 
+
 def _predictions_to_weights_rank(
-    predictions: Dict[str, float],
+    predictions: dict[str, float],
     top_n: int,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Top-N by predicted value, equal weight."""
     sorted_symbols = sorted(predictions, key=predictions.get, reverse=True)
     selected = sorted_symbols[:top_n]
@@ -190,10 +191,10 @@ def _predictions_to_weights_rank(
 
 
 def _predictions_to_weights_confidence(
-    predictions: Dict[str, float],
-    probabilities: Optional[Dict[str, float]],
+    predictions: dict[str, float],
+    probabilities: dict[str, float] | None,
     task: str,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Weight by prediction confidence (probability for classification,
     predicted return for regression)."""
     if task == "classification" and probabilities is not None:
@@ -210,8 +211,8 @@ def _predictions_to_weights_confidence(
 
 
 def _predictions_to_weights_threshold(
-    predictions: Dict[str, float],
-) -> Dict[str, float]:
+    predictions: dict[str, float],
+) -> dict[str, float]:
     """Positive predictions get proportional weight, normalized."""
     positive = {s: v for s, v in predictions.items() if v > 0}
     if not positive:
@@ -225,6 +226,7 @@ def _predictions_to_weights_threshold(
 # ---------------------------------------------------------------------------
 # Strategy plugin
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class MLPredictionStrategy:
@@ -246,7 +248,7 @@ class MLPredictionStrategy:
     task: str = "classification"
     model_name: str = "gradient_boosting"
     prediction_horizon: int = 5
-    lookback_periods: List[int] = field(default_factory=lambda: [5, 10, 20, 60])
+    lookback_periods: list[int] = field(default_factory=lambda: [5, 10, 20, 60])
     n_splits: int = 5
     scaler: str = "standard"
     train_lookback: int = 504
@@ -258,14 +260,11 @@ class MLPredictionStrategy:
 
     def run(
         self,
-        data: Dict[str, Any],
-        params: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        data: dict[str, Any],
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if not HAS_SKLEARN:
-            raise ImportError(
-                "scikit-learn is required for MLPredictionStrategy. "
-                "Install with: uv add scikit-learn"
-            )
+            raise ImportError("scikit-learn is required for MLPredictionStrategy. Install with: uv add scikit-learn")
 
         if params:
             for key, value in params.items():
@@ -273,7 +272,7 @@ class MLPredictionStrategy:
                     setattr(self, key, value)
 
         prices: pd.DataFrame = data["prices"]
-        volume_df: Optional[pd.DataFrame] = data.get("volume")
+        volume_df: pd.DataFrame | None = data.get("volume")
 
         # Limit to max_symbols
         symbols = list(prices.columns[: self.max_symbols])
@@ -286,7 +285,7 @@ class MLPredictionStrategy:
         max_lb = max(self.lookback_periods)
 
         # Pre-compute features for each symbol
-        symbol_features: Dict[str, pd.DataFrame] = {}
+        symbol_features: dict[str, pd.DataFrame] = {}
         for sym in symbols:
             vol_series = volume_df[sym] if (volume_df is not None and sym in volume_df.columns) else None
             symbol_features[sym] = engineer.compute(prices[sym], vol_series)
@@ -302,7 +301,7 @@ class MLPredictionStrategy:
                 start_idx,
                 n_dates,
             )
-            empty_weights = pd.DataFrame(0.0, index=dates[-self.output_periods:], columns=symbols)
+            empty_weights = pd.DataFrame(0.0, index=dates[-self.output_periods :], columns=symbols)
             return {
                 "weights": empty_weights,
                 "simple_weights": {},
@@ -310,10 +309,10 @@ class MLPredictionStrategy:
             }
 
         # Rolling train/predict
-        weights_records: List[Dict[str, float]] = []
-        weight_dates: List[Any] = []
+        weights_records: list[dict[str, float]] = []
+        weight_dates: list[Any] = []
 
-        current_model: Optional[Any] = None
+        current_model: Any | None = None
         last_train_idx = -self.retrain_frequency  # force initial train
 
         for i in range(start_idx, n_dates):
@@ -321,7 +320,10 @@ class MLPredictionStrategy:
 
             if need_retrain:
                 current_model = self._train_pooled_model(
-                    symbols, symbol_features, prices, i,
+                    symbols,
+                    symbol_features,
+                    prices,
+                    i,
                 )
                 last_train_idx = i
 
@@ -331,7 +333,10 @@ class MLPredictionStrategy:
                 continue
 
             preds, probs = self._predict_symbols(
-                symbols, symbol_features, current_model, i,
+                symbols,
+                symbol_features,
+                current_model,
+                i,
             )
 
             row_weights = self._convert_to_weights(preds, probs)
@@ -358,20 +363,22 @@ class MLPredictionStrategy:
 
     def _train_pooled_model(
         self,
-        symbols: List[str],
-        symbol_features: Dict[str, pd.DataFrame],
+        symbols: list[str],
+        symbol_features: dict[str, pd.DataFrame],
         prices: pd.DataFrame,
         current_idx: int,
-    ) -> Optional[Any]:
+    ) -> Any | None:
         """Train a pooled model on all symbols up to current_idx."""
         train_start = max(0, current_idx - self.train_lookback)
-        x_parts: List[pd.DataFrame] = []
-        y_parts: List[pd.Series] = []
+        x_parts: list[pd.DataFrame] = []
+        y_parts: list[pd.Series] = []
 
         for sym in symbols:
             feat = symbol_features[sym].iloc[train_start:current_idx]
             target = _create_target(
-                prices[sym], self.prediction_horizon, self.task,
+                prices[sym],
+                self.prediction_horizon,
+                self.task,
             )
             target = target.iloc[train_start:current_idx]
 
@@ -399,18 +406,17 @@ class MLPredictionStrategy:
 
     def _predict_symbols(
         self,
-        symbols: List[str],
-        symbol_features: Dict[str, pd.DataFrame],
+        symbols: list[str],
+        symbol_features: dict[str, pd.DataFrame],
         model: Any,
         idx: int,
-    ) -> tuple[Dict[str, float], Optional[Dict[str, float]]]:
+    ) -> tuple[dict[str, float], dict[str, float] | None]:
         """Generate predictions for each symbol at a given index."""
-        predictions: Dict[str, float] = {}
-        probabilities: Optional[Dict[str, float]] = None
+        predictions: dict[str, float] = {}
+        probabilities: dict[str, float] | None = None
 
         has_proba = hasattr(model, "predict_proba") or (
-            hasattr(model, "named_steps")
-            and hasattr(model.named_steps.get("model", None), "predict_proba")
+            hasattr(model, "named_steps") and hasattr(model.named_steps.get("model", None), "predict_proba")
         )
         if self.task == "classification" and has_proba:
             probabilities = {}
@@ -436,9 +442,9 @@ class MLPredictionStrategy:
 
     def _convert_to_weights(
         self,
-        predictions: Dict[str, float],
-        probabilities: Optional[Dict[str, float]],
-    ) -> Dict[str, float]:
+        predictions: dict[str, float],
+        probabilities: dict[str, float] | None,
+    ) -> dict[str, float]:
         """Convert predictions to portfolio weights based on weight_method."""
         if not predictions:
             return {}
@@ -447,7 +453,9 @@ class MLPredictionStrategy:
             return _predictions_to_weights_rank(predictions, self.top_n)
         if self.weight_method == "confidence":
             return _predictions_to_weights_confidence(
-                predictions, probabilities, self.task,
+                predictions,
+                probabilities,
+                self.task,
             )
         if self.weight_method == "threshold":
             return _predictions_to_weights_threshold(predictions)

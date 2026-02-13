@@ -1,4 +1,5 @@
 """Tests for quantbox.plugins.backtesting.optimizer module."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -23,7 +24,9 @@ def _equal_weight_fn(prices: pd.DataFrame, params: dict) -> pd.DataFrame:
     """Simple equal-weight strategy that ignores params."""
     n = len(prices.columns)
     return pd.DataFrame(
-        1.0 / n, index=prices.index, columns=prices.columns,
+        1.0 / n,
+        index=prices.index,
+        columns=prices.columns,
     )
 
 
@@ -44,9 +47,11 @@ def _momentum_fn(prices: pd.DataFrame, params: dict) -> pd.DataFrame:
 class TestGridSearch:
     def test_basic(self, prices):
         result = optimize(
-            prices, _equal_weight_fn,
+            prices,
+            _equal_weight_fn,
             {"dummy": [1, 2, 3]},
-            method="grid", metric="sharpe",
+            method="grid",
+            metric="sharpe",
         )
         assert "best_params" in result
         assert "best_metric" in result
@@ -55,9 +60,11 @@ class TestGridSearch:
 
     def test_best_params_returned(self, prices):
         result = optimize(
-            prices, _momentum_fn,
+            prices,
+            _momentum_fn,
             {"lookback": [10, 20, 50], "top_n": [2, 3]},
-            method="grid", metric="sharpe",
+            method="grid",
+            metric="sharpe",
         )
         assert "lookback" in result["best_params"]
         assert "top_n" in result["best_params"]
@@ -65,9 +72,11 @@ class TestGridSearch:
 
     def test_metric_is_numeric(self, prices):
         result = optimize(
-            prices, _equal_weight_fn,
+            prices,
+            _equal_weight_fn,
             {"dummy": [1]},
-            method="grid", metric="sharpe",
+            method="grid",
+            metric="sharpe",
         )
         assert isinstance(result["best_metric"], (int, float))
 
@@ -83,10 +92,13 @@ class TestGridSearch:
 class TestWalkForward:
     def test_basic(self, prices):
         result = optimize(
-            prices, _equal_weight_fn,
+            prices,
+            _equal_weight_fn,
             {"dummy": [1, 2]},
-            method="walk_forward", metric="sharpe",
-            train_size=200, test_size=100,
+            method="walk_forward",
+            metric="sharpe",
+            train_size=200,
+            test_size=100,
         )
         assert "best_params" in result
         assert "oos_results" in result
@@ -94,19 +106,25 @@ class TestWalkForward:
 
     def test_oos_metrics_present(self, prices):
         result = optimize(
-            prices, _equal_weight_fn,
+            prices,
+            _equal_weight_fn,
             {"dummy": [1]},
-            method="walk_forward", metric="sharpe",
-            train_size=150, test_size=100,
+            method="walk_forward",
+            metric="sharpe",
+            train_size=150,
+            test_size=100,
         )
         if not result["oos_results"].empty:
             assert "oos_sharpe" in result["oos_results"].columns
 
     def test_insufficient_data(self, prices):
         result = optimize(
-            prices, _equal_weight_fn,
+            prices,
+            _equal_weight_fn,
             {"dummy": [1]},
-            method="walk_forward", metric="sharpe",
-            train_size=300, test_size=200,
+            method="walk_forward",
+            metric="sharpe",
+            train_size=300,
+            test_size=200,
         )
         assert result["oos_results"].empty or len(result["oos_results"]) <= 1

@@ -1,7 +1,10 @@
-import yaml
 from pathlib import Path
+
+import yaml
+
 from quantbox.registry import PluginRegistry
 from quantbox.runner import run_from_config
+
 
 def test_trading_bridge(tmp_path):
     reg = PluginRegistry.discover()

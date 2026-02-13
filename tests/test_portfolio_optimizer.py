@@ -1,4 +1,5 @@
 """Tests for the portfolio optimizer strategy plugin."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -10,10 +11,10 @@ from quantbox.plugins.strategies.portfolio_optimizer import (
     _PortfolioAnalyzer,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def sample_prices() -> pd.DataFrame:
@@ -41,6 +42,7 @@ def analyzer(sample_prices: pd.DataFrame) -> _PortfolioAnalyzer:
 # ---------------------------------------------------------------------------
 # _PortfolioAnalyzer tests
 # ---------------------------------------------------------------------------
+
 
 class TestPortfolioAnalyzer:
     def test_equal_weight_sums_to_one(self, analyzer: _PortfolioAnalyzer) -> None:
@@ -102,10 +104,18 @@ class TestPortfolioAnalyzer:
 # Strategy run() tests
 # ---------------------------------------------------------------------------
 
+
 class TestPortfolioOptimizerStrategy:
-    @pytest.mark.parametrize("method", [
-        "max_sharpe", "min_variance", "equal_weight", "risk_parity", "inverse_vol",
-    ])
+    @pytest.mark.parametrize(
+        "method",
+        [
+            "max_sharpe",
+            "min_variance",
+            "equal_weight",
+            "risk_parity",
+            "inverse_vol",
+        ],
+    )
     def test_run_all_methods(self, sample_data: dict, method: str) -> None:
         strategy = PortfolioOptimizerStrategy(method=method)
         result = strategy.run(sample_data)
@@ -132,7 +142,10 @@ class TestPortfolioOptimizerStrategy:
 
     def test_rolling_mode_shape(self, sample_data: dict) -> None:
         strategy = PortfolioOptimizerStrategy(
-            method="equal_weight", rolling=True, lookback=100, output_periods=20,
+            method="equal_weight",
+            rolling=True,
+            lookback=100,
+            output_periods=20,
         )
         result = strategy.run(sample_data)
         assert result["weights"].shape[0] == 20
@@ -140,7 +153,10 @@ class TestPortfolioOptimizerStrategy:
 
     def test_rolling_weights_sum_to_one(self, sample_data: dict) -> None:
         strategy = PortfolioOptimizerStrategy(
-            method="risk_parity", rolling=True, lookback=100, output_periods=10,
+            method="risk_parity",
+            rolling=True,
+            lookback=100,
+            output_periods=10,
         )
         result = strategy.run(sample_data)
         row_sums = result["weights"].sum(axis=1)

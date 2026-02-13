@@ -7,15 +7,16 @@ Ported from the quantlab ``trading.py`` workflow, ``orders.py``, and
 ``portfolio.py`` into a single PipelinePlugin that the quantbox runner
 can invoke via ``pipeline.run()``.
 """
+
 from __future__ import annotations
 
 import importlib
-import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import ROUND_DOWN, Decimal, getcontext
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -59,8 +60,8 @@ def _adjust_quantity(qty: float, step_size: float) -> float:
 
 
 def _get_lot_size_and_min_notional(
-    symbol_info: Optional[Dict],
-) -> Tuple[float, float, float]:
+    symbol_info: dict | None,
+) -> tuple[float, float, float]:
     """Extract (min_qty, step_size, min_notional) from Binance symbol info."""
     min_qty, step_size, min_notional = 0.0, 0.0, 0.0
     if not symbol_info:
@@ -180,13 +181,13 @@ class TradingPipeline:
         *,
         mode: Mode,
         asof: str,
-        params: Dict[str, Any],
+        params: dict[str, Any],
         data: DataPlugin,
         store: ArtifactStore,
-        broker: Optional[BrokerPlugin],
-        risk: List[RiskPlugin],
-        strategies: Optional[List[StrategyPlugin]] = None,
-        rebalancer: Optional[RebalancingPlugin] = None,
+        broker: BrokerPlugin | None,
+        risk: list[RiskPlugin],
+        strategies: list[StrategyPlugin] | None = None,
+        rebalancer: RebalancingPlugin | None = None,
         **kwargs,
     ) -> RunResult:
         if mode in ("paper", "live") and broker is None:
@@ -208,7 +209,7 @@ class TradingPipeline:
 
         # Token policy filtering (universe scope)
         token_policy = self._load_token_policy(universe_params)
-        token_policy_notes: Dict[str, Any] = {}
+        token_policy_notes: dict[str, Any] = {}
         if token_policy:
             all_symbols = universe["symbol"].tolist()
 
@@ -233,9 +234,7 @@ class TradingPipeline:
                     [d[0] for d in denied[:5]],
                 )
 
-            universe = universe[
-                universe["symbol"].isin(allowed)
-            ].reset_index(drop=True)
+            universe = universe[universe["symbol"].isin(allowed)].reset_index(drop=True)
             logger.info(
                 "TokenPolicy: %d/%d symbols allowed (mode=%s)",
                 len(allowed),
@@ -248,7 +247,9 @@ class TradingPipeline:
         # Store prices as wide-format parquet
         prices_wide = market_data_dict.get("prices", pd.DataFrame())
         if not prices_wide.empty:
-            store.put_parquet("prices", prices_wide.reset_index() if isinstance(prices_wide.index, pd.DatetimeIndex) else prices_wide)
+            store.put_parquet(
+                "prices", prices_wide.reset_index() if isinstance(prices_wide.index, pd.DatetimeIndex) else prices_wide
+            )
         else:
             store.put_parquet("prices", pd.DataFrame())
 
@@ -258,24 +259,22 @@ class TradingPipeline:
         # --- Stage 2: Strategy Execution ---
         if strategies:
             strategy_results = self._run_strategy_plugins(
-                strategies, strategies_cfg, market_data,
+                strategies,
+                strategies_cfg,
+                market_data,
             )
         else:
             strategy_results = self._run_strategies(market_data, strategies_cfg, params)
 
         # Save per-strategy weights
-        strat_weights_records: List[Dict[str, Any]] = []
+        strat_weights_records: list[dict[str, Any]] = []
         for sname, sinfo in strategy_results.items():
             w = sinfo["result"].get("weights")
             if w is not None and not w.empty:
                 last_row = w.iloc[-1] if isinstance(w, pd.DataFrame) else w
                 for ticker, wt in last_row.items():
-                    strat_weights_records.append(
-                        {"strategy": sname, "symbol": str(ticker), "weight": float(wt)}
-                    )
-        a_strat_w = store.put_parquet(
-            "strategy_weights", pd.DataFrame(strat_weights_records)
-        )
+                    strat_weights_records.append({"strategy": sname, "symbol": str(ticker), "weight": float(wt)})
+        a_strat_w = store.put_parquet("strategy_weights", pd.DataFrame(strat_weights_records))
 
         # --- Stage 3: Strategy Aggregation ---
         # Use injected aggregator if provided via kwargs, else fallback
@@ -292,9 +291,7 @@ class TradingPipeline:
                     final_weights = {str(k): float(v) for k, v in last.items()}
         else:
             final_weights = self._aggregate_strategies(strategy_results, params)
-        agg_records = [
-            {"symbol": str(k), "weight": float(v)} for k, v in final_weights.items()
-        ]
+        agg_records = [{"symbol": str(k), "weight": float(v)} for k, v in final_weights.items()]
         a_agg_w = store.put_parquet("aggregated_weights", pd.DataFrame(agg_records))
         logger.info("Aggregated weights: %d assets", len(final_weights))
 
@@ -341,26 +338,17 @@ class TradingPipeline:
             final_weights = order_result.get("weights", final_weights)
         else:
             # Fallback: use internal risk transforms
-            final_weights = self._apply_risk_transforms(
-                final_weights, strategy_results, params
-            )
+            final_weights = self._apply_risk_transforms(final_weights, strategy_results, params)
 
         if mode == "backtest" or broker is None:
             # In backtest mode, just save targets with no execution
-            targets = pd.DataFrame(
-                [
-                    {"symbol": s, "weight": w, "asof": asof}
-                    for s, w in final_weights.items()
-                ]
-            )
+            targets = pd.DataFrame([{"symbol": s, "weight": w, "asof": asof} for s, w in final_weights.items()])
             a_targets = store.put_parquet("targets", targets)
             empty_orders = pd.DataFrame(columns=["symbol", "side", "qty", "price", "asof"])
             a_orders = store.put_parquet("orders", empty_orders)
             a_fills = store.put_parquet("fills", pd.DataFrame(columns=["symbol", "side", "qty", "price"]))
             a_rebal = store.put_parquet("rebalancing", pd.DataFrame())
-            portfolio_daily = pd.DataFrame(
-                [{"asof": asof, "cash_usd": 0.0, "portfolio_value_usd": 0.0}]
-            )
+            portfolio_daily = pd.DataFrame([{"asof": asof, "cash_usd": 0.0, "portfolio_value_usd": 0.0}])
             a_port = store.put_parquet("portfolio_daily", portfolio_daily)
             a_trade = store.put_json("trade_history", {"trades": []})
 
@@ -414,12 +402,16 @@ class TradingPipeline:
         a_orders = store.put_parquet("orders", orders_df)
 
         # --- Stage 6: Risk Checks ---
-        risk_findings: List[Dict[str, Any]] = []
+        risk_findings: list[dict[str, Any]] = []
         for rp in risk:
             try:
                 risk_params = params.get("_risk_cfg", params.get("risk", {}))
                 risk_findings.extend(rp.check_targets(targets, risk_params))
-                exec_orders = orders_df[orders_df.get("Executable", pd.Series(dtype=bool))].copy() if "Executable" in orders_df.columns else orders_df
+                exec_orders = (
+                    orders_df[orders_df.get("Executable", pd.Series(dtype=bool))].copy()
+                    if "Executable" in orders_df.columns
+                    else orders_df
+                )
                 risk_findings.extend(rp.check_orders(exec_orders, risk_params))
             except Exception as exc:
                 logger.warning("Risk check failed: %s", exc)
@@ -437,12 +429,14 @@ class TradingPipeline:
         fills_data = []
         for detail in execution_report.get("orders_details", []):
             if detail.get("status") == "FILLED":
-                fills_data.append({
-                    "symbol": detail.get("symbol", ""),
-                    "side": str(detail.get("side", detail.get("action", ""))).lower(),
-                    "qty": float(detail.get("executed_quantity", 0)),
-                    "price": float(detail.get("executed_price", 0)),
-                })
+                fills_data.append(
+                    {
+                        "symbol": detail.get("symbol", ""),
+                        "side": str(detail.get("side", detail.get("action", ""))).lower(),
+                        "qty": float(detail.get("executed_quantity", 0)),
+                        "price": float(detail.get("executed_price", 0)),
+                    }
+                )
         fills = pd.DataFrame(fills_data) if fills_data else pd.DataFrame(columns=["symbol", "side", "qty", "price"])
         a_fills = store.put_parquet("fills", fills)
 
@@ -479,11 +473,15 @@ class TradingPipeline:
         except Exception:
             pass
 
-        portfolio_daily = pd.DataFrame([{
-            "asof": asof,
-            "cash_usd": float(cash_usd_post),
-            "portfolio_value_usd": float(portfolio_value_post),
-        }])
+        portfolio_daily = pd.DataFrame(
+            [
+                {
+                    "asof": asof,
+                    "cash_usd": float(cash_usd_post),
+                    "portfolio_value_usd": float(portfolio_value_post),
+                }
+            ]
+        )
         a_port = store.put_parquet("portfolio_daily", portfolio_daily)
 
         # Collect fee/funding metrics from broker
@@ -493,7 +491,7 @@ class TradingPipeline:
 
         # --- Stage 8: Artifacts ---
         # Collect broker cost config for artifact
-        broker_costs: Dict[str, Any] = {}
+        broker_costs: dict[str, Any] = {}
         if broker is not None:
             for attr in ("spread_bps", "slippage_bps", "maker_fee_bps", "taker_fee_bps"):
                 if hasattr(broker, attr):
@@ -510,11 +508,14 @@ class TradingPipeline:
             cumulative_fees=cumulative_fees,
             broker_costs=broker_costs,
         )
-        a_trade = store.put_json("trade_history", {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "mode": mode,
-            "trades": artifact_payload.get("execution_summary", {}).get("executed_orders", []),
-        })
+        a_trade = store.put_json(
+            "trade_history",
+            {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "mode": mode,
+                "trades": artifact_payload.get("execution_summary", {}).get("executed_orders", []),
+            },
+        )
 
         metrics = {
             "n_strategies": float(len(strategy_results)),
@@ -558,15 +559,15 @@ class TradingPipeline:
     # ==================================================================
     def _build_market_data(
         self,
-        market_data_dict: Dict[str, pd.DataFrame],
+        market_data_dict: dict[str, pd.DataFrame],
         universe: pd.DataFrame,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Build the data dict that strategies expect.
 
         Takes the wide-format dict from ``DataPlugin.load_market_data()``
         and adds universe + defaults for missing keys.
         """
-        result: Dict[str, Any] = {"universe": universe}
+        result: dict[str, Any] = {"universe": universe}
         result.update(market_data_dict)
         for key in ("prices", "volume", "market_cap", "funding_rates"):
             result.setdefault(key, pd.DataFrame())
@@ -577,12 +578,12 @@ class TradingPipeline:
     # ==================================================================
     def _run_strategies(
         self,
-        market_data: Dict[str, Any],
-        strategies_cfg: List[Dict[str, Any]],
-        pipeline_params: Dict[str, Any],
-    ) -> Dict[str, Dict[str, Any]]:
+        market_data: dict[str, Any],
+        strategies_cfg: list[dict[str, Any]],
+        pipeline_params: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
         """Import and run each strategy, collecting results."""
-        results: Dict[str, Dict[str, Any]] = {}
+        results: dict[str, dict[str, Any]] = {}
 
         for strat_cfg in strategies_cfg:
             name = strat_cfg["name"]
@@ -590,9 +591,7 @@ class TradingPipeline:
             strat_params = strat_cfg.get("params", {})
 
             try:
-                module = importlib.import_module(
-                    f"quantbox.plugins.strategies.{name}"
-                )
+                module = importlib.import_module(f"quantbox.plugins.strategies.{name}")
             except ImportError:
                 logger.error("Could not import strategy '%s'", name)
                 raise
@@ -618,12 +617,12 @@ class TradingPipeline:
 
     def _run_strategy_plugins(
         self,
-        strategy_plugins: List[StrategyPlugin],
-        strategies_cfg: List[Dict[str, Any]],
-        market_data: Dict[str, Any],
-    ) -> Dict[str, Dict[str, Any]]:
+        strategy_plugins: list[StrategyPlugin],
+        strategies_cfg: list[dict[str, Any]],
+        market_data: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
         """Run injected StrategyPlugin instances, collecting results."""
-        results: Dict[str, Dict[str, Any]] = {}
+        results: dict[str, dict[str, Any]] = {}
 
         for i, strat in enumerate(strategy_plugins):
             strat_cfg = strategies_cfg[i] if i < len(strategies_cfg) else {}
@@ -654,9 +653,9 @@ class TradingPipeline:
     # ==================================================================
     def _aggregate_strategies(
         self,
-        strategy_results: Dict[str, Dict[str, Any]],
-        params: Dict[str, Any],
-    ) -> Dict[str, float]:
+        strategy_results: dict[str, dict[str, Any]],
+        params: dict[str, Any],
+    ) -> dict[str, float]:
         """Aggregate multi-strategy weights into a single weight per asset.
 
         Ported from quantlab trading.py aggregation logic:
@@ -693,12 +692,10 @@ class TradingPipeline:
 
         # Multi-strategy aggregation
         try:
-            combined = pd.concat(
-                weight_dfs, axis=1, keys=names[:len(weight_dfs)], names=["strategy"]
-            )
+            combined = pd.concat(weight_dfs, axis=1, keys=names[: len(weight_dfs)], names=["strategy"])
             acct_w = pd.Series(
                 account_weights,
-                index=pd.Index(names[:len(weight_dfs)], name="strategy"),
+                index=pd.Index(names[: len(weight_dfs)], name="strategy"),
             )
             weighted = combined.mul(acct_w, level="strategy")
             # Drop strategy level and sum per ticker
@@ -709,7 +706,7 @@ class TradingPipeline:
             aggregated = flat.iloc[-1]
         except Exception:
             # Fallback: manual aggregation
-            agg: Dict[str, float] = {}
+            agg: dict[str, float] = {}
             for i, df in enumerate(weight_dfs):
                 last = df.iloc[-1] if isinstance(df, pd.DataFrame) else df
                 w = account_weights[i]
@@ -725,10 +722,10 @@ class TradingPipeline:
     # ==================================================================
     def _apply_risk_transforms(
         self,
-        weights: Dict[str, float],
-        strategy_results: Dict[str, Dict[str, Any]],
-        params: Dict[str, Any],
-    ) -> Dict[str, float]:
+        weights: dict[str, float],
+        strategy_results: dict[str, dict[str, Any]],
+        params: dict[str, Any],
+    ) -> dict[str, float]:
         """Apply tranching, leverage cap, and negative-weight clamping.
 
         Ported from quantlab trading.py risk management section.
@@ -754,9 +751,7 @@ class TradingPipeline:
                     w_df = sinfo["result"].get("weights", pd.DataFrame())
                     if w_df is not None and not w_df.empty:
                         weight_dfs.append(w_df)
-                        account_weights.append(
-                            float(weight_overrides.get(sname, sinfo["weight"]))
-                        )
+                        account_weights.append(float(weight_overrides.get(sname, sinfo["weight"])))
 
                 if len(weight_dfs) == 1:
                     full_ts = weight_dfs[0] * account_weights[0]
@@ -764,12 +759,12 @@ class TradingPipeline:
                     combined = pd.concat(
                         weight_dfs,
                         axis=1,
-                        keys=names[:len(weight_dfs)],
+                        keys=names[: len(weight_dfs)],
                         names=["strategy"],
                     )
                     acct_w = pd.Series(
                         account_weights,
-                        index=pd.Index(names[:len(weight_dfs)], name="strategy"),
+                        index=pd.Index(names[: len(weight_dfs)], name="strategy"),
                     )
                     weighted = combined.mul(acct_w, level="strategy")
                     full_ts = weighted.droplevel(0, axis=1)
@@ -784,9 +779,7 @@ class TradingPipeline:
         # Max leverage
         gross = s.abs().sum()
         if gross > max_leverage:
-            logger.warning(
-                "Leverage %.4f exceeds max_leverage %.1f, scaling down", gross, max_leverage
-            )
+            logger.warning("Leverage %.4f exceeds max_leverage %.1f, scaling down", gross, max_leverage)
             s = s / gross * max_leverage
 
         # Clamp negatives
@@ -804,11 +797,11 @@ class TradingPipeline:
     def _generate_orders(
         self,
         broker: BrokerPlugin,
-        weights: Dict[str, float],
+        weights: dict[str, float],
         capital_at_risk: float,
         stable_coin: str,
-        params: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
         """Generate rebalancing DataFrame and executable orders.
 
         Ported from quantlab ``orders.py:generate_portfolio_orders()``.
@@ -825,7 +818,7 @@ class TradingPipeline:
         cash_available = float(cash.get(stable_coin, cash.get("USD", 0.0)))
 
         # Build holdings dict
-        current_holdings: Dict[str, float] = {}
+        current_holdings: dict[str, float] = {}
         if positions_df is not None and not positions_df.empty:
             for _, row in positions_df.iterrows():
                 sym = str(row.get("symbol", ""))
@@ -837,7 +830,7 @@ class TradingPipeline:
         all_symbols = sorted(set(list(weights.keys()) + list(current_holdings.keys())))
         all_symbols = [s for s in all_symbols if s not in exclusions]
 
-        price_map: Dict[str, Optional[float]] = {}
+        price_map: dict[str, float | None] = {}
         if all_symbols:
             try:
                 snap = broker.get_market_snapshot(all_symbols)
@@ -850,7 +843,7 @@ class TradingPipeline:
             except Exception:
                 pass
 
-        def get_price(asset: str) -> Optional[float]:
+        def get_price(asset: str) -> float | None:
             return price_map.get(asset)
 
         # Portfolio value -- prefer broker.get_equity() for derivatives
@@ -879,7 +872,7 @@ class TradingPipeline:
         adjusted_weights = {a: w * capital_at_risk for a, w in weights.items()}
 
         # Target positions
-        target_positions: Dict[str, float] = {}
+        target_positions: dict[str, float] = {}
         for asset, weight in adjusted_weights.items():
             p = get_price(asset)
             if p is not None and p > 0:
@@ -916,12 +909,12 @@ class TradingPipeline:
 
     def _build_rebalancing(
         self,
-        current_holdings: Dict[str, float],
-        target_positions: Dict[str, float],
-        get_price: Callable[[str], Optional[float]],
+        current_holdings: dict[str, float],
+        target_positions: dict[str, float],
+        get_price: Callable[[str], float | None],
         total_value: float,
-        strategy_weights: Dict[str, float],
-        exclusions: List[str],
+        strategy_weights: dict[str, float],
+        exclusions: list[str],
     ) -> pd.DataFrame:
         """Build the rebalancing analysis DataFrame.
 
@@ -930,7 +923,7 @@ class TradingPipeline:
         assets = sorted(set(current_holdings.keys()) | set(target_positions.keys()))
         assets = [a for a in assets if a not in exclusions]
 
-        rows: List[Dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
         for asset in assets:
             current_qty = current_holdings.get(asset, 0.0)
             price = get_price(asset)
@@ -949,19 +942,21 @@ class TradingPipeline:
             else:
                 trade_action = "Hold"
 
-            rows.append({
-                "Asset": asset,
-                "Current Quantity": current_qty,
-                "Current Value": current_value,
-                "Current Weight": current_weight,
-                "Target Quantity": target_qty,
-                "Target Value": target_value,
-                "Target Weight": target_weight,
-                "Weight Delta": weight_delta,
-                "Delta Quantity": delta_qty,
-                "Price": price,
-                "Trade Action": trade_action,
-            })
+            rows.append(
+                {
+                    "Asset": asset,
+                    "Current Quantity": current_qty,
+                    "Current Value": current_value,
+                    "Current Weight": current_weight,
+                    "Target Quantity": target_qty,
+                    "Target Value": target_value,
+                    "Target Weight": target_weight,
+                    "Weight Delta": weight_delta,
+                    "Delta Quantity": delta_qty,
+                    "Price": price,
+                    "Trade Action": trade_action,
+                }
+            )
 
         return pd.DataFrame(rows)
 
@@ -983,13 +978,26 @@ class TradingPipeline:
         Uses ``broker.get_market_snapshot()`` for symbol info where available.
         """
         if rebalancing_df.empty:
-            return pd.DataFrame(columns=[
-                "Asset", "Symbol", "Action", "Raw Quantity", "Adjusted Quantity",
-                "Price", "Notional Value", "Min Notional", "Min Qty", "Step Size",
-                "Scaling Factor", "Order Status", "Reason", "Executable",
-            ])
+            return pd.DataFrame(
+                columns=[
+                    "Asset",
+                    "Symbol",
+                    "Action",
+                    "Raw Quantity",
+                    "Adjusted Quantity",
+                    "Price",
+                    "Notional Value",
+                    "Min Notional",
+                    "Min Qty",
+                    "Step Size",
+                    "Scaling Factor",
+                    "Order Status",
+                    "Reason",
+                    "Executable",
+                ]
+            )
 
-        order_records: List[Dict[str, Any]] = []
+        order_records: list[dict[str, Any]] = []
 
         for _, row in rebalancing_df.iterrows():
             asset = row["Asset"]
@@ -1011,9 +1019,7 @@ class TradingPipeline:
                 reason = "No trade needed"
             else:
                 zero_target_sell = (
-                    action == "sell"
-                    and row.get("Target Weight", 0) == 0
-                    and row.get("Current Quantity", 0) > 0
+                    action == "sell" and row.get("Target Weight", 0) == 0 and row.get("Current Quantity", 0) > 0
                 )
                 if abs(row["Weight Delta"]) < min_trade_size and not zero_target_sell:
                     status = "Below threshold"
@@ -1055,31 +1061,31 @@ class TradingPipeline:
                         status = "Pending scaling"
                         reason = ""
 
-            order_records.append({
-                "Asset": asset,
-                "Symbol": symbol,
-                "Action": action.capitalize(),
-                "Raw Quantity": abs(delta_qty),
-                "Adjusted Quantity": adjusted_qty,
-                "Notional Value": notional_value,
-                "Price": price,
-                "Min Notional": min_notional,
-                "Min Qty": min_qty,
-                "Step Size": step_size,
-                "Order Status": status,
-                "Reason": reason,
-                "Scaling Factor": scaling_factor,
-            })
+            order_records.append(
+                {
+                    "Asset": asset,
+                    "Symbol": symbol,
+                    "Action": action.capitalize(),
+                    "Raw Quantity": abs(delta_qty),
+                    "Adjusted Quantity": adjusted_qty,
+                    "Notional Value": notional_value,
+                    "Price": price,
+                    "Min Notional": min_notional,
+                    "Min Qty": min_qty,
+                    "Step Size": step_size,
+                    "Order Status": status,
+                    "Reason": reason,
+                    "Scaling Factor": scaling_factor,
+                }
+            )
 
         # --- Buy scaling (ported from quantlab) ---
         buy_indices = [
-            i for i, rec in enumerate(order_records)
+            i
+            for i, rec in enumerate(order_records)
             if rec["Action"] == "Buy" and rec["Order Status"] == "Pending scaling"
         ]
-        total_buy_value = sum(
-            order_records[i]["Raw Quantity"] * (order_records[i]["Price"] or 0)
-            for i in buy_indices
-        )
+        total_buy_value = sum(order_records[i]["Raw Quantity"] * (order_records[i]["Price"] or 0) for i in buy_indices)
         cash_from_sells = sum(
             rec["Notional Value"]
             for rec in order_records
@@ -1128,13 +1134,24 @@ class TradingPipeline:
         elif total_buy_value > 0:
             logger.warning(
                 "Buy scaling factor %.4f < minimum %.2f, skipping buys",
-                scaling_factor, scaling_factor_min,
+                scaling_factor,
+                scaling_factor_min,
             )
 
         columns = [
-            "Asset", "Symbol", "Action", "Raw Quantity", "Adjusted Quantity",
-            "Price", "Notional Value", "Min Notional", "Min Qty", "Step Size",
-            "Scaling Factor", "Order Status", "Reason",
+            "Asset",
+            "Symbol",
+            "Action",
+            "Raw Quantity",
+            "Adjusted Quantity",
+            "Price",
+            "Notional Value",
+            "Min Notional",
+            "Min Qty",
+            "Step Size",
+            "Scaling Factor",
+            "Order Status",
+            "Reason",
         ]
         order_df = pd.DataFrame(order_records, columns=columns)
         order_df["Executable"] = (order_df["Adjusted Quantity"] > 0) & (order_df["Order Status"] == "To be placed")
@@ -1150,12 +1167,12 @@ class TradingPipeline:
         stable_coin: str,
         trading_enabled: bool,
         mode: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Execute orders via broker with sell-before-buy ordering.
 
         Ported from quantlab ``orders.py:execute_orders()``.
         """
-        report: Dict[str, Any] = {
+        report: dict[str, Any] = {
             "executed_orders": [],
             "failed_orders": [],
             "summary": {
@@ -1170,7 +1187,11 @@ class TradingPipeline:
         if orders_df is None or orders_df.empty or not trading_enabled:
             return report
 
-        executable = orders_df[orders_df.get("Executable", pd.Series(dtype=bool))].copy() if "Executable" in orders_df.columns else orders_df
+        executable = (
+            orders_df[orders_df.get("Executable", pd.Series(dtype=bool))].copy()
+            if "Executable" in orders_df.columns
+            else orders_df
+        )
         if executable.empty:
             return report
 
@@ -1178,16 +1199,18 @@ class TradingPipeline:
         executable = executable.sort_values(by="Action", ascending=False)
 
         # Convert to broker-compatible format
-        broker_orders_data: List[Dict[str, Any]] = []
+        broker_orders_data: list[dict[str, Any]] = []
         for _, row in executable.iterrows():
             action = str(row.get("Action", "")).lower()
             side = "sell" if action == "sell" else "buy"
-            broker_orders_data.append({
-                "symbol": str(row.get("Asset", "")),
-                "side": side,
-                "qty": float(row.get("Adjusted Quantity", 0)),
-                "price": float(row.get("Price", 0)),
-            })
+            broker_orders_data.append(
+                {
+                    "symbol": str(row.get("Asset", "")),
+                    "side": side,
+                    "qty": float(row.get("Adjusted Quantity", 0)),
+                    "price": float(row.get("Price", 0)),
+                }
+            )
 
         broker_orders = pd.DataFrame(broker_orders_data)
         if broker_orders.empty:
@@ -1198,12 +1221,14 @@ class TradingPipeline:
         except Exception as exc:
             logger.error("Broker place_orders failed: %s", exc)
             for _, row in broker_orders.iterrows():
-                report["orders_details"].append({
-                    "symbol": row["symbol"],
-                    "action": row["side"],
-                    "status": "FAILED",
-                    "error": str(exc),
-                })
+                report["orders_details"].append(
+                    {
+                        "symbol": row["symbol"],
+                        "action": row["side"],
+                        "status": "FAILED",
+                        "error": str(exc),
+                    }
+                )
                 report["summary"]["total_failed"] += 1
             return report
 
@@ -1249,14 +1274,14 @@ class TradingPipeline:
         self,
         rebalancing_df: pd.DataFrame,
         orders_df: pd.DataFrame,
-        execution_report: Dict[str, Any],
-        final_weights: Dict[str, float],
+        execution_report: dict[str, Any],
+        final_weights: dict[str, float],
         total_value: float,
         mode: str,
         funding_charge: float = 0.0,
         cumulative_fees: float = 0.0,
-        broker_costs: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        broker_costs: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Build structured artifact payload for publishers.
 
         Ported from quantlab ``trading.py:_build_artifact_payload()``.
@@ -1264,18 +1289,23 @@ class TradingPipeline:
         paper_trading = mode == "paper"
 
         # Rebalancing table
-        rebalancing_table: List[Dict[str, Any]] = []
+        rebalancing_table: list[dict[str, Any]] = []
         if rebalancing_df is not None and not rebalancing_df.empty:
             col_map = {
-                "Asset": "asset", "Current Quantity": "current_qty",
-                "Current Value": "current_value", "Current Weight": "current_weight",
-                "Target Quantity": "target_qty", "Target Value": "target_value",
-                "Target Weight": "target_weight", "Weight Delta": "weight_delta",
-                "Delta Quantity": "delta_qty", "Price": "price",
+                "Asset": "asset",
+                "Current Quantity": "current_qty",
+                "Current Value": "current_value",
+                "Current Weight": "current_weight",
+                "Target Quantity": "target_qty",
+                "Target Value": "target_value",
+                "Target Weight": "target_weight",
+                "Weight Delta": "weight_delta",
+                "Delta Quantity": "delta_qty",
+                "Price": "price",
                 "Trade Action": "trade_action",
             }
             for _, row in rebalancing_df.iterrows():
-                entry: Dict[str, Any] = {}
+                entry: dict[str, Any] = {}
                 for src, dst in col_map.items():
                     val = row.get(src)
                     if val is not None and isinstance(val, (int, float, np.floating)):
@@ -1286,30 +1316,34 @@ class TradingPipeline:
 
         # Execution summary
         summary = execution_report.get("summary", {})
-        executed_orders: List[Dict[str, Any]] = []
-        failed_orders: List[Dict[str, Any]] = []
+        executed_orders: list[dict[str, Any]] = []
+        failed_orders: list[dict[str, Any]] = []
         total_order_fees = 0.0
         for detail in execution_report.get("orders_details", []):
             if detail.get("status") == "FILLED":
                 order_fee = float(detail.get("fee", 0) or 0)
                 total_order_fees += order_fee
-                executed_orders.append({
-                    "symbol": str(detail.get("symbol", "")),
-                    "action": str(detail.get("action", "")),
-                    "quantity": detail.get("executed_quantity"),
-                    "executed_price": detail.get("executed_price"),
-                    "reference_price": detail.get("reference_price"),
-                    "spread_bps": round(float(detail.get("spread_pct", 0) or 0) * 10000, 1),
-                    "fee": round(order_fee, 4),
-                    "status": "FILLED",
-                })
+                executed_orders.append(
+                    {
+                        "symbol": str(detail.get("symbol", "")),
+                        "action": str(detail.get("action", "")),
+                        "quantity": detail.get("executed_quantity"),
+                        "executed_price": detail.get("executed_price"),
+                        "reference_price": detail.get("reference_price"),
+                        "spread_bps": round(float(detail.get("spread_pct", 0) or 0) * 10000, 1),
+                        "fee": round(order_fee, 4),
+                        "status": "FILLED",
+                    }
+                )
             elif detail.get("status") == "FAILED":
-                failed_orders.append({
-                    "symbol": str(detail.get("symbol", "")),
-                    "action": str(detail.get("action", "")),
-                    "error": str(detail.get("error", "")),
-                    "status": "FAILED",
-                })
+                failed_orders.append(
+                    {
+                        "symbol": str(detail.get("symbol", "")),
+                        "action": str(detail.get("action", "")),
+                        "error": str(detail.get("error", "")),
+                        "status": "FAILED",
+                    }
+                )
 
         return {
             "portfolio_value": round(float(total_value), 2),
@@ -1335,7 +1369,7 @@ class TradingPipeline:
     # ==================================================================
     # Token policy helpers
     # ==================================================================
-    def _load_token_policy(self, universe_params: Dict[str, Any]):
+    def _load_token_policy(self, universe_params: dict[str, Any]):
         """Create TokenPolicy from universe params or config file.
 
         Returns ``None`` when no token-policy configuration is present
@@ -1358,9 +1392,6 @@ class TradingPipeline:
             return []
 
         symbols = universe["symbol"].tolist()
-        rankings_data = [
-            {"symbol": sym, "rank": rank, "market_cap": 0}
-            for rank, sym in enumerate(symbols, 1)
-        ]
+        rankings_data = [{"symbol": sym, "rank": rank, "market_cap": 0} for rank, sym in enumerate(symbols, 1)]
         rankings_df = pd.DataFrame(rankings_data)
         return policy.detect_new_tokens(rankings_df, policy.top_n_monitor)

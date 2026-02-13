@@ -6,11 +6,12 @@ injected via config just like any other strategy.
 
 Ported from ``TradingPipeline._aggregate_strategies()``.
 """
+
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any
 
 import pandas as pd
 
@@ -42,8 +43,8 @@ class WeightedAverageAggregator:
         tags=("aggregator", "meta-strategy"),
     )
 
-    def run(self, data: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
-        strategy_results: Dict[str, Dict[str, Any]] = data.get("strategy_results", {})
+    def run(self, data: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        strategy_results: dict[str, dict[str, Any]] = data.get("strategy_results", {})
         weight_overrides = params.get("strategy_weights", {})
 
         names = list(strategy_results.keys())
@@ -76,8 +77,10 @@ class WeightedAverageAggregator:
         # Multi-strategy aggregation
         try:
             combined = pd.concat(
-                weight_dfs, axis=1,
-                keys=valid_names, names=["strategy"],
+                weight_dfs,
+                axis=1,
+                keys=valid_names,
+                names=["strategy"],
             )
             acct_w = pd.Series(
                 account_weights,
@@ -92,7 +95,7 @@ class WeightedAverageAggregator:
             last_row = aggregated_df.iloc[-1]
         except Exception:
             logger.warning("Concat aggregation failed, using manual fallback")
-            agg: Dict[str, float] = {}
+            agg: dict[str, float] = {}
             for i, df in enumerate(weight_dfs):
                 last = df.iloc[-1] if isinstance(df, pd.DataFrame) else df
                 w = account_weights[i]

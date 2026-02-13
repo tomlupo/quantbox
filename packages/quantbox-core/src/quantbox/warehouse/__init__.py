@@ -12,11 +12,11 @@ Usage::
         wh.register_dataset("crypto_spot", "/path/to/datasets/crypto-spot-daily")
         result = wh.query("SELECT * FROM crypto_spot__prices LIMIT 10")
 """
+
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Optional, Union
 
 import pandas as pd
 import pyarrow as pa
@@ -45,8 +45,8 @@ class Warehouse:
 
     def __init__(
         self,
-        root: Union[str, Path],
-        database: Union[str, Path, None] = None,
+        root: str | Path,
+        database: str | Path | None = None,
         *,
         compression: str = "zstd",
     ):
@@ -65,7 +65,7 @@ class Warehouse:
         df: pd.DataFrame,
         *,
         layer: str = "bronze",
-        partition_cols: Optional[list[str]] = None,
+        partition_cols: list[str] | None = None,
         mode: str = "append",
     ) -> None:
         """Ingest a pandas DataFrame into the warehouse.
@@ -79,7 +79,11 @@ class Warehouse:
         """
         table = pa.Table.from_pandas(df, preserve_index=False)
         self.lake.write(
-            name, table, layer=layer, partition_cols=partition_cols, mode=mode,
+            name,
+            table,
+            layer=layer,
+            partition_cols=partition_cols,
+            mode=mode,
         )
 
     # ── query ─────────────────────────────────────────────────
@@ -109,7 +113,7 @@ class Warehouse:
 
     # ── datasets ──────────────────────────────────────────────
 
-    def register_dataset(self, name: str, path: Union[str, Path]) -> list[str]:
+    def register_dataset(self, name: str, path: str | Path) -> list[str]:
         """Register an external dataset (e.g. from quantbox-datasets).
 
         Creates zero-copy DuckDB views over the dataset's Parquet files.
@@ -145,7 +149,7 @@ class Warehouse:
     def close(self) -> None:
         self.db.close()
 
-    def __enter__(self) -> "Warehouse":
+    def __enter__(self) -> Warehouse:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:

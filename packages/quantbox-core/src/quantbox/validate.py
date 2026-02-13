@@ -1,21 +1,25 @@
 from __future__ import annotations
-from typing import Any, Dict, List
+
 from dataclasses import dataclass
+from typing import Any
+
 from .plugin_manifest import load_manifest, resolve_profile
+
 
 @dataclass
 class ValidationFinding:
     level: str  # "error" or "warning"
     message: str
 
-def validate_config(cfg: Dict[str, Any]) -> List[ValidationFinding]:
-    findings: List[ValidationFinding] = []
-    for k in ("run","artifacts","plugins"):
+
+def validate_config(cfg: dict[str, Any]) -> list[ValidationFinding]:
+    findings: list[ValidationFinding] = []
+    for k in ("run", "artifacts", "plugins"):
         if k not in cfg:
             findings.append(ValidationFinding("error", f"missing_top_level_key:{k}"))
     if "run" in cfg:
         mode = cfg["run"].get("mode")
-        if mode not in ("backtest","paper","live"):
+        if mode not in ("backtest", "paper", "live"):
             findings.append(ValidationFinding("error", "run.mode must be backtest|paper|live"))
         if not cfg["run"].get("asof"):
             findings.append(ValidationFinding("error", "run.asof is required (YYYY-MM-DD)"))

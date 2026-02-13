@@ -1,14 +1,15 @@
 """Tests for quantbox.simulation.stress_testing — StressTestEngine."""
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from quantbox.simulation.stress_testing import (
+    HISTORICAL_SCENARIOS,
     HistoricalScenario,
     StressScenario,
     StressTestEngine,
     StressTestResult,
-    HISTORICAL_SCENARIOS,
 )
 
 
@@ -16,11 +17,14 @@ from quantbox.simulation.stress_testing import (
 def sample_returns():
     rng = np.random.default_rng(42)
     dates = pd.bdate_range("2020-01-01", periods=500)
-    return pd.DataFrame({
-        "equity_fund": rng.normal(0.0003, 0.012, 500),
-        "bond_fund": rng.normal(0.0001, 0.005, 500),
-        "gold": rng.normal(0.0002, 0.010, 500),
-    }, index=dates)
+    return pd.DataFrame(
+        {
+            "equity_fund": rng.normal(0.0003, 0.012, 500),
+            "bond_fund": rng.normal(0.0001, 0.005, 500),
+            "gold": rng.normal(0.0002, 0.010, 500),
+        },
+        index=dates,
+    )
 
 
 @pytest.fixture
@@ -47,7 +51,9 @@ class TestHistoricalScenarios:
 class TestStressTestEngine:
     def test_run_historical_scenario(self, engine):
         result = engine.run_historical_scenario(
-            HistoricalScenario.COVID_CRASH_2020, n_simulations=200, random_state=42,
+            HistoricalScenario.COVID_CRASH_2020,
+            n_simulations=200,
+            random_state=42,
         )
         assert isinstance(result, StressTestResult)
         assert result.portfolio_impact < 0  # Should show loss
@@ -56,7 +62,9 @@ class TestStressTestEngine:
 
     def test_run_by_string(self, engine):
         result = engine.run_historical_scenario(
-            "2008_financial_crisis", n_simulations=200, random_state=42,
+            "2008_financial_crisis",
+            n_simulations=200,
+            random_state=42,
         )
         assert result.scenario.name == "2008 Financial Crisis"
 
@@ -75,22 +83,28 @@ class TestStressTestEngine:
 
     def test_asset_impacts(self, engine):
         result = engine.run_historical_scenario(
-            HistoricalScenario.BLACK_MONDAY_1987, n_simulations=200, random_state=42,
+            HistoricalScenario.BLACK_MONDAY_1987,
+            n_simulations=200,
+            random_state=42,
         )
         assert "equity_fund" in result.asset_impacts
         assert "bond_fund" in result.asset_impacts
 
     def test_max_drawdown_negative(self, engine):
         result = engine.run_historical_scenario(
-            HistoricalScenario.FINANCIAL_CRISIS_2008, n_simulations=200, random_state=42,
+            HistoricalScenario.FINANCIAL_CRISIS_2008,
+            n_simulations=200,
+            random_state=42,
         )
         assert result.max_drawdown < 0
 
     def test_sensitivity_analysis(self, engine):
         shock_range = np.array([-0.1, -0.2, -0.3])
         results = engine.sensitivity_analysis(
-            shock_variable="equity", shock_range=shock_range,
-            n_simulations=100, random_state=42,
+            shock_variable="equity",
+            shock_range=shock_range,
+            n_simulations=100,
+            random_state=42,
         )
         assert isinstance(results, pd.DataFrame)
         assert len(results) == 3
@@ -101,8 +115,10 @@ class TestStressTestEngine:
     def test_sensitivity_volatility(self, engine):
         shock_range = np.array([1.0, 2.0, 4.0])
         results = engine.sensitivity_analysis(
-            shock_variable="volatility", shock_range=shock_range,
-            n_simulations=100, random_state=42,
+            shock_variable="volatility",
+            shock_range=shock_range,
+            n_simulations=100,
+            random_state=42,
         )
         assert len(results) == 3
 
@@ -118,7 +134,9 @@ class TestStressTestEngine:
 
     def test_var_calculation(self, engine):
         var_results = engine.var_calculation(
-            confidence_levels=[0.95, 0.99], horizon_days=1, method="historical",
+            confidence_levels=[0.95, 0.99],
+            horizon_days=1,
+            method="historical",
         )
         assert 0.95 in var_results
         assert 0.99 in var_results
@@ -137,9 +155,12 @@ class TestStressTestEngine:
 class TestStressScenario:
     def test_dataclass(self):
         s = StressScenario(
-            name="Test", description="desc",
-            equity_shock=-0.2, bond_shock=0.0,
-            volatility_multiplier=2.0, correlation_stress=1.5,
+            name="Test",
+            description="desc",
+            equity_shock=-0.2,
+            bond_shock=0.0,
+            volatility_multiplier=2.0,
+            correlation_stress=1.5,
             duration_days=30,
         )
         assert s.recovery_days == 0
@@ -149,8 +170,11 @@ class TestStressScenario:
 class TestReverseStressTest:
     def test_finds_shock_level(self, engine):
         shock_level, result = engine.reverse_stress_test(
-            target_loss=-0.05, shock_variable="equity",
-            tolerance=0.02, max_iterations=20, n_simulations=200,
+            target_loss=-0.05,
+            shock_variable="equity",
+            tolerance=0.02,
+            max_iterations=20,
+            n_simulations=200,
         )
         assert shock_level < 0
         assert isinstance(result, StressTestResult)

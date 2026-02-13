@@ -4,11 +4,12 @@ Generates realistic multi-asset price data from stochastic models,
 useful for strategy research, stress-testing, and CI pipelines that
 need deterministic synthetic data without external API calls.
 """
+
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -30,23 +31,29 @@ logger = logging.getLogger(__name__)
 
 
 _MODEL_BUILDERS = {
-    "gbm": lambda p: GBM(GBMParams(
-        mu=p.get("mu", 0.08),
-        sigma=p.get("sigma", 0.20),
-    )),
-    "jump_diffusion": lambda p: JumpDiffusion(JumpDiffusionParams(
-        mu=p.get("mu", 0.08),
-        sigma=p.get("sigma", 0.20),
-        jump_intensity=p.get("jump_intensity", 5.0),
-        jump_mean=p.get("jump_mean", -0.02),
-        jump_std=p.get("jump_std", 0.03),
-    )),
-    "mean_reversion": lambda p: MeanReversion(MeanReversionParams(
-        mu=p.get("mu", 0.05),
-        sigma=p.get("sigma", 0.15),
-        theta=p.get("theta", 0.5),
-        long_term_mean=p.get("long_term_mean", 100.0),
-    )),
+    "gbm": lambda p: GBM(
+        GBMParams(
+            mu=p.get("mu", 0.08),
+            sigma=p.get("sigma", 0.20),
+        )
+    ),
+    "jump_diffusion": lambda p: JumpDiffusion(
+        JumpDiffusionParams(
+            mu=p.get("mu", 0.08),
+            sigma=p.get("sigma", 0.20),
+            jump_intensity=p.get("jump_intensity", 5.0),
+            jump_mean=p.get("jump_mean", -0.02),
+            jump_std=p.get("jump_std", 0.03),
+        )
+    ),
+    "mean_reversion": lambda p: MeanReversion(
+        MeanReversionParams(
+            mu=p.get("mu", 0.05),
+            sigma=p.get("sigma", 0.15),
+            theta=p.get("theta", 0.5),
+            long_term_mean=p.get("long_term_mean", 100.0),
+        )
+    ),
 }
 
 
@@ -128,20 +135,20 @@ class SyntheticDataPlugin:
         ),
     )
 
-    def load_universe(self, params: Dict[str, Any]) -> List[str]:
+    def load_universe(self, params: dict[str, Any]) -> list[str]:
         """Return list of synthetic symbol names."""
         symbols = params.get("symbols")
         if symbols:
             return list(symbols)
         n_assets = int(params.get("n_assets", 10))
-        return [f"SYN_{i+1:03d}" for i in range(n_assets)]
+        return [f"SYN_{i + 1:03d}" for i in range(n_assets)]
 
     def load_market_data(
         self,
-        universe: List[str],
+        universe: list[str],
         asof: str,
-        params: Dict[str, Any],
-    ) -> Dict[str, pd.DataFrame]:
+        params: dict[str, Any],
+    ) -> dict[str, pd.DataFrame]:
         """Generate synthetic price/volume data.
 
         Returns wide-format DataFrames backdated from *asof*.
@@ -159,10 +166,7 @@ class SyntheticDataPlugin:
 
         builder = _MODEL_BUILDERS.get(model_name)
         if builder is None:
-            raise ValueError(
-                f"Unknown model '{model_name}'. "
-                f"Available: {list(_MODEL_BUILDERS.keys())}"
-            )
+            raise ValueError(f"Unknown model '{model_name}'. Available: {list(_MODEL_BUILDERS.keys())}")
 
         sim = MarketSimulator()
         for symbol in universe:
@@ -217,7 +221,10 @@ class SyntheticDataPlugin:
 
         logger.info(
             "Generated synthetic data: %d assets, %d steps, model=%s, corr=%s",
-            n_assets, n_steps, model_name, correlation_type,
+            n_assets,
+            n_steps,
+            model_name,
+            correlation_type,
         )
 
         return {"prices": prices_df, "volume": volume_df}

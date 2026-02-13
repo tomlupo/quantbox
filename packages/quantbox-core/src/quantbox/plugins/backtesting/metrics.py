@@ -8,7 +8,7 @@ or a plain returns Series/DataFrame.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Union
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -23,7 +23,7 @@ def compute_backtest_metrics(
     *,
     trading_days: int = TRADING_DAYS_PER_YEAR,
     risk_free_rate: float = 0.0,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Compute a standard set of performance metrics.
 
     Parameters
@@ -140,6 +140,7 @@ def compute_rolling_sharpe(
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _extract_returns(pf_or_returns: Any) -> pd.Series:
     """Get a flat returns Series from various input types."""
     if isinstance(pf_or_returns, pd.Series):
@@ -151,16 +152,17 @@ def _extract_returns(pf_or_returns: Any) -> pd.Series:
     # Assume vectorbt Portfolio
     try:
         return pf_or_returns.returns()
-    except Exception:
+    except Exception as exc:
         raise TypeError(
             f"Cannot extract returns from {type(pf_or_returns).__name__}. "
             "Pass a vbt.Portfolio, pd.Series, or single-column pd.DataFrame."
-        )
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
 # VaR / CVaR
 # ---------------------------------------------------------------------------
+
 
 def compute_var(
     returns: pd.Series,
@@ -197,6 +199,7 @@ def compute_var(
         return float(np.percentile(scaled, alpha * 100))
     elif method == "parametric":
         from scipy.stats import norm
+
         mu = float(np.mean(scaled))
         sigma = float(np.std(scaled))
         return mu + sigma * norm.ppf(alpha)
@@ -244,11 +247,11 @@ def compute_cvar(
 
 def compute_portfolio_var(
     returns: pd.DataFrame,
-    weights: Dict[str, float],
+    weights: dict[str, float],
     confidence_levels: list | None = None,
     horizon_days: int = 1,
     method: str = "historical",
-) -> Dict[float, float]:
+) -> dict[float, float]:
     """Portfolio VaR with asset weights.
 
     Parameters
@@ -280,10 +283,10 @@ def compute_portfolio_var(
 
 def compute_portfolio_cvar(
     returns: pd.DataFrame,
-    weights: Dict[str, float],
+    weights: dict[str, float],
     confidence_levels: list | None = None,
     horizon_days: int = 1,
-) -> Dict[float, float]:
+) -> dict[float, float]:
     """Portfolio CVaR (Expected Shortfall) with asset weights.
 
     Parameters
@@ -315,6 +318,7 @@ def compute_portfolio_cvar(
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _max_drawdown_duration(dd: pd.Series) -> int:
     """Return the longest drawdown duration in calendar days."""
     in_dd = dd < 0
@@ -324,7 +328,5 @@ def _max_drawdown_duration(dd: pd.Series) -> int:
     groups = groups[in_dd]
     if groups.empty:
         return 0
-    durations = groups.groupby(groups).apply(
-        lambda g: (g.index[-1] - g.index[0]).days
-    )
+    durations = groups.groupby(groups).apply(lambda g: (g.index[-1] - g.index[0]).days)
     return int(durations.max())

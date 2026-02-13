@@ -5,17 +5,19 @@ reverse stress testing, and VaR/CVaR calculations.
 
 Ported from quantlabnew/src/market-simulator.
 """
+
 from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
 
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Optional, Union
 
 
 class HistoricalScenario(Enum):
     """Pre-defined historical stress scenarios."""
+
     FINANCIAL_CRISIS_2008 = "2008_financial_crisis"
     COVID_CRASH_2020 = "2020_covid_crash"
     DOT_COM_BUST_2000 = "2000_dotcom_bust"
@@ -29,6 +31,7 @@ class HistoricalScenario(Enum):
 @dataclass
 class StressScenario:
     """Definition of a stress scenario."""
+
     name: str
     description: str
     equity_shock: float
@@ -44,58 +47,82 @@ HISTORICAL_SCENARIOS = {
     HistoricalScenario.FINANCIAL_CRISIS_2008: StressScenario(
         name="2008 Financial Crisis",
         description="Lehman Brothers collapse and global financial crisis",
-        equity_shock=-0.55, bond_shock=0.10,
-        volatility_multiplier=4.0, correlation_stress=1.8,
-        duration_days=350, recovery_days=700,
+        equity_shock=-0.55,
+        bond_shock=0.10,
+        volatility_multiplier=4.0,
+        correlation_stress=1.8,
+        duration_days=350,
+        recovery_days=700,
     ),
     HistoricalScenario.COVID_CRASH_2020: StressScenario(
         name="COVID-19 Crash",
         description="Pandemic-induced market crash",
-        equity_shock=-0.34, bond_shock=0.05,
-        volatility_multiplier=5.0, correlation_stress=2.0,
-        duration_days=23, recovery_days=140,
+        equity_shock=-0.34,
+        bond_shock=0.05,
+        volatility_multiplier=5.0,
+        correlation_stress=2.0,
+        duration_days=23,
+        recovery_days=140,
     ),
     HistoricalScenario.DOT_COM_BUST_2000: StressScenario(
         name="Dot-Com Bust",
         description="Technology bubble burst",
-        equity_shock=-0.49, bond_shock=0.15,
-        volatility_multiplier=2.0, correlation_stress=1.3,
-        duration_days=650, recovery_days=1500,
+        equity_shock=-0.49,
+        bond_shock=0.15,
+        volatility_multiplier=2.0,
+        correlation_stress=1.3,
+        duration_days=650,
+        recovery_days=1500,
     ),
     HistoricalScenario.BLACK_MONDAY_1987: StressScenario(
         name="Black Monday 1987",
         description="Single-day market crash",
-        equity_shock=-0.22, bond_shock=0.03,
-        volatility_multiplier=6.0, correlation_stress=2.5,
-        duration_days=1, recovery_days=400,
+        equity_shock=-0.22,
+        bond_shock=0.03,
+        volatility_multiplier=6.0,
+        correlation_stress=2.5,
+        duration_days=1,
+        recovery_days=400,
     ),
     HistoricalScenario.EURO_CRISIS_2011: StressScenario(
         name="European Debt Crisis",
         description="Sovereign debt crisis in Europe",
-        equity_shock=-0.20, bond_shock=-0.05,
-        volatility_multiplier=2.5, correlation_stress=1.5,
-        duration_days=180, recovery_days=300,
+        equity_shock=-0.20,
+        bond_shock=-0.05,
+        volatility_multiplier=2.5,
+        correlation_stress=1.5,
+        duration_days=180,
+        recovery_days=300,
     ),
     HistoricalScenario.TAPER_TANTRUM_2013: StressScenario(
         name="Taper Tantrum",
         description="Fed tapering announcement shock",
-        equity_shock=-0.06, bond_shock=-0.08,
-        volatility_multiplier=1.5, correlation_stress=1.2,
-        duration_days=60, recovery_days=90,
+        equity_shock=-0.06,
+        bond_shock=-0.08,
+        volatility_multiplier=1.5,
+        correlation_stress=1.2,
+        duration_days=60,
+        recovery_days=90,
     ),
     HistoricalScenario.FLASH_CRASH_2010: StressScenario(
         name="Flash Crash 2010",
         description="Rapid intraday market crash",
-        equity_shock=-0.09, bond_shock=0.02,
-        volatility_multiplier=3.0, correlation_stress=1.8,
-        duration_days=1, recovery_days=1,
+        equity_shock=-0.09,
+        bond_shock=0.02,
+        volatility_multiplier=3.0,
+        correlation_stress=1.8,
+        duration_days=1,
+        recovery_days=1,
     ),
     HistoricalScenario.VOLMAGEDDON_2018: StressScenario(
         name="Volmageddon",
         description="February 2018 volatility spike",
-        equity_shock=-0.10, bond_shock=-0.02,
-        volatility_multiplier=4.0, correlation_stress=1.6,
-        duration_days=10, recovery_days=60,
+        equity_shock=-0.10,
+        bond_shock=-0.02,
+        volatility_multiplier=4.0,
+        correlation_stress=1.6,
+        duration_days=10,
+        recovery_days=60,
     ),
 }
 
@@ -103,6 +130,7 @@ HISTORICAL_SCENARIOS = {
 @dataclass
 class StressTestResult:
     """Results from stress testing."""
+
     scenario: StressScenario
     portfolio_impact: float
     asset_impacts: dict[str, float]
@@ -110,9 +138,9 @@ class StressTestResult:
     var_99: float
     cvar_95: float
     max_drawdown: float
-    time_to_recovery: Optional[int] = None
-    stressed_prices: Optional[np.ndarray] = None
-    stressed_returns: Optional[np.ndarray] = None
+    time_to_recovery: int | None = None
+    stressed_prices: np.ndarray | None = None
+    stressed_returns: np.ndarray | None = None
 
 
 class StressTestEngine:
@@ -120,8 +148,8 @@ class StressTestEngine:
 
     def __init__(
         self,
-        returns: Optional[pd.DataFrame] = None,
-        weights: Optional[dict[str, float]] = None,
+        returns: pd.DataFrame | None = None,
+        weights: dict[str, float] | None = None,
     ):
         self.returns = returns
         self.weights = weights or {}
@@ -129,9 +157,9 @@ class StressTestEngine:
 
     def run_historical_scenario(
         self,
-        scenario: Union[HistoricalScenario, str],
+        scenario: HistoricalScenario | str,
         n_simulations: int = 1000,
-        random_state: Optional[int] = None,
+        random_state: int | None = None,
     ) -> StressTestResult:
         if isinstance(scenario, str):
             scenario = HistoricalScenario(scenario)
@@ -142,18 +170,16 @@ class StressTestEngine:
         self,
         scenario: StressScenario,
         n_simulations: int = 1000,
-        random_state: Optional[int] = None,
+        random_state: int | None = None,
     ) -> StressTestResult:
         rng = np.random.default_rng(random_state)
         n_assets = len(self.asset_names)
         n_steps = scenario.duration_days
 
         if self.returns is not None:
-            base_means = self.returns.mean().values
             base_stds = self.returns.std().values
             base_corr = self.returns.corr().values
         else:
-            base_means = np.zeros(n_assets)
             base_stds = np.ones(n_assets) * 0.01
             base_corr = np.eye(n_assets)
 
@@ -214,40 +240,54 @@ class StressTestEngine:
         shock_variable: str,
         shock_range: np.ndarray,
         n_simulations: int = 1000,
-        random_state: Optional[int] = None,
+        random_state: int | None = None,
     ) -> pd.DataFrame:
         results = []
         for shock_level in shock_range:
             if shock_variable == "equity":
                 scenario = StressScenario(
-                    name=f"Equity shock {shock_level:.1%}", description="Equity sensitivity test",
-                    equity_shock=shock_level, bond_shock=0.0,
-                    volatility_multiplier=1.0, correlation_stress=1.0, duration_days=21,
+                    name=f"Equity shock {shock_level:.1%}",
+                    description="Equity sensitivity test",
+                    equity_shock=shock_level,
+                    bond_shock=0.0,
+                    volatility_multiplier=1.0,
+                    correlation_stress=1.0,
+                    duration_days=21,
                 )
             elif shock_variable == "volatility":
                 scenario = StressScenario(
-                    name=f"Volatility shock {shock_level:.1f}x", description="Volatility sensitivity test",
-                    equity_shock=0.0, bond_shock=0.0,
-                    volatility_multiplier=shock_level, correlation_stress=1.0, duration_days=21,
+                    name=f"Volatility shock {shock_level:.1f}x",
+                    description="Volatility sensitivity test",
+                    equity_shock=0.0,
+                    bond_shock=0.0,
+                    volatility_multiplier=shock_level,
+                    correlation_stress=1.0,
+                    duration_days=21,
                 )
             elif shock_variable == "correlation":
                 scenario = StressScenario(
-                    name=f"Correlation stress {shock_level:.1f}x", description="Correlation sensitivity test",
-                    equity_shock=0.0, bond_shock=0.0,
-                    volatility_multiplier=1.0, correlation_stress=shock_level, duration_days=21,
+                    name=f"Correlation stress {shock_level:.1f}x",
+                    description="Correlation sensitivity test",
+                    equity_shock=0.0,
+                    bond_shock=0.0,
+                    volatility_multiplier=1.0,
+                    correlation_stress=shock_level,
+                    duration_days=21,
                 )
             else:
                 raise ValueError(f"Unknown shock variable: {shock_variable}")
 
             result = self.run_custom_scenario(scenario, n_simulations, random_state)
-            results.append({
-                "shock_level": shock_level,
-                "portfolio_impact": result.portfolio_impact,
-                "var_95": result.var_95,
-                "var_99": result.var_99,
-                "cvar_95": result.cvar_95,
-                "max_drawdown": result.max_drawdown,
-            })
+            results.append(
+                {
+                    "shock_level": shock_level,
+                    "portfolio_impact": result.portfolio_impact,
+                    "var_95": result.var_95,
+                    "var_99": result.var_99,
+                    "cvar_95": result.cvar_95,
+                    "max_drawdown": result.max_drawdown,
+                }
+            )
         return pd.DataFrame(results)
 
     def reverse_stress_test(
@@ -271,14 +311,35 @@ class StressTestEngine:
         for _ in range(max_iterations):
             mid = (low + high) / 2
             if shock_variable == "equity":
-                scenario = StressScenario(name="Reverse stress", description="Reverse stress test",
-                    equity_shock=mid, bond_shock=0.0, volatility_multiplier=1.5, correlation_stress=1.3, duration_days=21)
+                scenario = StressScenario(
+                    name="Reverse stress",
+                    description="Reverse stress test",
+                    equity_shock=mid,
+                    bond_shock=0.0,
+                    volatility_multiplier=1.5,
+                    correlation_stress=1.3,
+                    duration_days=21,
+                )
             elif shock_variable == "volatility":
-                scenario = StressScenario(name="Reverse stress", description="Reverse stress test",
-                    equity_shock=-0.1, bond_shock=0.0, volatility_multiplier=mid, correlation_stress=1.3, duration_days=21)
+                scenario = StressScenario(
+                    name="Reverse stress",
+                    description="Reverse stress test",
+                    equity_shock=-0.1,
+                    bond_shock=0.0,
+                    volatility_multiplier=mid,
+                    correlation_stress=1.3,
+                    duration_days=21,
+                )
             else:
-                scenario = StressScenario(name="Reverse stress", description="Reverse stress test",
-                    equity_shock=-0.1, bond_shock=0.0, volatility_multiplier=1.5, correlation_stress=mid, duration_days=21)
+                scenario = StressScenario(
+                    name="Reverse stress",
+                    description="Reverse stress test",
+                    equity_shock=-0.1,
+                    bond_shock=0.0,
+                    volatility_multiplier=1.5,
+                    correlation_stress=mid,
+                    duration_days=21,
+                )
 
             result = self.run_custom_scenario(scenario, n_simulations)
             current_loss = result.portfolio_impact
@@ -326,6 +387,7 @@ class StressTestEngine:
                 var_results[level] = float(np.percentile(scaled_returns, alpha * 100))
             elif method == "parametric":
                 from scipy.stats import norm
+
                 mu = np.mean(scaled_returns)
                 sigma = np.std(scaled_returns)
                 var_results[level] = float(mu + sigma * norm.ppf(alpha))
@@ -368,7 +430,7 @@ class StressTestEngine:
 
     def compare_scenarios(
         self,
-        scenarios: list[Union[HistoricalScenario, StressScenario]],
+        scenarios: list[HistoricalScenario | StressScenario],
         n_simulations: int = 1000,
     ) -> pd.DataFrame:
         results = []
@@ -377,15 +439,17 @@ class StressTestEngine:
                 result = self.run_historical_scenario(scenario, n_simulations)
             else:
                 result = self.run_custom_scenario(scenario, n_simulations)
-            results.append({
-                "scenario": result.scenario.name,
-                "portfolio_impact": result.portfolio_impact,
-                "var_95": result.var_95,
-                "var_99": result.var_99,
-                "cvar_95": result.cvar_95,
-                "max_drawdown": result.max_drawdown,
-                "duration_days": result.scenario.duration_days,
-            })
+            results.append(
+                {
+                    "scenario": result.scenario.name,
+                    "portfolio_impact": result.portfolio_impact,
+                    "var_95": result.var_95,
+                    "var_99": result.var_99,
+                    "cvar_95": result.cvar_95,
+                    "max_drawdown": result.max_drawdown,
+                    "duration_days": result.scenario.duration_days,
+                }
+            )
         return pd.DataFrame(results).set_index("scenario")
 
     def _stress_correlation_matrix(self, corr: np.ndarray, stress_factor: float) -> np.ndarray:

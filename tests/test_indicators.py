@@ -1,21 +1,22 @@
 """Tests for quantbox.indicators module."""
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from quantbox.indicators import (
     TechnicalIndicators,
-    sma,
-    ema,
-    rsi,
-    macd,
-    bollinger_bands,
     atr,
-    returns,
+    bollinger_bands,
+    ema,
     log_returns,
-    volatility,
+    macd,
     momentum,
     rate_of_change,
+    returns,
+    rsi,
+    sma,
+    volatility,
 )
 
 
@@ -53,9 +54,7 @@ class TestSMA:
         pd.testing.assert_series_equal(result, prices, check_names=False)
 
     def test_class_method_matches_function(self, prices):
-        pd.testing.assert_series_equal(
-            TechnicalIndicators.sma(prices, 5), sma(prices, 5)
-        )
+        pd.testing.assert_series_equal(TechnicalIndicators.sma(prices, 5), sma(prices, 5))
 
 
 class TestEMA:

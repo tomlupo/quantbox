@@ -1,17 +1,19 @@
 """Tests for shared feature functions."""
+
 import numpy as np
 import pandas as pd
 import pytest
+
 from quantbox.features import (
+    compute_donchian,
+    compute_ema,
+    compute_ewm_vol,
+    compute_features_bundle,
+    compute_rank_cross_sectional,
     compute_returns,
     compute_rolling_vol,
-    compute_ewm_vol,
     compute_sma,
-    compute_ema,
-    compute_donchian,
     compute_zscore_cross_sectional,
-    compute_rank_cross_sectional,
-    compute_features_bundle,
 )
 
 
@@ -33,7 +35,7 @@ class TestReturns:
     def test_multi_window(self, prices):
         result = compute_returns(prices, [1, 5, 21])
         assert set(result.keys()) == {"ret_1d", "ret_5d", "ret_21d"}
-        for key, df in result.items():
+        for _key, df in result.items():
             assert df.shape == prices.shape
 
     def test_log_returns(self, prices):
@@ -152,8 +154,13 @@ class TestBundle:
         }
         result = compute_features_bundle(prices, manifest)
         expected_keys = {
-            "ret_1d", "vol_21d", "vol_ewm_21",
-            "sma_20d", "ema_20", "donchian_20d_high",
-            "donchian_20d_low", "donchian_20d_mid",
+            "ret_1d",
+            "vol_21d",
+            "vol_ewm_21",
+            "sma_20d",
+            "ema_20",
+            "donchian_20d_high",
+            "donchian_20d_low",
+            "donchian_20d_mid",
         }
         assert expected_keys.issubset(set(result.keys()))

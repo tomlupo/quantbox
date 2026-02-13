@@ -23,19 +23,14 @@ Optional dependencies:
 
 from __future__ import annotations
 
-# Models
-from .models import (
-    BaseModel,
-    GBM,
-    GBMParams,
-    GARCH,
-    GARCHParams,
-    JumpDiffusion,
-    JumpDiffusionParams,
-    MeanReversion,
-    MeanReversionParams,
-    ModelParameters,
-    RegimeSwitching,
+# Visualization (optional — requires matplotlib/seaborn)
+import contextlib
+
+# Correlation
+from .correlation import (
+    CorrelationEngine,
+    CorrelationResult,
+    generate_random_correlation_matrix,
 )
 
 # Engine
@@ -46,22 +41,6 @@ from .engine import (
     generate_correlated_returns,
 )
 
-# Correlation
-from .correlation import (
-    CorrelationEngine,
-    CorrelationResult,
-    generate_random_correlation_matrix,
-)
-
-# Stress testing
-from .stress_testing import (
-    HistoricalScenario,
-    StressScenario,
-    StressTestEngine,
-    StressTestResult,
-    HISTORICAL_SCENARIOS,
-)
-
 # Forecasting
 from .forecasting import (
     ForecastResult,
@@ -70,11 +49,32 @@ from .forecasting import (
     ReturnForecaster,
 )
 
-# Visualization (optional — requires matplotlib/seaborn)
-try:
+# Models
+from .models import (
+    GARCH,
+    GBM,
+    BaseModel,
+    GARCHParams,
+    GBMParams,
+    JumpDiffusion,
+    JumpDiffusionParams,
+    MeanReversion,
+    MeanReversionParams,
+    ModelParameters,
+    RegimeSwitching,
+)
+
+# Stress testing
+from .stress_testing import (
+    HISTORICAL_SCENARIOS,
+    HistoricalScenario,
+    StressScenario,
+    StressTestEngine,
+    StressTestResult,
+)
+
+with contextlib.suppress(ImportError):
     from .visualization import SimulationPlotter
-except ImportError:
-    pass
 
 __all__ = [
     # Models

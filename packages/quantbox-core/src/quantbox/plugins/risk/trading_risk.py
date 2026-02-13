@@ -4,10 +4,11 @@ Validates targets (weight-level checks) and orders (order-level checks)
 before execution.  Ported from quantlab risk logic embedded in trading.py
 and orders.py.
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from dataclasses import dataclass
+from typing import Any
 
 import pandas as pd
 
@@ -68,9 +69,7 @@ class TradingRiskManager:
     # ------------------------------------------------------------------
     # check_targets: weight-level validation
     # ------------------------------------------------------------------
-    def check_targets(
-        self, targets: pd.DataFrame, params: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+    def check_targets(self, targets: pd.DataFrame, params: dict[str, Any]) -> list[dict[str, Any]]:
         """Validate target weights before order generation.
 
         Expected *targets* columns: ``symbol``, ``weight``.
@@ -81,7 +80,7 @@ class TradingRiskManager:
             rule   – short machine-readable rule id
             detail – human-readable message
         """
-        findings: List[Dict[str, Any]] = []
+        findings: list[dict[str, Any]] = []
         if targets is None or targets.empty:
             return findings
 
@@ -96,21 +95,25 @@ class TradingRiskManager:
         # --- leverage ---
         gross = weights.abs().sum()
         if gross > max_leverage:
-            findings.append({
-                "level": "warn",
-                "rule": "max_leverage_exceeded",
-                "detail": f"Gross leverage {gross:.4f} exceeds limit {max_leverage}.",
-            })
+            findings.append(
+                {
+                    "level": "warn",
+                    "rule": "max_leverage_exceeded",
+                    "detail": f"Gross leverage {gross:.4f} exceeds limit {max_leverage}.",
+                }
+            )
 
         # --- concentration ---
         for idx, w in weights.items():
             if abs(w) > max_conc:
                 symbol = targets.at[idx, "symbol"] if "symbol" in targets.columns else str(idx)
-                findings.append({
-                    "level": "warn",
-                    "rule": "concentration_exceeded",
-                    "detail": f"{symbol} weight {w:.4f} exceeds max_concentration {max_conc}.",
-                })
+                findings.append(
+                    {
+                        "level": "warn",
+                        "rule": "concentration_exceeded",
+                        "detail": f"{symbol} weight {w:.4f} exceeds max_concentration {max_conc}.",
+                    }
+                )
 
         # --- negative weights ---
         if not allow_neg and (weights < 0).any():
@@ -119,27 +122,27 @@ class TradingRiskManager:
                 if "symbol" in targets.columns
                 else weights[weights < 0].index.tolist()
             )
-            findings.append({
-                "level": "error",
-                "rule": "negative_weight_disallowed",
-                "detail": f"Negative weights found for {neg_syms} but allow_negative_weights=False.",
-            })
+            findings.append(
+                {
+                    "level": "error",
+                    "rule": "negative_weight_disallowed",
+                    "detail": f"Negative weights found for {neg_syms} but allow_negative_weights=False.",
+                }
+            )
 
         return findings
 
     # ------------------------------------------------------------------
     # check_orders: order-level validation
     # ------------------------------------------------------------------
-    def check_orders(
-        self, orders: pd.DataFrame, params: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+    def check_orders(self, orders: pd.DataFrame, params: dict[str, Any]) -> list[dict[str, Any]]:
         """Validate orders before execution.
 
         Expected *orders* columns: ``symbol``, ``side``, ``qty``, ``price``.
 
         Returns a list of finding dicts (same schema as check_targets).
         """
-        findings: List[Dict[str, Any]] = []
+        findings: list[dict[str, Any]] = []
         if orders is None or orders.empty:
             return findings
 
@@ -153,17 +156,21 @@ class TradingRiskManager:
             notional = qty * price
 
             if notional < min_notional:
-                findings.append({
-                    "level": "warn",
-                    "rule": "below_min_notional",
-                    "detail": f"{sym} notional {notional:.4f} < min_notional {min_notional}.",
-                })
+                findings.append(
+                    {
+                        "level": "warn",
+                        "rule": "below_min_notional",
+                        "detail": f"{sym} notional {notional:.4f} < min_notional {min_notional}.",
+                    }
+                )
 
             if max_order_notional > 0 and notional > max_order_notional:
-                findings.append({
-                    "level": "error",
-                    "rule": "exceeds_max_order_notional",
-                    "detail": f"{sym} notional {notional:.2f} exceeds max_order_notional {max_order_notional}.",
-                })
+                findings.append(
+                    {
+                        "level": "error",
+                        "rule": "exceeds_max_order_notional",
+                        "detail": f"{sym} notional {notional:.2f} exceeds max_order_notional {max_order_notional}.",
+                    }
+                )
 
         return findings

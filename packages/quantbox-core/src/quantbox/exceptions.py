@@ -69,10 +69,7 @@ class PluginNotFoundError(QuantboxError):
         group: str,
         available: list[str],
     ) -> None:
-        msg = (
-            f"plugin_not_found: '{plugin_name}' in group '{group}'. "
-            f"Available: {', '.join(sorted(available))}"
-        )
+        msg = f"plugin_not_found: '{plugin_name}' in group '{group}'. Available: {', '.join(sorted(available))}"
         super().__init__(msg, details={"plugin_name": plugin_name, "group": group})
         self.plugin_name = plugin_name
         self.group = group

@@ -3,22 +3,24 @@
 Coexists with existing ``schemas/*.schema.json`` files and ``validate_ohlcv()``
 in the datasources utils — this module provides reusable Python definitions.
 """
+
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
-import numpy as np
+
+from dataclasses import dataclass
+
 import pandas as pd
 
 
 @dataclass(frozen=True)
 class SchemaField:
     """Validates a single DataFrame column (Series)."""
+
     name: str
     dtype: str  # "number", "string", "datetime", "bool"
     required: bool = True
     nullable: bool = False
-    min_value: Optional[float] = None
-    max_value: Optional[float] = None
+    min_value: float | None = None
+    max_value: float | None = None
     description: str = ""
 
     _DTYPE_CHECKS = {
@@ -28,14 +30,11 @@ class SchemaField:
         "bool": lambda s: pd.api.types.is_bool_dtype(s),
     }
 
-    def validate(self, series: pd.Series) -> List[str]:
-        errors: List[str] = []
+    def validate(self, series: pd.Series) -> list[str]:
+        errors: list[str] = []
         check = self._DTYPE_CHECKS.get(self.dtype)
         if check and not check(series):
-            errors.append(
-                f"Column '{self.name}': expected dtype '{self.dtype}', "
-                f"got '{series.dtype}'"
-            )
+            errors.append(f"Column '{self.name}': expected dtype '{self.dtype}', got '{series.dtype}'")
             return errors  # skip further checks if type is wrong
         if not self.nullable and series.isna().any():
             n_null = int(series.isna().sum())
@@ -43,29 +42,24 @@ class SchemaField:
         if self.min_value is not None and pd.api.types.is_numeric_dtype(series):
             below = series.dropna() < self.min_value
             if below.any():
-                errors.append(
-                    f"Column '{self.name}': {int(below.sum())} values "
-                    f"below min_value={self.min_value}"
-                )
+                errors.append(f"Column '{self.name}': {int(below.sum())} values below min_value={self.min_value}")
         if self.max_value is not None and pd.api.types.is_numeric_dtype(series):
             above = series.dropna() > self.max_value
             if above.any():
-                errors.append(
-                    f"Column '{self.name}': {int(above.sum())} values "
-                    f"above max_value={self.max_value}"
-                )
+                errors.append(f"Column '{self.name}': {int(above.sum())} values above max_value={self.max_value}")
         return errors
 
 
 @dataclass(frozen=True)
 class DataFrameSchema:
     """Validates a DataFrame against a set of field definitions."""
+
     name: str
     fields: tuple  # tuple of SchemaField
     allow_extra_columns: bool = True
 
-    def validate(self, df: pd.DataFrame) -> List[str]:
-        errors: List[str] = []
+    def validate(self, df: pd.DataFrame) -> list[str]:
+        errors: list[str] = []
         columns = set(df.columns)
         for f in self.fields:
             if f.name not in columns:
@@ -81,13 +75,11 @@ class DataFrameSchema:
         return errors
 
 
-def validate_wide_prices(df: pd.DataFrame) -> List[str]:
+def validate_wide_prices(df: pd.DataFrame) -> list[str]:
     """Validate a wide-format prices DataFrame (DatetimeIndex x symbol columns)."""
-    errors: List[str] = []
+    errors: list[str] = []
     if not isinstance(df.index, pd.DatetimeIndex):
-        errors.append(
-            f"Expected DatetimeIndex, got {type(df.index).__name__}"
-        )
+        errors.append(f"Expected DatetimeIndex, got {type(df.index).__name__}")
     for col in df.columns:
         if not pd.api.types.is_numeric_dtype(df[col]):
             errors.append(f"Column '{col}' is not numeric (dtype={df[col].dtype})")
@@ -159,7 +151,7 @@ PORTFOLIO_DAILY_SCHEMA = DataFrameSchema(
     ),
 )
 
-SCHEMA_REGISTRY: Dict[str, DataFrameSchema] = {
+SCHEMA_REGISTRY: dict[str, DataFrameSchema] = {
     "ohlcv": OHLCV_SCHEMA,
     "strategy_weights": STRATEGY_WEIGHTS_SCHEMA,
     "aggregated_weights": AGGREGATED_WEIGHTS_SCHEMA,

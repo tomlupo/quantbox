@@ -1,14 +1,18 @@
 """Tests for quantbox.simulation.models — 5 stochastic price models."""
+
 import numpy as np
-import pytest
 
 from quantbox.simulation.models import (
-    GBM, GBMParams,
-    JumpDiffusion, JumpDiffusionParams,
-    MeanReversion, MeanReversionParams,
-    GARCH, GARCHParams,
-    RegimeSwitching,
+    GARCH,
+    GBM,
+    GARCHParams,
+    GBMParams,
+    JumpDiffusion,
+    JumpDiffusionParams,
+    MeanReversion,
+    MeanReversionParams,
     ModelParameters,
+    RegimeSwitching,
 )
 
 
@@ -54,9 +58,15 @@ class TestJumpDiffusion:
         assert prices.shape == (30, 101)
 
     def test_positive_prices(self):
-        model = JumpDiffusion(JumpDiffusionParams(
-            mu=0.05, sigma=0.25, jump_intensity=10, jump_mean=-0.03, jump_std=0.04,
-        ))
+        model = JumpDiffusion(
+            JumpDiffusionParams(
+                mu=0.05,
+                sigma=0.25,
+                jump_intensity=10,
+                jump_mean=-0.03,
+                jump_std=0.04,
+            )
+        )
         prices = model.simulate(S0=100, n_steps=252, n_paths=100, random_state=42)
         assert np.all(prices > 0)
 
@@ -94,7 +104,7 @@ class TestGARCH:
         model = GARCH(GARCHParams(omega=0.00001, alpha=0.15, beta=0.80, sigma=0.20))
         returns = model.simulate_returns(n_steps=1000, n_paths=1, random_state=42)
         # Rolling variance should vary (not constant like GBM)
-        rolling_var = np.array([np.var(returns[0, max(0, i-20):i+1]) for i in range(20, 1000)])
+        rolling_var = np.array([np.var(returns[0, max(0, i - 20) : i + 1]) for i in range(20, 1000)])
         assert np.std(rolling_var) > 0
 
 
@@ -120,7 +130,7 @@ class TestModelParameters:
         p = ModelParameters()
         assert p.mu == 0.08
         assert p.sigma == 0.20
-        assert abs(p.dt - 1/252) < 1e-10
+        assert abs(p.dt - 1 / 252) < 1e-10
 
     def test_gbm_params_inherits(self):
         p = GBMParams(mu=0.1, sigma=0.3)

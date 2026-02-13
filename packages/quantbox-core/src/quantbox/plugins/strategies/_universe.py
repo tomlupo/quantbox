@@ -5,11 +5,9 @@ with or without market-cap data.  When ``market_cap`` is ``None`` (e.g.
 Hyperliquid), the mcap tier is skipped and assets are ranked directly by
 dollar volume.
 """
+
 from __future__ import annotations
 
-from typing import Dict, List, Optional
-
-import numpy as np
 import pandas as pd
 
 try:
@@ -23,16 +21,41 @@ except ImportError:
 # Single source of truth for stablecoin / non-tradeable exclusion list.
 DEFAULT_STABLECOINS = [
     # USD stablecoins
-    "USDT", "USDC", "BUSD", "TUSD", "DAI", "MIM", "USTC", "FDUSD",
-    "USDP", "GUSD", "FRAX", "LUSD", "USDD", "PYUSD", "USD1", "USDJ",
+    "USDT",
+    "USDC",
+    "BUSD",
+    "TUSD",
+    "DAI",
+    "MIM",
+    "USTC",
+    "FDUSD",
+    "USDP",
+    "GUSD",
+    "FRAX",
+    "LUSD",
+    "USDD",
+    "PYUSD",
+    "USD1",
+    "USDJ",
     # EUR stablecoins
-    "EUR", "EURC", "EURT", "EURS", "EUROC",
+    "EUR",
+    "EURC",
+    "EURT",
+    "EURS",
+    "EUROC",
     # Gold / commodity tokens
-    "PAXG", "XAUT",
+    "PAXG",
+    "XAUT",
     # Wrapped tokens
-    "WBTC", "WETH", "BETH", "ETHW", "CBBTC", "CBETH",
+    "WBTC",
+    "WETH",
+    "BETH",
+    "ETHW",
+    "CBBTC",
+    "CBETH",
     # Other non-tradeable
-    "BFUSD", "AEUR",
+    "BFUSD",
+    "AEUR",
 ]
 
 
@@ -87,9 +110,7 @@ def select_universe(
 
     has_mcap = market_cap is not None and not market_cap.empty
 
-    dollar_vol = prices[valid_tickers] * volume.reindex(
-        index=prices.index, columns=valid_tickers
-    ).fillna(0.0)
+    dollar_vol = prices[valid_tickers] * volume.reindex(index=prices.index, columns=valid_tickers).fillna(0.0)
 
     if has_mcap:
         # Stage 1: market-cap rank
@@ -133,17 +154,13 @@ def select_universe_duckdb(
     has_mcap = market_cap is not None and not market_cap.empty
 
     if not DUCKDB_AVAILABLE or not has_mcap:
-        return select_universe(
-            prices, volume, market_cap, top_by_mcap, top_by_volume, exclude_tickers
-        )
+        return select_universe(prices, volume, market_cap, top_by_mcap, top_by_volume, exclude_tickers)
 
     if exclude_tickers is None:
         exclude_tickers = DEFAULT_STABLECOINS
 
     def _to_long(df: pd.DataFrame, value_name: str) -> pd.DataFrame:
-        return df.reset_index().melt(
-            id_vars="date", var_name="ticker", value_name=value_name
-        )
+        return df.reset_index().melt(id_vars="date", var_name="ticker", value_name=value_name)
 
     prices_long = _to_long(prices, "price")
     volume_long = _to_long(volume, "volume")

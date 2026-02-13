@@ -32,14 +32,18 @@ classes with a class-level ``meta = PluginMeta(...)`` attribute.
 **PublisherPlugin** — sends notifications:
     publish(result, params) → None
 """
+
 from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Protocol, Literal
+from typing import Any, Literal, Protocol
+
 import pandas as pd
 
 Mode = Literal["backtest", "paper", "live"]
 PluginKind = Literal["pipeline", "broker", "data", "publisher", "risk", "strategy", "rebalancing"]
 PipelineKind = Literal["research", "trading"]
+
 
 @dataclass(frozen=True)
 class PluginMeta:
@@ -59,6 +63,7 @@ class PluginMeta:
         outputs: Artifact names this plugin produces.
         examples: Minimal YAML config snippets showing usage.
     """
+
     name: str
     kind: PluginKind
     version: str
@@ -67,10 +72,11 @@ class PluginMeta:
     tags: tuple[str, ...] = ()
     capabilities: tuple[str, ...] = ()
     schema_version: str = "v1"
-    params_schema: Optional[Dict[str, Any]] = None
+    params_schema: dict[str, Any] | None = None
     inputs: tuple[str, ...] = ()
     outputs: tuple[str, ...] = ()
     examples: tuple[str, ...] = ()
+
 
 @dataclass
 class RunResult:
@@ -85,24 +91,28 @@ class RunResult:
         metrics: Numeric metrics (e.g. portfolio_value, n_orders).
         notes: Freeform metadata (risk findings, debug info, etc.).
     """
+
     run_id: str
     pipeline_name: str
     mode: Mode
     asof: str
-    artifacts: Dict[str, str]
-    metrics: Dict[str, float]
-    notes: Dict[str, Any]
+    artifacts: dict[str, str]
+    metrics: dict[str, float]
+    notes: dict[str, Any]
+
 
 class ArtifactStore(Protocol):
     """Stores pipeline artifacts (Parquet files, JSON) with run-level grouping."""
+
     def put_parquet(self, name: str, df: pd.DataFrame) -> str: ...
-    def put_json(self, name: str, obj: Dict[str, Any]) -> str: ...
+    def put_json(self, name: str, obj: dict[str, Any]) -> str: ...
     def get_path(self, name: str) -> str: ...
     def read_parquet(self, name: str) -> pd.DataFrame: ...
-    def read_json(self, name: str) -> Dict[str, Any]: ...
-    def list_artifacts(self) -> List[str]: ...
+    def read_json(self, name: str) -> dict[str, Any]: ...
+    def list_artifacts(self) -> list[str]: ...
     @property
     def run_id(self) -> str: ...
+
 
 class DataPlugin(Protocol):
     """Loads market data for pipelines and strategies.
@@ -122,10 +132,15 @@ class DataPlugin(Protocol):
         >>> data["prices"]  # DataFrame: date index x symbol columns
         >>> data["volume"]  # DataFrame: date index x symbol columns
     """
+
     meta: PluginMeta
-    def load_universe(self, params: Dict[str, Any]) -> pd.DataFrame: ...
-    def load_market_data(self, universe: pd.DataFrame, asof: str, params: Dict[str, Any]) -> Dict[str, pd.DataFrame]: ...
-    def load_fx(self, asof: str, params: Dict[str, Any]) -> Optional[pd.DataFrame]: ...
+
+    def load_universe(self, params: dict[str, Any]) -> pd.DataFrame: ...
+    def load_market_data(
+        self, universe: pd.DataFrame, asof: str, params: dict[str, Any]
+    ) -> dict[str, pd.DataFrame]: ...
+    def load_fx(self, asof: str, params: dict[str, Any]) -> pd.DataFrame | None: ...
+
 
 class BrokerPlugin(Protocol):
     """Manages positions and executes orders.
@@ -143,17 +158,23 @@ class BrokerPlugin(Protocol):
             Pipelines prefer this over cash + sum(qty * price) when available,
             since the latter is incorrect for short/futures positions.
     """
+
     meta: PluginMeta
+
     def get_positions(self) -> pd.DataFrame: ...
-    def get_cash(self) -> Dict[str, float]: ...
-    def get_market_snapshot(self, symbols: List[str]) -> pd.DataFrame: ...
+    def get_cash(self) -> dict[str, float]: ...
+    def get_market_snapshot(self, symbols: list[str]) -> pd.DataFrame: ...
     def place_orders(self, orders: pd.DataFrame) -> pd.DataFrame: ...
     def fetch_fills(self, since: str) -> pd.DataFrame: ...
 
+
 class PublisherPlugin(Protocol):
     """Sends run results to external destinations (Telegram, Slack, etc.)."""
+
     meta: PluginMeta
-    def publish(self, result: RunResult, params: Dict[str, Any]) -> None: ...
+
+    def publish(self, result: RunResult, params: dict[str, Any]) -> None: ...
+
 
 class RiskPlugin(Protocol):
     """Validates portfolio targets and orders against risk limits.
@@ -161,9 +182,12 @@ class RiskPlugin(Protocol):
     Returns a list of findings (dicts with severity, message, etc.).
     Empty list = all checks passed.
     """
+
     meta: PluginMeta
-    def check_targets(self, targets: pd.DataFrame, params: Dict[str, Any]) -> List[Dict[str, Any]]: ...
-    def check_orders(self, orders: pd.DataFrame, params: Dict[str, Any]) -> List[Dict[str, Any]]: ...
+
+    def check_targets(self, targets: pd.DataFrame, params: dict[str, Any]) -> list[dict[str, Any]]: ...
+    def check_orders(self, orders: pd.DataFrame, params: dict[str, Any]) -> list[dict[str, Any]]: ...
+
 
 class StrategyPlugin(Protocol):
     """Computes target portfolio weights from market data.
@@ -173,35 +197,43 @@ class StrategyPlugin(Protocol):
 
     Returns dict with at minimum ``"weights"`` (DataFrame: date index x symbol columns).
     """
+
     meta: PluginMeta
-    def run(self, data: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]: ...
+
+    def run(self, data: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]: ...
+
 
 class RebalancingPlugin(Protocol):
     """Generates executable orders from target weights + current broker state."""
+
     meta: PluginMeta
+
     def generate_orders(
         self,
         *,
-        weights: Dict[str, float],
+        weights: dict[str, float],
         broker: BrokerPlugin,
-        params: Dict[str, Any],
-    ) -> Dict[str, Any]: ...
+        params: dict[str, Any],
+    ) -> dict[str, Any]: ...
+
 
 class PipelinePlugin(Protocol):
     """Top-level orchestrator: data loading → strategy → risk → execution → artifacts."""
+
     meta: PluginMeta
     kind: PipelineKind
+
     def run(
         self,
         *,
         mode: Mode,
         asof: str,
-        params: Dict[str, Any],
+        params: dict[str, Any],
         data: DataPlugin,
         store: ArtifactStore,
-        broker: Optional[BrokerPlugin],
-        risk: List[RiskPlugin],
-        strategies: Optional[List["StrategyPlugin"]] = None,
-        rebalancer: Optional["RebalancingPlugin"] = None,
+        broker: BrokerPlugin | None,
+        risk: list[RiskPlugin],
+        strategies: list[StrategyPlugin] | None = None,
+        rebalancer: RebalancingPlugin | None = None,
         **kwargs,
     ) -> RunResult: ...

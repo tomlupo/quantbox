@@ -22,11 +22,12 @@ print(result['simple_weights'])
 Prices DataFrame with columns matching either ETF tickers (SPY, TLT, etc.)
 or asset class names (us_stocks, us_treasury_long, etc.).
 """
+
 from __future__ import annotations
 
 from collections import namedtuple
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -39,7 +40,7 @@ from quantbox.contracts import PluginMeta
 
 _AssetClass = namedtuple("_AssetClass", ["name", "category", "etf_ticker"])
 
-ASSET_CLASSES: Dict[str, _AssetClass] = {
+ASSET_CLASSES: dict[str, _AssetClass] = {
     # Fixed Income
     "money_market": _AssetClass("Money Market", "fixed_income", "SHV"),
     "us_treasury_short": _AssetClass("US Treasury Short", "fixed_income", "SHY"),
@@ -60,11 +61,9 @@ ASSET_CLASSES: Dict[str, _AssetClass] = {
 }
 
 # Reverse lookup: ETF ticker -> asset class key
-_TICKER_TO_ASSET: Dict[str, str] = {
-    ac.etf_ticker: key for key, ac in ASSET_CLASSES.items()
-}
+_TICKER_TO_ASSET: dict[str, str] = {ac.etf_ticker: key for key, ac in ASSET_CLASSES.items()}
 
-RISK_PROFILE_ALLOCATIONS: Dict[str, Dict[str, float]] = {
+RISK_PROFILE_ALLOCATIONS: dict[str, dict[str, float]] = {
     "safe": {
         "money_market": 0.60,
         "us_treasury_short": 0.30,
@@ -114,15 +113,16 @@ _SAFE_ASSETS = frozenset({"money_market", "us_treasury_short"})
 # Private helpers
 # ---------------------------------------------------------------------------
 
+
 def _resolve_columns(
     prices: pd.DataFrame,
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """Build mapping from DataFrame column -> internal asset class key.
 
     Accepts either ETF ticker columns (SPY, TLT, ...) or asset class name
     columns (us_stocks, us_treasury_long, ...).
     """
-    col_to_asset: Dict[str, str] = {}
+    col_to_asset: dict[str, str] = {}
     for col in prices.columns:
         if col in ASSET_CLASSES:
             col_to_asset[col] = col
@@ -132,17 +132,17 @@ def _resolve_columns(
 
 
 def _dual_momentum_signals(
-    prices_dict: Dict[str, pd.Series],
+    prices_dict: dict[str, pd.Series],
     lookback: int,
     risk_free_return: float = 0.0,
-) -> Dict[str, tuple]:
+) -> dict[str, tuple]:
     """Compute dual momentum signals for each asset.
 
     Returns dict of asset -> (signal, score) where signal is
     "long", "neutral", or "short" and score is a float.
     """
     # Absolute momentum: return over lookback period
-    mom_scores: Dict[str, float] = {}
+    mom_scores: dict[str, float] = {}
     for asset, prices in prices_dict.items():
         if len(prices) >= lookback:
             mom_scores[asset] = (prices.iloc[-1] / prices.iloc[-lookback]) - 1
@@ -156,7 +156,7 @@ def _dual_momentum_signals(
     scores_series = pd.Series(mom_scores)
     rel_rank = scores_series.rank(ascending=False, pct=True)
 
-    signals: Dict[str, tuple] = {}
+    signals: dict[str, tuple] = {}
     for asset in prices_dict:
         abs_mom = mom_scores[asset]
         abs_positive = abs_mom > risk_free_return
@@ -181,18 +181,18 @@ def _dual_momentum_signals(
 
 
 def _relative_strength_weights(
-    prices_dict: Dict[str, pd.Series],
-    base_weights: Dict[str, float],
-    lookback_periods: List[int],
+    prices_dict: dict[str, pd.Series],
+    base_weights: dict[str, float],
+    lookback_periods: list[int],
     top_n: int,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Adjust base weights using composite multi-period momentum ranking.
 
     Top N assets get +25% overweight, bottom N get -25% underweight,
     then normalize to sum to 1.
     """
     # Composite momentum: mean return across all lookback periods
-    composite: Dict[str, float] = {}
+    composite: dict[str, float] = {}
     for asset, prices in prices_dict.items():
         period_returns = []
         for period in lookback_periods:
@@ -204,7 +204,7 @@ def _relative_strength_weights(
     top_assets = set(ranked[:top_n])
     bottom_assets = set(ranked[-top_n:])
 
-    adjusted: Dict[str, float] = {}
+    adjusted: dict[str, float] = {}
     for asset, base_weight in base_weights.items():
         if asset in top_assets:
             adjusted[asset] = base_weight * 1.25
@@ -220,15 +220,15 @@ def _relative_strength_weights(
 
 
 def _trend_signals(
-    prices_dict: Dict[str, pd.Series],
+    prices_dict: dict[str, pd.Series],
     short_ma: int,
     long_ma: int,
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """Compute trend signals based on moving average crossover.
 
     Returns dict of asset -> "up" / "down" / "neutral".
     """
-    signals: Dict[str, str] = {}
+    signals: dict[str, str] = {}
     for asset, prices in prices_dict.items():
         if len(prices) < long_ma:
             signals[asset] = "neutral"
@@ -278,20 +278,18 @@ def _volatility_scalar(
 
 
 def _corridor_rebalance_needed(
-    current: Dict[str, float],
-    target: Dict[str, float],
+    current: dict[str, float],
+    target: dict[str, float],
     threshold: float,
 ) -> bool:
     """Check if any position deviates beyond the corridor threshold."""
-    for asset in target:
-        if abs(current.get(asset, 0.0) - target[asset]) > threshold:
-            return True
-    return False
+    return any(abs(current.get(asset, 0.0) - target[asset]) > threshold for asset in target)
 
 
 # ---------------------------------------------------------------------------
 # Strategy plugin
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class BeGlobalStrategy:
@@ -319,7 +317,7 @@ class BeGlobalStrategy:
     short_momentum_lookback: int = 21
 
     # Relative strength
-    strength_lookback_periods: List[int] = field(
+    strength_lookback_periods: list[int] = field(
         default_factory=lambda: [21, 63, 126, 252],
     )
     strength_top_n: int = 3
@@ -340,9 +338,9 @@ class BeGlobalStrategy:
 
     def run(
         self,
-        data: Dict[str, Any],
-        params: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        data: dict[str, Any],
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Run BeGlobal strategy.
 
         Args:
@@ -359,7 +357,8 @@ class BeGlobalStrategy:
 
         prices: pd.DataFrame = data["prices"]
         base_allocation = RISK_PROFILE_ALLOCATIONS.get(
-            self.risk_profile, RISK_PROFILE_ALLOCATIONS["mixed"],
+            self.risk_profile,
+            RISK_PROFILE_ALLOCATIONS["mixed"],
         )
 
         # Resolve columns to internal asset names
@@ -372,10 +371,10 @@ class BeGlobalStrategy:
             )
 
         # asset_key -> column name (for output mapping)
-        asset_to_col: Dict[str, str] = {v: k for k, v in col_to_asset.items()}
+        asset_to_col: dict[str, str] = {v: k for k, v in col_to_asset.items()}
 
         # Build per-asset price series (keyed by internal asset name)
-        asset_prices: Dict[str, pd.Series] = {}
+        asset_prices: dict[str, pd.Series] = {}
         for col, asset_key in col_to_asset.items():
             if asset_key in base_allocation or asset_key in ASSET_CLASSES:
                 asset_prices[asset_key] = prices[col].dropna()
@@ -385,7 +384,9 @@ class BeGlobalStrategy:
         if len(dates) == 0:
             # Not enough data -- return empty weights
             empty_weights = pd.DataFrame(
-                0.0, index=prices.index, columns=prices.columns,
+                0.0,
+                index=prices.index,
+                columns=prices.columns,
             )
             return {
                 "weights": empty_weights,
@@ -397,52 +398,49 @@ class BeGlobalStrategy:
         portfolio_ret = prices[list(col_to_asset.keys())].mean(axis=1).pct_change()
 
         satellite_weight = 1.0 - self.core_weight
-        prev_weights: Dict[str, float] = {}
-        rows: List[Dict[str, float]] = []
-        row_dates: List = []
+        prev_weights: dict[str, float] = {}
+        rows: list[dict[str, float]] = []
+        row_dates: list = []
 
         for date in dates:
             loc = prices.index.get_loc(date)
 
             # Slice prices up to current date
-            prices_to_date: Dict[str, pd.Series] = {}
+            prices_to_date: dict[str, pd.Series] = {}
             for asset_key, series in asset_prices.items():
-                sliced = series.iloc[:loc + 1]
+                sliced = series.iloc[: loc + 1]
                 if len(sliced) > 0:
                     prices_to_date[asset_key] = sliced
 
             # -- Core weights: base_allocation * core_weight --
-            core: Dict[str, float] = {
-                k: v * self.core_weight for k, v in base_allocation.items()
-            }
+            core: dict[str, float] = {k: v * self.core_weight for k, v in base_allocation.items()}
 
             # -- Satellite weights: dual momentum -> equal weight long assets --
             mom_signals = _dual_momentum_signals(
-                prices_to_date, self.momentum_lookback,
+                prices_to_date,
+                self.momentum_lookback,
             )
-            long_assets = [
-                a for a, (sig, _) in mom_signals.items() if sig == "long"
-            ]
+            long_assets = [a for a, (sig, _) in mom_signals.items() if sig == "long"]
 
             if long_assets:
                 sat_per_asset = 1.0 / len(long_assets)
-                satellite: Dict[str, float] = {
-                    a: sat_per_asset * satellite_weight for a in long_assets
-                }
+                satellite: dict[str, float] = {a: sat_per_asset * satellite_weight for a in long_assets}
             else:
                 satellite = {"money_market": satellite_weight}
 
             # -- Combine core + satellite --
-            combined: Dict[str, float] = {}
+            combined: dict[str, float] = {}
             all_assets = set(core.keys()) | set(satellite.keys())
             for asset in all_assets:
                 combined[asset] = core.get(asset, 0.0) + satellite.get(asset, 0.0)
 
             # -- Volatility targeting --
-            port_ret_to_date = portfolio_ret.iloc[:loc + 1].dropna()
+            port_ret_to_date = portfolio_ret.iloc[: loc + 1].dropna()
             if len(port_ret_to_date) > self.vol_lookback:
                 scalar = _volatility_scalar(
-                    port_ret_to_date, self.target_volatility, self.vol_lookback,
+                    port_ret_to_date,
+                    self.target_volatility,
+                    self.vol_lookback,
                 )
                 if scalar != 1.0:
                     for asset in combined:
@@ -450,9 +448,7 @@ class BeGlobalStrategy:
                             combined[asset] *= scalar
                     total = sum(combined.values())
                     if total < 1.0:
-                        combined["money_market"] = (
-                            combined.get("money_market", 0.0) + (1.0 - total)
-                        )
+                        combined["money_market"] = combined.get("money_market", 0.0) + (1.0 - total)
 
             # -- Normalize --
             total = sum(combined.values())
@@ -461,7 +457,9 @@ class BeGlobalStrategy:
 
             # -- Corridor rebalancing --
             if prev_weights and not _corridor_rebalance_needed(
-                prev_weights, combined, self.rebalance_threshold,
+                prev_weights,
+                combined,
+                self.rebalance_threshold,
             ):
                 combined = prev_weights.copy()
             else:
@@ -490,9 +488,7 @@ class BeGlobalStrategy:
 
         # Latest weights as dict (non-zero only)
         latest = weights_df.iloc[-1]
-        simple_weights = {
-            k: float(v) for k, v in latest.items() if abs(v) > 1e-6
-        }
+        simple_weights = {k: float(v) for k, v in latest.items() if abs(v) > 1e-6}
 
         return {
             "weights": weights_df.tail(self.output_periods),

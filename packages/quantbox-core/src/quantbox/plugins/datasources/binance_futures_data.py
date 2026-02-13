@@ -8,28 +8,29 @@ Adds futures-specific methods:
 - ``get_open_interest()`` — current open interest per symbol
 - ``get_position_limits()`` — exchange-imposed max notional limits
 """
+
 from __future__ import annotations
 
 import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import pandas as pd
 
 from quantbox.plugins.datasources._utils import (
-    validate_ohlcv,
-    retry_transient,
-    OHLCVCache,
     MarketCapProvider,
+    OHLCVCache,
+    retry_transient,
+    validate_ohlcv,
 )
 
 logger = logging.getLogger(__name__)
 
 try:
     import ccxt
+
     CCXT_AVAILABLE = True
 except ImportError:
     ccxt = None  # type: ignore[assignment]
@@ -38,8 +39,22 @@ except ImportError:
 
 # Stablecoins to exclude from universe discovery
 DEFAULT_STABLECOINS = [
-    "USDT", "USDC", "BUSD", "TUSD", "DAI", "MIM", "USTC", "FDUSD",
-    "USDP", "GUSD", "FRAX", "LUSD", "USDD", "PYUSD", "EURC", "EURT",
+    "USDT",
+    "USDC",
+    "BUSD",
+    "TUSD",
+    "DAI",
+    "MIM",
+    "USTC",
+    "FDUSD",
+    "USDP",
+    "GUSD",
+    "FRAX",
+    "LUSD",
+    "USDD",
+    "PYUSD",
+    "EURC",
+    "EURT",
 ]
 
 FAPI_BASE = "https://fapi.binance.com"
@@ -55,27 +70,29 @@ class BinanceFuturesDataFetcher:
     """
 
     quote_asset: str = "USDT"
-    stablecoins: List[str] = field(default_factory=lambda: DEFAULT_STABLECOINS.copy())
+    stablecoins: list[str] = field(default_factory=lambda: DEFAULT_STABLECOINS.copy())
     request_delay_ms: int = DEFAULT_REQUEST_DELAY_MS
     max_retries: int = 3
 
     # Caching
-    cache_dir: Optional[str] = None
+    cache_dir: str | None = None
     cache_fresh_ttl_hours: float = 4.0
-    _ohlcv_cache: Optional[OHLCVCache] = field(default=None, repr=False)
+    _ohlcv_cache: OHLCVCache | None = field(default=None, repr=False)
 
     # CoinMarketCap integration
-    cmc_api_key: Optional[str] = None
-    _cmc_provider: Optional[MarketCapProvider] = field(default=None, repr=False)
+    cmc_api_key: str | None = None
+    _cmc_provider: MarketCapProvider | None = field(default=None, repr=False)
 
     _exchange: Any = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if CCXT_AVAILABLE and self._exchange is None:
-            self._exchange = ccxt.binanceusdm({
-                "enableRateLimit": True,
-                "options": {"defaultType": "future"},
-            })
+            self._exchange = ccxt.binanceusdm(
+                {
+                    "enableRateLimit": True,
+                    "options": {"defaultType": "future"},
+                }
+            )
 
         if self.cache_dir and self._ohlcv_cache is None:
             self._ohlcv_cache = OHLCVCache(
@@ -105,7 +122,7 @@ class BinanceFuturesDataFetcher:
     # Universe discovery
     # ------------------------------------------------------------------
 
-    def get_tradable_tickers(self, min_volume_usd: float = 1e6) -> List[str]:
+    def get_tradable_tickers(self, min_volume_usd: float = 1e6) -> list[str]:
         """Discover perpetual USDT futures pairs, sorted by 24h volume descending."""
         if not CCXT_AVAILABLE:
             return []
@@ -117,7 +134,7 @@ class BinanceFuturesDataFetcher:
             logger.error("Failed to fetch futures tickers: %s", exc)
             return []
 
-        candidates: List[Tuple[str, float]] = []
+        candidates: list[tuple[str, float]] = []
         for sym, info in tickers_24h.items():
             market = self._exchange.markets.get(sym, {})
             # Only perpetual USDT-margined
@@ -134,7 +151,7 @@ class BinanceFuturesDataFetcher:
         candidates.sort(key=lambda x: x[1], reverse=True)
         return [c[0] for c in candidates]
 
-    def get_valid_pairs(self, tickers: List[str]) -> Dict[str, Optional[str]]:
+    def get_valid_pairs(self, tickers: list[str]) -> dict[str, str | None]:
         """Map bare tickers to ccxt futures symbols.
 
         Returns ``{ticker: ccxt_symbol}`` or ``{ticker: None}`` if not found.
@@ -148,7 +165,7 @@ class BinanceFuturesDataFetcher:
             logger.error("Failed to load futures markets: %s", exc)
             return {t: None for t in tickers}
 
-        result: Dict[str, Optional[str]] = {}
+        result: dict[str, str | None] = {}
         for ticker in tickers:
             sym = self._ccxt_symbol(ticker)
             if sym in self._exchange.markets:
@@ -167,7 +184,7 @@ class BinanceFuturesDataFetcher:
         start_date: str,
         end_date: str,
         interval: str = "1d",
-    ) -> Optional[pd.DataFrame]:
+    ) -> pd.DataFrame | None:
         """Fetch futures OHLCV with caching, retry, and validation."""
         if not CCXT_AVAILABLE:
             return None
@@ -205,9 +222,8 @@ class BinanceFuturesDataFetcher:
         try:
             df = self._fetch_ohlcv_with_retry(symbol, fetch_start, end_date, interval)
 
-            if df is not None and not df.empty:
-                if self._ohlcv_cache is not None and interval == "1d":
-                    self._ohlcv_cache.store(ticker, df)
+            if df is not None and not df.empty and self._ohlcv_cache is not None and interval == "1d":
+                self._ohlcv_cache.store(ticker, df)
 
             # Merge with cached data
             if self._ohlcv_cache is not None and interval == "1d":
@@ -244,7 +260,7 @@ class BinanceFuturesDataFetcher:
         start_date: str,
         end_date: str,
         interval: str,
-    ) -> Optional[pd.DataFrame]:
+    ) -> pd.DataFrame | None:
         """Fetch OHLCV from exchange with retry on transient errors."""
         since = int(pd.Timestamp(start_date).timestamp() * 1000)
         end_ts = int(pd.Timestamp(end_date).timestamp() * 1000)
@@ -252,13 +268,16 @@ class BinanceFuturesDataFetcher:
         if since >= end_ts:
             return None
 
-        all_ohlcv: List[list] = []
+        all_ohlcv: list[list] = []
         limit = 1000
 
         while since < end_ts:
             self._rate_limit()
             ohlcv = self._exchange.fetch_ohlcv(
-                symbol, timeframe=interval, since=since, limit=limit,
+                symbol,
+                timeframe=interval,
+                since=since,
+                limit=limit,
             )
             if not ohlcv:
                 break
@@ -274,7 +293,8 @@ class BinanceFuturesDataFetcher:
             return None
 
         df = pd.DataFrame(
-            all_ohlcv, columns=["date", "open", "high", "low", "close", "volume"],
+            all_ohlcv,
+            columns=["date", "open", "high", "low", "close", "volume"],
         )
         df["date"] = pd.to_datetime(df["date"], unit="ms")
         df = df[(df["date"] >= start_date) & (df["date"] <= end_date)]
@@ -289,7 +309,7 @@ class BinanceFuturesDataFetcher:
         ticker: str,
         start_date: str,
         end_date: str,
-    ) -> Optional[pd.DataFrame]:
+    ) -> pd.DataFrame | None:
         """Fetch 8-hourly funding rates and forward-fill to daily.
 
         Returns DataFrame with columns ``date``, ``funding_rate`` (daily).
@@ -306,13 +326,15 @@ class BinanceFuturesDataFetcher:
             since = int(pd.Timestamp(start_date).timestamp() * 1000)
             end_ts = int(pd.Timestamp(end_date).timestamp() * 1000)
 
-            all_rates: List[Dict[str, Any]] = []
+            all_rates: list[dict[str, Any]] = []
             limit = 1000
 
             while since < end_ts:
                 self._rate_limit()
                 rates = self._exchange.fetch_funding_rate_history(
-                    symbol, since=since, limit=limit,
+                    symbol,
+                    since=since,
+                    limit=limit,
                 )
                 if not rates:
                     break
@@ -347,7 +369,7 @@ class BinanceFuturesDataFetcher:
     # Open interest
     # ------------------------------------------------------------------
 
-    def get_open_interest(self, symbols: List[str]) -> Dict[str, float]:
+    def get_open_interest(self, symbols: list[str]) -> dict[str, float]:
         """Fetch current open interest (in USD) for each symbol.
 
         Uses ``ccxt.fetch_open_interest()`` per symbol.
@@ -355,7 +377,7 @@ class BinanceFuturesDataFetcher:
         if not CCXT_AVAILABLE:
             return {}
 
-        result: Dict[str, float] = {}
+        result: dict[str, float] = {}
         for ticker in symbols:
             sym = self._ccxt_symbol(ticker)
             try:
@@ -373,7 +395,7 @@ class BinanceFuturesDataFetcher:
     # Position limits
     # ------------------------------------------------------------------
 
-    def get_position_limits(self, symbols: List[str]) -> Dict[str, float]:
+    def get_position_limits(self, symbols: list[str]) -> dict[str, float]:
         """Extract max notional limits from exchange market info.
 
         Returns ``{ticker: max_notional_usd}``.
@@ -386,7 +408,7 @@ class BinanceFuturesDataFetcher:
         except Exception:
             return {}
 
-        result: Dict[str, float] = {}
+        result: dict[str, float] = {}
         for ticker in symbols:
             sym = self._ccxt_symbol(ticker)
             market = self._exchange.markets.get(sym, {})
@@ -413,10 +435,10 @@ class BinanceFuturesDataFetcher:
 
     def get_market_data(
         self,
-        tickers: List[str],
+        tickers: list[str],
         lookback_days: int = 400,
-        end_date: Optional[str] = None,
-    ) -> Dict[str, pd.DataFrame]:
+        end_date: str | None = None,
+    ) -> dict[str, pd.DataFrame]:
         """Fetch prices, volume, funding rates, and estimated market cap.
 
         Returns dict with wide DataFrames (date index, ticker columns):
@@ -428,12 +450,14 @@ class BinanceFuturesDataFetcher:
 
         logger.info(
             "Fetching futures data for %d tickers from %s to %s",
-            len(tickers), start_date, end_date,
+            len(tickers),
+            start_date,
+            end_date,
         )
 
-        prices_data: Dict[str, pd.Series] = {}
-        volume_data: Dict[str, pd.Series] = {}
-        funding_data: Dict[str, pd.Series] = {}
+        prices_data: dict[str, pd.Series] = {}
+        volume_data: dict[str, pd.Series] = {}
+        funding_data: dict[str, pd.Series] = {}
 
         for ticker in tickers:
             if ticker.upper() in self.stablecoins:
@@ -473,7 +497,9 @@ class BinanceFuturesDataFetcher:
         market_cap = self._cmc_provider.estimate_market_cap(prices, volume)
 
         logger.info(
-            "Fetched futures data: %d tickers, %d days", len(prices.columns), len(prices),
+            "Fetched futures data: %d tickers, %d days",
+            len(prices.columns),
+            len(prices),
         )
 
         return {

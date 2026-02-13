@@ -5,22 +5,25 @@ mean reversion (OU), Bayesian shrinkage, correlation-adjusted portfolio.
 
 Ported from quantlabnew/src/market-simulator.
 """
+
 from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
 
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Optional, Union
 
 try:
     from scipy import stats as _scipy_stats
+
     HAS_SCIPY = True
 except ImportError:
     HAS_SCIPY = False
 
 try:
     from arch import arch_model as _arch_model
+
     HAS_ARCH = True
 except ImportError:
     HAS_ARCH = False
@@ -28,6 +31,7 @@ except ImportError:
 
 class Horizon(Enum):
     """Standard forecast horizons (trading days)."""
+
     DAILY = 1
     WEEKLY = 5
     MONTHLY = 21
@@ -42,6 +46,7 @@ class Horizon(Enum):
 @dataclass
 class ForecastResult:
     """Container for a single-horizon return forecast."""
+
     asset: str
     horizon: int
     horizon_name: str
@@ -70,11 +75,12 @@ class ForecastResult:
 @dataclass
 class MultiHorizonForecast:
     """Container for multi-horizon forecasts."""
+
     asset: str
     forecasts: dict[int, ForecastResult]
     term_structure: pd.DataFrame
 
-    def get_horizon(self, horizon: Union[int, Horizon]) -> ForecastResult:
+    def get_horizon(self, horizon: int | Horizon) -> ForecastResult:
         if isinstance(horizon, Horizon):
             horizon = horizon.value
         return self.forecasts[horizon]
@@ -95,7 +101,7 @@ class ReturnForecaster:
     def forecast_single_horizon(
         self,
         asset: str,
-        horizon: Union[int, Horizon],
+        horizon: int | Horizon,
         method: str = "historical",
         confidence_levels: list[float] | None = None,
         n_simulations: int = 10000,
@@ -137,7 +143,7 @@ class ReturnForecaster:
     def forecast_multi_horizon(
         self,
         asset: str,
-        horizons: list[Union[int, Horizon]] | None = None,
+        horizons: list[int | Horizon] | None = None,
         method: str = "historical",
         **kwargs,
     ) -> MultiHorizonForecast:
@@ -152,17 +158,19 @@ class ReturnForecaster:
 
         term_data = []
         for h, f in sorted(forecasts.items()):
-            term_data.append({
-                "horizon_days": h,
-                "horizon_name": f.horizon_name,
-                "expected_return": f.expected_return,
-                "annualized_return": f.expected_return * (252 / h),
-                "volatility": f.volatility,
-                "annualized_volatility": f.volatility * np.sqrt(252 / h),
-                "sharpe_ratio": (f.expected_return - self._daily_rf * h) / f.volatility if f.volatility > 0 else 0,
-                "ci_95_lower": f.confidence_intervals.get(0.95, (0, 0))[0],
-                "ci_95_upper": f.confidence_intervals.get(0.95, (0, 0))[1],
-            })
+            term_data.append(
+                {
+                    "horizon_days": h,
+                    "horizon_name": f.horizon_name,
+                    "expected_return": f.expected_return,
+                    "annualized_return": f.expected_return * (252 / h),
+                    "volatility": f.volatility,
+                    "annualized_volatility": f.volatility * np.sqrt(252 / h),
+                    "sharpe_ratio": (f.expected_return - self._daily_rf * h) / f.volatility if f.volatility > 0 else 0,
+                    "ci_95_lower": f.confidence_intervals.get(0.95, (0, 0))[0],
+                    "ci_95_upper": f.confidence_intervals.get(0.95, (0, 0))[1],
+                }
+            )
 
         return MultiHorizonForecast(
             asset=asset,
@@ -172,14 +180,11 @@ class ReturnForecaster:
 
     def forecast_all_assets(
         self,
-        horizons: list[Union[int, Horizon]] | None = None,
+        horizons: list[int | Horizon] | None = None,
         method: str = "historical",
         **kwargs,
     ) -> dict[str, MultiHorizonForecast]:
-        return {
-            asset: self.forecast_multi_horizon(asset, horizons, method, **kwargs)
-            for asset in self.asset_names
-        }
+        return {asset: self.forecast_multi_horizon(asset, horizons, method, **kwargs) for asset in self.asset_names}
 
     def expected_return_with_mean_reversion(
         self,
@@ -216,8 +221,16 @@ class ReturnForecaster:
             expected_return=expected_horizon,
             volatility=horizon_vol,
             confidence_intervals=confidence_intervals,
-            percentiles={5: expected_horizon - 1.645 * horizon_vol, 50: expected_horizon, 95: expected_horizon + 1.645 * horizon_vol},
-            distribution_params={"current_return": current_return, "long_term_return": long_term_return, "mean_reversion_speed": mean_reversion_speed},
+            percentiles={
+                5: expected_horizon - 1.645 * horizon_vol,
+                50: expected_horizon,
+                95: expected_horizon + 1.645 * horizon_vol,
+            },
+            distribution_params={
+                "current_return": current_return,
+                "long_term_return": long_term_return,
+                "mean_reversion_speed": mean_reversion_speed,
+            },
             method="mean_reversion",
         )
 
@@ -252,8 +265,17 @@ class ReturnForecaster:
             expected_return=expected_horizon,
             volatility=horizon_vol,
             confidence_intervals=confidence_intervals,
-            percentiles={5: expected_horizon - 1.645 * horizon_vol, 50: expected_horizon, 95: expected_horizon + 1.645 * horizon_vol},
-            distribution_params={"historical_return": hist_mean, "prior_return": prior_return, "prior_weight": prior_weight, "shrunk_return": shrunk_return},
+            percentiles={
+                5: expected_horizon - 1.645 * horizon_vol,
+                50: expected_horizon,
+                95: expected_horizon + 1.645 * horizon_vol,
+            },
+            distribution_params={
+                "historical_return": hist_mean,
+                "prior_return": prior_return,
+                "prior_weight": prior_weight,
+                "shrunk_return": shrunk_return,
+            },
             method="bayesian_shrinkage",
         )
 
@@ -311,7 +333,10 @@ class ReturnForecaster:
         confidence_intervals = {}
         for level in [0.90, 0.95, 0.99]:
             z = _scipy_stats.norm.ppf((1 + level) / 2)
-            confidence_intervals[level] = (portfolio_expected - z * portfolio_vol, portfolio_expected + z * portfolio_vol)
+            confidence_intervals[level] = (
+                portfolio_expected - z * portfolio_vol,
+                portfolio_expected + z * portfolio_vol,
+            )
 
         return ForecastResult(
             asset="Portfolio",
@@ -320,7 +345,11 @@ class ReturnForecaster:
             expected_return=portfolio_expected,
             volatility=portfolio_vol,
             confidence_intervals=confidence_intervals,
-            percentiles={5: portfolio_expected - 1.645 * portfolio_vol, 50: portfolio_expected, 95: portfolio_expected + 1.645 * portfolio_vol},
+            percentiles={
+                5: portfolio_expected - 1.645 * portfolio_vol,
+                50: portfolio_expected,
+                95: portfolio_expected + 1.645 * portfolio_vol,
+            },
             distribution_params={"weights": weights},
             method=f"portfolio_{method}",
         )
@@ -351,7 +380,13 @@ class ReturnForecaster:
             dist_params["skewness"] = float(_scipy_stats.skew(horizon_returns))
             dist_params["kurtosis"] = float(_scipy_stats.kurtosis(horizon_returns))
 
-        return {"expected_return": float(expected), "volatility": float(volatility), "confidence_intervals": confidence_intervals, "percentiles": percentiles, "distribution_params": dist_params}
+        return {
+            "expected_return": float(expected),
+            "volatility": float(volatility),
+            "confidence_intervals": confidence_intervals,
+            "percentiles": percentiles,
+            "distribution_params": dist_params,
+        }
 
     def _bootstrap_forecast(self, returns, horizon, confidence_levels, n_simulations):
         rng = np.random.default_rng(42)
@@ -377,7 +412,13 @@ class ReturnForecaster:
             )
 
         percentiles = {p: float(np.percentile(simulated_returns, p)) for p in [1, 5, 10, 25, 50, 75, 90, 95, 99]}
-        return {"expected_return": float(expected), "volatility": float(volatility), "confidence_intervals": confidence_intervals, "percentiles": percentiles, "distribution_params": {"n_simulations": n_simulations, "block_size": block_size}}
+        return {
+            "expected_return": float(expected),
+            "volatility": float(volatility),
+            "confidence_intervals": confidence_intervals,
+            "percentiles": percentiles,
+            "distribution_params": {"n_simulations": n_simulations, "block_size": block_size},
+        }
 
     def _parametric_forecast(self, returns, horizon, confidence_levels):
         if not HAS_SCIPY:
@@ -393,8 +434,20 @@ class ReturnForecaster:
             z = _scipy_stats.norm.ppf((1 + level) / 2)
             confidence_intervals[level] = (float(expected - z * volatility), float(expected + z * volatility))
 
-        percentiles = {p: float(expected + _scipy_stats.norm.ppf(p / 100) * volatility) for p in [1, 5, 10, 25, 50, 75, 90, 95, 99]}
-        return {"expected_return": float(expected), "volatility": float(volatility), "confidence_intervals": confidence_intervals, "percentiles": percentiles, "distribution_params": {"daily_mu": float(daily_mu), "daily_sigma": float(daily_sigma), "distribution": "normal"}}
+        percentiles = {
+            p: float(expected + _scipy_stats.norm.ppf(p / 100) * volatility) for p in [1, 5, 10, 25, 50, 75, 90, 95, 99]
+        }
+        return {
+            "expected_return": float(expected),
+            "volatility": float(volatility),
+            "confidence_intervals": confidence_intervals,
+            "percentiles": percentiles,
+            "distribution_params": {
+                "daily_mu": float(daily_mu),
+                "daily_sigma": float(daily_sigma),
+                "distribution": "normal",
+            },
+        }
 
     def _garch_forecast(self, returns, horizon, confidence_levels, n_simulations):
         if not HAS_ARCH:
@@ -418,8 +471,20 @@ class ReturnForecaster:
             z = _scipy_stats.norm.ppf((1 + level) / 2)
             confidence_intervals[level] = (float(expected - z * volatility), float(expected + z * volatility))
 
-        percentiles = {p: float(expected + _scipy_stats.norm.ppf(p / 100) * volatility) for p in [1, 5, 10, 25, 50, 75, 90, 95, 99]}
-        return {"expected_return": float(expected), "volatility": float(volatility), "confidence_intervals": confidence_intervals, "percentiles": percentiles, "distribution_params": {"omega": float(result.params.get("omega", 0)), "alpha": float(result.params.get("alpha[1]", 0)), "beta": float(result.params.get("beta[1]", 0))}}
+        percentiles = {
+            p: float(expected + _scipy_stats.norm.ppf(p / 100) * volatility) for p in [1, 5, 10, 25, 50, 75, 90, 95, 99]
+        }
+        return {
+            "expected_return": float(expected),
+            "volatility": float(volatility),
+            "confidence_intervals": confidence_intervals,
+            "percentiles": percentiles,
+            "distribution_params": {
+                "omega": float(result.params.get("omega", 0)),
+                "alpha": float(result.params.get("alpha[1]", 0)),
+                "beta": float(result.params.get("beta[1]", 0)),
+            },
+        }
 
     def _horizon_to_name(self, horizon: int) -> str:
         for h in Horizon:

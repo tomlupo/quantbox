@@ -24,6 +24,11 @@ dev = [
 [tool.ruff]
 target-version = "py310"
 line-length = 120
+exclude = [
+    "packages/quantbox-core/src/quantbox/plugins/trading/quantlab/",
+    "scripts/",
+    "config/",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
@@ -33,6 +38,9 @@ ignore = [
     "B008",    # function call in default arg (typer uses this)
     "SIM108",  # ternary — readability preference
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"packages/quantbox-core/src/quantbox/plugins/strategies/crypto_trend.py" = ["E402", "I001"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["quantbox"]

@@ -1,8 +1,9 @@
 """Mean-variance portfolio optimizer strategy plugin."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -22,6 +23,7 @@ _SCIPY_MSG = "scipy is required for max_sharpe and min_variance optimization"
 # ---------------------------------------------------------------------------
 # Private analyzer (not exported)
 # ---------------------------------------------------------------------------
+
 
 class _PortfolioAnalyzer:
     """Compute portfolio metrics and run optimizations on a returns matrix."""
@@ -47,9 +49,7 @@ class _PortfolioAnalyzer:
 
     # -- portfolio metrics ---------------------------------------------------
 
-    def portfolio_performance(
-        self, weights: np.ndarray
-    ) -> tuple[float, float, float]:
+    def portfolio_performance(self, weights: np.ndarray) -> tuple[float, float, float]:
         """Return (annualised return, annualised vol, Sharpe ratio)."""
         w = np.asarray(weights)
         ret = float(np.dot(self._mean_annual(), w))
@@ -182,9 +182,9 @@ class PortfolioOptimizerStrategy:
 
     def run(
         self,
-        data: Dict[str, pd.DataFrame],
-        params: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        data: dict[str, pd.DataFrame],
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Compute portfolio weights using the configured optimization method."""
         if params:
             for key, value in params.items():
@@ -192,9 +192,7 @@ class PortfolioOptimizerStrategy:
                     setattr(self, key, value)
 
         if self.method not in _METHODS:
-            raise ValueError(
-                f"Unknown method '{self.method}'. Choose from: {_METHODS}"
-            )
+            raise ValueError(f"Unknown method '{self.method}'. Choose from: {_METHODS}")
 
         prices: pd.DataFrame = data["prices"]
 
@@ -210,9 +208,7 @@ class PortfolioOptimizerStrategy:
         # Statistics and risk from the latest window
         tail = prices.iloc[-self.lookback :]
         returns = tail.pct_change().dropna()
-        analyzer = _PortfolioAnalyzer(
-            returns, self.risk_free_rate, self.trading_days
-        )
+        analyzer = _PortfolioAnalyzer(returns, self.risk_free_rate, self.trading_days)
         w_arr = latest.values
         var_val = analyzer.var(w_arr)
         cvar_val = analyzer.cvar(w_arr)
@@ -246,13 +242,9 @@ class PortfolioOptimizerStrategy:
         """Compute weights once for the latest lookback window."""
         tail = prices.iloc[-self.lookback :]
         returns = tail.pct_change().dropna()
-        analyzer = _PortfolioAnalyzer(
-            returns, self.risk_free_rate, self.trading_days
-        )
+        analyzer = _PortfolioAnalyzer(returns, self.risk_free_rate, self.trading_days)
         w = self._optimize(analyzer)
-        return pd.DataFrame(
-            [w], columns=prices.columns, index=[prices.index[-1]]
-        )
+        return pd.DataFrame([w], columns=prices.columns, index=[prices.index[-1]])
 
     def _rolling_weights(self, prices: pd.DataFrame) -> pd.DataFrame:
         """Compute a full weight history, rebalancing every N days."""
@@ -262,7 +254,7 @@ class PortfolioOptimizerStrategy:
             start = len(dates) - 1
 
         rows = []
-        last_weights: Optional[np.ndarray] = None
+        last_weights: np.ndarray | None = None
         steps_since_rebalance = self.rebalance_every  # force first rebalance
 
         for i in range(start, len(dates)):
@@ -273,9 +265,7 @@ class PortfolioOptimizerStrategy:
                 if len(returns) < 2:
                     last_weights = np.full(len(prices.columns), 1.0 / len(prices.columns))
                 else:
-                    analyzer = _PortfolioAnalyzer(
-                        returns, self.risk_free_rate, self.trading_days
-                    )
+                    analyzer = _PortfolioAnalyzer(returns, self.risk_free_rate, self.trading_days)
                     last_weights = self._optimize(analyzer)
                 steps_since_rebalance = 0
             rows.append(last_weights)

@@ -1,14 +1,15 @@
 """Tests for VaR/CVaR functions in backtesting/metrics.py."""
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from quantbox.plugins.backtesting.metrics import (
-    compute_var,
-    compute_cvar,
-    compute_portfolio_var,
-    compute_portfolio_cvar,
     compute_backtest_metrics,
+    compute_cvar,
+    compute_portfolio_cvar,
+    compute_portfolio_var,
+    compute_var,
 )
 
 
@@ -23,11 +24,14 @@ def sample_returns():
 def multi_asset_returns():
     rng = np.random.default_rng(42)
     dates = pd.bdate_range("2020-01-01", periods=500)
-    return pd.DataFrame({
-        "A": rng.normal(0.0003, 0.012, 500),
-        "B": rng.normal(0.0001, 0.008, 500),
-        "C": rng.normal(0.0002, 0.010, 500),
-    }, index=dates)
+    return pd.DataFrame(
+        {
+            "A": rng.normal(0.0003, 0.012, 500),
+            "B": rng.normal(0.0001, 0.008, 500),
+            "C": rng.normal(0.0002, 0.010, 500),
+        },
+        index=dates,
+    )
 
 
 class TestComputeVaR:
@@ -89,7 +93,9 @@ class TestPortfolioVaR:
     def test_custom_confidence(self, multi_asset_returns):
         weights = {"A": 0.5, "B": 0.3, "C": 0.2}
         var_dict = compute_portfolio_var(
-            multi_asset_returns, weights, confidence_levels=[0.90],
+            multi_asset_returns,
+            weights,
+            confidence_levels=[0.90],
         )
         assert 0.90 in var_dict
 

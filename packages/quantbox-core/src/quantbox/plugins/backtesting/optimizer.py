@@ -11,34 +11,38 @@ wrapping the existing ``backtest()`` function::
     )
     print(result["best_params"], result["best_metric"])
 """
+
 from __future__ import annotations
 
+from collections.abc import Callable
 from itertools import product
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any
 
 import pandas as pd
+
 
 def _backtest_lazy():
     """Lazy import to avoid circular dependency with __init__.py."""
     from quantbox.plugins.backtesting import backtest as _bt
+
     return _bt
 
 
 def optimize(
     prices: pd.DataFrame,
-    weights_fn: Callable[[pd.DataFrame, Dict[str, Any]], pd.DataFrame],
-    param_grid: Dict[str, List[Any]],
+    weights_fn: Callable[[pd.DataFrame, dict[str, Any]], pd.DataFrame],
+    param_grid: dict[str, list[Any]],
     *,
     method: str = "grid",
     metric: str = "sharpe",
     fees: float = 0.001,
     fixed_fees: float = 0.0,
     slippage: float = 0.0,
-    rebalancing_freq: Optional[Union[int, str]] = 1,
+    rebalancing_freq: int | str | None = 1,
     trading_days: int = 365,
     train_size: int = 252,
     test_size: int = 63,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Optimize strategy parameters via grid search or walk-forward.
 
     Args:
@@ -74,16 +78,16 @@ def optimize(
 def _grid_search(
     prices: pd.DataFrame,
     weights_fn: Callable,
-    param_grid: Dict[str, List[Any]],
+    param_grid: dict[str, list[Any]],
     metric: str,
-    bt_kwargs: Dict[str, Any],
-) -> Dict[str, Any]:
+    bt_kwargs: dict[str, Any],
+) -> dict[str, Any]:
     param_names = list(param_grid.keys())
     combos = list(product(*param_grid.values()))
-    rows: list[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
 
     for combo in combos:
-        params = dict(zip(param_names, combo))
+        params = dict(zip(param_names, combo, strict=False))
         try:
             weights = weights_fn(prices, params)
             result = _backtest_lazy()(prices, weights, **bt_kwargs)
@@ -107,13 +111,13 @@ def _grid_search(
 def _walk_forward(
     prices: pd.DataFrame,
     weights_fn: Callable,
-    param_grid: Dict[str, List[Any]],
+    param_grid: dict[str, list[Any]],
     metric: str,
-    bt_kwargs: Dict[str, Any],
+    bt_kwargs: dict[str, Any],
     train_size: int,
     test_size: int,
-) -> Dict[str, Any]:
-    oos_rows: list[Dict[str, Any]] = []
+) -> dict[str, Any]:
+    oos_rows: list[dict[str, Any]] = []
     start = 0
 
     while start + train_size + test_size <= len(prices):
@@ -129,12 +133,14 @@ def _walk_forward(
             try:
                 test_weights = weights_fn(test_prices, best_params)
                 test_bt = _backtest_lazy()(test_prices, test_weights, **bt_kwargs)
-                oos_rows.append({
-                    "period_start": test_prices.index[0],
-                    "period_end": test_prices.index[-1],
-                    **best_params,
-                    **{f"oos_{k}": v for k, v in test_bt["metrics"].items()},
-                })
+                oos_rows.append(
+                    {
+                        "period_start": test_prices.index[0],
+                        "period_end": test_prices.index[-1],
+                        **best_params,
+                        **{f"oos_{k}": v for k, v in test_bt["metrics"].items()},
+                    }
+                )
             except Exception:
                 pass
 

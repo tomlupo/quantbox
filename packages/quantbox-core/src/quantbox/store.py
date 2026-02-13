@@ -1,16 +1,16 @@
 from __future__ import annotations
+
 import json
 import logging
-from glob import glob
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 
 class FileArtifactStore:
-
     def __init__(self, root: str, run_id: str, *, _readonly: bool = False):
         self._run_id = run_id
         self.root = Path(root) / run_id
@@ -33,15 +33,13 @@ class FileArtifactStore:
             try:
                 errors = schema.validate(df)
                 if errors:
-                    logger.warning(
-                        "Schema validation warnings for %s: %s", name, errors
-                    )
+                    logger.warning("Schema validation warnings for %s: %s", name, errors)
             except Exception as exc:
                 logger.warning("Schema validation failed for %s: %s", name, exc)
         df.to_parquet(path, index=False)
         return str(path)
 
-    def put_json(self, name: str, obj: Dict[str, Any]) -> str:
+    def put_json(self, name: str, obj: dict[str, Any]) -> str:
         path = self.root / f"{name}.json"
         path.write_text(json.dumps(obj, ensure_ascii=False, indent=2))
         return str(path)
@@ -58,11 +56,11 @@ class FileArtifactStore:
         path = self.root / f"{name}.parquet"
         return pd.read_parquet(path)
 
-    def read_json(self, name: str) -> Dict[str, Any]:
+    def read_json(self, name: str) -> dict[str, Any]:
         path = self.root / f"{name}.json"
         return json.loads(path.read_text(encoding="utf-8"))
 
-    def list_artifacts(self) -> List[str]:
+    def list_artifacts(self) -> list[str]:
         manifest_path = self.root / "run_manifest.json"
         if manifest_path.exists():
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -75,7 +73,7 @@ class FileArtifactStore:
                 names.append(p.stem)
         return names
 
-    def get_manifest(self) -> Dict[str, Any]:
+    def get_manifest(self) -> dict[str, Any]:
         path = self.root / "run_manifest.json"
         return json.loads(path.read_text(encoding="utf-8"))
 
@@ -86,14 +84,14 @@ class FileArtifactStore:
         cls,
         root: str,
         *,
-        pipeline: Optional[str] = None,
-        mode: Optional[str] = None,
-        since: Optional[str] = None,
+        pipeline: str | None = None,
+        mode: str | None = None,
+        since: str | None = None,
         limit: int = 100,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         root_path = Path(root)
         manifests = sorted(root_path.glob("*/run_manifest.json"), reverse=True)
-        runs: List[Dict[str, Any]] = []
+        runs: list[dict[str, Any]] = []
         for mp in manifests:
             try:
                 data = json.loads(mp.read_text(encoding="utf-8"))
@@ -114,7 +112,7 @@ class FileArtifactStore:
         return runs
 
     @classmethod
-    def open_run(cls, root: str, run_id: str) -> "FileArtifactStore":
+    def open_run(cls, root: str, run_id: str) -> FileArtifactStore:
         store = cls(root, run_id, _readonly=True)
         if not store.root.exists():
             raise FileNotFoundError(f"Run directory not found: {store.root}")
@@ -138,6 +136,7 @@ class FileArtifactStore:
             return pd.DataFrame()
         try:
             import duckdb
+
             query = f"SELECT * FROM read_parquet({paths!r})"
             return duckdb.sql(query).df()
         except ImportError:
