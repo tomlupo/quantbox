@@ -1,13 +1,16 @@
 from __future__ import annotations
-from pathlib import Path
-from typing import Any, Dict
+
 import os
+from pathlib import Path
+from typing import Any
+
 import yaml
 
 
 def _repo_root_from_here() -> Path:
     # quantbox/plugin_manifest.py -> quantbox -> src -> quantbox-core -> packages -> repo
     return Path(__file__).resolve().parents[4]
+
 
 def repo_root() -> Path:
     return _repo_root_from_here()
@@ -26,7 +29,7 @@ def default_manifest_path() -> Path:
     return repo_path
 
 
-def load_manifest() -> Dict[str, Any]:
+def load_manifest() -> dict[str, Any]:
     path = default_manifest_path()
     if not path.exists():
         return {}
@@ -34,6 +37,6 @@ def load_manifest() -> Dict[str, Any]:
         return yaml.safe_load(f) or {}
 
 
-def resolve_profile(profile: str, manifest: Dict[str, Any]) -> Dict[str, Any]:
+def resolve_profile(profile: str, manifest: dict[str, Any]) -> dict[str, Any]:
     profiles = (manifest or {}).get("profiles", {}) or {}
     return profiles.get(profile, {}) or {}

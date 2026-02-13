@@ -1,9 +1,10 @@
 from __future__ import annotations
-from pathlib import Path
-from typing import Optional, Tuple
-import json
 
-def find_latest_run(artifacts_root: str | Path, pipeline_name: str) -> Optional[Tuple[str, Path]]:
+import json
+from pathlib import Path
+
+
+def find_latest_run(artifacts_root: str | Path, pipeline_name: str) -> tuple[str, Path] | None:
     root = Path(artifacts_root)
     if not root.exists():
         return None
@@ -31,6 +32,7 @@ def find_latest_run(artifacts_root: str | Path, pipeline_name: str) -> Optional[
     _, run_id, run_dir = candidates[0]
     return run_id, run_dir
 
+
 def resolve_latest_artifact(artifacts_root: str | Path, pipeline_name: str, artifact_file: str) -> Path:
     found = find_latest_run(artifacts_root, pipeline_name)
     if not found:
@@ -38,5 +40,7 @@ def resolve_latest_artifact(artifacts_root: str | Path, pipeline_name: str, arti
     run_id, run_dir = found
     p = run_dir / artifact_file
     if not p.exists():
-        raise FileNotFoundError(f"Latest run {run_id} for pipeline '{pipeline_name}' does not have artifact {artifact_file}")
+        raise FileNotFoundError(
+            f"Latest run {run_id} for pipeline '{pipeline_name}' does not have artifact {artifact_file}"
+        )
     return p

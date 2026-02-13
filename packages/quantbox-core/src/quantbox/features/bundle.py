@@ -1,12 +1,15 @@
 """Dispatch feature computations from a manifest dict."""
+
 from __future__ import annotations
-from typing import Any, Dict
+
+from typing import Any
+
 import pandas as pd
 
-from quantbox.features.returns import compute_returns
-from quantbox.features.volatility import compute_rolling_vol, compute_ewm_vol
-from quantbox.features.moving_averages import compute_sma, compute_ema
 from quantbox.features.channels import compute_donchian
+from quantbox.features.moving_averages import compute_ema, compute_sma
+from quantbox.features.returns import compute_returns
+from quantbox.features.volatility import compute_ewm_vol, compute_rolling_vol
 
 _DISPATCHERS = {
     "returns": lambda prices, cfg: compute_returns(
@@ -26,16 +29,14 @@ _DISPATCHERS = {
     ),
     "sma": lambda prices, cfg: compute_sma(prices, cfg.get("windows", [20])),
     "ema": lambda prices, cfg: compute_ema(prices, cfg.get("spans", [20])),
-    "donchian": lambda prices, cfg: compute_donchian(
-        prices, cfg.get("windows", [20])
-    ),
+    "donchian": lambda prices, cfg: compute_donchian(prices, cfg.get("windows", [20])),
 }
 
 
 def compute_features_bundle(
     prices: pd.DataFrame,
-    manifest: Dict[str, Any],
-) -> Dict[str, pd.DataFrame]:
+    manifest: dict[str, Any],
+) -> dict[str, pd.DataFrame]:
     """Compute multiple feature sets from a manifest.
 
     Args:
@@ -52,7 +53,7 @@ def compute_features_bundle(
     Returns:
         Merged dict of all computed features, keyed by feature name.
     """
-    result: Dict[str, pd.DataFrame] = {}
+    result: dict[str, pd.DataFrame] = {}
     for feature_type, config in manifest.items():
         dispatcher = _DISPATCHERS.get(feature_type)
         if dispatcher is None:

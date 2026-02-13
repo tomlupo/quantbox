@@ -5,13 +5,12 @@ trades, fills, positions, and portfolio snapshots.
 
 Adapted from quantlabnew/datalayer schemas.
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 import pyarrow as pa
-
 
 # ── Schema field & base class ────────────────────────────────
 
@@ -43,11 +42,7 @@ class WarehouseSchema:
 
     @classmethod
     def fields(cls) -> list[SchemaField]:
-        return [
-            getattr(cls, name)
-            for name in dir(cls)
-            if isinstance(getattr(cls, name), SchemaField)
-        ]
+        return [getattr(cls, name) for name in dir(cls) if isinstance(getattr(cls, name), SchemaField)]
 
     @classmethod
     def field_names(cls) -> list[str]:
@@ -55,12 +50,7 @@ class WarehouseSchema:
 
     @classmethod
     def to_arrow_schema(cls) -> pa.Schema:
-        return pa.schema(
-            [
-                pa.field(f.name, f.dtype, nullable=f.nullable)
-                for f in cls.fields()
-            ]
-        )
+        return pa.schema([pa.field(f.name, f.dtype, nullable=f.nullable) for f in cls.fields()])
 
     @classmethod
     def validate(cls, table: pa.Table) -> list[str]:
@@ -76,9 +66,7 @@ class WarehouseSchema:
                 continue
             actual = table.schema.field(f.name).type
             if not actual.equals(f.dtype) and not _types_compatible(actual, f.dtype):
-                errors.append(
-                    f"Type mismatch for {f.name}: expected {f.dtype}, got {actual}"
-                )
+                errors.append(f"Type mismatch for {f.name}: expected {f.dtype}, got {actual}")
         return errors
 
     @classmethod
@@ -96,13 +84,11 @@ class WarehouseSchema:
                 arrays.append(pa.nulls(len(table), type=arrow_field.type))
             else:
                 raise ValueError(f"Missing required column: {arrow_field.name}")
-        return pa.table(dict(zip(schema.names, arrays)))
+        return pa.table(dict(zip(schema.names, arrays, strict=False)))
 
     @classmethod
     def empty_table(cls) -> pa.Table:
-        return pa.table(
-            {f.name: pa.array([], type=f.dtype) for f in cls.fields()}
-        )
+        return pa.table({f.name: pa.array([], type=f.dtype) for f in cls.fields()})
 
 
 def _types_compatible(actual: pa.DataType, expected: pa.DataType) -> bool:
@@ -119,9 +105,7 @@ def _types_compatible(actual: pa.DataType, expected: pa.DataType) -> bool:
         return True
     if pa.types.is_large_string(actual) and pa.types.is_string(expected):
         return True
-    if pa.types.is_string(actual) and pa.types.is_large_string(expected):
-        return True
-    return False
+    return pa.types.is_string(actual) and pa.types.is_large_string(expected)
 
 
 # ── Domain schemas ────────────────────────────────────────────

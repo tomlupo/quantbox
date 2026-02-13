@@ -3,28 +3,29 @@
 - ``ingest_run``: bridge FileArtifactStore artifacts → warehouse bronze layer.
 - ``register_dataset``: create zero-copy DuckDB views over quantbox-datasets Parquet files.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 import pyarrow as pa
 
 if TYPE_CHECKING:
-    from . import Warehouse
     from ..store import FileArtifactStore
+    from . import Warehouse
 
 logger = logging.getLogger(__name__)
 
 
 def ingest_run(
-    warehouse: "Warehouse",
-    store: "FileArtifactStore",
+    warehouse: Warehouse,
+    store: FileArtifactStore,
     *,
-    tables: Optional[list[str]] = None,
+    tables: list[str] | None = None,
 ) -> dict[str, int]:
     """Ingest run artifacts from a FileArtifactStore into the warehouse.
 
@@ -83,9 +84,9 @@ def ingest_run(
 
 
 def register_dataset(
-    warehouse: "Warehouse",
+    warehouse: Warehouse,
     name: str,
-    path: Union[str, Path],
+    path: str | Path,
 ) -> list[str]:
     """Create zero-copy DuckDB views over quantbox-datasets Parquet files.
 
@@ -147,7 +148,7 @@ def register_dataset(
     return views_created
 
 
-def restore_dataset_views(warehouse: "Warehouse") -> list[str]:
+def restore_dataset_views(warehouse: Warehouse) -> list[str]:
     """Restore dataset views from persisted registrations.
 
     Called during ``Warehouse.__init__`` to recreate views
@@ -178,7 +179,7 @@ def restore_dataset_views(warehouse: "Warehouse") -> list[str]:
 
 
 def _save_dataset_registration(
-    warehouse: "Warehouse",
+    warehouse: Warehouse,
     name: str,
     path: str,
     views: list[str],

@@ -4,23 +4,25 @@ Orchestrates correlated simulations across multiple stochastic models.
 
 Ported from quantlabnew/src/market-simulator.
 """
+
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass
-from typing import Optional
 
-from .models import BaseModel, GBM, GBMParams
+from .models import GBM, BaseModel
 
 
 @dataclass
 class SimulationConfig:
     """Configuration for Monte Carlo simulation."""
+
     n_paths: int = 10000
     n_steps: int = 252
     dt: float = 1 / 252
-    random_state: Optional[int] = None
+    random_state: int | None = None
 
 
 @dataclass
@@ -31,42 +33,39 @@ class SimulationResult:
         prices: shape ``(n_assets, n_paths, n_steps + 1)``
         returns: shape ``(n_assets, n_paths, n_steps)``
     """
+
     prices: np.ndarray
     returns: np.ndarray
     asset_names: list[str]
     config: SimulationConfig
-    correlation_matrix: Optional[np.ndarray] = None
+    correlation_matrix: np.ndarray | None = None
 
     def get_terminal_prices(self) -> pd.DataFrame:
-        return pd.DataFrame({
-            name: self.prices[i, :, -1]
-            for i, name in enumerate(self.asset_names)
-        })
+        return pd.DataFrame({name: self.prices[i, :, -1] for i, name in enumerate(self.asset_names)})
 
     def get_terminal_returns(self) -> pd.DataFrame:
         total_returns = self.prices[:, :, -1] / self.prices[:, :, 0] - 1
-        return pd.DataFrame({
-            name: total_returns[i]
-            for i, name in enumerate(self.asset_names)
-        })
+        return pd.DataFrame({name: total_returns[i] for i, name in enumerate(self.asset_names)})
 
     def get_path_statistics(self) -> pd.DataFrame:
         stats = []
         for i, name in enumerate(self.asset_names):
             terminal = self.prices[i, :, -1] / self.prices[i, :, 0] - 1
-            stats.append({
-                "asset": name,
-                "mean_return": np.mean(terminal),
-                "median_return": np.median(terminal),
-                "std_return": np.std(terminal),
-                "skewness": self._skewness(terminal),
-                "kurtosis": self._kurtosis(terminal),
-                "var_95": np.percentile(terminal, 5),
-                "var_99": np.percentile(terminal, 1),
-                "cvar_95": np.mean(terminal[terminal <= np.percentile(terminal, 5)]),
-                "max_drawdown_mean": np.mean(self._max_drawdowns(self.prices[i])),
-                "sharpe_ratio": np.mean(terminal) / np.std(terminal) if np.std(terminal) > 0 else 0,
-            })
+            stats.append(
+                {
+                    "asset": name,
+                    "mean_return": np.mean(terminal),
+                    "median_return": np.median(terminal),
+                    "std_return": np.std(terminal),
+                    "skewness": self._skewness(terminal),
+                    "kurtosis": self._kurtosis(terminal),
+                    "var_95": np.percentile(terminal, 5),
+                    "var_99": np.percentile(terminal, 1),
+                    "cvar_95": np.mean(terminal[terminal <= np.percentile(terminal, 5)]),
+                    "max_drawdown_mean": np.mean(self._max_drawdowns(self.prices[i])),
+                    "sharpe_ratio": np.mean(terminal) / np.std(terminal) if np.std(terminal) > 0 else 0,
+                }
+            )
         return pd.DataFrame(stats).set_index("asset")
 
     def get_percentile_paths(self, asset: str, percentiles: list[float] | None = None) -> pd.DataFrame:
@@ -189,6 +188,7 @@ class MarketSimulator:
                 models[col] = GBM.fit(asset_returns)
             elif model_type == "garch":
                 from .models import GARCH
+
                 models[col] = GARCH.fit(asset_returns)
             else:
                 raise ValueError(f"Unknown model type: {model_type}")
@@ -205,7 +205,7 @@ def generate_correlated_returns(
     means: np.ndarray,
     stds: np.ndarray,
     correlation_matrix: np.ndarray,
-    random_state: Optional[int] = None,
+    random_state: int | None = None,
 ) -> np.ndarray:
     """Generate correlated multivariate returns.
 

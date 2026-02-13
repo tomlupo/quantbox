@@ -5,13 +5,14 @@ DuckDBEngine — SQL queries, views, materializations over the lake.
 
 Adapted from quantlabnew/datalayer backends.
 """
+
 from __future__ import annotations
 
 import logging
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Generator, Optional, Union
 
 import pyarrow as pa
 import pyarrow.dataset as ds
@@ -36,7 +37,7 @@ class ParquetLake:
           gold/     ← aggregated / materialized
     """
 
-    def __init__(self, root: Union[str, Path], *, compression: str = "zstd"):
+    def __init__(self, root: str | Path, *, compression: str = "zstd"):
         self.root = Path(root)
         self.compression = compression
         for layer in LAYERS:
@@ -53,7 +54,7 @@ class ParquetLake:
         data: pa.Table,
         *,
         layer: str = "bronze",
-        partition_cols: Optional[list[str]] = None,
+        partition_cols: list[str] | None = None,
         mode: str = "append",
     ) -> None:
         """Write a PyArrow Table to Parquet.
@@ -69,6 +70,7 @@ class ParquetLake:
 
         if mode == "overwrite" and path.exists():
             import shutil
+
             shutil.rmtree(path)
 
         path.mkdir(parents=True, exist_ok=True)
@@ -96,8 +98,8 @@ class ParquetLake:
         table: str,
         *,
         layer: str = "bronze",
-        columns: Optional[list[str]] = None,
-        filters: Optional[list[tuple]] = None,
+        columns: list[str] | None = None,
+        filters: list[tuple] | None = None,
     ) -> pa.Table:
         """Read Parquet data with optional predicate pushdown.
 
@@ -113,14 +115,12 @@ class ParquetLake:
             raise FileNotFoundError(f"Table not found: {table} in {layer}")
 
         dataset = ds.dataset(path, format="parquet", partitioning="hive")
-        return dataset.to_table(
-            columns=columns, filter=self._build_filter(filters)
-        )
+        return dataset.to_table(columns=columns, filter=self._build_filter(filters))
 
     @staticmethod
     def _build_filter(
-        filters: Optional[list[tuple]],
-    ) -> Optional[ds.Expression]:
+        filters: list[tuple] | None,
+    ) -> ds.Expression | None:
         if not filters:
             return None
         exprs = []
@@ -181,33 +181,34 @@ class DuckDBEngine:
     Supports SQL queries, view creation, materialization, and Parquet export.
     """
 
-    def __init__(self, database: Union[str, Path]):
+    def __init__(self, database: str | Path):
         import duckdb
 
         self._db_path = Path(database)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn: Optional[duckdb.DuckDBPyConnection] = None
+        self._conn: duckdb.DuckDBPyConnection | None = None
 
     @property
     def conn(self):
         if self._conn is None:
             import duckdb
+
             self._conn = duckdb.connect(str(self._db_path))
             self._conn.execute("SET enable_progress_bar = false")
         return self._conn
 
     # ── query ──
 
-    def execute(self, sql: str, params: Optional[dict] = None):
+    def execute(self, sql: str, params: dict | None = None):
         if params:
             return self.conn.execute(sql, params)
         return self.conn.execute(sql)
 
-    def query(self, sql: str, params: Optional[dict] = None) -> pa.Table:
+    def query(self, sql: str, params: dict | None = None) -> pa.Table:
         """Execute SQL and return PyArrow Table."""
         return self.execute(sql, params).arrow()
 
-    def query_df(self, sql: str, params: Optional[dict] = None):
+    def query_df(self, sql: str, params: dict | None = None):
         """Execute SQL and return pandas DataFrame."""
         return self.execute(sql, params).df()
 
@@ -247,15 +248,12 @@ class DuckDBEngine:
         sql: str,
         path: str,
         *,
-        partition_by: Optional[list[str]] = None,
+        partition_by: list[str] | None = None,
     ) -> None:
         """Export SQL query results to Parquet file(s)."""
         if partition_by:
             cols = ", ".join(partition_by)
-            self.conn.execute(
-                f"COPY ({sql}) TO '{path}' "
-                f"(FORMAT PARQUET, PARTITION_BY ({cols}))"
-            )
+            self.conn.execute(f"COPY ({sql}) TO '{path}' (FORMAT PARQUET, PARTITION_BY ({cols}))")
         else:
             self.conn.execute(f"COPY ({sql}) TO '{path}' (FORMAT PARQUET)")
 
@@ -281,31 +279,25 @@ class DuckDBEngine:
 
     def list_tables(self) -> list[str]:
         rows = self.conn.execute(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = 'main' AND table_type = 'BASE TABLE'"
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main' AND table_type = 'BASE TABLE'"
         ).fetchall()
         return sorted(r[0] for r in rows)
 
     def list_views(self) -> list[str]:
         rows = self.conn.execute(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = 'main' AND table_type = 'VIEW'"
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main' AND table_type = 'VIEW'"
         ).fetchall()
         return sorted(r[0] for r in rows)
 
     def table_exists(self, table: str) -> bool:
         result = self.conn.execute(
-            "SELECT COUNT(*) FROM information_schema.tables "
-            f"WHERE table_name = '{table}'"
+            f"SELECT COUNT(*) FROM information_schema.tables WHERE table_name = '{table}'"
         ).fetchone()
         return bool(result and result[0] > 0)
 
     def describe(self, table: str) -> list[dict]:
         rows = self.conn.execute(f"DESCRIBE {table}").fetchall()
-        return [
-            {"column_name": r[0], "column_type": r[1], "null": r[2]}
-            for r in rows
-        ]
+        return [{"column_name": r[0], "column_type": r[1], "null": r[2]} for r in rows]
 
     # ── lifecycle ──
 

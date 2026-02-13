@@ -1,14 +1,14 @@
 from __future__ import annotations
-from typing import Dict, List
+
 import pandas as pd
 
 
 def compute_returns(
     prices: pd.DataFrame,
-    windows: List[int],
+    windows: list[int],
     *,
     method: str = "pct_change",
-) -> Dict[str, pd.DataFrame]:
+) -> dict[str, pd.DataFrame]:
     """Compute period returns for multiple windows.
 
     Args:
@@ -19,10 +19,11 @@ def compute_returns(
     Returns:
         Dict keyed ``"ret_{w}d"`` -> DataFrame of returns.
     """
-    result: Dict[str, pd.DataFrame] = {}
+    result: dict[str, pd.DataFrame] = {}
     for w in windows:
         if method == "log":
             import numpy as np
+
             ret = np.log(prices / prices.shift(w))
         else:
             ret = prices.pct_change(periods=w)

@@ -38,13 +38,14 @@ plugins:
 - Daily OHLCV candles and 8h funding rates (aggregated to daily)
 - No market_cap available (returns empty DataFrame)
 """
+
 from __future__ import annotations
 
 import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import pandas as pd
 import requests
@@ -89,16 +90,14 @@ class HyperliquidDataPlugin:
             "properties": {},
         },
         outputs=("universe", "prices", "volume", "funding_rates", "market_cap"),
-        examples=(
-            "plugins:\n  data:\n    name: hyperliquid.data.v1\n    params_init: {}",
-        ),
+        examples=("plugins:\n  data:\n    name: hyperliquid.data.v1\n    params_init: {}",),
     )
 
     # ------------------------------------------------------------------
     # DataPlugin protocol
     # ------------------------------------------------------------------
 
-    def load_universe(self, params: Dict[str, Any]) -> pd.DataFrame:
+    def load_universe(self, params: dict[str, Any]) -> pd.DataFrame:
         """Return the Hyperliquid perps universe sorted by 24h volume.
 
         Uses the ``metaAndAssetCtxs`` endpoint which returns both the
@@ -115,22 +114,24 @@ class HyperliquidDataPlugin:
         top_n : int
             Keep top N by 24h notional volume (upper bound).
         """
-        symbols: Optional[List[str]] = params.get("symbols")
+        symbols: list[str] | None = params.get("symbols")
         if symbols:
             return pd.DataFrame({"symbol": symbols})
 
         data = _post({"type": "metaAndAssetCtxs"})
         meta_info = data[0]["universe"]  # list of {name, szDecimals, ...}
-        asset_ctxs = data[1]             # parallel list of live contexts
+        asset_ctxs = data[1]  # parallel list of live contexts
 
         rows: list[dict] = []
-        for meta, ctx in zip(meta_info, asset_ctxs):
+        for meta, ctx in zip(meta_info, asset_ctxs, strict=False):
             symbol = meta["name"]
             day_ntl_vlm = float(ctx["dayNtlVlm"])
-            rows.append({
-                "symbol": symbol,
-                "day_ntl_vlm": day_ntl_vlm,
-            })
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "day_ntl_vlm": day_ntl_vlm,
+                }
+            )
 
         df = pd.DataFrame(rows)
 
@@ -143,7 +144,8 @@ class HyperliquidDataPlugin:
             df = df.head(int(top_n))
 
         logger.info(
-            "Hyperliquid universe: %d symbols loaded", len(df),
+            "Hyperliquid universe: %d symbols loaded",
+            len(df),
         )
 
         return df[["symbol"]]
@@ -152,8 +154,8 @@ class HyperliquidDataPlugin:
         self,
         universe: pd.DataFrame,
         asof: str,
-        params: Dict[str, Any],
-    ) -> Dict[str, pd.DataFrame]:
+        params: dict[str, Any],
+    ) -> dict[str, pd.DataFrame]:
         """Fetch OHLCV candles and funding-rate history.
 
         Returns dict with keys: ``prices``, ``volume``, ``funding_rates``,
@@ -186,15 +188,17 @@ class HyperliquidDataPlugin:
 
             # --- OHLCV candles ---
             try:
-                candles = _post({
-                    "type": "candleSnapshot",
-                    "req": {
-                        "coin": ticker,
-                        "interval": "1d",
-                        "startTime": start_ms,
-                        "endTime": end_ms,
-                    },
-                })
+                candles = _post(
+                    {
+                        "type": "candleSnapshot",
+                        "req": {
+                            "coin": ticker,
+                            "interval": "1d",
+                            "startTime": start_ms,
+                            "endTime": end_ms,
+                        },
+                    }
+                )
                 if candles:
                     df_c = pd.DataFrame(candles)
                     df_c["date"] = pd.to_datetime(df_c["t"], unit="ms", utc=True).dt.normalize()
@@ -210,12 +214,14 @@ class HyperliquidDataPlugin:
 
             # --- Funding rates ---
             try:
-                funding = _post({
-                    "type": "fundingHistory",
-                    "coin": ticker,
-                    "startTime": start_ms,
-                    "endTime": end_ms,
-                })
+                funding = _post(
+                    {
+                        "type": "fundingHistory",
+                        "coin": ticker,
+                        "startTime": start_ms,
+                        "endTime": end_ms,
+                    }
+                )
                 if funding:
                     df_f = pd.DataFrame(funding)
                     df_f["date"] = pd.to_datetime(df_f["time"], unit="ms", utc=True).dt.normalize()
@@ -236,7 +242,8 @@ class HyperliquidDataPlugin:
 
         logger.info(
             "Loaded %d price rows for %d symbols from Hyperliquid",
-            len(prices), len(prices.columns),
+            len(prices),
+            len(prices.columns),
         )
 
         return {
@@ -246,6 +253,6 @@ class HyperliquidDataPlugin:
             "market_cap": pd.DataFrame(),  # Not available on Hyperliquid
         }
 
-    def load_fx(self, asof: str, params: Dict[str, Any]) -> Optional[pd.DataFrame]:
+    def load_fx(self, asof: str, params: dict[str, Any]) -> pd.DataFrame | None:
         """Not applicable for crypto."""
         return None

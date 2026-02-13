@@ -6,13 +6,12 @@ Provides:
 - DuckDB-backed Parquet OHLCV cache for incremental fetching
 - Market-cap data via CoinGecko (``pycoingecko``) with hardcoded fallback
 """
+
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
 
 import duckdb
 import httpx
@@ -30,6 +29,7 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # OHLCV Validation
 # ============================================================================
+
 
 def validate_ohlcv(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
     """Validate and clean an OHLCV DataFrame.
@@ -99,6 +99,7 @@ def validate_ohlcv(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
 # Transient Error Classification (used by tenacity)
 # ============================================================================
 
+
 def is_transient(exc: BaseException) -> bool:
     """Check if an exception is transient and worth retrying.
 
@@ -109,15 +110,16 @@ def is_transient(exc: BaseException) -> bool:
     # ccxt rate-limit / exchange-not-available errors
     exc_name = type(exc).__name__
     if exc_name in (
-        "RateLimitExceeded", "ExchangeNotAvailable",
-        "RequestTimeout", "NetworkError", "DDoSProtection",
+        "RateLimitExceeded",
+        "ExchangeNotAvailable",
+        "RequestTimeout",
+        "NetworkError",
+        "DDoSProtection",
     ):
         return True
     # Binance API transient codes (-1003 rate limit, -1001 disconnected)
     code = getattr(exc, "code", None)
-    if code in (-1003, -1001, -1000, 503, 504):
-        return True
-    return False
+    return code in (-1003, -1001, -1000, 503, 504)
 
 
 # Pre-built tenacity retry decorator for data-fetching functions.
@@ -132,6 +134,7 @@ retry_transient = retry(
 # ============================================================================
 # DuckDB-Backed OHLCV Cache
 # ============================================================================
+
 
 class OHLCVCache:
     """DuckDB-backed Parquet cache for OHLCV data.
@@ -150,7 +153,7 @@ class OHLCVCache:
 
     def __init__(
         self,
-        cache_dir: Union[str, Path],
+        cache_dir: str | Path,
         fresh_ttl_hours: float = 4.0,
     ) -> None:
         self.cache_dir = Path(cache_dir)
@@ -165,7 +168,7 @@ class OHLCVCache:
         ticker: str,
         start_date: str,
         end_date: str,
-    ) -> Optional[pd.DataFrame]:
+    ) -> pd.DataFrame | None:
         """Read cached OHLCV from Parquet via DuckDB.
 
         Returns DataFrame with columns [date, open, high, low, close, volume]
@@ -192,7 +195,7 @@ class OHLCVCache:
             logger.debug("Cache read failed for %s: %s", ticker, exc)
             return None
 
-    def get_last_date(self, ticker: str) -> Optional[pd.Timestamp]:
+    def get_last_date(self, ticker: str) -> pd.Timestamp | None:
         """Get the most recent cached date for a ticker."""
         tdir = self._ticker_dir(ticker)
         if not tdir.exists():
@@ -251,9 +254,10 @@ class OHLCVCache:
         store_df.to_parquet(path, engine="pyarrow", index=False)
         logger.debug("Cached %d rows for %s -> %s", len(store_df), ticker, path)
 
-    def clear(self, ticker: Optional[str] = None) -> None:
+    def clear(self, ticker: str | None = None) -> None:
         """Clear cache for a ticker, or all tickers if None."""
         import shutil
+
         if ticker:
             tdir = self._ticker_dir(ticker)
             if tdir.exists():
@@ -267,6 +271,7 @@ class OHLCVCache:
 # ============================================================================
 # Market Cap Data (CoinGecko + hardcoded fallback)
 # ============================================================================
+
 
 class MarketCapProvider:
     """Fetch market cap rankings from CoinGecko (free, no API key).
@@ -287,7 +292,7 @@ class MarketCapProvider:
     """
 
     # Hardcoded fallback circulating supplies
-    _FALLBACK_SUPPLY: Dict[str, float] = {
+    _FALLBACK_SUPPLY: dict[str, float] = {
         "BTC": 19.6e6,
         "ETH": 120e6,
         "SOL": 440e6,
@@ -312,12 +317,12 @@ class MarketCapProvider:
 
     def __init__(
         self,
-        cache_dir: Optional[Union[str, Path]] = None,
+        cache_dir: str | Path | None = None,
         fresh_ttl_hours: float = 4.0,
         fallback_ttl_hours: float = 28.0,
         limit: int = 100,
         # Legacy params (ignored, kept for backwards compat)
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
     ) -> None:
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.fresh_ttl_hours = fresh_ttl_hours
@@ -327,12 +332,12 @@ class MarketCapProvider:
         if self.cache_dir:
             (self.cache_dir / "market_cap").mkdir(parents=True, exist_ok=True)
 
-    def _cache_path(self) -> Optional[Path]:
+    def _cache_path(self) -> Path | None:
         if self.cache_dir is None:
             return None
         return self.cache_dir / "market_cap" / "rankings.parquet"
 
-    def _read_cache(self) -> Optional[pd.DataFrame]:
+    def _read_cache(self) -> pd.DataFrame | None:
         """Read cached rankings if fresh or usable as fallback."""
         path = self._cache_path()
         if path is None or not path.exists():
@@ -341,9 +346,7 @@ class MarketCapProvider:
             df = pd.read_parquet(path)
             if "fetch_timestamp" not in df.columns:
                 return None
-            age_hours = (
-                pd.Timestamp.now() - pd.Timestamp(df["fetch_timestamp"].iloc[0])
-            ).total_seconds() / 3600
+            age_hours = (pd.Timestamp.now() - pd.Timestamp(df["fetch_timestamp"].iloc[0])).total_seconds() / 3600
             if age_hours < self.fresh_ttl_hours:
                 logger.debug("Market cap cache is fresh (%.1fh old)", age_hours)
                 return df
@@ -365,7 +368,7 @@ class MarketCapProvider:
         except Exception as exc:
             logger.warning("Failed to write market cap cache: %s", exc)
 
-    def fetch_rankings(self) -> Optional[pd.DataFrame]:
+    def fetch_rankings(self) -> pd.DataFrame | None:
         """Fetch top coin rankings from CoinGecko API.
 
         Returns DataFrame with columns: symbol, market_cap, circulating_supply,
@@ -376,15 +379,14 @@ class MarketCapProvider:
         # Check cache first
         cached = self._read_cache()
         if cached is not None:
-            age_hours = (
-                pd.Timestamp.now() - pd.Timestamp(cached["fetch_timestamp"].iloc[0])
-            ).total_seconds() / 3600
+            age_hours = (pd.Timestamp.now() - pd.Timestamp(cached["fetch_timestamp"].iloc[0])).total_seconds() / 3600
             if age_hours < self.fresh_ttl_hours:
                 return cached
 
         # Fetch from CoinGecko (free, no API key needed)
         try:
             from pycoingecko import CoinGeckoAPI
+
             cg = CoinGeckoAPI()
             coins = cg.get_coins_markets(
                 vs_currency="usd",
@@ -400,13 +402,15 @@ class MarketCapProvider:
 
             rows = []
             for coin in coins:
-                rows.append({
-                    "symbol": str(coin.get("symbol", "")).upper(),
-                    "market_cap": float(coin.get("market_cap", 0) or 0),
-                    "circulating_supply": float(coin.get("circulating_supply", 0) or 0),
-                    "rank": int(coin.get("market_cap_rank", 0) or 0),
-                    "fetch_timestamp": pd.Timestamp.now().isoformat(),
-                })
+                rows.append(
+                    {
+                        "symbol": str(coin.get("symbol", "")).upper(),
+                        "market_cap": float(coin.get("market_cap", 0) or 0),
+                        "circulating_supply": float(coin.get("circulating_supply", 0) or 0),
+                        "rank": int(coin.get("market_cap_rank", 0) or 0),
+                        "fetch_timestamp": pd.Timestamp.now().isoformat(),
+                    }
+                )
 
             df = pd.DataFrame(rows)
             self._write_cache(df)
@@ -440,7 +444,7 @@ class MarketCapProvider:
             Same shape as *prices* with estimated market cap values.
         """
         rankings = self.fetch_rankings()
-        supply_map: Dict[str, float] = {}
+        supply_map: dict[str, float] = {}
 
         if rankings is not None and not rankings.empty:
             for _, row in rankings.iterrows():

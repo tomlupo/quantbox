@@ -3,19 +3,17 @@
 Runs configured stress scenarios against proposed target weights and
 raises findings when portfolio risk metrics exceed thresholds.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any
 
-import numpy as np
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
 from quantbox.simulation.stress_testing import (
-    HistoricalScenario,
     StressTestEngine,
-    HISTORICAL_SCENARIOS,
 )
 
 
@@ -94,8 +92,10 @@ class StressTestRiskManager:
     )
 
     def check_targets(
-        self, targets: pd.DataFrame, params: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
+        self,
+        targets: pd.DataFrame,
+        params: dict[str, Any],
+    ) -> list[dict[str, Any]]:
         """Run stress scenarios on proposed target weights.
 
         Parameters
@@ -110,25 +110,27 @@ class StressTestRiskManager:
         list[dict]
             Findings with keys ``level``, ``rule``, ``detail``.
         """
-        findings: List[Dict[str, Any]] = []
+        findings: list[dict[str, Any]] = []
         if targets is None or targets.empty:
             return findings
 
         weights_col = targets["weight"].astype(float) if "weight" in targets.columns else pd.Series(dtype=float)
-        symbols_col = targets["symbol"].tolist() if "symbol" in targets.columns else [f"asset_{i}" for i in range(len(targets))]
+        symbols_col = (
+            targets["symbol"].tolist() if "symbol" in targets.columns else [f"asset_{i}" for i in range(len(targets))]
+        )
         if weights_col.empty:
             return findings
 
-        weights = {sym: float(w) for sym, w in zip(symbols_col, weights_col)}
+        weights = {sym: float(w) for sym, w in zip(symbols_col, weights_col, strict=False)}
 
         # Load historical returns if provided
         returns_df = None
         hist_path = params.get("historical_returns")
         if hist_path:
-            try:
+            import contextlib
+
+            with contextlib.suppress(Exception):
                 returns_df = pd.read_parquet(hist_path)
-            except Exception:
-                pass
 
         engine = StressTestEngine(returns=returns_df, weights=weights)
 
@@ -142,49 +144,55 @@ class StressTestRiskManager:
             try:
                 result = engine.run_historical_scenario(sid, n_simulations=n_sims)
             except (KeyError, ValueError):
-                findings.append({
-                    "level": "warn",
-                    "rule": "unknown_scenario",
-                    "detail": f"Scenario '{sid}' not found. Skipping.",
-                })
+                findings.append(
+                    {
+                        "level": "warn",
+                        "rule": "unknown_scenario",
+                        "detail": f"Scenario '{sid}' not found. Skipping.",
+                    }
+                )
                 continue
 
             scenario_name = result.scenario.name
 
             if result.var_95 < max_var:
-                findings.append({
-                    "level": "warn",
-                    "rule": "stress_var_breach",
-                    "detail": (
-                        f"[{scenario_name}] VaR 95% = {result.var_95:.2%} "
-                        f"exceeds threshold {max_var:.2%}."
-                    ),
-                })
+                findings.append(
+                    {
+                        "level": "warn",
+                        "rule": "stress_var_breach",
+                        "detail": (f"[{scenario_name}] VaR 95% = {result.var_95:.2%} exceeds threshold {max_var:.2%}."),
+                    }
+                )
 
             if result.cvar_95 < max_cvar:
-                findings.append({
-                    "level": "warn",
-                    "rule": "stress_cvar_breach",
-                    "detail": (
-                        f"[{scenario_name}] CVaR 95% = {result.cvar_95:.2%} "
-                        f"exceeds threshold {max_cvar:.2%}."
-                    ),
-                })
+                findings.append(
+                    {
+                        "level": "warn",
+                        "rule": "stress_cvar_breach",
+                        "detail": (
+                            f"[{scenario_name}] CVaR 95% = {result.cvar_95:.2%} exceeds threshold {max_cvar:.2%}."
+                        ),
+                    }
+                )
 
             if result.max_drawdown < max_dd:
-                findings.append({
-                    "level": "error",
-                    "rule": "stress_drawdown_breach",
-                    "detail": (
-                        f"[{scenario_name}] Max drawdown = {result.max_drawdown:.2%} "
-                        f"exceeds threshold {max_dd:.2%}."
-                    ),
-                })
+                findings.append(
+                    {
+                        "level": "error",
+                        "rule": "stress_drawdown_breach",
+                        "detail": (
+                            f"[{scenario_name}] Max drawdown = {result.max_drawdown:.2%} "
+                            f"exceeds threshold {max_dd:.2%}."
+                        ),
+                    }
+                )
 
         return findings
 
     def check_orders(
-        self, orders: pd.DataFrame, params: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
+        self,
+        orders: pd.DataFrame,
+        params: dict[str, Any],
+    ) -> list[dict[str, Any]]:
         """Stress testing is target-level only; orders pass through."""
         return []

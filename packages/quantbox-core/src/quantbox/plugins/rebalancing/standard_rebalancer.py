@@ -8,12 +8,14 @@ Ported from ``TradingPipeline._apply_risk_transforms()``,
 ``_generate_orders()``, ``_build_rebalancing()``, and
 ``_create_executable_orders()``.
 """
+
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal, getcontext
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -35,6 +37,7 @@ DEFAULT_STABLE_COIN = "USDC"
 # Low-level helpers (from quantlab orders.py / portfolio.py)
 # ---------------------------------------------------------------------------
 
+
 def _adjust_quantity(qty: float, step_size: float) -> float:
     """Round *qty* down to the nearest *step_size* (Binance-style)."""
     if step_size <= 0:
@@ -47,8 +50,8 @@ def _adjust_quantity(qty: float, step_size: float) -> float:
 
 
 def _get_lot_size_and_min_notional(
-    symbol_info: Optional[Dict],
-) -> Tuple[float, float, float]:
+    symbol_info: dict | None,
+) -> tuple[float, float, float]:
     """Extract (min_qty, step_size, min_notional) from Binance symbol info."""
     min_qty, step_size, min_notional = 0.0, 0.0, 0.0
     if not symbol_info:
@@ -65,6 +68,7 @@ def _get_lot_size_and_min_notional(
 # ---------------------------------------------------------------------------
 # Plugin
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class StandardRebalancer:
@@ -89,10 +93,10 @@ class StandardRebalancer:
     def generate_orders(
         self,
         *,
-        weights: Dict[str, float],
+        weights: dict[str, float],
         broker: BrokerPlugin,
-        params: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
         # 1. Risk transforms
         risk_adjusted = self._apply_risk_transforms(weights, params)
 
@@ -115,9 +119,9 @@ class StandardRebalancer:
     # ==================================================================
     def _apply_risk_transforms(
         self,
-        weights: Dict[str, float],
-        params: Dict[str, Any],
-    ) -> Dict[str, float]:
+        weights: dict[str, float],
+        params: dict[str, Any],
+    ) -> dict[str, float]:
         """Apply tranching, leverage cap, and negative-weight clamping."""
         tranches = int(params.get("tranches", 1))
         max_leverage = float(params.get("max_leverage", 1))
@@ -139,9 +143,7 @@ class StandardRebalancer:
                         w_df = sinfo["result"].get("weights", pd.DataFrame())
                         if w_df is not None and not w_df.empty:
                             weight_dfs.append(w_df)
-                            account_weights.append(
-                                float(weight_overrides.get(sname, sinfo["weight"]))
-                            )
+                            account_weights.append(float(weight_overrides.get(sname, sinfo["weight"])))
 
                     if len(weight_dfs) == 1:
                         full_ts = weight_dfs[0] * account_weights[0]
@@ -149,12 +151,12 @@ class StandardRebalancer:
                         combined = pd.concat(
                             weight_dfs,
                             axis=1,
-                            keys=names[:len(weight_dfs)],
+                            keys=names[: len(weight_dfs)],
                             names=["strategy"],
                         )
                         acct_w = pd.Series(
                             account_weights,
-                            index=pd.Index(names[:len(weight_dfs)], name="strategy"),
+                            index=pd.Index(names[: len(weight_dfs)], name="strategy"),
                         )
                         weighted = combined.mul(acct_w, level="strategy")
                         full_ts = weighted.droplevel(0, axis=1)
@@ -171,7 +173,8 @@ class StandardRebalancer:
         if gross > max_leverage:
             logger.warning(
                 "Leverage %.4f exceeds max_leverage %.1f, scaling down",
-                gross, max_leverage,
+                gross,
+                max_leverage,
             )
             s = s / gross * max_leverage
 
@@ -190,11 +193,11 @@ class StandardRebalancer:
     def _generate_orders(
         self,
         broker: BrokerPlugin,
-        weights: Dict[str, float],
+        weights: dict[str, float],
         capital_at_risk: float,
         stable_coin: str,
-        params: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
         """Generate rebalancing DataFrame and executable orders."""
         min_notional_cfg = float(params.get("min_notional", DEFAULT_MIN_NOTIONAL))
         min_trade_size = float(params.get("min_trade_size", DEFAULT_MIN_TRADE_SIZE))
@@ -206,7 +209,7 @@ class StandardRebalancer:
         cash = broker.get_cash() or {}
         cash_available = float(cash.get(stable_coin, cash.get("USD", 0.0)))
 
-        current_holdings: Dict[str, float] = {}
+        current_holdings: dict[str, float] = {}
         if positions_df is not None and not positions_df.empty:
             for _, row in positions_df.iterrows():
                 sym = str(row.get("symbol", ""))
@@ -217,7 +220,7 @@ class StandardRebalancer:
         all_symbols = sorted(set(list(weights.keys()) + list(current_holdings.keys())))
         all_symbols = [s for s in all_symbols if s not in exclusions]
 
-        price_map: Dict[str, Optional[float]] = {}
+        price_map: dict[str, float | None] = {}
         if all_symbols:
             try:
                 snap = broker.get_market_snapshot(all_symbols)
@@ -230,7 +233,7 @@ class StandardRebalancer:
             except Exception:
                 pass
 
-        def get_price(asset: str) -> Optional[float]:
+        def get_price(asset: str) -> float | None:
             return price_map.get(asset)
 
         total_value = max(0, cash_available)
@@ -252,7 +255,7 @@ class StandardRebalancer:
 
         adjusted_weights = {a: w * capital_at_risk for a, w in weights.items()}
 
-        target_positions: Dict[str, float] = {}
+        target_positions: dict[str, float] = {}
         for asset, weight in adjusted_weights.items():
             p = get_price(asset)
             if p is not None and p > 0:
@@ -287,18 +290,18 @@ class StandardRebalancer:
 
     def _build_rebalancing(
         self,
-        current_holdings: Dict[str, float],
-        target_positions: Dict[str, float],
-        get_price: Callable[[str], Optional[float]],
+        current_holdings: dict[str, float],
+        target_positions: dict[str, float],
+        get_price: Callable[[str], float | None],
         total_value: float,
-        strategy_weights: Dict[str, float],
-        exclusions: List[str],
+        strategy_weights: dict[str, float],
+        exclusions: list[str],
     ) -> pd.DataFrame:
         """Build the rebalancing analysis DataFrame."""
         assets = sorted(set(current_holdings.keys()) | set(target_positions.keys()))
         assets = [a for a in assets if a not in exclusions]
 
-        rows: List[Dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
         for asset in assets:
             current_qty = current_holdings.get(asset, 0.0)
             price = get_price(asset)
@@ -317,19 +320,21 @@ class StandardRebalancer:
             else:
                 trade_action = "Hold"
 
-            rows.append({
-                "Asset": asset,
-                "Current Quantity": current_qty,
-                "Current Value": current_value,
-                "Current Weight": current_weight,
-                "Target Quantity": target_qty,
-                "Target Value": target_value,
-                "Target Weight": target_weight,
-                "Weight Delta": weight_delta,
-                "Delta Quantity": delta_qty,
-                "Price": price,
-                "Trade Action": trade_action,
-            })
+            rows.append(
+                {
+                    "Asset": asset,
+                    "Current Quantity": current_qty,
+                    "Current Value": current_value,
+                    "Current Weight": current_weight,
+                    "Target Quantity": target_qty,
+                    "Target Value": target_value,
+                    "Target Weight": target_weight,
+                    "Weight Delta": weight_delta,
+                    "Delta Quantity": delta_qty,
+                    "Price": price,
+                    "Trade Action": trade_action,
+                }
+            )
 
         return pd.DataFrame(rows)
 
@@ -347,13 +352,26 @@ class StandardRebalancer:
     ) -> pd.DataFrame:
         """Convert rebalancing to executable orders with lot/step/notional validation."""
         if rebalancing_df.empty:
-            return pd.DataFrame(columns=[
-                "Asset", "Symbol", "Action", "Raw Quantity", "Adjusted Quantity",
-                "Price", "Notional Value", "Min Notional", "Min Qty", "Step Size",
-                "Scaling Factor", "Order Status", "Reason", "Executable",
-            ])
+            return pd.DataFrame(
+                columns=[
+                    "Asset",
+                    "Symbol",
+                    "Action",
+                    "Raw Quantity",
+                    "Adjusted Quantity",
+                    "Price",
+                    "Notional Value",
+                    "Min Notional",
+                    "Min Qty",
+                    "Step Size",
+                    "Scaling Factor",
+                    "Order Status",
+                    "Reason",
+                    "Executable",
+                ]
+            )
 
-        order_records: List[Dict[str, Any]] = []
+        order_records: list[dict[str, Any]] = []
 
         for _, row in rebalancing_df.iterrows():
             asset = row["Asset"]
@@ -375,9 +393,7 @@ class StandardRebalancer:
                 reason = "No trade needed"
             else:
                 zero_target_sell = (
-                    action == "sell"
-                    and row.get("Target Weight", 0) == 0
-                    and row.get("Current Quantity", 0) > 0
+                    action == "sell" and row.get("Target Weight", 0) == 0 and row.get("Current Quantity", 0) > 0
                 )
                 if abs(row["Weight Delta"]) < min_trade_size and not zero_target_sell:
                     status = "Below threshold"
@@ -418,31 +434,31 @@ class StandardRebalancer:
                         status = "Pending scaling"
                         reason = ""
 
-            order_records.append({
-                "Asset": asset,
-                "Symbol": symbol,
-                "Action": action.capitalize(),
-                "Raw Quantity": abs(delta_qty),
-                "Adjusted Quantity": adjusted_qty,
-                "Notional Value": notional_value,
-                "Price": price,
-                "Min Notional": min_notional,
-                "Min Qty": min_qty,
-                "Step Size": step_size,
-                "Order Status": status,
-                "Reason": reason,
-                "Scaling Factor": scaling_factor,
-            })
+            order_records.append(
+                {
+                    "Asset": asset,
+                    "Symbol": symbol,
+                    "Action": action.capitalize(),
+                    "Raw Quantity": abs(delta_qty),
+                    "Adjusted Quantity": adjusted_qty,
+                    "Notional Value": notional_value,
+                    "Price": price,
+                    "Min Notional": min_notional,
+                    "Min Qty": min_qty,
+                    "Step Size": step_size,
+                    "Order Status": status,
+                    "Reason": reason,
+                    "Scaling Factor": scaling_factor,
+                }
+            )
 
         # --- Buy scaling ---
         buy_indices = [
-            i for i, rec in enumerate(order_records)
+            i
+            for i, rec in enumerate(order_records)
             if rec["Action"] == "Buy" and rec["Order Status"] == "Pending scaling"
         ]
-        total_buy_value = sum(
-            order_records[i]["Raw Quantity"] * (order_records[i]["Price"] or 0)
-            for i in buy_indices
-        )
+        total_buy_value = sum(order_records[i]["Raw Quantity"] * (order_records[i]["Price"] or 0) for i in buy_indices)
         cash_from_sells = sum(
             rec["Notional Value"]
             for rec in order_records
@@ -491,13 +507,24 @@ class StandardRebalancer:
         elif total_buy_value > 0:
             logger.warning(
                 "Buy scaling factor %.4f < minimum %.2f, skipping buys",
-                scaling_factor, scaling_factor_min,
+                scaling_factor,
+                scaling_factor_min,
             )
 
         columns = [
-            "Asset", "Symbol", "Action", "Raw Quantity", "Adjusted Quantity",
-            "Price", "Notional Value", "Min Notional", "Min Qty", "Step Size",
-            "Scaling Factor", "Order Status", "Reason",
+            "Asset",
+            "Symbol",
+            "Action",
+            "Raw Quantity",
+            "Adjusted Quantity",
+            "Price",
+            "Notional Value",
+            "Min Notional",
+            "Min Qty",
+            "Step Size",
+            "Scaling Factor",
+            "Order Status",
+            "Reason",
         ]
         order_df = pd.DataFrame(order_records, columns=columns)
         order_df["Executable"] = (order_df["Adjusted Quantity"] > 0) & (order_df["Order Status"] == "To be placed")

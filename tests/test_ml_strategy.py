@@ -1,4 +1,5 @@
 """Tests for MLPredictionStrategy plugin."""
+
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -9,18 +10,18 @@ import pytest
 
 from quantbox.plugins.strategies.ml_strategy import (
     MLPredictionStrategy,
-    _FeatureEngineer,
     _create_target,
+    _FeatureEngineer,
     _make_model,
     _predictions_to_weights_confidence,
     _predictions_to_weights_rank,
     _predictions_to_weights_threshold,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def prices() -> pd.DataFrame:
@@ -54,6 +55,7 @@ def data(prices: pd.DataFrame, volume: pd.DataFrame) -> dict:
 # PluginMeta
 # ---------------------------------------------------------------------------
 
+
 def test_meta_name():
     assert MLPredictionStrategy.meta.name == "strategy.ml_prediction.v1"
     assert MLPredictionStrategy.meta.kind == "strategy"
@@ -62,6 +64,7 @@ def test_meta_name():
 # ---------------------------------------------------------------------------
 # Feature engineering
 # ---------------------------------------------------------------------------
+
 
 def test_feature_engineer_shape(prices: pd.DataFrame):
     eng = _FeatureEngineer([5, 10, 20, 60])
@@ -90,6 +93,7 @@ def test_feature_engineer_no_nan_at_end(prices: pd.DataFrame):
 # Target creation
 # ---------------------------------------------------------------------------
 
+
 def test_create_target_regression(prices: pd.DataFrame):
     target = _create_target(prices["SYM00"], horizon=5, task="regression")
     assert len(target) == len(prices)
@@ -109,6 +113,7 @@ def test_create_target_classification(prices: pd.DataFrame):
 # Model factory
 # ---------------------------------------------------------------------------
 
+
 def test_make_model_regression():
     model = _make_model("ridge", "regression")
     assert hasattr(model, "fit")
@@ -127,6 +132,7 @@ def test_make_model_invalid():
 # ---------------------------------------------------------------------------
 # Weight conversion
 # ---------------------------------------------------------------------------
+
 
 def test_weights_rank():
     preds = {"A": 0.5, "B": 0.3, "C": 0.8, "D": 0.1}
@@ -153,6 +159,7 @@ def test_weights_threshold():
 # ---------------------------------------------------------------------------
 # Full strategy run
 # ---------------------------------------------------------------------------
+
 
 def test_run_classification(data: dict):
     strategy = MLPredictionStrategy(
@@ -239,22 +246,27 @@ def test_output_columns_match_symbols(data: dict):
 
 def test_params_override(data: dict):
     strategy = MLPredictionStrategy()
-    result = strategy.run(data, params={
-        "train_lookback": 200,
-        "retrain_frequency": 50,
-        "lookback_periods": [5, 10],
-        "max_symbols": 6,
-        "output_periods": 5,
-        "top_n": 3,
-    })
+    result = strategy.run(
+        data,
+        params={
+            "train_lookback": 200,
+            "retrain_frequency": 50,
+            "lookback_periods": [5, 10],
+            "max_symbols": 6,
+            "output_periods": 5,
+            "top_n": 3,
+        },
+    )
     assert result["weights"].shape[1] <= 6
 
 
 def test_sklearn_import_error(data: dict):
     strategy = MLPredictionStrategy()
-    with patch("quantbox.plugins.strategies.ml_strategy.HAS_SKLEARN", False):
-        with pytest.raises(ImportError, match="scikit-learn"):
-            strategy.run(data)
+    with (
+        patch("quantbox.plugins.strategies.ml_strategy.HAS_SKLEARN", False),
+        pytest.raises(ImportError, match="scikit-learn"),
+    ):
+        strategy.run(data)
 
 
 def test_not_enough_data():

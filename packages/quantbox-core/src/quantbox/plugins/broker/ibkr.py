@@ -1,14 +1,16 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
 
 try:
-    from ib_insync import IB, Stock, Contract, MarketOrder, LimitOrder, util
+    from ib_insync import IB, LimitOrder, MarketOrder, Stock
 except Exception:  # pragma: no cover
     IB = None  # type: ignore
+
 
 @dataclass
 class IBKRBroker:
@@ -31,7 +33,7 @@ class IBKRBroker:
     host: str = "127.0.0.1"
     port: int = 7497
     client_id: int = 7
-    account: Optional[str] = None
+    account: str | None = None
     readonly: bool = False  # set True to block order placement
 
     meta = PluginMeta(
@@ -40,22 +42,22 @@ class IBKRBroker:
         version="0.1.0",
         core_compat=">=0.1,<0.2",
         description="Interactive Brokers broker adapter (ib_insync)",
-        tags=("ibkr","broker"),
-        capabilities=("paper","live","stocks","etfs","futures"),
+        tags=("ibkr", "broker"),
+        capabilities=("paper", "live", "stocks", "etfs", "futures"),
         schema_version="v1",
         params_schema={
-            "type":"object",
-            "properties":{
-                "host":{"type":"string","default":"127.0.0.1"},
-                "port":{"type":"integer","default":7497},
-                "client_id":{"type":"integer","default":7},
-                "account":{"type":["string","null"]},
-                "readonly":{"type":"boolean","default":False}
+            "type": "object",
+            "properties": {
+                "host": {"type": "string", "default": "127.0.0.1"},
+                "port": {"type": "integer", "default": 7497},
+                "client_id": {"type": "integer", "default": 7},
+                "account": {"type": ["string", "null"]},
+                "readonly": {"type": "boolean", "default": False},
             },
         },
         examples=(
             "plugins:\n  broker:\n    name: ibkr.live.v1\n    params_init:\n      host: 127.0.0.1\n      port: 7497\n      client_id: 7\n      account: DUXXXX",
-        )
+        ),
     )
 
     def __post_init__(self):
@@ -79,7 +81,7 @@ class IBKRBroker:
             rows.append({"symbol": sym, "qty": float(p.position)})
         return pd.DataFrame(rows)
 
-    def get_cash(self) -> Dict[str, float]:
+    def get_cash(self) -> dict[str, float]:
         self._ensure_account()
         # accountSummary returns list of AccountValue
         vals = self.ib.accountSummary()
@@ -88,13 +90,13 @@ class IBKRBroker:
             if self.account and getattr(v, "account", None) != self.account:
                 continue
             if v.tag == "CashBalance":
-                try:
+                import contextlib
+
+                with contextlib.suppress(Exception):
                     cash[v.currency] = float(v.value)
-                except Exception:
-                    pass
         return cash
 
-    def get_market_snapshot(self, symbols: List[str]) -> pd.DataFrame:
+    def get_market_snapshot(self, symbols: list[str]) -> pd.DataFrame:
         # Snapshot mid using reqMktData; in practice you may need exchange/currency routing.
         rows = []
         for sym in symbols:
@@ -143,12 +145,14 @@ class IBKRBroker:
 
             # Collect executions (if any)
             for f in trade.fills:
-                fills.append({
-                    "symbol": sym,
-                    "side": side,
-                    "qty": float(f.execution.shares),
-                    "price": float(f.execution.price),
-                })
+                fills.append(
+                    {
+                        "symbol": sym,
+                        "side": side,
+                        "qty": float(f.execution.shares),
+                        "price": float(f.execution.price),
+                    }
+                )
 
         return pd.DataFrame(fills)
 
@@ -159,5 +163,7 @@ class IBKRBroker:
         for e in execs:
             sym = getattr(e.contract, "symbol", None) or getattr(e.contract, "localSymbol", "")
             side = "buy" if e.execution.side.upper() == "BOT" else "sell"
-            rows.append({"symbol": sym, "side": side, "qty": float(e.execution.shares), "price": float(e.execution.price)})
+            rows.append(
+                {"symbol": sym, "side": side, "qty": float(e.execution.shares), "price": float(e.execution.price)}
+            )
         return pd.DataFrame(rows)

@@ -8,6 +8,7 @@ Simulates a perpetual-futures account with:
 - Volume-dependent price impact
 - JSON state persistence across runs
 """
+
 from __future__ import annotations
 
 import json
@@ -15,7 +16,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import pandas as pd
 
@@ -50,38 +51,38 @@ class FuturesPaperBroker:
     leverage: int = 1
 
     # Slippage model
-    spread_bps: float = 2.0     # half-spread in basis points (0.02%)
-    slippage_bps: float = 5.0   # market impact in basis points (0.05%)
+    spread_bps: float = 2.0  # half-spread in basis points (0.02%)
+    slippage_bps: float = 5.0  # market impact in basis points (0.05%)
 
     # Volume-dependent price impact
-    impact_factor: float = 0.01   # bps per $10k notional
+    impact_factor: float = 0.01  # bps per $10k notional
     max_impact_bps: float = 20.0  # cap on price impact
 
     # Trading fees
-    maker_fee_bps: float = 2.0   # 0.02%
-    taker_fee_bps: float = 4.0   # 0.04%
+    maker_fee_bps: float = 2.0  # 0.02%
+    taker_fee_bps: float = 4.0  # 0.04%
     assume_taker: bool = True
     _cumulative_fees: float = field(default=0.0, repr=False)
 
     # State persistence
-    state_file: Optional[str] = None  # Path to JSON state file
+    state_file: str | None = None  # Path to JSON state file
 
     # Position limits: symbol -> max notional USD
-    position_limits: Dict[str, float] = field(default_factory=dict)
+    position_limits: dict[str, float] = field(default_factory=dict)
     default_max_notional: float = 1_000_000.0
 
     # Positions: symbol -> signed qty (+ long, - short)
-    positions: Dict[str, float] = field(default_factory=dict)
+    positions: dict[str, float] = field(default_factory=dict)
     # Entry prices: symbol -> avg entry price
-    entry_prices: Dict[str, float] = field(default_factory=dict)
+    entry_prices: dict[str, float] = field(default_factory=dict)
     # Current market prices: symbol -> price (injected by pipeline or seeded)
-    prices: Dict[str, float] = field(default_factory=dict)
+    prices: dict[str, float] = field(default_factory=dict)
     # Funding rates: symbol -> rate per snapshot (default 0.01% / 8h)
-    funding_rates: Dict[str, float] = field(default_factory=dict)
+    funding_rates: dict[str, float] = field(default_factory=dict)
     default_funding_rate: float = 0.0001  # 0.01% per 8h
 
     # Internal fill log
-    _fill_log: List[Dict[str, Any]] = field(default_factory=list, repr=False)
+    _fill_log: list[dict[str, Any]] = field(default_factory=list, repr=False)
 
     def __post_init__(self) -> None:
         """Load persisted state if state_file exists."""
@@ -92,15 +93,15 @@ class FuturesPaperBroker:
     # Price / funding injection
     # ------------------------------------------------------------------
 
-    def set_prices(self, prices: Dict[str, float]) -> None:
+    def set_prices(self, prices: dict[str, float]) -> None:
         """Inject latest market prices (called by pipeline before rebalancing)."""
         self.prices.update(prices)
 
-    def set_funding_rates(self, rates: Dict[str, float]) -> None:
+    def set_funding_rates(self, rates: dict[str, float]) -> None:
         """Inject per-symbol funding rates."""
         self.funding_rates.update(rates)
 
-    def set_position_limits(self, limits: Dict[str, float]) -> None:
+    def set_position_limits(self, limits: dict[str, float]) -> None:
         """Inject per-symbol max-notional position limits."""
         self.position_limits.update(limits)
 
@@ -117,34 +118,40 @@ class FuturesPaperBroker:
             entry = self.entry_prices.get(symbol, price)
             notional = abs(qty) * price
             unrealized_pnl = qty * (price - entry) if price and entry else 0.0
-            rows.append({
-                "symbol": symbol,
-                "qty": qty,
-                "notional": notional,
-                "entry_price": entry,
-                "unrealized_pnl": unrealized_pnl,
-            })
-        return pd.DataFrame(rows) if rows else pd.DataFrame(
-            columns=["symbol", "qty", "notional", "entry_price", "unrealized_pnl"]
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "qty": qty,
+                    "notional": notional,
+                    "entry_price": entry,
+                    "unrealized_pnl": unrealized_pnl,
+                }
+            )
+        return (
+            pd.DataFrame(rows)
+            if rows
+            else pd.DataFrame(columns=["symbol", "qty", "notional", "entry_price", "unrealized_pnl"])
         )
 
-    def get_cash(self) -> Dict[str, float]:
+    def get_cash(self) -> dict[str, float]:
         return {self.quote_currency: self.margin_balance}
 
-    def get_market_snapshot(self, symbols: List[str]) -> pd.DataFrame:
+    def get_market_snapshot(self, symbols: list[str]) -> pd.DataFrame:
         rows = []
         for s in symbols:
-            rows.append({
-                "symbol": s,
-                "mid": self.prices.get(s),
-                "min_qty": 0.0,
-                "step_size": 0.0,
-                "min_notional": 1.0,
-            })
+            rows.append(
+                {
+                    "symbol": s,
+                    "mid": self.prices.get(s),
+                    "min_qty": 0.0,
+                    "step_size": 0.0,
+                    "min_notional": 1.0,
+                }
+            )
         return pd.DataFrame(rows)
 
     def place_orders(self, orders: pd.DataFrame) -> pd.DataFrame:
-        fills: List[Dict[str, Any]] = []
+        fills: list[dict[str, Any]] = []
         now = datetime.now(timezone.utc).isoformat()
 
         for _, o in orders.iterrows():
@@ -180,7 +187,9 @@ class FuturesPaperBroker:
                         continue
                     logger.info(
                         "Position limit: capped %s qty from %.4f to %.4f",
-                        sym, abs(signed), abs(capped_signed),
+                        sym,
+                        abs(signed),
+                        abs(capped_signed),
                     )
                     signed = capped_signed
                     qty = abs(signed)
@@ -198,9 +207,8 @@ class FuturesPaperBroker:
             elif (old_qty >= 0 and signed > 0) or (old_qty <= 0 and signed < 0):
                 # Adding to position — weighted average entry
                 if abs(old_qty) + abs(signed) > 0:
-                    self.entry_prices[sym] = (
-                        (abs(old_qty) * old_entry + abs(signed) * fill_price)
-                        / (abs(old_qty) + abs(signed))
+                    self.entry_prices[sym] = (abs(old_qty) * old_entry + abs(signed) * fill_price) / (
+                        abs(old_qty) + abs(signed)
                     )
                 self.positions[sym] = new_qty
             else:
@@ -240,14 +248,18 @@ class FuturesPaperBroker:
         # Persist state after order execution
         self._save_state()
 
-        return pd.DataFrame(fills) if fills else pd.DataFrame(
-            columns=["symbol", "side", "qty", "price", "notional", "fee", "timestamp"]
+        return (
+            pd.DataFrame(fills)
+            if fills
+            else pd.DataFrame(columns=["symbol", "side", "qty", "price", "notional", "fee", "timestamp"])
         )
 
     def fetch_fills(self, since: str) -> pd.DataFrame:
         matching = [f for f in self._fill_log if f.get("timestamp", "") >= since]
-        return pd.DataFrame(matching) if matching else pd.DataFrame(
-            columns=["symbol", "side", "qty", "price", "notional", "timestamp"]
+        return (
+            pd.DataFrame(matching)
+            if matching
+            else pd.DataFrame(columns=["symbol", "side", "qty", "price", "notional", "timestamp"])
         )
 
     # ------------------------------------------------------------------
@@ -303,17 +315,15 @@ class FuturesPaperBroker:
         try:
             state = json.loads(path.read_text())
             self.margin_balance = float(state.get("margin_balance", self.margin_balance))
-            self.positions = {
-                str(k): float(v) for k, v in state.get("positions", {}).items()
-            }
-            self.entry_prices = {
-                str(k): float(v) for k, v in state.get("entry_prices", {}).items()
-            }
+            self.positions = {str(k): float(v) for k, v in state.get("positions", {}).items()}
+            self.entry_prices = {str(k): float(v) for k, v in state.get("entry_prices", {}).items()}
             self._cumulative_fees = float(state.get("cumulative_fees", 0.0))
             self._fill_log = state.get("fill_log", [])
             logger.info(
                 "Loaded futures broker state: margin=%.2f, %d positions, %d fills",
-                self.margin_balance, len(self.positions), len(self._fill_log),
+                self.margin_balance,
+                len(self.positions),
+                len(self._fill_log),
             )
         except Exception as exc:
             logger.warning("Failed to load futures broker state: %s", exc)

@@ -21,18 +21,21 @@ result = strategy.run(data)
 print(result['simple_weights'])
 ```
 """
+
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Any
-import pandas as pd
-import numpy as np
+
 import logging
+from dataclasses import dataclass, field
+from typing import Any
+
+import numpy as np
+import pandas as pd
 
 from quantbox.contracts import PluginMeta
+
 from .crypto_trend import (
-    compute_volatility_scalers,
-    construct_weights,
     DEFAULT_STABLECOINS,
+    compute_volatility_scalers,
 )
 
 logger = logging.getLogger(__name__)
@@ -47,6 +50,7 @@ DEFAULT_WINDOW_PAIRS = [(10, 25), (20, 50), (40, 100), (100, 250)]
 # ============================================================================
 # BTC Regime Detection
 # ============================================================================
+
 
 def compute_btc_regime(
     btc_prices: pd.Series,
@@ -66,20 +70,24 @@ def compute_btc_regime(
     long_regime = (btc_prices > ma).astype(float)
     short_regime = (btc_prices < ma).astype(float)
 
-    return pd.DataFrame({
-        "long_regime": long_regime,
-        "short_regime": short_regime,
-    }, index=btc_prices.index)
+    return pd.DataFrame(
+        {
+            "long_regime": long_regime,
+            "short_regime": short_regime,
+        },
+        index=btc_prices.index,
+    )
 
 
 # ============================================================================
 # Trend Signal Computation
 # ============================================================================
 
+
 def compute_trend_signals(
     prices: pd.DataFrame,
     trend_window: int,
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Compute per-asset trend signals based on price vs MA.
 
@@ -99,8 +107,8 @@ def compute_trend_signals(
 def compute_ensemble_regime_signals(
     prices: pd.DataFrame,
     btc_prices: pd.Series,
-    window_pairs: List[Tuple[int, int]],
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    window_pairs: list[tuple[int, int]],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Compute ensemble regime signals across multiple window pairs.
 
@@ -137,6 +145,7 @@ def compute_ensemble_regime_signals(
 # Universe Selection
 # ============================================================================
 
+
 def select_regime_universe(
     market_cap: pd.DataFrame,
     volume: pd.DataFrame,
@@ -144,8 +153,8 @@ def select_regime_universe(
     long_max: int,
     short_max: int,
     coins_to_trade: int = 30,
-    exclude_tickers: Optional[List[str]] = None,
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    exclude_tickers: list[str] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Select separate long and short universes.
 
@@ -197,6 +206,7 @@ def select_regime_universe(
 # Weighting
 # ============================================================================
 
+
 def compute_atr_weights(
     prices: pd.DataFrame,
     atr_window: int = 14,
@@ -224,6 +234,7 @@ def compute_atr_weights(
 # ============================================================================
 # Strategy Class
 # ============================================================================
+
 
 @dataclass
 class CryptoRegimeTrendStrategy:
@@ -254,23 +265,21 @@ class CryptoRegimeTrendStrategy:
 
     # Ensemble parameters
     use_ensemble: bool = True
-    window_pairs: List[Tuple[int, int]] = field(
-        default_factory=lambda: list(DEFAULT_WINDOW_PAIRS)
-    )
+    window_pairs: list[tuple[int, int]] = field(default_factory=lambda: list(DEFAULT_WINDOW_PAIRS))
 
     # Universe parameters
     long_max: int = 10
     short_max: int = 20
     coins_to_trade: int = 30
-    exclude_tickers: List[str] = field(default_factory=lambda: DEFAULT_STABLECOINS.copy())
+    exclude_tickers: list[str] = field(default_factory=lambda: DEFAULT_STABLECOINS.copy())
 
     # Weighting
     weighting: str = "equal"  # "equal" or "inverse_atr"
     atr_window: int = 14
 
     # Vol targeting (optional, reuse crypto_trend infra)
-    vol_targets: List[Any] = field(default_factory=lambda: ["off"])
-    tranches: List[int] = field(default_factory=lambda: [1])
+    vol_targets: list[Any] = field(default_factory=lambda: ["off"])
+    tranches: list[int] = field(default_factory=lambda: [1])
     vol_lookback: int = 60
 
     # Output
@@ -278,15 +287,18 @@ class CryptoRegimeTrendStrategy:
     normalize_weights: bool = True
 
     # Param aliases for quantlab compat
-    _PARAM_ALIASES: Dict[str, str] = field(default_factory=lambda: {
-        "filtered_coins_market_cap": "coins_to_trade",
-        "portfolio_coins_max_long": "long_max",
-        "portfolio_coins_max_short": "short_max",
-        "last_x_days": "output_periods",
-        "periods": "output_periods",
-    }, repr=False)
+    _PARAM_ALIASES: dict[str, str] = field(
+        default_factory=lambda: {
+            "filtered_coins_market_cap": "coins_to_trade",
+            "portfolio_coins_max_long": "long_max",
+            "portfolio_coins_max_short": "short_max",
+            "last_x_days": "output_periods",
+            "periods": "output_periods",
+        },
+        repr=False,
+    )
 
-    def describe(self) -> Dict[str, Any]:
+    def describe(self) -> dict[str, Any]:
         """Describe strategy for LLM introspection."""
         return {
             "name": "CryptoRegimeTrend",
@@ -305,9 +317,9 @@ class CryptoRegimeTrendStrategy:
 
     def run(
         self,
-        data: Dict[str, pd.DataFrame],
-        params: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        data: dict[str, pd.DataFrame],
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """
         Run regime trend strategy.
 
@@ -334,15 +346,14 @@ class CryptoRegimeTrendStrategy:
 
         btc_prices = prices[self.btc_ticker]
 
-        logger.info(
-            f"Running CryptoRegimeTrend on {len(prices.columns)} tickers, "
-            f"ensemble={self.use_ensemble}"
-        )
+        logger.info(f"Running CryptoRegimeTrend on {len(prices.columns)} tickers, ensemble={self.use_ensemble}")
 
         # 1. Compute signals
         if self.use_ensemble:
             long_sig, short_sig = compute_ensemble_regime_signals(
-                prices, btc_prices, self.window_pairs,
+                prices,
+                btc_prices,
+                self.window_pairs,
             )
         else:
             regime = compute_btc_regime(btc_prices, self.regime_window)
@@ -352,8 +363,12 @@ class CryptoRegimeTrendStrategy:
 
         # 2. Universe selection
         long_univ, short_univ = select_regime_universe(
-            market_cap, volume, prices,
-            self.long_max, self.short_max, self.coins_to_trade,
+            market_cap,
+            volume,
+            prices,
+            self.long_max,
+            self.short_max,
+            self.coins_to_trade,
             self.exclude_tickers,
         )
 
@@ -385,20 +400,23 @@ class CryptoRegimeTrendStrategy:
             scalers = {}
             if numeric_targets:
                 scalers = compute_volatility_scalers(
-                    prices, numeric_targets, self.vol_lookback,
+                    prices,
+                    numeric_targets,
+                    self.vol_lookback,
                 )
             if has_off:
-                scalers["off"] = pd.DataFrame(
-                    1.0, index=prices.index, columns=prices.columns
-                )
+                scalers["off"] = pd.DataFrame(1.0, index=prices.index, columns=prices.columns)
 
             # Build multi-index weights using construct_weights
             # We pass the combined signal (long - short) through the scaler framework
             from .crypto_trend import construct_weights as _cw
 
             multi_weights = _cw(
-                combined, long_univ.clip(upper=1) + short_univ.clip(upper=1),
-                scalers, self.tranches, normalize=False,
+                combined,
+                long_univ.clip(upper=1) + short_univ.clip(upper=1),
+                scalers,
+                self.tranches,
+                normalize=False,
             )
             output_weights = multi_weights.tail(self.output_periods)
         else:
@@ -438,7 +456,7 @@ class CryptoRegimeTrendStrategy:
             },
         }
 
-    def get_latest_weights(self, result: Dict[str, Any]) -> Dict[str, float]:
+    def get_latest_weights(self, result: dict[str, Any]) -> dict[str, float]:
         """Extract latest weights as dict."""
         return result["simple_weights"]
 
@@ -446,6 +464,7 @@ class CryptoRegimeTrendStrategy:
 # ============================================================================
 # Standard Interface
 # ============================================================================
+
 
 def run(data: dict, params: dict = None) -> dict:
     """Standard strategy interface."""

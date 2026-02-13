@@ -1,4 +1,5 @@
 """Tests for quantbox.simulation.engine — MarketSimulator orchestrator."""
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -6,7 +7,6 @@ import pytest
 from quantbox.simulation.engine import (
     MarketSimulator,
     SimulationConfig,
-    SimulationResult,
     generate_correlated_returns,
 )
 from quantbox.simulation.models import GBM, GBMParams
@@ -58,10 +58,13 @@ class TestMarketSimulator:
     def test_from_historical_data(self):
         rng = np.random.default_rng(42)
         dates = pd.bdate_range("2020-01-01", periods=300)
-        prices = pd.DataFrame({
-            "SPY": 100 * np.cumprod(1 + rng.normal(0.0003, 0.012, 300)),
-            "TLT": 50 * np.cumprod(1 + rng.normal(0.0001, 0.008, 300)),
-        }, index=dates)
+        prices = pd.DataFrame(
+            {
+                "SPY": 100 * np.cumprod(1 + rng.normal(0.0003, 0.012, 300)),
+                "TLT": 50 * np.cumprod(1 + rng.normal(0.0001, 0.008, 300)),
+            },
+            index=dates,
+        )
         sim = MarketSimulator.from_historical_data(prices, model_type="gbm")
         assert "SPY" in sim.models
         assert "TLT" in sim.models
@@ -110,7 +113,9 @@ class TestGenerateCorrelatedReturns:
     def test_shape(self):
         corr = np.array([[1.0, 0.5], [0.5, 1.0]])
         returns = generate_correlated_returns(
-            n_assets=2, n_steps=50, n_paths=100,
+            n_assets=2,
+            n_steps=50,
+            n_paths=100,
             means=np.array([0.0003, 0.0001]),
             stds=np.array([0.01, 0.008]),
             correlation_matrix=corr,

@@ -1,11 +1,11 @@
 """Tests for quantbox.simulation.correlation — CorrelationEngine."""
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from quantbox.simulation.correlation import (
     CorrelationEngine,
-    CorrelationResult,
     generate_random_correlation_matrix,
 )
 

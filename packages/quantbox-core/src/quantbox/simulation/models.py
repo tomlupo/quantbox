@@ -9,15 +9,17 @@ Implements various stochastic processes:
 
 Ported from quantlabnew/src/market-simulator.
 """
+
 from __future__ import annotations
 
-import numpy as np
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
+
+import numpy as np
 
 try:
     from arch import arch_model as _arch_model
+
     HAS_ARCH = True
 except ImportError:
     HAS_ARCH = False
@@ -26,38 +28,43 @@ except ImportError:
 @dataclass
 class ModelParameters:
     """Base parameters for market models."""
-    mu: float = 0.08       # Annual drift/expected return
-    sigma: float = 0.20    # Annual volatility
-    dt: float = 1 / 252    # Time step (daily by default)
+
+    mu: float = 0.08  # Annual drift/expected return
+    sigma: float = 0.20  # Annual volatility
+    dt: float = 1 / 252  # Time step (daily by default)
 
 
 @dataclass
 class GBMParams(ModelParameters):
     """Parameters for Geometric Brownian Motion."""
+
     pass
 
 
 @dataclass
 class JumpDiffusionParams(ModelParameters):
     """Parameters for Jump Diffusion model."""
-    jump_intensity: float = 0.1    # Expected jumps per year
-    jump_mean: float = -0.05       # Mean jump size
-    jump_std: float = 0.10         # Jump size volatility
+
+    jump_intensity: float = 0.1  # Expected jumps per year
+    jump_mean: float = -0.05  # Mean jump size
+    jump_std: float = 0.10  # Jump size volatility
 
 
 @dataclass
 class MeanReversionParams(ModelParameters):
     """Parameters for Ornstein-Uhlenbeck process."""
-    theta: float = 0.5             # Mean reversion speed
-    long_term_mean: float = 0.0    # Long-term mean level
+
+    theta: float = 0.5  # Mean reversion speed
+    long_term_mean: float = 0.0  # Long-term mean level
 
 
 @dataclass
 class GARCHParams(ModelParameters):
     """Parameters for GARCH model."""
-    omega: float = 0.00001   # Constant term
-    alpha: float = 0.1       # ARCH coefficient
-    beta: float = 0.85       # GARCH coefficient
+
+    omega: float = 0.00001  # Constant term
+    alpha: float = 0.1  # ARCH coefficient
+    beta: float = 0.85  # GARCH coefficient
 
 
 class BaseModel(ABC):
@@ -69,7 +76,7 @@ class BaseModel(ABC):
         S0: float,
         n_steps: int,
         n_paths: int,
-        random_state: Optional[int] = None,
+        random_state: int | None = None,
     ) -> np.ndarray:
         """Simulate price paths.
 
@@ -81,7 +88,7 @@ class BaseModel(ABC):
         self,
         n_steps: int,
         n_paths: int,
-        random_state: Optional[int] = None,
+        random_state: int | None = None,
     ) -> np.ndarray:
         """Simulate return paths.
 
@@ -92,7 +99,7 @@ class BaseModel(ABC):
 class GBM(BaseModel):
     """Geometric Brownian Motion: dS = mu*S*dt + sigma*S*dW."""
 
-    def __init__(self, params: Optional[GBMParams] = None):
+    def __init__(self, params: GBMParams | None = None):
         self.params = params or GBMParams()
 
     def simulate(self, S0, n_steps, n_paths, random_state=None):
@@ -134,7 +141,7 @@ class GBM(BaseModel):
 class JumpDiffusion(BaseModel):
     """Merton Jump Diffusion: dS = mu*S*dt + sigma*S*dW + S*dJ."""
 
-    def __init__(self, params: Optional[JumpDiffusionParams] = None):
+    def __init__(self, params: JumpDiffusionParams | None = None):
         self.params = params or JumpDiffusionParams()
 
     def simulate(self, S0, n_steps, n_paths, random_state=None):
@@ -183,7 +190,7 @@ class JumpDiffusion(BaseModel):
 class MeanReversion(BaseModel):
     """Ornstein-Uhlenbeck process: dX = theta*(mu - X)*dt + sigma*dW."""
 
-    def __init__(self, params: Optional[MeanReversionParams] = None):
+    def __init__(self, params: MeanReversionParams | None = None):
         self.params = params or MeanReversionParams()
 
     def simulate(self, S0, n_steps, n_paths, random_state=None):
@@ -225,7 +232,7 @@ class GARCH(BaseModel):
     sigma^2(t) = omega + alpha * eps^2(t-1) + beta * sigma^2(t-1)
     """
 
-    def __init__(self, params: Optional[GARCHParams] = None):
+    def __init__(self, params: GARCHParams | None = None):
         self.params = params or GARCHParams()
         self._fitted_model = None
 
@@ -274,8 +281,12 @@ class GARCH(BaseModel):
         sigma = np.sqrt(result.conditional_volatility[-1]) / 100 / np.sqrt(dt)
 
         params = GARCHParams(
-            mu=mu, sigma=sigma, dt=dt,
-            omega=omega, alpha=alpha_val, beta=beta_val,
+            mu=mu,
+            sigma=sigma,
+            dt=dt,
+            omega=omega,
+            alpha=alpha_val,
+            beta=beta_val,
         )
         instance = cls(params)
         instance._fitted_model = result
@@ -292,14 +303,16 @@ class RegimeSwitching(BaseModel):
     ):
         if regimes is None:
             regimes = [
-                GBMParams(mu=0.12, sigma=0.15),   # Bull
-                GBMParams(mu=-0.05, sigma=0.35),   # Bear
+                GBMParams(mu=0.12, sigma=0.15),  # Bull
+                GBMParams(mu=-0.05, sigma=0.35),  # Bear
             ]
         if transition_matrix is None:
-            transition_matrix = np.array([
-                [0.98, 0.02],
-                [0.05, 0.95],
-            ])
+            transition_matrix = np.array(
+                [
+                    [0.98, 0.02],
+                    [0.05, 0.95],
+                ]
+            )
         self.regimes = regimes
         self.transition_matrix = transition_matrix
         self.n_regimes = len(regimes)

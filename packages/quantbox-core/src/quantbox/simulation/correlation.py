@@ -11,21 +11,24 @@ Implements various correlation estimation methods:
 
 Ported from quantlabnew/src/market-simulator.
 """
+
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass
-from typing import Optional
 
 try:
     from scipy.optimize import minimize as _scipy_minimize
+
     HAS_SCIPY = True
 except ImportError:
     HAS_SCIPY = False
 
 try:
     from arch import arch_model as _arch_model
+
     HAS_ARCH = True
 except ImportError:
     HAS_ARCH = False
@@ -34,9 +37,10 @@ except ImportError:
 @dataclass
 class CorrelationResult:
     """Container for correlation analysis results."""
+
     current_correlation: np.ndarray
-    correlation_history: Optional[np.ndarray] = None
-    asset_names: Optional[list[str]] = None
+    correlation_history: np.ndarray | None = None
+    asset_names: list[str] | None = None
     method: str = "static"
 
     def to_dataframe(self) -> pd.DataFrame:
@@ -115,8 +119,7 @@ class CorrelationEngine:
         """
         if not HAS_ARCH:
             raise ImportError(
-                "The 'arch' package is required for DCC. "
-                "Install with: uv pip install 'quantbox[simulation]'"
+                "The 'arch' package is required for DCC. Install with: uv pip install 'quantbox[simulation]'"
             )
         returns_arr = self.returns.values
         n_obs, n_assets = returns_arr.shape
@@ -284,10 +287,12 @@ class CorrelationEngine:
         avg_corr = np.array(avg_corr)
         regime_changes = np.abs(np.diff(avg_corr)) > threshold
 
-        return pd.DataFrame({
-            "average_correlation": avg_corr,
-            "regime_change": np.concatenate([[False], regime_changes]),
-        })
+        return pd.DataFrame(
+            {
+                "average_correlation": avg_corr,
+                "regime_change": np.concatenate([[False], regime_changes]),
+            }
+        )
 
     # -- internal helpers --
 
@@ -322,7 +327,7 @@ class CorrelationEngine:
 def generate_random_correlation_matrix(
     n: int,
     eigenvalue_concentration: float = 0.8,
-    random_state: Optional[int] = None,
+    random_state: int | None = None,
 ) -> np.ndarray:
     """Generate a random valid correlation matrix."""
     rng = np.random.default_rng(random_state)

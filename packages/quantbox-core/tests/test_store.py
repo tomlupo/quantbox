@@ -1,7 +1,8 @@
 """Tests for FileArtifactStore read/query capabilities."""
-import json
-import pytest
+
 import pandas as pd
+import pytest
+
 from quantbox.store import FileArtifactStore
 
 
@@ -24,11 +25,11 @@ class TestReadWrite:
         assert loaded == obj
 
     def test_read_parquet_missing(self, store):
-        with pytest.raises(Exception):
+        with pytest.raises((FileNotFoundError, KeyError)):
             store.read_parquet("nonexistent")
 
     def test_read_json_missing(self, store):
-        with pytest.raises(Exception):
+        with pytest.raises((FileNotFoundError, KeyError)):
             store.read_json("nonexistent")
 
 
@@ -36,9 +37,7 @@ class TestListArtifacts:
     def test_list_from_manifest(self, store):
         store.put_parquet("weights", pd.DataFrame({"a": [1]}))
         store.put_parquet("orders", pd.DataFrame({"b": [2]}))
-        manifest = {
-            "artifacts": {"weights": "weights.parquet", "orders": "orders.parquet"}
-        }
+        manifest = {"artifacts": {"weights": "weights.parquet", "orders": "orders.parquet"}}
         store.put_json("run_manifest", manifest)
         names = store.list_artifacts()
         assert "weights" in names
@@ -100,7 +99,7 @@ class TestListRuns:
 
     def test_limit(self, tmp_path):
         for i in range(5):
-            self._make_run(tmp_path, f"run_{i}", asof=f"2026-01-0{i+1}")
+            self._make_run(tmp_path, f"run_{i}", asof=f"2026-01-0{i + 1}")
         runs = FileArtifactStore.list_runs(str(tmp_path), limit=2)
         assert len(runs) == 2
 
@@ -131,24 +130,30 @@ class TestQueryArtifacts:
             s = FileArtifactStore(str(tmp_path), f"run_{i}")
             df = pd.DataFrame({"symbol": ["BTC"], "weight": [0.1 * (i + 1)]})
             s.put_parquet("weights", df)
-            s.put_json("run_manifest", {
-                "run_id": f"run_{i}",
-                "pipeline_name": "test",
-                "mode": "paper",
-                "asof": f"2026-01-0{i+1}",
-            })
+            s.put_json(
+                "run_manifest",
+                {
+                    "run_id": f"run_{i}",
+                    "pipeline_name": "test",
+                    "mode": "paper",
+                    "asof": f"2026-01-0{i + 1}",
+                },
+            )
 
         result = FileArtifactStore.query_artifacts(str(tmp_path), "weights")
         assert len(result) == 3
 
     def test_query_missing_artifact(self, tmp_path):
         s = FileArtifactStore(str(tmp_path), "run_0")
-        s.put_json("run_manifest", {
-            "run_id": "run_0",
-            "pipeline_name": "test",
-            "mode": "paper",
-            "asof": "2026-01-01",
-        })
+        s.put_json(
+            "run_manifest",
+            {
+                "run_id": "run_0",
+                "pipeline_name": "test",
+                "mode": "paper",
+                "asof": "2026-01-01",
+            },
+        )
         result = FileArtifactStore.query_artifacts(str(tmp_path), "nonexistent")
         assert len(result) == 0
 
@@ -156,13 +161,16 @@ class TestQueryArtifacts:
 class TestSchemaIntegration:
     def test_put_parquet_with_schema(self, store):
         from quantbox.schemas import AGGREGATED_WEIGHTS_SCHEMA
+
         df = pd.DataFrame({"symbol": ["BTC", "ETH"], "weight": [0.6, 0.4]})
         path = store.put_parquet("weights", df, schema=AGGREGATED_WEIGHTS_SCHEMA)
         assert path.endswith(".parquet")
 
     def test_put_parquet_schema_warning(self, store, caplog):
-        from quantbox.schemas import AGGREGATED_WEIGHTS_SCHEMA
         import logging
+
+        from quantbox.schemas import AGGREGATED_WEIGHTS_SCHEMA
+
         # missing required 'weight' column
         df = pd.DataFrame({"symbol": ["BTC"], "bad_col": [1.0]})
         with caplog.at_level(logging.WARNING):

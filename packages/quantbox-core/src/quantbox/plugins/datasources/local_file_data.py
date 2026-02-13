@@ -5,12 +5,13 @@ Replaces the old ``DuckDBParquetData`` stub with a real implementation that:
 - Auto-detects wide vs long format and pivots to wide
 - Returns wide-format ``Dict[str, pd.DataFrame]`` from ``load_market_data()``
 """
+
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import pandas as pd
 
@@ -28,7 +29,7 @@ except ImportError:
     logger.warning("duckdb not installed — LocalFileDataPlugin will use pandas fallback")
 
 
-def _read_file(path: str, asof: Optional[str] = None, symbols: Optional[List[str]] = None) -> pd.DataFrame:
+def _read_file(path: str, asof: str | None = None, symbols: list[str] | None = None) -> pd.DataFrame:
     """Read a Parquet or CSV file, optionally filtering by date and symbols.
 
     Auto-detects wide vs long format:
@@ -65,9 +66,7 @@ def _read_file(path: str, asof: Optional[str] = None, symbols: Optional[List[str
     return df
 
 
-def _read_via_duckdb(
-    path: str, ext: str, asof: Optional[str], symbols: Optional[List[str]]
-) -> pd.DataFrame:
+def _read_via_duckdb(path: str, ext: str, asof: str | None, symbols: list[str] | None) -> pd.DataFrame:
     """Read file using DuckDB SQL for efficient filtering."""
     con = duckdb.connect()
     try:
@@ -80,7 +79,7 @@ def _read_via_duckdb(
             return _read_via_pandas(path, ext, asof, symbols)
 
         # Build WHERE clause
-        conditions: List[str] = []
+        conditions: list[str] = []
         if asof:
             conditions.append(f"date <= '{asof}'")
         if symbols:
@@ -95,7 +94,7 @@ def _read_via_duckdb(
         cols = set(schema_df.columns)
 
         # Only apply symbol filter if column exists
-        actual_conditions: List[str] = []
+        actual_conditions: list[str] = []
         if asof and "date" in cols:
             actual_conditions.append(f"date <= '{asof}'")
         if symbols and "symbol" in cols:
@@ -112,9 +111,7 @@ def _read_via_duckdb(
         con.close()
 
 
-def _read_via_pandas(
-    path: str, ext: str, asof: Optional[str], symbols: Optional[List[str]]
-) -> pd.DataFrame:
+def _read_via_pandas(path: str, ext: str, asof: str | None, symbols: list[str] | None) -> pd.DataFrame:
     """Fallback reader using pandas."""
     if ext == ".parquet":
         df = pd.read_parquet(path)
@@ -180,14 +177,14 @@ class LocalFileDataPlugin:
         outputs=("universe", "prices", "volume", "market_cap", "funding_rates", "fx"),
     )
 
-    prices_path: Optional[str] = None
-    volume_path: Optional[str] = None
-    market_cap_path: Optional[str] = None
-    universe_path: Optional[str] = None
-    funding_rates_path: Optional[str] = None
-    fx_path: Optional[str] = None
+    prices_path: str | None = None
+    volume_path: str | None = None
+    market_cap_path: str | None = None
+    universe_path: str | None = None
+    funding_rates_path: str | None = None
+    fx_path: str | None = None
 
-    def load_universe(self, params: Dict[str, Any]) -> pd.DataFrame:
+    def load_universe(self, params: dict[str, Any]) -> pd.DataFrame:
         """Load trading universe from file or params.
 
         Priority:
@@ -222,20 +219,16 @@ class LocalFileDataPlugin:
         self,
         universe: pd.DataFrame,
         asof: str,
-        params: Dict[str, Any],
-    ) -> Dict[str, pd.DataFrame]:
+        params: dict[str, Any],
+    ) -> dict[str, pd.DataFrame]:
         """Load market data as wide-format DataFrames.
 
         Returns dict with keys: ``prices``, ``volume``, ``market_cap``.
         Only ``prices`` is required; others default to empty DataFrames.
         """
-        symbols = (
-            universe["symbol"].tolist()
-            if not universe.empty and "symbol" in universe.columns
-            else None
-        )
+        symbols = universe["symbol"].tolist() if not universe.empty and "symbol" in universe.columns else None
 
-        result: Dict[str, pd.DataFrame] = {}
+        result: dict[str, pd.DataFrame] = {}
 
         # Prices
         ppath = params.get("prices_path") or params.get("path") or self.prices_path
@@ -270,8 +263,8 @@ class LocalFileDataPlugin:
     def load_fx(
         self,
         asof: str,
-        params: Dict[str, Any],
-    ) -> Optional[pd.DataFrame]:
+        params: dict[str, Any],
+    ) -> pd.DataFrame | None:
         """Load FX rates from file."""
         path = params.get("fx_path") or self.fx_path
         if path is None:

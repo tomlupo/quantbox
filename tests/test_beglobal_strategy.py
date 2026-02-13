@@ -1,4 +1,5 @@
 """Tests for BeGlobal core-satellite multi-asset strategy plugin."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -109,7 +110,8 @@ class TestDualMomentumSignals:
         prices_dict = {}
         for i, key in enumerate(["us_stocks", "gold", "us_treasury_short"]):
             prices_dict[key] = pd.Series(
-                np.linspace(100, 200 + i * 10, n), dtype=float,
+                np.linspace(100, 200 + i * 10, n),
+                dtype=float,
             )
 
         signals = _dual_momentum_signals(prices_dict, lookback=252)
@@ -243,7 +245,9 @@ class TestCorridorRebalance:
 
 class TestBeGlobalRun:
     def test_output_structure(
-        self, strategy: BeGlobalStrategy, prices_etf: pd.DataFrame,
+        self,
+        strategy: BeGlobalStrategy,
+        prices_etf: pd.DataFrame,
     ) -> None:
         result = strategy.run({"prices": prices_etf})
         assert "weights" in result
@@ -253,20 +257,25 @@ class TestBeGlobalRun:
         assert isinstance(result["simple_weights"], dict)
 
     def test_weights_sum_to_one(
-        self, strategy: BeGlobalStrategy, prices_etf: pd.DataFrame,
+        self,
+        strategy: BeGlobalStrategy,
+        prices_etf: pd.DataFrame,
     ) -> None:
         result = strategy.run({"prices": prices_etf})
         row_sums = result["weights"].sum(axis=1)
         np.testing.assert_allclose(row_sums.values, 1.0, atol=1e-6)
 
     def test_weights_non_negative(
-        self, strategy: BeGlobalStrategy, prices_etf: pd.DataFrame,
+        self,
+        strategy: BeGlobalStrategy,
+        prices_etf: pd.DataFrame,
     ) -> None:
         result = strategy.run({"prices": prices_etf})
         assert (result["weights"].values >= -1e-9).all()
 
     def test_asset_name_columns(
-        self, prices_asset_names: pd.DataFrame,
+        self,
+        prices_asset_names: pd.DataFrame,
     ) -> None:
         """Strategy should work with asset class name columns."""
         strategy = BeGlobalStrategy(risk_profile="profit")
@@ -277,7 +286,9 @@ class TestBeGlobalRun:
 
     @pytest.mark.parametrize("profile", list(RISK_PROFILE_ALLOCATIONS.keys()))
     def test_all_profiles_run(
-        self, profile: str, prices_etf: pd.DataFrame,
+        self,
+        profile: str,
+        prices_etf: pd.DataFrame,
     ) -> None:
         strategy = BeGlobalStrategy(risk_profile=profile)
         result = strategy.run({"prices": prices_etf})
@@ -285,7 +296,8 @@ class TestBeGlobalRun:
         assert len(result["simple_weights"]) > 0
 
     def test_core_satellite_split(
-        self, prices_etf: pd.DataFrame,
+        self,
+        prices_etf: pd.DataFrame,
     ) -> None:
         """Core weight=1 should produce weights matching base allocation only."""
         strategy = BeGlobalStrategy(core_weight=1.0, risk_profile="safe")
@@ -319,7 +331,9 @@ class TestBeGlobalRun:
         assert result["details"]["risk_profile"] == "safe"
 
     def test_output_periods_respected(
-        self, strategy: BeGlobalStrategy, prices_etf: pd.DataFrame,
+        self,
+        strategy: BeGlobalStrategy,
+        prices_etf: pd.DataFrame,
     ) -> None:
         strategy.output_periods = 10
         result = strategy.run({"prices": prices_etf})

@@ -27,12 +27,7 @@ class EqualWeightStrategy:
         description="Equal-weight allocation across all assets.",
         tags=("simple", "benchmark"),
         outputs=("weights",),
-        examples=(
-            "strategies:\n"
-            "  - name: strategy.equal_weight.v1\n"
-            "    weight: 1.0\n"
-            "    params: {}",
-        ),
+        examples=("strategies:\n  - name: strategy.equal_weight.v1\n    weight: 1.0\n    params: {}",),
     )
 
     def run(self, data: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:

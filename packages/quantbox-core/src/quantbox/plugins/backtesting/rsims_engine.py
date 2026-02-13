@@ -19,7 +19,6 @@ Features
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -94,7 +93,7 @@ def fixed_commission_backtest_with_funding(
     *,
     equity_basis: str = "rsims",
     maintenance_buffer: float = 0.0,
-    max_gross_leverage: Optional[float] = None,
+    max_gross_leverage: float | None = None,
 ) -> pd.DataFrame:
     """Daily fixed-commission backtest with funding rates and margin.
 
@@ -185,10 +184,7 @@ def fixed_commission_backtest_with_funding(
 
         # --- Update cash ---
         cash = (
-            cash
-            + np.nansum(period_pnl)
-            + maint_margin
-            - margin * np.nansum(np.abs(current_positions * current_prices))
+            cash + np.nansum(period_pnl) + maint_margin - margin * np.nansum(np.abs(current_positions * current_prices))
         )
 
         position_value = current_positions * current_prices
@@ -269,9 +265,7 @@ def fixed_commission_backtest_with_funding(
             if denom <= 0:
                 max_post_trade_contracts_value = 0.0
             else:
-                max_post_trade_contracts_value = (
-                    0.95 * max(0.0, cash + maint_margin - np.nansum(commissions)) / denom
-                )
+                max_post_trade_contracts_value = 0.95 * max(0.0, cash + maint_margin - np.nansum(commissions)) / denom
 
             if gross_exposure > 0:
                 reduce_by = np.clip(max_post_trade_contracts_value / gross_exposure, 0.0, 1.0)

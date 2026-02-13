@@ -1,8 +1,6 @@
 """Tests for quantbox.warehouse module."""
-from __future__ import annotations
 
-import json
-from pathlib import Path
+from __future__ import annotations
 
 import pandas as pd
 import pyarrow as pa
@@ -10,14 +8,11 @@ import pytest
 
 from quantbox.warehouse import Warehouse
 from quantbox.warehouse.backends import DuckDBEngine, ParquetLake
+from quantbox.warehouse.ingestion import ingest_run
 from quantbox.warehouse.schemas import (
-    PriceBarSchema,
     PortfolioSnapshotSchema,
-    SchemaField,
-    WarehouseSchema,
+    PriceBarSchema,
 )
-from quantbox.warehouse.ingestion import ingest_run, register_dataset
-
 
 # ── Fixtures ──────────────────────────────────────────────────
 
@@ -125,9 +120,7 @@ class TestParquetLake:
 
     def test_read_with_filters(self, tmp_lake, sample_arrow_table):
         tmp_lake.write("prices", sample_arrow_table)
-        result = tmp_lake.read(
-            "prices", filters=[("symbol", "==", "BTC")]
-        )
+        result = tmp_lake.read("prices", filters=[("symbol", "==", "BTC")])
         assert len(result) == 2
         assert all(v.as_py() == "BTC" for v in result.column("symbol"))
 
@@ -206,10 +199,9 @@ class TestDuckDBEngine:
 
     def test_transaction_rollback(self, tmp_db, sample_arrow_table):
         tmp_db.write("prices", sample_arrow_table)
-        with pytest.raises(ValueError):
-            with tmp_db.transaction():
-                tmp_db.conn.execute("DELETE FROM prices WHERE symbol = 'BTC'")
-                raise ValueError("force rollback")
+        with pytest.raises(ValueError), tmp_db.transaction():
+            tmp_db.conn.execute("DELETE FROM prices WHERE symbol = 'BTC'")
+            raise ValueError("force rollback")
         result = tmp_db.query_df("SELECT COUNT(*) AS n FROM prices")
         assert result.iloc[0]["n"] == 4
 
@@ -290,9 +282,7 @@ class TestWarehouse:
     def test_ingest_and_query(self, tmp_warehouse, sample_prices_df):
         tmp_warehouse.ingest("prices", sample_prices_df)
         glob = tmp_warehouse.lake.get_parquet_glob("prices")
-        result = tmp_warehouse.query(
-            f"SELECT COUNT(*) AS n FROM read_parquet('{glob}')"
-        )
+        result = tmp_warehouse.query(f"SELECT COUNT(*) AS n FROM read_parquet('{glob}')")
         assert result.iloc[0]["n"] == 4
 
     def test_create_lake_view(self, tmp_warehouse, sample_prices_df):
@@ -304,9 +294,7 @@ class TestWarehouse:
     def test_materialize(self, tmp_warehouse, sample_prices_df):
         tmp_warehouse.ingest("prices", sample_prices_df)
         tmp_warehouse.create_lake_view("v_prices", "prices")
-        count = tmp_warehouse.materialize(
-            "btc_only", "SELECT * FROM v_prices WHERE symbol = 'BTC'"
-        )
+        count = tmp_warehouse.materialize("btc_only", "SELECT * FROM v_prices WHERE symbol = 'BTC'")
         assert count == 2
 
     def test_list_tables(self, tmp_warehouse, sample_prices_df):
@@ -326,9 +314,7 @@ class TestWarehouse:
         assert "crypto_spot__prices" in views
         assert "crypto_spot__volume" in views
 
-        result = tmp_warehouse.query(
-            "SELECT COUNT(*) AS n FROM crypto_spot__prices"
-        )
+        result = tmp_warehouse.query("SELECT COUNT(*) AS n FROM crypto_spot__prices")
         assert result.iloc[0]["n"] == 4
 
     def test_dataset_views_persist(self, tmp_path, sample_prices_df):
@@ -360,11 +346,14 @@ class TestIngestion:
 
         store = FileArtifactStore(str(tmp_path / "artifacts"), "test_run_001")
         store.put_parquet("targets", sample_prices_df)
-        store.put_json("run_manifest", {
-            "run_id": "test_run_001",
-            "asof": "2026-01-02",
-            "artifacts": {"targets": str(tmp_path / "artifacts" / "test_run_001" / "targets.parquet")},
-        })
+        store.put_json(
+            "run_manifest",
+            {
+                "run_id": "test_run_001",
+                "asof": "2026-01-02",
+                "artifacts": {"targets": str(tmp_path / "artifacts" / "test_run_001" / "targets.parquet")},
+            },
+        )
 
         results = ingest_run(tmp_warehouse, store)
         assert "targets" in results
@@ -380,15 +369,18 @@ class TestIngestion:
     def test_ingest_run_selective(self, tmp_warehouse, tmp_path, sample_prices_df):
         from quantbox.store import FileArtifactStore
 
-        art_root = tmp_path / "artifacts" / "test_run_002"
+        _art_root = tmp_path / "artifacts" / "test_run_002"  # noqa: F841
         store = FileArtifactStore(str(tmp_path / "artifacts"), "test_run_002")
         targets_path = store.put_parquet("targets", sample_prices_df)
         fills_path = store.put_parquet("fills", sample_prices_df)
-        store.put_json("run_manifest", {
-            "run_id": "test_run_002",
-            "asof": "2026-01-02",
-            "artifacts": {"targets": targets_path, "fills": fills_path},
-        })
+        store.put_json(
+            "run_manifest",
+            {
+                "run_id": "test_run_002",
+                "asof": "2026-01-02",
+                "artifacts": {"targets": targets_path, "fills": fills_path},
+            },
+        )
 
         results = ingest_run(tmp_warehouse, store, tables=["targets"])
         assert "targets" in results

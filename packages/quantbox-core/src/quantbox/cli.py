@@ -1,19 +1,22 @@
 from __future__ import annotations
-import yaml
-import typer
 
+import typer
+import yaml
+
+from .exceptions import PluginNotFoundError
+from .plugin_manifest import load_manifest, resolve_profile
 from .registry import PluginRegistry
 from .runner import run_from_config
-from .exceptions import PluginNotFoundError
 from .validate import validate_config
-from .plugin_manifest import load_manifest, resolve_profile
 
 app = typer.Typer(name="quantbox", help="Quant research & trading CLI")
 
 
 def _as_json(obj) -> str:
     import json
+
     return json.dumps(obj, ensure_ascii=False, indent=2)
+
 
 def cmd_plugins_list(reg: PluginRegistry, as_json: bool = False):
     if as_json:
@@ -31,7 +34,9 @@ def cmd_plugins_list(reg: PluginRegistry, as_json: bool = False):
 
     def show(title, d):
         print(title + ":")
-        for k in sorted(d): print("  -", k)
+        for k in sorted(d):
+            print("  -", k)
+
     show("Pipelines", reg.pipelines)
     show("Strategies", reg.strategies)
     show("Brokers", reg.brokers)
@@ -39,6 +44,7 @@ def cmd_plugins_list(reg: PluginRegistry, as_json: bool = False):
     show("Rebalancing", reg.rebalancing)
     show("Publishers", reg.publishers)
     show("Risk", reg.risk)
+
 
 def cmd_plugins_info(reg: PluginRegistry, name: str, as_json: bool = False):
     # name can match any group
@@ -63,54 +69,62 @@ def cmd_plugins_info(reg: PluginRegistry, name: str, as_json: bool = False):
             }
             print(_as_json(payload) if as_json else payload)
             return
-    all_names = sorted(set(
-        k for d in groups.values() for k in d
-    ))
+    all_names = sorted(set(k for d in groups.values() for k in d))
     raise PluginNotFoundError(name, "any", all_names)
+
 
 def cmd_plugins_doctor(as_json: bool = False, strict: bool = False):
     import importlib.metadata
-    from .registry import ENTRYPOINT_GROUPS
-    from .plugins.builtins import builtins as builtin_plugins
+
     from .plugin_manifest import repo_root
+    from .plugins.builtins import builtins as builtin_plugins
+    from .registry import ENTRYPOINT_GROUPS
 
     results = []
 
     builtins = builtin_plugins()
     for group, mapping in builtins.items():
         for name in sorted(mapping.keys()):
-            results.append({
-                "source": "builtin",
-                "group": group,
-                "name": name,
-                "status": "ok",
-                "message": "",
-            })
+            results.append(
+                {
+                    "source": "builtin",
+                    "group": group,
+                    "name": name,
+                    "status": "ok",
+                    "message": "",
+                }
+            )
 
     # Optional dependency checks for built-in live brokers
     try:
         from .plugins.broker import ibkr as _ibkr_mod
+
         if getattr(_ibkr_mod, "IB", None) is None:
-            results.append({
-                "source": "builtin",
-                "group": "broker",
-                "name": "ibkr.live.v1",
-                "status": "warn",
-                "message": "optional dependency missing: ib_insync",
-            })
+            results.append(
+                {
+                    "source": "builtin",
+                    "group": "broker",
+                    "name": "ibkr.live.v1",
+                    "status": "warn",
+                    "message": "optional dependency missing: ib_insync",
+                }
+            )
     except Exception:
         pass
 
     try:
         from .plugins.broker import binance as _binance_mod
+
         if getattr(_binance_mod, "Client", None) is None:
-            results.append({
-                "source": "builtin",
-                "group": "broker",
-                "name": "binance.live.v1",
-                "status": "warn",
-                "message": "optional dependency missing: python-binance",
-            })
+            results.append(
+                {
+                    "source": "builtin",
+                    "group": "broker",
+                    "name": "binance.live.v1",
+                    "status": "warn",
+                    "message": "optional dependency missing: python-binance",
+                }
+            )
     except Exception:
         pass
 
@@ -133,13 +147,15 @@ def cmd_plugins_doctor(as_json: bool = False, strict: bool = False):
                     message = message + "; "
                 message = message + "overrides built-in"
 
-            results.append({
-                "source": "entrypoint",
-                "group": group_name,
-                "name": ep.name,
-                "status": status,
-                "message": message,
-            })
+            results.append(
+                {
+                    "source": "entrypoint",
+                    "group": group_name,
+                    "name": ep.name,
+                    "status": status,
+                    "message": message,
+                }
+            )
 
     # Schemas for built-in plugins
     schema_dir = repo_root() / "schemas"
@@ -152,13 +168,15 @@ def cmd_plugins_doctor(as_json: bool = False, strict: bool = False):
             for logical in logicals:
                 schema_path = schema_dir / f"{logical}.schema.json"
                 if not schema_path.exists():
-                    results.append({
-                        "source": "schema",
-                        "group": group,
-                        "name": name,
-                        "status": "warn",
-                        "message": f"missing_schema:{logical}",
-                    })
+                    results.append(
+                        {
+                            "source": "schema",
+                            "group": group,
+                            "name": name,
+                            "status": "warn",
+                            "message": f"missing_schema:{logical}",
+                        }
+                    )
 
     # Config references
     try:
@@ -190,29 +208,33 @@ def cmd_plugins_doctor(as_json: bool = False, strict: bool = False):
                         "risk": reg.risk,
                     }[group]
                     if name not in registry_map:
-                        results.append({
-                            "source": "config",
-                            "group": group,
-                            "name": name,
-                            "status": "error",
-                            "message": f"config_ref_not_found:{cfg_path.name}",
-                        })
+                        results.append(
+                            {
+                                "source": "config",
+                                "group": group,
+                                "name": name,
+                                "status": "error",
+                                "message": f"config_ref_not_found:{cfg_path.name}",  # noqa: B023
+                            }
+                        )
 
                 _check("pipeline", (merged.get("pipeline") or {}).get("name"))
                 _check("data", (merged.get("data") or {}).get("name"))
                 _check("broker", (merged.get("broker") or {}).get("name"))
-                for pub in (merged.get("publishers") or []):
+                for pub in merged.get("publishers") or []:
                     _check("publisher", pub.get("name"))
-                for rk in (merged.get("risk") or []):
+                for rk in merged.get("risk") or []:
                     _check("risk", rk.get("name"))
             except Exception as e:  # pragma: no cover
-                results.append({
-                    "source": "config",
-                    "group": "config",
-                    "name": cfg_path.name,
-                    "status": "error",
-                    "message": f"config_parse_failed:{e}",
-                })
+                results.append(
+                    {
+                        "source": "config",
+                        "group": "config",
+                        "name": cfg_path.name,
+                        "status": "error",
+                        "message": f"config_parse_failed:{e}",
+                    }
+                )
 
     if as_json:
         print(_as_json(results))
@@ -255,7 +277,7 @@ def validate(
     json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Validate a run config file."""
-    with open(config, "r", encoding="utf-8") as f:
+    with open(config, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     findings = validate_config(cfg)
     payload = [f.__dict__ for f in findings]
@@ -276,7 +298,7 @@ def run(
     """Run a trading pipeline from config."""
     import json as json_mod
 
-    with open(config, "r", encoding="utf-8") as f:
+    with open(config, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
     if dry_run:
@@ -306,9 +328,7 @@ def run(
 
 @app.command()
 def warehouse(
-    action: str = typer.Argument(
-        help="Action: init, tables, query, describe, ingest, register-dataset"
-    ),
+    action: str = typer.Argument(help="Action: init, tables, query, describe, ingest, register-dataset"),
     root: str = typer.Option("./warehouse", "-r", "--root", help="Warehouse root directory"),
     sql: str = typer.Option(None, "-q", "--query", help="SQL query (for 'query' action)"),
     table: str = typer.Option(None, "-t", "--table", help="Table name (for 'describe')"),
@@ -319,7 +339,6 @@ def warehouse(
     json_out: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Interact with the warehouse (query, ingest, manage)."""
-    import json as json_mod
     from .warehouse import Warehouse
 
     if action == "init":
@@ -369,12 +388,12 @@ def warehouse(
             if not run_dir:
                 raise typer.BadParameter("--run-dir is required for 'ingest' action")
             from pathlib import Path
+
             from .store import FileArtifactStore
             from .warehouse.ingestion import ingest_run
+
             run_path = Path(run_dir)
-            store = FileArtifactStore(
-                str(run_path.parent), run_path.name, _readonly=True
-            )
+            store = FileArtifactStore(str(run_path.parent), run_path.name, _readonly=True)
             results = ingest_run(wh, store)
             if json_out:
                 print(_as_json(results))
@@ -385,9 +404,7 @@ def warehouse(
 
         if action == "register-dataset":
             if not name or not path:
-                raise typer.BadParameter(
-                    "--name/-n and --path/-p are required for 'register-dataset'"
-                )
+                raise typer.BadParameter("--name/-n and --path/-p are required for 'register-dataset'")
             views = wh.register_dataset(name, path)
             if json_out:
                 print(_as_json({"views": views}))
@@ -398,8 +415,7 @@ def warehouse(
             return
 
         raise typer.BadParameter(
-            f"Unknown action: {action}. "
-            "Use init, tables, query, describe, ingest, or register-dataset."
+            f"Unknown action: {action}. Use init, tables, query, describe, ingest, or register-dataset."
         )
     finally:
         wh.close()
@@ -407,6 +423,7 @@ def warehouse(
 
 def main():
     app()
+
 
 if __name__ == "__main__":
     main()

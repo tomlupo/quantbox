@@ -27,22 +27,51 @@ result = strategy.run(data)
 print(result['simple_weights'])
 ```
 """
+
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
-import pandas as pd
-import numpy as np
+
 import logging
+from dataclasses import dataclass, field
+from typing import Any
+
+import numpy as np
+import pandas as pd
 
 from quantbox.contracts import PluginMeta
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_STABLECOINS = [
-    'USDT', 'USDC', 'BUSD', 'TUSD', 'DAI', 'MIM', 'USTC', 'FDUSD',
-    'USDP', 'GUSD', 'FRAX', 'LUSD', 'USDD', 'PYUSD', 'USD1', 'USDJ',
-    'EUR', 'EURC', 'EURT', 'EURS', 'PAXG', 'XAUT', 'WBTC', 'WETH',
-    'BETH', 'ETHW', 'CBBTC', 'CBETH', 'BFUSD', 'AEUR',
+    "USDT",
+    "USDC",
+    "BUSD",
+    "TUSD",
+    "DAI",
+    "MIM",
+    "USTC",
+    "FDUSD",
+    "USDP",
+    "GUSD",
+    "FRAX",
+    "LUSD",
+    "USDD",
+    "PYUSD",
+    "USD1",
+    "USDJ",
+    "EUR",
+    "EURC",
+    "EURT",
+    "EURS",
+    "PAXG",
+    "XAUT",
+    "WBTC",
+    "WETH",
+    "BETH",
+    "ETHW",
+    "CBBTC",
+    "CBETH",
+    "BFUSD",
+    "AEUR",
 ]
 
 DEFAULT_MOMENTUM_WINDOWS = [21, 63, 126, 189, 252]
@@ -52,9 +81,10 @@ DEFAULT_MOMENTUM_WINDOWS = [21, 63, 126, 189, 252]
 # Multi-Window Momentum
 # ============================================================================
 
+
 def compute_multi_window_momentum(
     prices: pd.DataFrame,
-    windows: List[int],
+    windows: list[int],
 ) -> pd.DataFrame:
     """
     Compute composite momentum as the mean of per-window total returns.
@@ -86,6 +116,7 @@ def compute_multi_window_momentum(
 # Z-Score & Winsorize
 # ============================================================================
 
+
 def zscore_and_winsorize(
     signals: pd.DataFrame,
     pct: float = 0.05,
@@ -116,6 +147,7 @@ def zscore_and_winsorize(
 # EWMA Volatility
 # ============================================================================
 
+
 def compute_ewma_volatility(
     prices: pd.DataFrame,
     ewma_lambda: float = 0.94,
@@ -135,7 +167,7 @@ def compute_ewma_volatility(
         Annualized EWMA volatility DataFrame
     """
     returns = prices.pct_change()
-    sq_returns = returns ** 2
+    sq_returns = returns**2
 
     # EWMA of squared returns
     span = 2.0 / (1.0 - ewma_lambda) - 1.0
@@ -148,6 +180,7 @@ def compute_ewma_volatility(
 # ============================================================================
 # Trend Filter
 # ============================================================================
+
 
 def compute_trend_filter(
     prices: pd.DataFrame,
@@ -171,10 +204,11 @@ def compute_trend_filter(
 # Rank & Select
 # ============================================================================
 
+
 def rank_and_select_top_n(
     signals: pd.DataFrame,
     top_n: int,
-    trend_filter: Optional[pd.DataFrame] = None,
+    trend_filter: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
     Rank assets by signal and select top N, optionally filtered by trend.
@@ -206,6 +240,7 @@ def rank_and_select_top_n(
 # Volatility Parity Weights
 # ============================================================================
 
+
 def compute_volatility_parity_weights(
     selection: pd.DataFrame,
     vol: pd.DataFrame,
@@ -229,6 +264,7 @@ def compute_volatility_parity_weights(
 # ============================================================================
 # Core-Satellite Construction
 # ============================================================================
+
 
 def apply_core_satellite(
     active: pd.DataFrame,
@@ -275,6 +311,7 @@ def apply_core_satellite(
 # Strategy Class
 # ============================================================================
 
+
 @dataclass
 class CrossAssetMomentumStrategy:
     """
@@ -304,9 +341,7 @@ class CrossAssetMomentumStrategy:
     )
 
     # Momentum parameters
-    momentum_windows: List[int] = field(
-        default_factory=lambda: DEFAULT_MOMENTUM_WINDOWS.copy()
-    )
+    momentum_windows: list[int] = field(default_factory=lambda: DEFAULT_MOMENTUM_WINDOWS.copy())
     winsorize_pct: float = 0.05
     top_n: int = 4
 
@@ -323,19 +358,22 @@ class CrossAssetMomentumStrategy:
     risk_off_ticker: str = "USDT"
 
     # Universe filtering
-    exclude_tickers: List[str] = field(default_factory=lambda: DEFAULT_STABLECOINS.copy())
+    exclude_tickers: list[str] = field(default_factory=lambda: DEFAULT_STABLECOINS.copy())
 
     # Output
     output_periods: int = 30
 
     # Param aliases for backward compat
-    _PARAM_ALIASES: Dict[str, str] = field(default_factory=lambda: {
-        "top_n_assets": "top_n",
-        "last_x_days": "output_periods",
-        "periods": "output_periods",
-    }, repr=False)
+    _PARAM_ALIASES: dict[str, str] = field(
+        default_factory=lambda: {
+            "top_n_assets": "top_n",
+            "last_x_days": "output_periods",
+            "periods": "output_periods",
+        },
+        repr=False,
+    )
 
-    def describe(self) -> Dict[str, Any]:
+    def describe(self) -> dict[str, Any]:
         """Describe strategy for LLM introspection."""
         return {
             "name": "CrossAssetMomentum",
@@ -353,9 +391,9 @@ class CrossAssetMomentumStrategy:
 
     def run(
         self,
-        data: Dict[str, pd.DataFrame],
-        params: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        data: dict[str, pd.DataFrame],
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """
         Run XSMOM strategy.
 
@@ -386,7 +424,8 @@ class CrossAssetMomentumStrategy:
 
         # 1. Multi-window momentum
         raw_momentum = compute_multi_window_momentum(
-            prices_filtered, self.momentum_windows,
+            prices_filtered,
+            self.momentum_windows,
         )
 
         # 2. Z-score & winsorize
@@ -396,7 +435,8 @@ class CrossAssetMomentumStrategy:
         trend_filter = None
         if self.enable_trend_filter:
             trend_filter = compute_trend_filter(
-                prices_filtered, self.trend_filter_window,
+                prices_filtered,
+                self.trend_filter_window,
             )
 
         # 4. Rank & select top N
@@ -404,7 +444,9 @@ class CrossAssetMomentumStrategy:
 
         # 5. EWMA volatility
         ewma_vol = compute_ewma_volatility(
-            prices_filtered, self.ewma_lambda, self.ewma_min_periods,
+            prices_filtered,
+            self.ewma_lambda,
+            self.ewma_min_periods,
         )
 
         # 6. Volatility parity weights (active component)
@@ -417,21 +459,26 @@ class CrossAssetMomentumStrategy:
         else:
             n_assets = len(valid_tickers)
             passive_weights = pd.DataFrame(
-                1.0 / n_assets, index=prices_filtered.index,
+                1.0 / n_assets,
+                index=prices_filtered.index,
                 columns=prices_filtered.columns,
             )
 
         # 8. Core-satellite blend
         # Expand to include risk-off ticker if not in valid_tickers
-        all_cols = list(prices.columns) if self.risk_off_ticker in prices.columns else (
-            list(prices_filtered.columns) + [self.risk_off_ticker]
+        all_cols = (
+            list(prices.columns)
+            if self.risk_off_ticker in prices.columns
+            else (list(prices_filtered.columns) + [self.risk_off_ticker])
         )
         active_expanded = active_weights.reindex(columns=all_cols, fill_value=0)
         passive_expanded = passive_weights.reindex(columns=all_cols, fill_value=0)
 
         combined = apply_core_satellite(
-            active_expanded, passive_expanded,
-            self.core_weight, self.risk_off_ticker,
+            active_expanded,
+            passive_expanded,
+            self.core_weight,
+            self.risk_off_ticker,
         )
 
         # 9. Extract simple weights
@@ -453,7 +500,7 @@ class CrossAssetMomentumStrategy:
             },
         }
 
-    def get_latest_weights(self, result: Dict[str, Any]) -> Dict[str, float]:
+    def get_latest_weights(self, result: dict[str, Any]) -> dict[str, float]:
         """Extract latest weights as dict."""
         return result["simple_weights"]
 
@@ -462,22 +509,23 @@ class CrossAssetMomentumStrategy:
 # Backward-Compatible Wrappers
 # ============================================================================
 
+
 def cross_asset_momentum(
     prices: pd.DataFrame,
-    volume: Optional[pd.DataFrame] = None,
-    market_cap: Optional[pd.DataFrame] = None,
-    momentum_windows: List[int] = None,
+    volume: pd.DataFrame | None = None,
+    market_cap: pd.DataFrame | None = None,
+    momentum_windows: list[int] = None,
     vol_lookback: int = 20,
     trend_filter_window: int = 100,
     top_n_assets: int = 5,
-    rebalance_frequency: str = 'W',
+    rebalance_frequency: str = "W",
     atr_window: int = 14,
     stop_loss_atr_multiplier: float = 2.0,
     enable_trend_filter: bool = True,
     enable_stop_loss: bool = False,
     enable_hedging: bool = False,
     hedge_threshold: float = -0.05,
-    hedge_assets: List[str] = None,
+    hedge_assets: list[str] = None,
     last_x_days: int = 30,
     min_momentum_threshold: float = 0.0,
 ) -> dict:
@@ -489,7 +537,7 @@ def cross_asset_momentum(
     if momentum_windows is None:
         momentum_windows = [21, 63]
     if hedge_assets is None:
-        hedge_assets = ['USDT', 'USDC']
+        hedge_assets = ["USDT", "USDC"]
 
     strategy = CrossAssetMomentumStrategy(
         momentum_windows=momentum_windows,

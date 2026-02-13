@@ -8,7 +8,7 @@ from .ibkr_stub import PaperBrokerStub as IBKRPaperBrokerStub
 from .sim import SimPaperBroker
 
 try:
-    from .binance_live import BinanceLiveBroker, UniverseSelector, UniverseConfig
+    from .binance_live import BinanceLiveBroker, UniverseConfig, UniverseSelector
 except ImportError:
     BinanceLiveBroker = None  # type: ignore[assignment,misc]
     UniverseSelector = None  # type: ignore[assignment,misc]

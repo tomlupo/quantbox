@@ -4,16 +4,15 @@ Sends trading pipeline results to a Telegram chat.  Ported from
 quantlab ``trading_bot/telegram.py`` formatting functions and
 ``utils/messaging.py:send_telegram_message()``.
 """
+
 from __future__ import annotations
 
-import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
-
 import pandas as pd
 
 from quantbox.contracts import PluginMeta, RunResult
@@ -25,8 +24,9 @@ logger = logging.getLogger(__name__)
 # Formatting helpers (ported from quantlab telegram.py)
 # ------------------------------------------------------------------
 
+
 def _format_execution_summary(
-    summary: Dict[str, Any],
+    summary: dict[str, Any],
     paper_trading: bool,
     pipeline_name: str,
     mode: str,
@@ -48,7 +48,7 @@ def _format_execution_summary(
 
 
 def _format_portfolio_rebalancing(
-    rebalancing: List[Dict[str, Any]],
+    rebalancing: list[dict[str, Any]],
     pipeline_name: str,
 ) -> str:
     header = (
@@ -60,7 +60,7 @@ def _format_portfolio_rebalancing(
         "ASSET  CURRENT  TARGET   DELTA\n"
         "-------------------------------\n"
     )
-    rows: List[str] = []
+    rows: list[str] = []
     total_curr = 0.0
     total_tgt = 0.0
     total_delta = 0.0
@@ -71,9 +71,7 @@ def _format_portfolio_rebalancing(
         delta_w = float(entry.get("weight_delta", 0))
         if curr_w != 0 or tgt_w != 0:
             asset = str(entry.get("asset", ""))[:6].ljust(6)
-            rows.append(
-                f"{asset}{curr_w * 100:6.1f}%{tgt_w * 100:7.1f}%{delta_w * 100:+7.1f}%"
-            )
+            rows.append(f"{asset}{curr_w * 100:6.1f}%{tgt_w * 100:7.1f}%{delta_w * 100:+7.1f}%")
             total_curr += curr_w
             total_tgt += tgt_w
             total_delta += delta_w
@@ -84,16 +82,11 @@ def _format_portfolio_rebalancing(
 
 
 def _format_executed_orders(
-    orders: List[Dict[str, Any]],
+    orders: list[dict[str, Any]],
     pipeline_name: str,
 ) -> str:
-    header = (
-        "<b>Trading Bot Report</b>\n"
-        f"Pipeline: <b>{pipeline_name}</b>\n\n"
-        "Executed Orders\n"
-        "<pre>"
-    )
-    rows: List[str] = []
+    header = f"<b>Trading Bot Report</b>\nPipeline: <b>{pipeline_name}</b>\n\nExecuted Orders\n<pre>"
+    rows: list[str] = []
     for o in orders:
         action = str(o.get("action", "")).upper()
         symbol = str(o.get("symbol", ""))
@@ -105,16 +98,11 @@ def _format_executed_orders(
 
 
 def _format_failed_orders(
-    orders: List[Dict[str, Any]],
+    orders: list[dict[str, Any]],
     pipeline_name: str,
 ) -> str:
-    header = (
-        "<b>Trading Bot Report</b>\n"
-        f"Pipeline: <b>{pipeline_name}</b>\n\n"
-        "Failed Orders\n"
-        "<pre>"
-    )
-    rows: List[str] = []
+    header = f"<b>Trading Bot Report</b>\nPipeline: <b>{pipeline_name}</b>\n\nFailed Orders\n<pre>"
+    rows: list[str] = []
     for o in orders:
         action = str(o.get("action", "")).upper()
         symbol = str(o.get("symbol", ""))
@@ -136,7 +124,7 @@ def _send_telegram_message(
     chat_id: str,
     message: str,
     parse_mode: str = "HTML",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Post a message to the Telegram Bot API via httpx."""
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
@@ -154,6 +142,7 @@ def _send_telegram_message(
 # ------------------------------------------------------------------
 # Plugin
 # ------------------------------------------------------------------
+
 
 @dataclass
 class TelegramPublisher:
@@ -194,11 +183,9 @@ class TelegramPublisher:
         ),
     )
 
-    def publish(self, result: RunResult, params: Dict[str, Any]) -> None:
+    def publish(self, result: RunResult, params: dict[str, Any]) -> None:
         """Send trading result notifications to Telegram."""
-        token = params.get("telegram_token") or os.environ.get(
-            params.get("telegram_token_env", "TELEGRAM_TOKEN"), ""
-        )
+        token = params.get("telegram_token") or os.environ.get(params.get("telegram_token_env", "TELEGRAM_TOKEN"), "")
         chat_id = params.get("telegram_chat_id") or os.environ.get(
             params.get("telegram_chat_id_env", "TELEGRAM_CHAT_ID"), ""
         )
@@ -213,7 +200,9 @@ class TelegramPublisher:
 
         # Extract data from notes (populated by TradingPipeline)
         artifact_payload = notes.get("artifact_payload", {})
-        portfolio_value = float(artifact_payload.get("portfolio_value", result.metrics.get("portfolio_value_usd_pre", 0)))
+        portfolio_value = float(
+            artifact_payload.get("portfolio_value", result.metrics.get("portfolio_value_usd_pre", 0))
+        )
         exec_summary = artifact_payload.get("execution_summary", {})
         rebalancing = artifact_payload.get("rebalancing_table", [])
         executed = exec_summary.get("executed_orders", [])

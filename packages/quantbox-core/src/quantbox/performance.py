@@ -43,12 +43,11 @@ equity = pd.Series(
 )
 ```
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
 
-import numpy as np
 import pandas as pd
 
 from quantbox.plugins.backtesting.metrics import compute_backtest_metrics
@@ -215,7 +214,7 @@ def compute_performance(
     inception_date: str,
     target_date: str | None = None,
     trading_days: int = 365,
-    period_days: Optional[List[tuple]] = None,
+    period_days: list[tuple] | None = None,
 ) -> dict:
     """Compute full performance report from an equity curve.
 
@@ -284,10 +283,7 @@ def compute_performance(
         }
 
     # Equity curve for output
-    equity_list = [
-        {"date": d.strftime("%Y-%m-%d"), "equity": round(float(v), 4)}
-        for d, v in equity.items()
-    ]
+    equity_list = [{"date": d.strftime("%Y-%m-%d"), "equity": round(float(v), 4)} for d, v in equity.items()]
 
     # Reconciliation
     reconciliation = compute_reconciliation(equity, flows_df)

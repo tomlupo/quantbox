@@ -4,15 +4,17 @@ Wraps ``BinanceFuturesDataFetcher`` to implement the ``DataPlugin`` protocol
 for the ``TradingPipeline``.  Returns wide-format DataFrames including
 funding rates.
 """
+
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+
 from .binance_futures_data import BinanceFuturesDataFetcher
 
 logger = logging.getLogger(__name__)
@@ -66,7 +68,7 @@ class BinanceFuturesDataPlugin:
     # DataPlugin protocol
     # ------------------------------------------------------------------
 
-    def load_universe(self, params: Dict[str, Any]) -> pd.DataFrame:
+    def load_universe(self, params: dict[str, Any]) -> pd.DataFrame:
         """Return the futures trading universe.
 
         Params:
@@ -75,7 +77,7 @@ class BinanceFuturesDataPlugin:
             min_volume_usd (float): Min 24h volume for auto-discovery.
             min_open_interest_usd (float): Min OI filter (overrides instance field).
         """
-        symbols: Optional[List[str]] = params.get("symbols")
+        symbols: list[str] | None = params.get("symbols")
         if symbols:
             df = pd.DataFrame({"symbol": symbols})
         else:
@@ -99,7 +101,9 @@ class BinanceFuturesDataPlugin:
             if filtered:
                 logger.info(
                     "OI filter: removed %d symbols (min $%.0f), %d remaining",
-                    filtered, min_oi, len(df),
+                    filtered,
+                    min_oi,
+                    len(df),
                 )
 
         return df
@@ -108,8 +112,8 @@ class BinanceFuturesDataPlugin:
         self,
         universe: pd.DataFrame,
         asof: str,
-        params: Dict[str, Any],
-    ) -> Dict[str, pd.DataFrame]:
+        params: dict[str, Any],
+    ) -> dict[str, pd.DataFrame]:
         """Fetch OHLCV + funding rates and return wide-format dict.
 
         Returns dict with keys: ``prices``, ``volume``, ``funding_rates``,
@@ -127,7 +131,9 @@ class BinanceFuturesDataPlugin:
         lookback = int(params.get("lookback_days", 365))
 
         data = self._fetcher.get_market_data(
-            tickers=tickers, lookback_days=lookback, end_date=asof,
+            tickers=tickers,
+            lookback_days=lookback,
+            end_date=asof,
         )
 
         logger.info(
@@ -137,6 +143,6 @@ class BinanceFuturesDataPlugin:
         )
         return data
 
-    def load_fx(self, asof: str, params: Dict[str, Any]) -> Optional[pd.DataFrame]:
+    def load_fx(self, asof: str, params: dict[str, Any]) -> pd.DataFrame | None:
         """Not applicable for crypto."""
         return None

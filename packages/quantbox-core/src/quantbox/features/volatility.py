@@ -1,16 +1,16 @@
 from __future__ import annotations
+
 import numpy as np
-from typing import Dict, List, Optional
 import pandas as pd
 
 
 def compute_rolling_vol(
     prices: pd.DataFrame,
-    windows: List[int],
+    windows: list[int],
     *,
     annualize: bool = True,
     factor: float = 365.0,
-) -> Dict[str, pd.DataFrame]:
+) -> dict[str, pd.DataFrame]:
     """Compute rolling volatility of log returns.
 
     Args:
@@ -23,7 +23,7 @@ def compute_rolling_vol(
         Dict keyed ``"vol_{w}d"`` -> DataFrame of volatilities.
     """
     log_ret = np.log(prices / prices.shift(1))
-    result: Dict[str, pd.DataFrame] = {}
+    result: dict[str, pd.DataFrame] = {}
     for w in windows:
         vol = log_ret.rolling(window=w).std()
         if annualize:
@@ -34,11 +34,11 @@ def compute_rolling_vol(
 
 def compute_ewm_vol(
     prices: pd.DataFrame,
-    spans: List[int],
+    spans: list[int],
     *,
     annualize: bool = True,
     factor: float = 365.0,
-) -> Dict[str, pd.DataFrame]:
+) -> dict[str, pd.DataFrame]:
     """Compute exponentially weighted volatility of log returns.
 
     Args:
@@ -51,7 +51,7 @@ def compute_ewm_vol(
         Dict keyed ``"vol_ewm_{span}"`` -> DataFrame of volatilities.
     """
     log_ret = np.log(prices / prices.shift(1))
-    result: Dict[str, pd.DataFrame] = {}
+    result: dict[str, pd.DataFrame] = {}
     for span in spans:
         vol = log_ret.ewm(span=span).std()
         if annualize:

@@ -6,11 +6,6 @@ installed via entry points and will be merged by the PluginRegistry.
 
 from __future__ import annotations
 
-from typing import Dict, Type
-
-from ..contracts import PipelinePlugin, BrokerPlugin, DataPlugin, PublisherPlugin, RiskPlugin
-from .pipeline import AllocationsToOrdersPipeline, BacktestPipeline, FundSelectionPipeline, TradingPipeline
-from .datasources import BinanceDataPlugin, BinanceFuturesDataPlugin, HyperliquidDataPlugin, LocalFileDataPlugin, SyntheticDataPlugin
 from .broker import (
     BinanceBroker,
     BinanceFuturesBroker,
@@ -21,30 +16,40 @@ from .broker import (
     IBKRPaperBrokerStub,
     SimPaperBroker,
 )
+from .datasources import (
+    BinanceDataPlugin,
+    BinanceFuturesDataPlugin,
+    HyperliquidDataPlugin,
+    LocalFileDataPlugin,
+    SyntheticDataPlugin,
+)
+from .pipeline import AllocationsToOrdersPipeline, BacktestPipeline, FundSelectionPipeline, TradingPipeline
 from .publisher import TelegramPublisher
-from .risk import TradingRiskManager, StressTestRiskManager
+from .rebalancing import FuturesRebalancer, StandardRebalancer
+from .risk import StressTestRiskManager, TradingRiskManager
 from .strategies import (
     BeGlobalStrategy,
-    CryptoTrendStrategy,
     CarverTrendStrategy,
-    MomentumLongShortStrategy,
     CrossAssetMomentumStrategy,
     CryptoRegimeTrendStrategy,
+    CryptoTrendStrategy,
     MLPredictionStrategy,
+    MomentumLongShortStrategy,
     PortfolioOptimizerStrategy,
 )
 from .strategies.weighted_avg_aggregator import WeightedAverageAggregator
-from .rebalancing import StandardRebalancer, FuturesRebalancer
 
 
 def _map(*classes):
     return {c.meta.name: c for c in classes}
 
 
-def builtins() -> Dict[str, Dict[str, Type]]:
+def builtins() -> dict[str, dict[str, type]]:
     return {
         "pipeline": _map(FundSelectionPipeline, AllocationsToOrdersPipeline, TradingPipeline, BacktestPipeline),
-        "data": _map(LocalFileDataPlugin, BinanceDataPlugin, BinanceFuturesDataPlugin, HyperliquidDataPlugin, SyntheticDataPlugin),
+        "data": _map(
+            LocalFileDataPlugin, BinanceDataPlugin, BinanceFuturesDataPlugin, HyperliquidDataPlugin, SyntheticDataPlugin
+        ),
         "broker": _map(
             SimPaperBroker,
             FuturesPaperBroker,
