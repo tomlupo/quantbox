@@ -177,13 +177,14 @@ class LocalFileDataPlugin:
         core_compat=">=0.1.0",
         description="Load market data from local Parquet/CSV files via DuckDB",
         inputs=(),
-        outputs=("universe", "prices", "volume", "market_cap", "fx"),
+        outputs=("universe", "prices", "volume", "market_cap", "funding_rates", "fx"),
     )
 
     prices_path: Optional[str] = None
     volume_path: Optional[str] = None
     market_cap_path: Optional[str] = None
     universe_path: Optional[str] = None
+    funding_rates_path: Optional[str] = None
     fx_path: Optional[str] = None
 
     def load_universe(self, params: Dict[str, Any]) -> pd.DataFrame:
@@ -256,6 +257,13 @@ class LocalFileDataPlugin:
             result["market_cap"] = _read_file(mpath, asof=asof, symbols=symbols)
         else:
             result["market_cap"] = pd.DataFrame()
+
+        # Funding rates
+        fpath = params.get("funding_rates_path") or self.funding_rates_path
+        if fpath:
+            result["funding_rates"] = _read_file(fpath, asof=asof, symbols=symbols)
+        else:
+            result["funding_rates"] = pd.DataFrame()
 
         return result
 
