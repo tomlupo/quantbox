@@ -71,5 +71,5 @@ plugins:
     name: "binance.live_data.v1"
     params_init:
       quote_asset: USDT
-      interval: "1h"             # ⚠️ CRITICAL: Hourly data required
-      # data_frequency is determined by interval parameter
+    params:
+      data_frequency: "1h"       # ⚠️ CRITICAL: Hourly data required
