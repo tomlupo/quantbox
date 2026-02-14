@@ -28,6 +28,7 @@ from .publisher import TelegramPublisher
 from .rebalancing import FuturesRebalancer, StandardRebalancer
 from .risk import StressTestRiskManager, TradingRiskManager
 from .strategies import (
+    AltcoinCrashBounceStrategy,
     BeGlobalStrategy,
     CarverTrendStrategy,
     CrossAssetMomentumStrategy,
@@ -63,6 +64,7 @@ def builtins() -> dict[str, dict[str, type]]:
         "publisher": _map(TelegramPublisher),
         "risk": _map(TradingRiskManager, StressTestRiskManager),
         "strategy": _map(
+            AltcoinCrashBounceStrategy,
             BeGlobalStrategy,
             CryptoTrendStrategy,
             CarverTrendStrategy,

@@ -17,6 +17,7 @@ import pandas as pd
 
 from quantbox.contracts import PluginMeta
 
+from ._utils import normalize_data_frequency
 from .binance_data import BinanceDataFetcher
 
 logger = logging.getLogger(__name__)
@@ -38,20 +39,29 @@ class BinanceDataPlugin:
     meta = PluginMeta(
         name="binance.live_data.v1",
         kind="data",
-        version="0.1.0",
+        version="0.4.0",
         core_compat=">=0.1,<0.2",
-        description="Live market data from Binance public API (no API key needed).",
-        tags=("binance", "crypto", "live"),
+        description="Live market data from Binance public API (no API key needed). Supports daily and intraday data frequencies. Returns full OHLCV data including open/high/low for candle pattern detection and crash bounce strategies.",
+        tags=("binance", "crypto", "live", "daily"),
         capabilities=("backtest", "paper", "live", "crypto"),
         schema_version="v1",
         params_schema={
             "type": "object",
             "properties": {
                 "quote_asset": {"type": "string", "default": "USDT"},
+                "data_frequency": {
+                    "type": "string",
+                    "default": "1d",
+                    "description": "Candle interval. Accepts Binance intervals ('1d', '1h', '4h') or semantic names ('daily', 'hourly'). Normalized automatically.",
+                },
             },
         },
-        outputs=("universe", "prices", "volume", "market_cap"),
-        examples=("plugins:\n  data:\n    name: binance.live_data.v1\n    params_init:\n      quote_asset: USDT",),
+        outputs=("universe", "prices", "prices_open", "open", "high", "low", "volume", "market_cap"),
+        examples=(
+            "plugins:\n  data:\n    name: binance.live_data.v1\n    params_init:\n      quote_asset: USDT",
+            "# Hourly data for intraday strategies:\nplugins:\n  data:\n    name: binance.live_data.v1\n    params:\n      data_frequency: 1h\n      lookback_days: 30",
+            "# Full OHLCV for crash bounce strategies:\n# data['open'], data['high'], data['low'] for candle patterns\n# data['low'] enables higher-low detection",
+        ),
     )
 
     quote_asset: str = "USDT"
@@ -93,28 +103,51 @@ class BinanceDataPlugin:
     ) -> dict[str, pd.DataFrame]:
         """Fetch historical OHLCV from Binance and return wide-format dict.
 
-        Returns dict with keys: ``prices``, ``volume``, ``market_cap``
-        (DataFrames with date index, ticker columns).
+        Params:
+            lookback_days (int): Number of days of history (default 365).
+            data_frequency (str): Candle interval. Accepts Binance intervals ('1d', '1h', '4h')
+                or semantic names ('daily', 'hourly'). Normalized automatically. Default: '1d'.
+
+        Returns dict with keys (DataFrames with date index, ticker columns):
+            - ``prices``: Close prices (required by all strategies)
+            - ``prices_open``: Open prices (legacy key, kept for backwards compatibility)
+            - ``open``: Open prices (strategy-expected key)
+            - ``high``: High prices (for candle pattern analysis)
+            - ``low``: Low prices (for higher-low detection in crash bounce)
+            - ``volume``: Trading volume
+            - ``market_cap``: Estimated market cap
+
+        Crash bounce strategies (v55+) require ``open`` and ``low`` for:
+        - Green candle confirmation: close > open
+        - Higher-low detection: current low > previous low
         """
         if universe.empty or "symbol" not in universe.columns:
             return {
                 "prices": pd.DataFrame(),
+                "prices_open": pd.DataFrame(),
+                "open": pd.DataFrame(),
+                "high": pd.DataFrame(),
+                "low": pd.DataFrame(),
                 "volume": pd.DataFrame(),
                 "market_cap": pd.DataFrame(),
             }
 
         tickers = universe["symbol"].tolist()
         lookback = int(params.get("lookback_days", 365))
+        raw_interval = params.get("data_frequency", "1d")
+        interval = normalize_data_frequency(raw_interval)
 
         data = self._fetcher.get_market_data(
             tickers=tickers,
             lookback_days=lookback,
             end_date=asof,
+            interval=interval,
         )
 
         logger.info(
-            "Loaded market data for %d symbols from Binance",
+            "Loaded market data for %d symbols from Binance (interval=%s)",
             len(data.get("prices", pd.DataFrame()).columns),
+            interval,
         )
         return data
 

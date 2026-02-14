@@ -255,20 +255,27 @@ class BinanceDataFetcher:
             "api_key_required": False,
             "capabilities": {
                 "current_prices": "Real-time prices for any Binance pair",
-                "historical_ohlcv": "Daily OHLCV data (up to 2 years)",
+                "historical_ohlcv": "Daily and intraday OHLCV data (up to 2 years daily, shorter for intraday)",
                 "24h_stats": "24-hour volume, price change, high/low",
                 "market_cap": "Estimated market cap (price * circulating supply)",
+                "intervals": "Supports: 1m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M",
             },
             "methods": {
                 "get_current_prices(tickers)": "Returns Dict[ticker, price]",
-                "get_market_data(tickers, lookback_days)": "Returns {'prices', 'volume', 'market_cap'} DataFrames",
+                "get_market_data(tickers, lookback_days, interval='1d')": "Returns {'prices', 'volume', 'market_cap'} DataFrames",
+                "get_ohlcv(ticker, start_date, end_date, interval='1d')": "Returns single-ticker OHLCV DataFrame",
                 "get_snapshot(tickers)": "Returns MarketDataSnapshot with current state",
                 "get_valid_pairs(tickers)": "Returns Dict[ticker, binance_pair]",
             },
             "example": """
 fetcher = BinanceDataFetcher()
 prices = fetcher.get_current_prices(['BTC', 'ETH', 'SOL'])
+
+# Daily data
 data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
+
+# Hourly data for intraday strategies
+data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=7, interval='1h')
             """,
             "ccxt_available": CCXT_AVAILABLE,
         }
@@ -478,8 +485,9 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
         Fetch OHLCV data for a single ticker with caching and validation.
 
         Uses DuckDB Parquet cache (if ``cache_dir`` is set) for incremental
-        fetching: only requests candles not already cached.  Validates the
-        resulting DataFrame for data quality.
+        fetching: only requests candles not already cached. Supports all
+        intervals (1d, 1h, 4h, etc.). Validates the resulting DataFrame for
+        data quality.
 
         Args:
             ticker: Base asset symbol (e.g., 'BTC')
@@ -494,19 +502,25 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
             logger.error("ccxt not installed - cannot fetch OHLCV data")
             return None
 
-        # --- Check cache for a complete hit ---
-        if self._ohlcv_cache is not None and interval == "1d":
-            cached = self._ohlcv_cache.get_cached(ticker, start_date, end_date)
+        # --- Check cache for a complete hit (all intervals supported) ---
+        if self._ohlcv_cache is not None:
+            cached = self._ohlcv_cache.get_cached(ticker, start_date, end_date, interval)
             if cached is not None and not cached.empty:
                 last_cached = cached["date"].max()
                 target_end = pd.Timestamp(end_date)
-                if last_cached >= target_end - timedelta(hours=self.cache_fresh_ttl_hours * 24):
+                # For intraday data, use hours; for daily, use days
+                if interval == "1d":
+                    fresh_threshold = timedelta(hours=self.cache_fresh_ttl_hours * 24)
+                else:
+                    # For hourly/intraday, use the cache_fresh_ttl_hours directly
+                    fresh_threshold = timedelta(hours=self.cache_fresh_ttl_hours)
+                if last_cached >= target_end - fresh_threshold:
                     # Cache is fresh enough
                     cached["ticker"] = ticker
                     try:
                         cached = validate_ohlcv(cached, ticker)
                     except ValueError as exc:
-                        logger.warning("Cached OHLCV invalid for %s: %s", ticker, exc)
+                        logger.warning("Cached OHLCV invalid for %s (%s): %s", ticker, interval, exc)
                     else:
                         cached["ticker"] = ticker
                         return cached.reset_index(drop=True)
@@ -518,15 +532,19 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
             logger.warning(f"No valid Binance pair for {ticker}")
             return None
 
-        # Determine fetch start: use cache to do incremental fetching
+        # Determine fetch start: use cache to do incremental fetching (all intervals)
         fetch_start = start_date
-        if self._ohlcv_cache is not None and interval == "1d":
-            last_cached_date = self._ohlcv_cache.get_last_date(ticker)
+        if self._ohlcv_cache is not None:
+            last_cached_date = self._ohlcv_cache.get_last_date(ticker, interval)
             if last_cached_date is not None:
-                # Fetch from the day after last cached date
-                next_day = (last_cached_date + timedelta(days=1)).strftime("%Y-%m-%d")
-                if next_day > start_date:
-                    fetch_start = next_day
+                # Fetch from one interval after last cached candle
+                increment = self._ohlcv_cache.get_interval_increment(interval)
+                next_period = last_cached_date + increment
+                next_period_str = (
+                    next_period.strftime("%Y-%m-%d %H:%M:%S") if interval != "1d" else next_period.strftime("%Y-%m-%d")
+                )
+                if next_period_str > start_date:
+                    fetch_start = next_period_str
 
         # Format pair for ccxt (BTC/USDT not BTCUSDT)
         ccxt_symbol = f"{ticker}/{self.quote_asset}"
@@ -534,12 +552,13 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
         try:
             df = self._fetch_ohlcv_with_retry(ccxt_symbol, fetch_start, end_date, interval)
 
-            if df is not None and not df.empty and self._ohlcv_cache is not None and interval == "1d":
-                self._ohlcv_cache.store(ticker, df)
+            if df is not None and not df.empty and self._ohlcv_cache is not None:
+                # Store new data in cache (all intervals supported)
+                self._ohlcv_cache.store(ticker, df, interval)
 
-            # Merge with cached data for the full range
-            if self._ohlcv_cache is not None and interval == "1d":
-                full = self._ohlcv_cache.get_cached(ticker, start_date, end_date)
+            # Merge with cached data for the full range (all intervals supported)
+            if self._ohlcv_cache is not None:
+                full = self._ohlcv_cache.get_cached(ticker, start_date, end_date, interval)
                 if full is not None and not full.empty:
                     df = full
 
@@ -550,19 +569,19 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
             try:
                 df = validate_ohlcv(df, ticker)
             except ValueError as exc:
-                logger.error("OHLCV validation failed for %s: %s", ticker, exc)
+                logger.error("OHLCV validation failed for %s (%s): %s", ticker, interval, exc)
                 return None
 
             df["ticker"] = ticker
             return df.reset_index(drop=True)
 
         except Exception as e:
-            logger.error(f"Error fetching OHLCV for {ticker}: {e}")
-            # Try to serve from cache even on failure
-            if self._ohlcv_cache is not None and interval == "1d":
-                cached = self._ohlcv_cache.get_cached(ticker, start_date, end_date)
+            logger.error(f"Error fetching OHLCV for {ticker} ({interval}): {e}")
+            # Try to serve from cache even on failure (all intervals supported)
+            if self._ohlcv_cache is not None:
+                cached = self._ohlcv_cache.get_cached(ticker, start_date, end_date, interval)
                 if cached is not None and not cached.empty:
-                    logger.info("Serving stale cache for %s after fetch failure", ticker)
+                    logger.info("Serving stale cache for %s (%s) after fetch failure", ticker, interval)
                     cached["ticker"] = ticker
                     return cached.reset_index(drop=True)
             return None
@@ -623,9 +642,10 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
         tickers: list[str],
         lookback_days: int = 400,
         end_date: str | None = None,
+        interval: str = "1d",
     ) -> dict[str, pd.DataFrame]:
         """
-        Get full market data for strategies (prices, volume, market_cap).
+        Get full market data for strategies (prices, volume, market_cap, prices_open).
 
         This is the main method for feeding data to trading strategies.
         Returns DataFrames in the format expected by quantlab strategies.
@@ -634,10 +654,12 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
             tickers: List of base asset symbols
             lookback_days: Number of days of history to fetch
             end_date: End date (default: yesterday)
+            interval: Candle interval ('1d', '1h', '4h', '15m', etc.). Default '1d'.
 
         Returns:
             Dict with:
-            - 'prices': DataFrame (date index, ticker columns)
+            - 'prices': DataFrame (date index, ticker columns) - close prices
+            - 'prices_open': DataFrame (date index, ticker columns) - open prices
             - 'volume': DataFrame (date index, ticker columns)
             - 'market_cap': DataFrame (date index, ticker columns)
 
@@ -648,16 +670,24 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
             date
             2024-02-01  95000   3200.0   190.0
             2024-02-02  94500   3180.0   188.0
+
+            # Hourly data
+            >>> data = fetcher.get_market_data(['BTC'], lookback_days=7, interval='1h')
         """
         if end_date is None:
             end_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
         start_date = (pd.to_datetime(end_date) - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
 
-        logger.info(f"Fetching market data for {len(tickers)} tickers from {start_date} to {end_date}")
+        logger.info(
+            f"Fetching market data for {len(tickers)} tickers from {start_date} to {end_date} (interval={interval})"
+        )
 
         # Fetch OHLCV for each ticker
         prices_data = {}
+        prices_open_data = {}
+        prices_high_data = {}
+        prices_low_data = {}
         volume_data = {}
 
         for ticker in tickers:
@@ -666,12 +696,15 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
                 logger.debug(f"Skipping stablecoin: {ticker}")
                 continue
 
-            df = self.get_ohlcv(ticker, start_date, end_date)
+            df = self.get_ohlcv(ticker, start_date, end_date, interval=interval)
             if df is not None and not df.empty:
                 df = df.set_index("date")
                 prices_data[ticker] = df["close"]
+                prices_open_data[ticker] = df["open"]
+                prices_high_data[ticker] = df["high"]
+                prices_low_data[ticker] = df["low"]
                 volume_data[ticker] = df["volume"]
-                logger.debug(f"Fetched {len(df)} days for {ticker}")
+                logger.debug(f"Fetched {len(df)} bars for {ticker}")
             else:
                 logger.warning(f"No data for {ticker}")
 
@@ -679,12 +712,19 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
             logger.error("No data fetched for any ticker")
             return {
                 "prices": pd.DataFrame(),
+                "prices_open": pd.DataFrame(),
+                "open": pd.DataFrame(),
+                "high": pd.DataFrame(),
+                "low": pd.DataFrame(),
                 "volume": pd.DataFrame(),
                 "market_cap": pd.DataFrame(),
             }
 
         # Combine into DataFrames
         prices = pd.DataFrame(prices_data)
+        prices_open = pd.DataFrame(prices_open_data)
+        prices_high = pd.DataFrame(prices_high_data)
+        prices_low = pd.DataFrame(prices_low_data)
         volume = pd.DataFrame(volume_data)
 
         # Estimate market cap (price * volume as proxy)
@@ -695,6 +735,10 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
 
         return {
             "prices": prices,
+            "prices_open": prices_open,  # Legacy key (kept for backwards compat)
+            "open": prices_open,  # Strategy-expected key
+            "high": prices_high,  # For candle pattern analysis
+            "low": prices_low,  # For higher-low detection
             "volume": volume,
             "market_cap": market_cap,
         }

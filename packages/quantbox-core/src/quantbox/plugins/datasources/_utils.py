@@ -96,6 +96,82 @@ def validate_ohlcv(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
 
 
 # ============================================================================
+# Data Frequency Normalization
+# ============================================================================
+
+# Map semantic frequency names to Binance interval strings
+FREQUENCY_ALIASES: dict[str, str] = {
+    # Daily variants
+    "daily": "1d",
+    "day": "1d",
+    "d": "1d",
+    "1day": "1d",
+    # Hourly variants
+    "hourly": "1h",
+    "hour": "1h",
+    "h": "1h",
+    "1hour": "1h",
+    # 4-hour variants
+    "4hourly": "4h",
+    "4hour": "4h",
+    # Weekly variants
+    "weekly": "1w",
+    "week": "1w",
+    "w": "1w",
+    # Monthly
+    "monthly": "1M",
+    "month": "1M",
+    # Minute variants
+    "1min": "1m",
+    "5min": "5m",
+    "15min": "15m",
+    "30min": "30m",
+}
+
+
+def normalize_data_frequency(frequency: str) -> str:
+    """Normalize data frequency strings to Binance-compatible intervals.
+
+    Accepts both semantic names (e.g., "daily", "hourly") and Binance-native
+    intervals (e.g., "1d", "1h"). Returns the Binance-compatible interval.
+
+    Args:
+        frequency: Frequency string (semantic or Binance-native)
+
+    Returns:
+        Binance-compatible interval string (e.g., "1d", "1h", "4h")
+
+    Examples:
+        >>> normalize_data_frequency("daily")
+        '1d'
+        >>> normalize_data_frequency("1d")
+        '1d'
+        >>> normalize_data_frequency("hourly")
+        '1h'
+        >>> normalize_data_frequency("4h")
+        '4h'
+    """
+    freq_lower = frequency.lower().strip()
+
+    # Check if it's already a valid Binance interval
+    valid_intervals = {"1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"}
+    if freq_lower in valid_intervals:
+        return freq_lower
+
+    # Look up alias
+    if freq_lower in FREQUENCY_ALIASES:
+        return FREQUENCY_ALIASES[freq_lower]
+
+    # Case-sensitive check for "1M" (monthly)
+    if frequency == "1M":
+        return "1M"
+
+    # Unknown frequency - log warning and return as-is (let Binance API fail with clear error)
+    logger.warning(f"Unknown data frequency '{frequency}', using as-is. Valid: {valid_intervals}")
+    return frequency
+
+
+# ============================================================================
 # Transient Error Classification (used by tenacity)
 # ============================================================================
 
@@ -142,6 +218,9 @@ class OHLCVCache:
     Stores OHLCV data as Parquet files on disk, queries them via DuckDB for
     incremental fetching (only fetch candles newer than what's cached).
 
+    Supports multiple intervals (1d, 1h, 4h, etc.) by storing each interval
+    in a separate subdirectory.
+
     Parameters
     ----------
     cache_dir : str or Path
@@ -150,6 +229,24 @@ class OHLCVCache:
         If the most recent cached candle for a ticker is younger than this,
         skip re-fetching entirely.
     """
+
+    # Map interval to appropriate increment for determining fetch start
+    _INTERVAL_INCREMENTS = {
+        "1m": timedelta(minutes=1),
+        "5m": timedelta(minutes=5),
+        "15m": timedelta(minutes=15),
+        "30m": timedelta(minutes=30),
+        "1h": timedelta(hours=1),
+        "2h": timedelta(hours=2),
+        "4h": timedelta(hours=4),
+        "6h": timedelta(hours=6),
+        "8h": timedelta(hours=8),
+        "12h": timedelta(hours=12),
+        "1d": timedelta(days=1),
+        "3d": timedelta(days=3),
+        "1w": timedelta(weeks=1),
+        "1M": timedelta(days=30),
+    }
 
     def __init__(
         self,
@@ -160,21 +257,38 @@ class OHLCVCache:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.fresh_ttl_hours = fresh_ttl_hours
 
-    def _ticker_dir(self, ticker: str) -> Path:
-        return self.cache_dir / "ohlcv" / ticker.upper()
+    def _ticker_dir(self, ticker: str, interval: str = "1d") -> Path:
+        """Get directory for ticker/interval combination."""
+        return self.cache_dir / "ohlcv" / interval / ticker.upper()
+
+    def get_interval_increment(self, interval: str) -> timedelta:
+        """Get the time increment for an interval."""
+        return self._INTERVAL_INCREMENTS.get(interval, timedelta(days=1))
 
     def get_cached(
         self,
         ticker: str,
         start_date: str,
         end_date: str,
+        interval: str = "1d",
     ) -> pd.DataFrame | None:
         """Read cached OHLCV from Parquet via DuckDB.
 
         Returns DataFrame with columns [date, open, high, low, close, volume]
         or None if no cache exists.
+
+        Parameters
+        ----------
+        ticker : str
+            Base asset symbol (e.g., 'BTC')
+        start_date : str
+            Start date as 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'
+        end_date : str
+            End date as 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'
+        interval : str
+            Candle interval ('1d', '1h', '4h', etc.)
         """
-        tdir = self._ticker_dir(ticker)
+        tdir = self._ticker_dir(ticker, interval)
         if not tdir.exists():
             return None
 
@@ -192,12 +306,12 @@ class OHLCVCache:
             df["date"] = pd.to_datetime(df["date"])
             return df
         except Exception as exc:
-            logger.debug("Cache read failed for %s: %s", ticker, exc)
+            logger.debug("Cache read failed for %s (%s): %s", ticker, interval, exc)
             return None
 
-    def get_last_date(self, ticker: str) -> pd.Timestamp | None:
-        """Get the most recent cached date for a ticker."""
-        tdir = self._ticker_dir(ticker)
+    def get_last_date(self, ticker: str, interval: str = "1d") -> pd.Timestamp | None:
+        """Get the most recent cached date for a ticker/interval."""
+        tdir = self._ticker_dir(ticker, interval)
         if not tdir.exists():
             return None
 
@@ -212,23 +326,32 @@ class OHLCVCache:
         except Exception:
             return None
 
-    def is_fresh(self, ticker: str, end_date: str) -> bool:
+    def is_fresh(self, ticker: str, end_date: str, interval: str = "1d") -> bool:
         """Check if cached data is fresh enough to skip re-fetching."""
-        last = self.get_last_date(ticker)
+        last = self.get_last_date(ticker, interval)
         if last is None:
             return False
         target = pd.Timestamp(end_date)
         return (target - last) < timedelta(hours=self.fresh_ttl_hours)
 
-    def store(self, ticker: str, df: pd.DataFrame) -> None:
+    def store(self, ticker: str, df: pd.DataFrame, interval: str = "1d") -> None:
         """Append new OHLCV data to the cache.
 
         Deduplicates by date before writing.
+
+        Parameters
+        ----------
+        ticker : str
+            Base asset symbol
+        df : DataFrame
+            OHLCV data with columns [date, open, high, low, close, volume]
+        interval : str
+            Candle interval ('1d', '1h', '4h', etc.)
         """
         if df.empty:
             return
 
-        tdir = self._ticker_dir(ticker)
+        tdir = self._ticker_dir(ticker, interval)
         tdir.mkdir(parents=True, exist_ok=True)
 
         # Ensure date is datetime
@@ -238,12 +361,18 @@ class OHLCVCache:
         # Deduplicate against existing cache
         existing = self.get_cached(
             ticker,
-            store_df["date"].min().strftime("%Y-%m-%d"),
-            store_df["date"].max().strftime("%Y-%m-%d"),
+            store_df["date"].min().strftime("%Y-%m-%d %H:%M:%S"),
+            store_df["date"].max().strftime("%Y-%m-%d %H:%M:%S"),
+            interval,
         )
         if existing is not None and not existing.empty:
-            existing_dates = set(existing["date"].dt.normalize())
-            store_df = store_df[~store_df["date"].dt.normalize().isin(existing_dates)]
+            # For intraday data, compare full timestamps not just dates
+            if interval != "1d":
+                existing_timestamps = set(existing["date"])
+                store_df = store_df[~store_df["date"].isin(existing_timestamps)]
+            else:
+                existing_dates = set(existing["date"].dt.normalize())
+                store_df = store_df[~store_df["date"].dt.normalize().isin(existing_dates)]
 
         if store_df.empty:
             return
@@ -252,16 +381,33 @@ class OHLCVCache:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = tdir / f"{ts}.parquet"
         store_df.to_parquet(path, engine="pyarrow", index=False)
-        logger.debug("Cached %d rows for %s -> %s", len(store_df), ticker, path)
+        logger.debug("Cached %d rows for %s (%s) -> %s", len(store_df), ticker, interval, path)
 
-    def clear(self, ticker: str | None = None) -> None:
-        """Clear cache for a ticker, or all tickers if None."""
+    def clear(self, ticker: str | None = None, interval: str | None = None) -> None:
+        """Clear cache for a ticker/interval, or all if None.
+
+        Parameters
+        ----------
+        ticker : str or None
+            Ticker to clear, or None for all tickers
+        interval : str or None
+            Interval to clear, or None for all intervals (only when ticker is set)
+        """
         import shutil
 
         if ticker:
-            tdir = self._ticker_dir(ticker)
-            if tdir.exists():
-                shutil.rmtree(tdir)
+            if interval:
+                tdir = self._ticker_dir(ticker, interval)
+                if tdir.exists():
+                    shutil.rmtree(tdir)
+            else:
+                # Clear all intervals for this ticker
+                ohlcv_dir = self.cache_dir / "ohlcv"
+                if ohlcv_dir.exists():
+                    for idir in ohlcv_dir.iterdir():
+                        tdir = idir / ticker.upper()
+                        if tdir.exists():
+                            shutil.rmtree(tdir)
         else:
             ohlcv_dir = self.cache_dir / "ohlcv"
             if ohlcv_dir.exists():
