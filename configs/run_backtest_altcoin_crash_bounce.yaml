@@ -1,0 +1,75 @@
+# Backtest altcoin crash bounce strategy
+# Mean-reversion entry on crash + volume spike (capitulation signals)
+# 
+# IMPORTANT: This strategy requires HOURLY data (interval: "1h")
+# The lookback/hold periods are in hours, not days.
+#
+# Strategy logic:
+#   Entry: crash_pct <= -15% AND volume_ratio >= 1.3
+#   Exit: TP +12%, SL -12%, or 72h time decay
+#   Position: 8% per position, max 15 positions
+#   Circuit breaker: max 6 entries per 24h rolling window
+
+run:
+  mode: backtest
+  asof: "2026-02-14"
+  pipeline: "backtest.pipeline.v1"
+
+artifacts:
+  root: "./artifacts"
+
+plugins:
+  pipeline:
+    name: "backtest.pipeline.v1"
+    params:
+      engine: vectorbt
+      fees: 0.001
+      rebalancing_freq: 1        # hourly rebalancing (matches data frequency)
+      trading_days: 365
+
+      universe:
+        top_n: 100
+
+      prices:
+        lookback_days: 90        # 90 days of hourly data
+
+      risk:
+        tranches: 1
+        max_leverage: 1
+        allow_short: false
+
+  strategies:
+    - name: "strategy.altcoin_crash_bounce.v62"
+      weight: 1.0
+      params:
+        # Signal parameters
+        crash_threshold_pct: -15.0
+        volume_spike_ratio: 1.3
+        lookback_periods: 24           # 24h rolling high
+        volume_lookback_periods: 480   # 20 days = 480 hours
+        
+        # Exit parameters (all in hours for hourly data)
+        take_profit_pct: 12.0
+        stop_loss_pct: 12.0
+        max_hold_hours: 72
+        
+        # Position sizing
+        position_size_pct: 8.0
+        max_positions: 15
+        
+        # Risk management
+        circuit_breaker_entries: 6
+        circuit_breaker_hours: 24
+        slippage_pct: 2.5
+        commission_pct: 0.1
+        
+        # Universe filtering
+        min_market_cap_usd: 10000000      # $10M minimum
+        min_daily_volume_usd: 500000      # $500K minimum
+
+  data:
+    name: "binance.live_data.v1"
+    params_init:
+      quote_asset: USDT
+      interval: "1h"             # ⚠️ CRITICAL: Hourly data required
+      # data_frequency is determined by interval parameter
