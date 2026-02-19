@@ -6,16 +6,124 @@ description: >
   'backtest', 'paper trade', 'live trade', 'strategy plugin', 'broker plugin',
   'data plugin', 'risk plugin', 'rebalancing', 'run config', 'target weights',
   'portfolio', or asks to create/run/debug any quantitative trading workflow.
+references:
+  - strategies
+  - pipelines
+  - data
+  - brokers
+  - configs
+  - risk
 metadata:
   author: quantbox
-  version: 1.0.0
+  version: 2.0.0
 ---
 
-# QuantBox Agent Skill
+# QuantBox Platform Skill
 
-QuantBox is a config-driven quant framework where strategies, data sources, brokers, and risk
-managers are all plugins wired together via YAML configs. The same config works across
-backtesting, paper trading, and live execution by changing `run.mode`.
+Config-driven quant framework. Strategies, data, brokers, and risk are all plugins
+wired together via YAML configs. Same config works across backtesting, paper trading,
+and live execution by changing `run.mode`.
+
+## Progressive Disclosure Rules
+
+**Do NOT load all reference files into context at once.** Follow this loading order:
+
+1. Read this SKILL.md first (always loaded)
+2. Use the decision trees below to identify which domain applies
+3. Load only the relevant `references/<domain>/README.md`
+4. Load `api.md`, `patterns.md`, or `gotchas.md` only when needed for the specific task
+
+## Pre-Flight Check
+
+Before any pipeline execution, verify the environment:
+
+```bash
+uv run quantbox plugins doctor     # check all plugins load correctly
+uv run quantbox plugins list       # confirm expected plugins are registered
+```
+
+For live brokers, verify credentials are set:
+```bash
+# Check env vars (do NOT print values)
+python -c "import os; print('BINANCE:', bool(os.getenv('API_KEY_BINANCE'))); print('HYPERLIQUID:', bool(os.getenv('HYPERLIQUID_WALLET')))"
+```
+
+No env vars are needed for backtesting or paper trading with simulated brokers.
+
+## Decision Trees
+
+Use these to route to the right reference files, then load detailed references on demand.
+
+### "I need to run something"
+
+| Intent | Pipeline | Mode | References to load |
+|---|---|---|---|
+| Historical backtest | `backtest.pipeline.v1` | backtest | [configs/README](references/configs/README.md), [configs/patterns](references/configs/patterns.md) |
+| Screen / rank assets | `fund_selection.simple.v1` | backtest | [configs/README](references/configs/README.md), [configs/patterns](references/configs/patterns.md) |
+| Paper trade (spot) | `trade.full_pipeline.v1` | paper | [configs/README](references/configs/README.md), [brokers/README](references/brokers/README.md) |
+| Paper trade (futures) | `trade.full_pipeline.v1` | paper | [configs/README](references/configs/README.md), [brokers/README](references/brokers/README.md) |
+| Live trade | `trade.full_pipeline.v1` | live | [configs/README](references/configs/README.md), [brokers/README](references/brokers/README.md) |
+| Execute pre-computed weights | `trade.allocations_to_orders.v1` | paper/live | [configs/README](references/configs/README.md), [brokers/README](references/brokers/README.md) |
+
+### "I need to create a plugin"
+
+| Plugin type | Protocol | Reference to load |
+|---|---|---|
+| Strategy (compute weights) | `StrategyPlugin` | [strategies/api](references/strategies/api.md), [strategies/patterns](references/strategies/patterns.md) |
+| Pipeline (orchestrate run) | `PipelinePlugin` | [pipelines/api](references/pipelines/api.md) |
+| Data source (load OHLCV) | `DataPlugin` | [data/api](references/data/api.md) |
+| Broker (execute orders) | `BrokerPlugin` | [brokers/api](references/brokers/api.md) |
+| Risk manager (validate) | `RiskPlugin` | [risk/api](references/risk/api.md) |
+| Rebalancer (weights to orders) | `RebalancingPlugin` | [pipelines/api](references/pipelines/api.md) |
+| Publisher (notifications) | `PublisherPlugin` | [pipelines/api](references/pipelines/api.md) |
+
+### "I need to work with data"
+
+| Intent | Plugin | Reference to load |
+|---|---|---|
+| Load from local Parquet files | `local_file_data` | [data/README](references/data/README.md) |
+| Fetch live Binance spot data | `binance.live_data.v1` | [data/README](references/data/README.md) |
+| Fetch Binance futures data | `binance.futures_data.v1` | [data/README](references/data/README.md) |
+| Fetch Hyperliquid perps data | `hyperliquid.data.v1` | [data/README](references/data/README.md) |
+| Generate synthetic test data | `data.synthetic.v1` | [data/README](references/data/README.md) |
+
+### "I need to choose a strategy"
+
+| Intent | Strategy | Reference to load |
+|---|---|---|
+| Crypto trend following | `strategy.crypto_trend.v1` | [strategies/README](references/strategies/README.md) |
+| Futures trend (Carver-style) | `strategy.carver_trend.v1` | [strategies/README](references/strategies/README.md) |
+| Long/short momentum | `strategy.momentum_long_short.v1` | [strategies/README](references/strategies/README.md) |
+| Cross-asset momentum | `strategy.cross_asset_momentum.v1` | [strategies/README](references/strategies/README.md) |
+| Regime-aware trend | `strategy.crypto_regime_trend.v1` | [strategies/README](references/strategies/README.md) |
+| Global multi-asset | `strategy.beglobal.v1` | [strategies/README](references/strategies/README.md) |
+| Mean-variance optimization | `strategy.portfolio_optimizer.v1` | [strategies/README](references/strategies/README.md) |
+| ML prediction | `strategy.ml_prediction.v1` | [strategies/README](references/strategies/README.md) |
+| Blend multiple strategies | `strategy.weighted_avg.v1` | [strategies/README](references/strategies/README.md) |
+
+### "Something went wrong"
+
+| Symptom | Likely cause | Reference to load |
+|---|---|---|
+| Config validation fails | Invalid YAML structure or plugin name | [configs/gotchas](references/configs/gotchas.md) |
+| Plugin not found | Typo or not installed | [configs/gotchas](references/configs/gotchas.md) |
+| Data load fails | API keys, network, date range | [data/gotchas](references/data/gotchas.md) |
+| Strategy returns empty weights | Data format or lookback issues | [strategies/gotchas](references/strategies/gotchas.md) |
+| Broker execution fails | Credentials, balances, or mode mismatch | [brokers/gotchas](references/brokers/gotchas.md) |
+| Pipeline crashes | Missing plugin sections in config | [pipelines/gotchas](references/pipelines/gotchas.md) |
+
+## Essential Commands
+
+```bash
+uv run quantbox plugins list               # list all registered plugins
+uv run quantbox plugins list --json        # JSON output for programmatic use
+uv run quantbox plugins info --name <id>   # show plugin metadata and params
+uv run quantbox plugins doctor             # diagnostic checks
+uv run quantbox validate -c <config>       # validate a YAML config
+uv run quantbox run -c <config>            # execute a pipeline
+uv run quantbox run --dry-run -c <config>  # preview execution plan
+uv run pytest -q                           # run test suite
+```
 
 ## Project Layout
 
@@ -37,32 +145,20 @@ packages/quantbox-core/src/quantbox/   # core library
     rebalancing/     # Rebalancing plugins
     risk/            # Risk plugins
     publisher/       # Publisher plugins
-configs/             # Example YAML configs
-schemas/             # JSON schemas for artifact validation
+configs/             # Example YAML configs (21 files)
+schemas/             # JSON schemas for artifact validation (14 files)
 plugins/manifest.yaml  # Plugin profiles (presets)
+recipes/             # Step-by-step plugin creation guides
 ```
 
-## Essential Commands
+## Pipeline Execution Workflow
 
-```bash
-uv run quantbox plugins list               # list all registered plugins
-uv run quantbox plugins list --json        # JSON output for programmatic use
-uv run quantbox plugins info --name <id>   # show plugin metadata and params
-uv run quantbox plugins doctor             # diagnostic checks on all plugins
-uv run quantbox validate -c <config>       # validate a YAML config
-uv run quantbox run -c <config>            # execute a pipeline
-uv run quantbox run --dry-run -c <config>  # preview execution plan
-uv run pytest -q                           # run test suite
-```
-
-## Workflow 1: Running a Pipeline
-
-**Step 1 - Validate the config first:**
+**Step 1 - Validate:**
 ```bash
 uv run quantbox validate -c configs/<config>.yaml
 ```
 
-**Step 2 - Preview with dry-run:**
+**Step 2 - Preview:**
 ```bash
 uv run quantbox run --dry-run -c configs/<config>.yaml
 ```
@@ -72,267 +168,36 @@ uv run quantbox run --dry-run -c configs/<config>.yaml
 uv run quantbox run -c configs/<config>.yaml
 ```
 
-**Step 4 - Check artifacts:**
-Outputs go to `artifacts/<run_id>/` containing:
-- `target_weights.parquet` - portfolio weights
-- `orders.parquet` - generated orders
-- `run_manifest.json` - full run metadata
-- `events.jsonl` - event stream
+**Step 4 - Self-verify:**
+- Check `artifacts/<run_id>/run_manifest.json` for run metadata
+- Check `artifacts/<run_id>/events.jsonl` for event stream
+- Inspect `target_weights.parquet` and `orders.parquet` for outputs
+- Run `uv run pytest -q` to confirm no regressions
 
-## Workflow 2: Creating a New Plugin
+## Plugin Creation Workflow
 
-All plugins are `@dataclass` classes with a class-level `meta = PluginMeta(...)` attribute
-that implement a Protocol from `contracts.py`. See [references/plugin-protocols.md](references/plugin-protocols.md)
-for the exact signatures.
+**Step 1 - Identify type:** Use the "I need to create a plugin" decision tree above
 
-### Steps for a Built-in Plugin
+**Step 2 - Load reference:** Read the `api.md` for the relevant plugin type
 
-1. **Create module**: `packages/quantbox-core/src/quantbox/plugins/<type>/<name>.py`
-2. **Implement protocol**: Use `@dataclass` with `meta = PluginMeta(...)` class attribute
-3. **Export**: Add to `plugins/<type>/__init__.py`
-4. **Register**: Add to `plugins/builtins.py` imports and `builtins()` dict
-5. **Config**: Add example YAML to `configs/`
-6. **Test**: Add test in `tests/`
-7. **Verify**:
-   ```bash
-   uv run quantbox plugins list          # confirm plugin appears
-   uv run quantbox validate -c <config>  # validate config
-   uv run quantbox run --dry-run -c <config>
-   uv run pytest -q                      # all tests pass
-   ```
+**Step 3 - Create module:** `packages/quantbox-core/src/quantbox/plugins/<type>/<name>.py`
 
-### Strategy Plugin Template
+**Step 4 - Register:**
+1. Export from `plugins/<type>/__init__.py`
+2. Import in `plugins/builtins.py`, add to `builtins()` dict
 
-```python
-from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import Any
-import pandas as pd
-from quantbox.contracts import PluginMeta
+**Step 5 - Config:** Add example YAML to `configs/`
 
-@dataclass
-class MyStrategy:
-    """Short description of strategy logic.
+**Step 6 - Test:** Add test in `tests/`
 
-    LLM Note: Explain the core algorithm and key parameters.
-    """
-
-    meta = PluginMeta(
-        name="strategy.my_strategy.v1",
-        kind="strategy",
-        version="0.1.0",
-        core_compat=">=0.1,<0.2",
-        description="One-line description of strategy",
-        tags=("crypto", "trend"),
-    )
-
-    # Constructor params (set via params or params_init in config)
-    lookback_days: int = 90
-
-    def run(
-        self,
-        data: dict[str, pd.DataFrame],
-        params: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        prices = data["prices"]
-
-        # Apply param overrides
-        if params:
-            for k, v in params.items():
-                if hasattr(self, k):
-                    setattr(self, k, v)
-
-        # --- Strategy logic here ---
-        # Compute weights as a wide DataFrame (date index x symbol columns)
-        weights = pd.DataFrame(...)
-
-        return {
-            "weights": weights,
-            "simple_weights": weights.iloc[-1].to_dict(),
-        }
-```
-
-### Pipeline Plugin Template
-
-```python
-from __future__ import annotations
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
-import pandas as pd
-from quantbox.contracts import (
-    BrokerPlugin, DataPlugin, Mode, PluginMeta,
-    RiskPlugin, RunResult, StrategyPlugin,
-)
-from quantbox.store import FileArtifactStore
-
-@dataclass
-class MyPipeline:
-    meta = PluginMeta(
-        name="my.pipeline.v1",
-        kind="pipeline",
-        version="0.1.0",
-        core_compat=">=0.1,<0.2",
-        description="What this pipeline does",
-        outputs=("target_weights", "run_summary"),
-    )
-
-    def run(
-        self,
-        *,
-        mode: Mode,
-        asof: str,
-        params: Dict[str, Any],
-        data: DataPlugin,
-        store: FileArtifactStore,
-        broker: Optional[BrokerPlugin] = None,
-        risk: Optional[List[RiskPlugin]] = None,
-        strategies: Optional[List[StrategyPlugin]] = None,
-        **kwargs,
-    ) -> RunResult:
-        # 1. Load data
-        universe = data.load_universe(params)
-        market_data = data.load_market_data(universe, asof, params)
-
-        # 2. Run strategy
-        if strategies:
-            result = strategies[0].run(market_data, params)
-            weights = result["weights"]
-        else:
-            # fallback: equal weight
-            symbols = list(market_data["prices"].columns)
-            n = len(symbols)
-            weights = pd.DataFrame(
-                {s: [1.0 / n] for s in symbols},
-                index=[pd.Timestamp(asof)],
-            )
-
-        # 3. Risk checks
-        if risk:
-            for r in risk:
-                findings = r.check_targets(weights, params)
-                if findings:
-                    ...  # handle violations
-
-        # 4. Store artifacts
-        store.put_parquet("target_weights", weights)
-        summary = {"mode": mode, "asof": asof, "n_symbols": len(weights.columns)}
-        store.put_json("run_summary", summary)
-
-        # 5. Execute (paper/live only)
-        if mode in ("paper", "live") and broker:
-            ...  # broker execution
-
-        return RunResult(
-            run_id=store.run_id,
-            pipeline_name=self.meta.name,
-            mode=mode,
-            asof=asof,
-            artifacts={"target_weights": "target_weights.parquet"},
-            metrics=summary,
-            notes={},
-        )
-```
-
-## Workflow 3: Building a Config
-
-See [references/config-reference.md](references/config-reference.md) for the full config schema
-and [references/plugin-catalog.md](references/plugin-catalog.md) for all available plugins.
-
-### Config Structure
-
-```yaml
-run:
-  mode: backtest|paper|live     # execution mode
-  asof: "2026-02-01"            # reference date
-  pipeline: "pipeline.name.v1"  # which pipeline to run
-
-artifacts:
-  root: "./artifacts"           # output directory
-
-plugins:
-  profile: "research"           # optional preset from manifest.yaml
-
-  pipeline:
-    name: "pipeline.name.v1"
-    params: { ... }             # runtime params -> pipeline.run()
-
-  data:
-    name: "data.source.v1"
-    params_init: { ... }        # constructor params -> dataclass fields
-
-  strategies:                   # list of strategies with blend weights
-    - name: "strategy.name.v1"
-      weight: 1.0
-      params: { ... }
-
-  broker:
-    name: "broker.name.v1"
-    params_init: { ... }
-
-  rebalancing:
-    name: "rebalancing.type.v1"
-    params: { ... }
-
-  risk:                         # list - all must pass
-    - name: "risk.type.v1"
-      params: { ... }
-
-  publishers:                   # list - all run after pipeline completes
-    - name: "publisher.type.v1"
-      params_init: { ... }
-```
-
-**Key distinction**: `params` are passed to `plugin.run()` at runtime. `params_init` are
-passed to the dataclass constructor when instantiating the plugin.
-
-### Profiles
-
-Profiles in `plugins/manifest.yaml` provide preset plugin configurations:
-
-| Profile | Use Case |
-|---|---|
-| `research` | Jupyter-style research with local data |
-| `trading` | Spot paper trading with simulated broker |
-| `trading_full` | Live crypto trading (Binance) |
-| `stress_test` | Risk analysis with synthetic data |
-| `futures_paper` | Futures paper trading |
-
-## Workflow 4: Debugging
-
-### Common Errors
-
-| Exception | Cause | Fix |
-|---|---|---|
-| `ConfigValidationError` | Invalid YAML config | Check `.findings` for details |
-| `PluginNotFoundError` | Plugin name not in registry | Check `.available` for valid names; run `quantbox plugins list` |
-| `PluginLoadError` | Import failed | Check dependencies: `uv sync --extra full` |
-| `DataLoadError` | Data fetch failed | Check API keys, network, date range |
-| `BrokerExecutionError` | Order placement failed | Check broker credentials and balances |
-
-### Diagnostic Commands
-
+**Step 7 - Self-verify:**
 ```bash
-uv run quantbox plugins doctor             # check all plugins for issues
-uv run quantbox plugins doctor --strict    # strict mode
-uv run quantbox plugins info --name <id>   # inspect specific plugin
+uv run quantbox plugins list            # plugin appears in list
+uv run quantbox plugins info --name <id>  # metadata is correct
+uv run quantbox validate -c <config>    # config validates
+uv run quantbox run --dry-run -c <config>  # dry run succeeds
+uv run pytest -q                        # all tests pass
 ```
-
-### Checking Artifacts
-
-After a run, inspect `artifacts/<run_id>/run_manifest.json` for full metadata,
-or query across runs:
-
-```bash
-uv run quantbox warehouse query --sql "SELECT * FROM runs ORDER BY created_at DESC LIMIT 5"
-```
-
-## Data Format
-
-DataPlugin returns `Dict[str, pd.DataFrame]` of **wide-format** DataFrames:
-- **Index**: DatetimeIndex
-- **Columns**: symbol names (e.g., "BTC", "ETH", "SPY")
-- **Required key**: `"prices"` (close prices)
-- **Optional keys**: `"volume"`, `"market_cap"`, `"funding_rates"`
 
 ## Development Rules
 
@@ -345,15 +210,16 @@ DataPlugin returns `Dict[str, pd.DataFrame]` of **wide-format** DataFrames:
 - Add tests for new plugins or core behavior
 - Write LLM-friendly docstrings with examples and "LLM Note:" hints
 
-## Environment Variables
+## Product Index
 
-| Variable | Required for |
-|---|---|
-| `API_KEY_BINANCE` | Binance brokers |
-| `API_SECRET_BINANCE` | Binance brokers |
-| `HYPERLIQUID_WALLET` | Hyperliquid broker |
-| `HYPERLIQUID_PRIVATE_KEY` | Hyperliquid broker |
-| `TELEGRAM_TOKEN` | Telegram publisher |
-| `TELEGRAM_CHAT_ID` | Telegram publisher |
+| Category | Count | Plugins |
+|---|---|---|
+| Pipelines | 4 | fund_selection, backtest, trade.full, allocations_to_orders |
+| Strategies | 9 | crypto_trend, carver_trend, momentum_ls, xsmom, regime_trend, beglobal, optimizer, ml, weighted_avg |
+| Data | 5 | local_file, binance_spot, binance_futures, hyperliquid, synthetic |
+| Brokers | 8 | sim_paper, futures_paper, ibkr_stub, binance_stub, ibkr_live, binance_live, binance_futures, hyperliquid |
+| Risk | 2 | trading_basic, stress_test |
+| Rebalancing | 2 | standard, futures |
+| Publishers | 1 | telegram |
 
-None needed for backtesting or paper trading with simulated brokers.
+Total: 31 built-in plugins. Run `uv run quantbox plugins list` for exact IDs.
