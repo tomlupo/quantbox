@@ -2,26 +2,17 @@
 
 Quant research and trading framework with a plugin architecture. Config-driven pipelines for backtesting, paper trading, and live execution.
 
-## Repositories
-
-| Repo | Purpose | Quantbox pin |
-|---|---|---|
-| **quantbox** (this) | Library: strategies, plugins, protocols, core runtime | (source) |
-| [quantbox-live](https://github.com/tomlupo/quantbox-live) | Production: daily automated trading | `@v0.1.0` (stable tag) |
-| [quantbox-lab](https://github.com/tomlupo/quantbox-lab) | Research: backtesting, notebooks, experiments | `@dev` (latest) |
-
-See [multi-repo workflow](docs/guides/multi-repo-workflow.md) for versioning and promotion.
-
 ## Install
 
 ```bash
 uv venv && source .venv/bin/activate
 uv sync
 
-# Optional extras for broker adapters:
+# Optional extras:
 uv sync --extra ccxt      # Binance, Hyperliquid (via ccxt)
 uv sync --extra ibkr      # Interactive Brokers
 uv sync --extra binance   # python-binance
+uv sync --extra agents    # MCP server + Claude Agent SDK
 uv sync --extra full      # all of the above
 ```
 
@@ -49,7 +40,11 @@ quantbox run -c configs/run_futures_paper_crypto_trend.yaml
 
 ### Live trading
 
-Configured via [quantbox-live](https://github.com/tomlupo/quantbox-live).
+```bash
+quantbox run -c configs/run_live_crypto_trend.yaml
+```
+
+Requires exchange API credentials in environment variables. See `.env.example`.
 
 ## Plugins
 
@@ -119,6 +114,62 @@ quantbox plugins list
 |---|---|
 | `telegram.publisher.v1` | Trade notifications via Telegram |
 
+## Agent integration
+
+QuantBox provides a layered agent integration system for LLM-driven workflows.
+
+### Programmatic API
+
+```python
+from quantbox.agents import QuantBoxAgent
+
+agent = QuantBoxAgent()
+agent.list_plugins()                          # browse all plugins
+agent.search_plugins("trend")                 # search by keyword
+agent.plugin_info("strategy.crypto_trend.v1") # inspect details
+config = agent.build_config(
+    mode="backtest",
+    pipeline="backtest.pipeline.v1",
+    strategy="strategy.crypto_trend.v1",
+    data="binance.live_data.v1",
+)
+agent.validate_config(config)                 # check config
+agent.run(config)                             # execute pipeline
+```
+
+### MCP server (Claude Code, Cursor, etc.)
+
+```bash
+uv sync --extra agents
+quantbox-mcp
+```
+
+Exposes 9 tools: `quantbox_list_plugins`, `quantbox_plugin_info`, `quantbox_search_plugins`, `quantbox_build_config`, `quantbox_validate_config`, `quantbox_run`, `quantbox_dry_run`, `quantbox_inspect_run`, `quantbox_list_profiles`.
+
+### Claude Agent SDK subagents
+
+```python
+import asyncio
+from quantbox.agents import research_agent, backtest_agent
+
+asyncio.run(research_agent("Find the best momentum strategy for crypto"))
+asyncio.run(backtest_agent("Backtest crypto trend on BTC ETH SOL"))
+```
+
+Pre-built agents: `research_agent`, `backtest_agent`, `monitor_agent`, `plugin_builder_agent`.
+
+### Plugin introspection
+
+```python
+from quantbox.introspect import describe_plugin_class, describe_registry
+from quantbox.registry import PluginRegistry
+
+registry = PluginRegistry.discover()
+catalog = describe_registry(registry)  # full catalog for LLM consumption
+```
+
+See [LLM operations reference](docs/reference/llm-operations.md) for full details.
+
 ## Plugin manifest and profiles
 
 The manifest at `plugins/manifest.yaml` defines available profiles:
@@ -165,7 +216,6 @@ See [CONTRIBUTING_LLM.md](CONTRIBUTING_LLM.md) for LLM development guidelines.
 See [docs/](docs/) for full documentation:
 - [Product requirements (PRD)](docs/PRD.md)
 - [Backtesting guide](docs/guides/backtesting.md)
-- [Multi-repo workflow](docs/guides/multi-repo-workflow.md)
 - [Trading bridge](docs/guides/trading-bridge.md)
 - [Approval gate](docs/guides/approval-gate.md)
 - [Integration guide](docs/guides/quantbox-integration-guide.md)

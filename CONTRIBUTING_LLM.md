@@ -93,6 +93,33 @@ publisher.publish(result, params)
 
 ## LLM Workflow Example
 
+### Using QuantBoxAgent (recommended for agents)
+
+```python
+from quantbox.agents import QuantBoxAgent
+
+agent = QuantBoxAgent()
+
+# 1. Explore plugins
+plugins = agent.list_plugins(kind="strategy")
+info = agent.plugin_info("strategy.crypto_trend.v1")
+
+# 2. Build and validate config
+config = agent.build_config(
+    mode="backtest",
+    pipeline="backtest.pipeline.v1",
+    strategy="strategy.crypto_trend.v1",
+    data="binance.live_data.v1",
+)
+result = agent.validate_config(config)
+
+# 3. Execute and inspect
+run_result = agent.run(config)
+artifacts = agent.inspect_run(run_result["run_id"])
+```
+
+### Using broker directly
+
 ```python
 # 1. Initialize broker in paper mode
 from quantbox.plugins.broker import BinanceLiveBroker
@@ -113,6 +140,27 @@ print(analysis[['Asset', 'Action', 'Delta_Qty']])
 result = broker.execute_rebalancing(target_weights)
 print(f"Executed {result['summary']['total_executed']} trades")
 ```
+
+## Agent infrastructure
+
+When building agent integrations or modifying LLM-facing code:
+
+- **Introspection**: Use `quantbox.introspect.describe_plugin_class()` for universal plugin descriptions. No per-plugin changes needed.
+- **Agent API**: `quantbox.agents.QuantBoxAgent` returns plain dicts — errors in return values, never raised.
+- **MCP server**: `quantbox.agents.mcp_server` exposes 9 tools. Test with `uv run quantbox-mcp`.
+- **Claude Agent SDK**: Pre-built subagent definitions in `quantbox.agents.claude_agents.QUANTBOX_AGENTS`.
+- **Skill docs**: Auto-generated sections in `.claude/skills/quantbox/` use `<!-- BEGIN AUTO-GENERATED -->` markers. Run `uv run python scripts/refresh_skill.py` after changing plugins.
+
+## Claude Code skill
+
+The `.claude/skills/quantbox/SKILL.md` provides decision trees for intent-based routing.
+Domain-specific references live in `.claude/skills/quantbox/references/<domain>/`:
+- `strategies/` — strategy selection, API, patterns, gotchas
+- `pipelines/` — pipeline selection, API, gotchas
+- `data/` — data source selection, API, gotchas
+- `brokers/` — broker selection, API, gotchas
+- `configs/` — config schema, patterns, gotchas
+- `risk/` — risk plugin API
 
 ## Required checks after edits
 1. `quantbox plugins list`
