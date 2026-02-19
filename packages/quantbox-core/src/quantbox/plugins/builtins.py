@@ -16,8 +16,6 @@ from .broker import (
     IBKRPaperBrokerStub,
     SimPaperBroker,
 )
-from .features import CrossSectionalFeatures, TechnicalFeatures
-from .monitor import DrawdownMonitor, SignalDecayMonitor
 from .datasources import (
     BinanceDataPlugin,
     BinanceFuturesDataPlugin,
@@ -25,10 +23,17 @@ from .datasources import (
     LocalFileDataPlugin,
     SyntheticDataPlugin,
 )
+from .features import CrossSectionalFeatures, TechnicalFeatures
+from .monitor import DrawdownMonitor, SignalDecayMonitor
 from .pipeline import AllocationsToOrdersPipeline, BacktestPipeline, FundSelectionPipeline, TradingPipeline
 from .publisher import TelegramPublisher
 from .rebalancing import FuturesRebalancer, StandardRebalancer
-from .risk import StressTestRiskManager, TradingRiskManager
+from .risk import (
+    DrawdownControlRiskManager,
+    FactorExposureRiskManager,
+    StressTestRiskManager,
+    TradingRiskManager,
+)
 from .strategies import (
     BeGlobalStrategy,
     CarverTrendStrategy,
@@ -40,6 +45,13 @@ from .strategies import (
     PortfolioOptimizerStrategy,
 )
 from .strategies.weighted_avg_aggregator import WeightedAverageAggregator
+from .validation import (
+    BenchmarkValidation,
+    RegimeValidation,
+    StatisticalValidation,
+    TurnoverValidation,
+    WalkForwardValidation,
+)
 
 
 def _map(*classes):
@@ -63,7 +75,12 @@ def builtins() -> dict[str, dict[str, type]]:
             HyperliquidBroker,
         ),
         "publisher": _map(TelegramPublisher),
-        "risk": _map(TradingRiskManager, StressTestRiskManager),
+        "risk": _map(
+            TradingRiskManager,
+            StressTestRiskManager,
+            FactorExposureRiskManager,
+            DrawdownControlRiskManager,
+        ),
         "strategy": _map(
             BeGlobalStrategy,
             CryptoTrendStrategy,
@@ -78,4 +95,11 @@ def builtins() -> dict[str, dict[str, type]]:
         "rebalancing": _map(StandardRebalancer, FuturesRebalancer),
         "feature": _map(TechnicalFeatures, CrossSectionalFeatures),
         "monitor": _map(DrawdownMonitor, SignalDecayMonitor),
+        "validation": _map(
+            WalkForwardValidation,
+            StatisticalValidation,
+            TurnoverValidation,
+            RegimeValidation,
+            BenchmarkValidation,
+        ),
     }
