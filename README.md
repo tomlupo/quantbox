@@ -2,16 +2,6 @@
 
 Quant research and trading framework with a plugin architecture. Config-driven pipelines for backtesting, paper trading, and live execution.
 
-## Repositories
-
-| Repo | Purpose | Quantbox pin |
-|---|---|---|
-| **quantbox** (this) | Library: strategies, plugins, protocols, core runtime | (source) |
-| [quantbox-live](https://github.com/tomlupo/quantbox-live) | Production: daily automated trading | `@v0.1.0` (stable tag) |
-| [quantbox-lab](https://github.com/tomlupo/quantbox-lab) | Research: backtesting, notebooks, experiments | `@dev` (latest) |
-
-See [multi-repo workflow](docs/guides/multi-repo-workflow.md) for versioning and promotion.
-
 ## Install
 
 ```bash
@@ -49,7 +39,11 @@ quantbox run -c configs/run_futures_paper_crypto_trend.yaml
 
 ### Live trading
 
-Configured via [quantbox-live](https://github.com/tomlupo/quantbox-live).
+```bash
+quantbox run -c configs/run_live_crypto_trend.yaml
+```
+
+Requires exchange API credentials in environment variables. See `.env.example`.
 
 ## Plugins
 
@@ -165,7 +159,6 @@ See [CONTRIBUTING_LLM.md](CONTRIBUTING_LLM.md) for LLM development guidelines.
 See [docs/](docs/) for full documentation:
 - [Product requirements (PRD)](docs/PRD.md)
 - [Backtesting guide](docs/guides/backtesting.md)
-- [Multi-repo workflow](docs/guides/multi-repo-workflow.md)
 - [Trading bridge](docs/guides/trading-bridge.md)
 - [Approval gate](docs/guides/approval-gate.md)
 - [Integration guide](docs/guides/quantbox-integration-guide.md)
