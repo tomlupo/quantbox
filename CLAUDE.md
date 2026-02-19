@@ -11,9 +11,14 @@ packages/quantbox-core/src/quantbox/   ← core library
   contracts.py       Protocol definitions (start here)
   runner.py          Config → plugin instantiation → pipeline.run()
   registry.py        Plugin discovery (builtins + entry points)
+  introspect.py      Universal plugin introspection for LLM agents
   cli.py             CLI entry point (quantbox command)
   store.py           Artifact storage (Parquet + JSON)
   schemas.py         Runtime schema validation
+  agents/            LLM agent integration layer
+    tools.py         QuantBoxAgent programmatic API
+    mcp_server.py    MCP server (9 tools for Claude Code / Cursor)
+    claude_agents.py Claude Agent SDK subagent definitions
   plugins/
     builtins.py      Plugin registration map
     strategies/      Strategy plugins (compute target weights)
@@ -27,6 +32,10 @@ packages/quantbox-core/src/quantbox/   ← core library
 configs/             Example YAML configs for all pipeline types
 schemas/             JSON schemas for artifact validation
 plugins/manifest.yaml  Plugin profiles (research, trading, futures_paper)
+scripts/
+  refresh_skill.py   Auto-regenerate skill docs from live registry
+.claude/skills/quantbox/  Claude Code agent skill (decision trees + references)
+.githooks/pre-commit      Auto-refresh skill docs on plugin changes
 ```
 
 ## Key commands
@@ -39,6 +48,7 @@ uv run quantbox validate -c <config>        # validate config
 uv run quantbox run -c <config>             # run pipeline
 uv run quantbox run --dry-run -c <config>   # dry run
 uv run pytest -q                            # run tests
+uv run quantbox-mcp                        # start MCP server
 ```
 
 ## Plugin architecture
@@ -125,6 +135,48 @@ Quantbox uses custom exceptions (see `quantbox.exceptions`):
 | `DataLoadError` | Data plugin can't fetch data | Check API keys, network, date range |
 | `BrokerExecutionError` | Order placement failed | Check broker credentials and balances |
 
+## Agent infrastructure
+
+QuantBox has a layered agent integration system:
+
+### 1. Programmatic API (`quantbox.agents.QuantBoxAgent`)
+```python
+from quantbox.agents import QuantBoxAgent
+agent = QuantBoxAgent()
+agent.list_plugins()                          # browse registry
+agent.plugin_info("strategy.crypto_trend.v1") # inspect a plugin
+agent.build_config(mode="backtest", ...)      # construct config
+agent.validate_config(config)                 # validate
+agent.run(config)                             # execute pipeline
+```
+
+### 2. MCP Server (Claude Code, Cursor, etc.)
+Configured in `.claude/settings.json`. Exposes 9 tools:
+`quantbox_list_plugins`, `quantbox_plugin_info`, `quantbox_search_plugins`,
+`quantbox_build_config`, `quantbox_validate_config`, `quantbox_run`,
+`quantbox_dry_run`, `quantbox_inspect_run`, `quantbox_list_profiles`.
+
+### 3. Claude Agent SDK subagents
+Pre-built agents in `quantbox.agents.claude_agents`:
+- `research_agent()` — explore strategies, analyze data, recommend configs
+- `backtest_agent()` — build, validate, run backtests, summarize results
+- `monitor_agent()` — inspect runs, check positions, flag risk violations
+- `plugin_builder_agent()` — create new plugins following framework conventions
+
+### 4. Universal introspection (`quantbox.introspect`)
+`describe_plugin()` and `describe_plugin_class()` work with any plugin
+without requiring per-plugin changes.
+
+## Claude Code skill
+
+The `.claude/skills/quantbox/` directory provides a structured agent skill with:
+- Decision trees for intent-based routing
+- Per-domain reference directories (strategies, pipelines, data, brokers, configs, risk)
+- Progressive disclosure rules (load only what's needed)
+- Auto-generated plugin catalogs (refreshed by `scripts/refresh_skill.py`)
+
+The `.githooks/pre-commit` hook auto-refreshes skill docs when plugin source changes.
+
 ## Development rules
 
 - Use `uv` as package manager, `uv run` to execute
@@ -134,13 +186,3 @@ Quantbox uses custom exceptions (see `quantbox.exceptions`):
 - Don't rename existing entry-point IDs
 - Add tests for new plugins or core behavior
 - See `CONTRIBUTING_LLM.md` for full guidelines
-
-## Multi-repo setup
-
-| Repo | Purpose | Branch/tag |
-|---|---|---|
-| quantbox (this) | Library | `dev` for development, `main` for releases |
-| quantbox-live | Production trading | Pins to tags on `main` (e.g. `@v0.1.0`) |
-| quantbox-lab | Research/backtesting | Tracks `@dev` branch |
-
-Develop on `dev` → merge to `main` → tag → bump quantbox-live.

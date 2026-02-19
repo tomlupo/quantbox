@@ -8,10 +8,11 @@ Quant research and trading framework with a plugin architecture. Config-driven p
 uv venv && source .venv/bin/activate
 uv sync
 
-# Optional extras for broker adapters:
+# Optional extras:
 uv sync --extra ccxt      # Binance, Hyperliquid (via ccxt)
 uv sync --extra ibkr      # Interactive Brokers
 uv sync --extra binance   # python-binance
+uv sync --extra agents    # MCP server + Claude Agent SDK
 uv sync --extra full      # all of the above
 ```
 
@@ -112,6 +113,62 @@ quantbox plugins list
 | Name | Description |
 |---|---|
 | `telegram.publisher.v1` | Trade notifications via Telegram |
+
+## Agent integration
+
+QuantBox provides a layered agent integration system for LLM-driven workflows.
+
+### Programmatic API
+
+```python
+from quantbox.agents import QuantBoxAgent
+
+agent = QuantBoxAgent()
+agent.list_plugins()                          # browse all plugins
+agent.search_plugins("trend")                 # search by keyword
+agent.plugin_info("strategy.crypto_trend.v1") # inspect details
+config = agent.build_config(
+    mode="backtest",
+    pipeline="backtest.pipeline.v1",
+    strategy="strategy.crypto_trend.v1",
+    data="binance.live_data.v1",
+)
+agent.validate_config(config)                 # check config
+agent.run(config)                             # execute pipeline
+```
+
+### MCP server (Claude Code, Cursor, etc.)
+
+```bash
+uv sync --extra agents
+quantbox-mcp
+```
+
+Exposes 9 tools: `quantbox_list_plugins`, `quantbox_plugin_info`, `quantbox_search_plugins`, `quantbox_build_config`, `quantbox_validate_config`, `quantbox_run`, `quantbox_dry_run`, `quantbox_inspect_run`, `quantbox_list_profiles`.
+
+### Claude Agent SDK subagents
+
+```python
+import asyncio
+from quantbox.agents import research_agent, backtest_agent
+
+asyncio.run(research_agent("Find the best momentum strategy for crypto"))
+asyncio.run(backtest_agent("Backtest crypto trend on BTC ETH SOL"))
+```
+
+Pre-built agents: `research_agent`, `backtest_agent`, `monitor_agent`, `plugin_builder_agent`.
+
+### Plugin introspection
+
+```python
+from quantbox.introspect import describe_plugin_class, describe_registry
+from quantbox.registry import PluginRegistry
+
+registry = PluginRegistry.discover()
+catalog = describe_registry(registry)  # full catalog for LLM consumption
+```
+
+See [LLM operations reference](docs/reference/llm-operations.md) for full details.
 
 ## Plugin manifest and profiles
 

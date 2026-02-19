@@ -199,6 +199,47 @@ uv run quantbox run --dry-run -c <config>  # dry run succeeds
 uv run pytest -q                        # all tests pass
 ```
 
+## MCP Server and Agent Tools
+
+QuantBox has a built-in MCP server and programmatic agent API. When the user asks
+to interact with QuantBox programmatically or through an agent workflow:
+
+### MCP Tools (available when MCP server is configured)
+
+| Tool | Use when |
+|---|---|
+| `quantbox_list_plugins` | Browsing available plugins |
+| `quantbox_plugin_info` | Getting details about a specific plugin |
+| `quantbox_search_plugins` | Finding plugins by keyword |
+| `quantbox_build_config` | Constructing a config from parameters |
+| `quantbox_validate_config` | Checking a config for errors |
+| `quantbox_run` | Executing a pipeline |
+| `quantbox_dry_run` | Previewing execution |
+| `quantbox_inspect_run` | Reading artifacts from a completed run |
+| `quantbox_list_profiles` | Listing preset plugin profiles |
+
+### Programmatic API (Python)
+
+```python
+from quantbox.agents import QuantBoxAgent
+agent = QuantBoxAgent()
+agent.list_plugins()                          # browse registry
+agent.plugin_info("strategy.crypto_trend.v1") # inspect details
+agent.build_config(mode="backtest", ...)      # construct config
+agent.validate_config(config)                 # validate
+agent.run(config)                             # execute
+agent.inspect_run("artifacts/<run_id>")       # read results
+```
+
+### Plugin Introspection
+
+```python
+from quantbox.introspect import describe_plugin_class, describe_registry
+```
+
+`describe_plugin_class(cls)` returns structured metadata for any plugin class
+without instantiation. `describe_registry(registry)` returns a full catalog.
+
 ## Development Rules
 
 - Use `uv` as package manager; run everything with `uv run`
