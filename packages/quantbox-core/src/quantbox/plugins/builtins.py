@@ -16,6 +16,8 @@ from .broker import (
     IBKRPaperBrokerStub,
     SimPaperBroker,
 )
+from .features import CrossSectionalFeatures, TechnicalFeatures
+from .monitor import DrawdownMonitor, SignalDecayMonitor
 from .datasources import (
     BinanceDataPlugin,
     BinanceFuturesDataPlugin,
@@ -74,4 +76,6 @@ def builtins() -> dict[str, dict[str, type]]:
             WeightedAverageAggregator,
         ),
         "rebalancing": _map(StandardRebalancer, FuturesRebalancer),
+        "feature": _map(TechnicalFeatures, CrossSectionalFeatures),
+        "monitor": _map(DrawdownMonitor, SignalDecayMonitor),
     }
