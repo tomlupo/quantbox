@@ -22,6 +22,11 @@ from .plugin_manifest import load_manifest, repo_root, resolve_profile
 from .store import FileArtifactStore
 from .validate import validate_config
 
+import logging
+import pandas as pd
+
+logger = logging.getLogger(__name__)
+
 
 def _hash_config(cfg: dict[str, Any]) -> str:
     b = json.dumps(cfg, sort_keys=True).encode("utf-8")
@@ -142,6 +147,52 @@ def run_from_config(cfg: dict[str, Any], registry) -> RunResult:
         rebalancer=rebalancer,
         aggregator=aggregator,
     )
+
+
+    # --- Validation plugins (post-backtest) ---
+    validation_cfg = cfg["plugins"].get("validation", []) or []
+    if validation_cfg and mode == "backtest":
+        validation_results = []
+        for v_cfg in validation_cfg:
+            v_name = v_cfg["name"]
+            if v_name not in registry.validations:
+                logger.warning("Validation plugin '%s' not found, skipping", v_name)
+                continue
+            v_cls = registry.validations[v_name]
+            v_plugin = v_cls(**v_cfg.get("params_init", {}))
+            # Load returns and weights from artifacts
+            returns_path = result.artifacts.get("returns", "")
+            weights_path = result.artifacts.get("weights_history", "")
+            returns_df = pd.read_parquet(returns_path) if returns_path else pd.DataFrame()
+            weights_df = pd.read_parquet(weights_path) if weights_path else pd.DataFrame()
+            benchmark_df = None
+            v_result = v_plugin.validate(returns_df, weights_df, benchmark_df, v_cfg.get("params", {}))
+            validation_results.append({"plugin": v_name, **v_result})
+        if validation_results:
+            validation_path = store.put_json("validation", validation_results)
+            result.artifacts["validation"] = validation_path
+            result.notes["validation"] = validation_results
+
+    # --- Monitor plugins (paper/live) ---
+    monitor_cfg = cfg["plugins"].get("monitors", []) or []
+    if monitor_cfg and mode in ("paper", "live"):
+        all_alerts = []
+        for m_cfg in monitor_cfg:
+            m_name = m_cfg["name"]
+            if m_name not in registry.monitors:
+                logger.warning("Monitor plugin '%s' not found, skipping", m_name)
+                continue
+            m_cls = registry.monitors[m_name]
+            m_plugin = m_cls(**m_cfg.get("params_init", {}))
+            alerts = m_plugin.check(result, None, m_cfg.get("params", {}))
+            all_alerts.extend(alerts)
+        if all_alerts:
+            result.notes["monitor_alerts"] = all_alerts
+            # Kill-switch: if any alert has action="halt", write halt file
+            if any(a.get("action") == "halt" for a in all_alerts):
+                halt_path = store.put_json("halt", {"reason": "monitor_halt", "alerts": all_alerts})
+                result.artifacts["halt"] = halt_path
+                logger.critical("HALT triggered by monitor alerts")
 
     store.put_json(
         "run_meta",

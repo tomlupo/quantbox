@@ -38,41 +38,9 @@ import numpy as np
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+from quantbox.plugins.strategies._universe import DEFAULT_STABLECOINS
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_STABLECOINS = [
-    "USDT",
-    "USDC",
-    "BUSD",
-    "TUSD",
-    "DAI",
-    "MIM",
-    "USTC",
-    "FDUSD",
-    "USDP",
-    "GUSD",
-    "FRAX",
-    "LUSD",
-    "USDD",
-    "PYUSD",
-    "USD1",
-    "USDJ",
-    "EUR",
-    "EURC",
-    "EURT",
-    "EURS",
-    "PAXG",
-    "XAUT",
-    "WBTC",
-    "WETH",
-    "BETH",
-    "ETHW",
-    "CBBTC",
-    "CBETH",
-    "BFUSD",
-    "AEUR",
-]
 
 DEFAULT_MOMENTUM_WINDOWS = [21, 63, 126, 189, 252]
 

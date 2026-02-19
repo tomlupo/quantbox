@@ -37,6 +37,7 @@ from .crypto_trend import (
     DEFAULT_STABLECOINS,
     compute_volatility_scalers,
 )
+from ._universe import select_universe
 
 logger = logging.getLogger(__name__)
 
@@ -158,47 +159,23 @@ def select_regime_universe(
     """
     Select separate long and short universes.
 
-    1. Exclude stablecoins/wrapped tokens
-    2. Top `coins_to_trade` by market cap
-    3. Within those, top `long_max` / `short_max` by dollar volume
-
-    Args:
-        market_cap: Market cap DataFrame
-        volume: Volume DataFrame
-        prices: Price DataFrame
-        long_max: Max long positions
-        short_max: Max short positions
-        coins_to_trade: Initial mcap filter size
-        exclude_tickers: Tickers to exclude
+    Delegates to the shared :func:`_universe.select_universe` which already
+    handles missing market-cap data (e.g. Hyperliquid).
 
     Returns:
         (long_universe, short_universe) DataFrames of 0/1 flags
     """
-    if exclude_tickers is None:
-        exclude_tickers = DEFAULT_STABLECOINS
-
-    valid_tickers = [t for t in prices.columns if t not in exclude_tickers]
-    if not valid_tickers:
-        empty = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
-        return empty, empty.copy()
-
-    # Market cap rank
-    mc = market_cap[valid_tickers]
-    mc_rank = mc.rank(axis=1, ascending=False, method="min")
-    mc_mask = mc_rank <= coins_to_trade
-
-    # Dollar volume within mcap filter
-    dollar_vol = (prices[valid_tickers] * volume[valid_tickers]).where(mc_mask)
-    vol_rank = dollar_vol.rank(axis=1, ascending=False, method="min")
-
-    def _expand(mask_valid):
-        full = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
-        full[valid_tickers] = mask_valid.astype(float)
-        return full
-
-    long_universe = _expand(vol_rank <= long_max)
-    short_universe = _expand(vol_rank <= short_max)
-
+    mcap = market_cap if not market_cap.empty else None
+    long_universe = select_universe(
+        prices, volume, market_cap=mcap,
+        top_by_mcap=coins_to_trade, top_by_volume=long_max,
+        exclude_tickers=exclude_tickers,
+    )
+    short_universe = select_universe(
+        prices, volume, market_cap=mcap,
+        top_by_mcap=coins_to_trade, top_by_volume=short_max,
+        exclude_tickers=exclude_tickers,
+    )
     return long_universe, short_universe
 
 

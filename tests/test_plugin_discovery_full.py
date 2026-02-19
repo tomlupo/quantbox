@@ -16,7 +16,7 @@ from quantbox.registry import PluginRegistry
 # Expected plugin types — the keys returned by builtins()
 # ---------------------------------------------------------------------------
 
-EXPECTED_PLUGIN_TYPES = frozenset({"pipeline", "data", "broker", "strategy", "rebalancing", "risk", "publisher"})
+EXPECTED_PLUGIN_TYPES = frozenset({"pipeline", "data", "broker", "strategy", "rebalancing", "risk", "publisher", "feature", "monitor", "validation"})
 
 # ---------------------------------------------------------------------------
 # Known plugin names that must always be present
@@ -171,6 +171,9 @@ class TestPluginRegistry:
             "rebalancing": "rebalancing",
             "risk": "risk",
             "publisher": "publishers",
+            "feature": "features",
+            "monitor": "monitors",
+            "validation": "validations",
         }
         for type_key, expected_plugins in b.items():
             field_name = field_map[type_key]
@@ -194,6 +197,9 @@ class TestPluginRegistry:
             "rebalancing": "rebalancing",
             "risk": "risk",
             "publisher": "publishers",
+            "feature": "features",
+            "monitor": "monitors",
+            "validation": "validations",
         }
         for type_key, expected_plugins in b.items():
             field_name = field_map[type_key]

@@ -23,6 +23,20 @@ plugins:
     risk:
       - risk.trading_basic.v1
       - risk.stress_test.v1
+      - risk.factor_exposure.v1
+      - risk.drawdown_control.v1
+    features:
+      - features.technical.v1
+      - features.cross_sectional.v1
+    monitors:
+      - monitor.drawdown.v1
+      - monitor.signal_decay.v1
+    validation:
+      - validation.walk_forward.v1
+      - validation.statistical.v1
+      - validation.turnover.v1
+      - validation.regime.v1
+      - validation.benchmark.v1
     strategies:
       - strategy.crypto_trend.v1
       - strategy.carver_trend.v1
