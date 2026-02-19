@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "quantbox": {
+      "command": "uv",
+      "args": ["run", "--extra", "agents", "python", "-m", "quantbox.agents.mcp_server"],
+      "cwd": "."
+    }
+  }
+}
