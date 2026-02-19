@@ -212,14 +212,16 @@ uv run pytest -q                        # all tests pass
 
 ## Product Index
 
-| Category | Count | Plugins |
+<!-- BEGIN AUTO-GENERATED -->
+| Category | Count | Plugin IDs |
 |---|---|---|
-| Pipelines | 4 | fund_selection, backtest, trade.full, allocations_to_orders |
-| Strategies | 9 | crypto_trend, carver_trend, momentum_ls, xsmom, regime_trend, beglobal, optimizer, ml, weighted_avg |
-| Data | 5 | local_file, binance_spot, binance_futures, hyperliquid, synthetic |
-| Brokers | 8 | sim_paper, futures_paper, ibkr_stub, binance_stub, ibkr_live, binance_live, binance_futures, hyperliquid |
-| Risk | 2 | trading_basic, stress_test |
-| Rebalancing | 2 | standard, futures |
-| Publishers | 1 | telegram |
+| Pipelines | 4 | `backtest.pipeline.v1`, `fund_selection.simple.v1`, `trade.allocations_to_orders.v1`, `trade.full_pipeline.v1` |
+| Strategies | 9 | `strategy.beglobal.v1`, `strategy.carver_trend.v1`, `strategy.cross_asset_momentum.v1`, `strategy.crypto_regime_trend.v1`, `strategy.crypto_trend.v1`, `strategy.ml_prediction.v1`, `strategy.momentum_long_short.v1`, `strategy.portfolio_optimizer.v1`, `strategy.weighted_avg.v1` |
+| Data Sources | 5 | `binance.futures_data.v1`, `binance.live_data.v1`, `data.synthetic.v1`, `hyperliquid.data.v1`, `local_file_data` |
+| Brokers | 8 | `binance.futures.v1`, `binance.live.v1`, `binance.paper.stub.v1`, `hyperliquid.perps.v1`, `ibkr.live.v1`, `ibkr.paper.stub.v1`, `sim.futures_paper.v1`, `sim.paper.v1` |
+| Risk | 2 | `risk.stress_test.v1`, `risk.trading_basic.v1` |
+| Rebalancing | 2 | `rebalancing.futures.v1`, `rebalancing.standard.v1` |
+| Publishers | 1 | `telegram.publisher.v1` |
 
-Total: 31 built-in plugins. Run `uv run quantbox plugins list` for exact IDs.
+Total: **31** built-in plugins.
+<!-- END AUTO-GENERATED -->

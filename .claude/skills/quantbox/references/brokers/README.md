@@ -11,23 +11,18 @@ pipelines. Not needed for backtesting or research pipelines.
 
 ## Available Brokers
 
-### Paper (simulated)
-
-| ID | Type | Description |
+<!-- BEGIN AUTO-GENERATED -->
+| ID | Description | Tags |
 |---|---|---|
-| `sim.paper.v1` | Spot | Simple paper broker, tracks positions and cash |
-| `sim.futures_paper.v1` | Futures | Futures paper broker with leverage, margin, and PnL |
-| `ibkr.paper.stub.v1` | Spot | IBKR simulator stub |
-| `binance.paper.stub.v1` | Spot | Binance simulator stub |
-
-### Live (real money)
-
-| ID | Type | Env vars required | Description |
-|---|---|---|---|
-| `ibkr.live.v1` | Spot | TWS/Gateway running | Interactive Brokers live trading |
-| `binance.live.v1` | Spot | `API_KEY_BINANCE`, `API_SECRET_BINANCE` | Binance spot |
-| `binance.futures.v1` | Futures | `API_KEY_BINANCE`, `API_SECRET_BINANCE` | Binance USDT-M futures |
-| `hyperliquid.perps.v1` | Perps | `HYPERLIQUID_WALLET`, `HYPERLIQUID_PRIVATE_KEY` | Hyperliquid perps |
+| `binance.futures.v1` | Binance USDM Futures broker (live) with leverage and short support | live, futures, binance |
+| `binance.live.v1` | Binance broker adapter (python-binance) | binance, broker, crypto |
+| `binance.paper.stub.v1` | Binance (paper stub) | paper, stub |
+| `hyperliquid.perps.v1` | Hyperliquid DEX perpetuals broker (live) with short support | live, futures, hyperliquid, decentralized |
+| `ibkr.live.v1` | Interactive Brokers broker adapter (ib_insync) | ibkr, broker |
+| `ibkr.paper.stub.v1` | Interactive Brokers (paper stub) | paper, stub |
+| `sim.futures_paper.v1` | Futures paper broker with margin accounting and short support | paper, futures |
+| `sim.paper.v1` | Simple paper broker simulator for spot trading | paper |
+<!-- END AUTO-GENERATED -->
 
 ## Broker Selection Guide
 

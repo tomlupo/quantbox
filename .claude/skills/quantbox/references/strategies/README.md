@@ -11,17 +11,19 @@ core algorithmic component of any quantbox pipeline.
 
 ## Available Strategies
 
-| ID | Type | Asset class | Description |
-|---|---|---|---|
-| `strategy.crypto_trend.v1` | Trend | Crypto | Donchian breakout + volatility targeting. Multi-window ensemble. |
-| `strategy.carver_trend.v1` | Trend | Futures | Robert Carver-style trend following, multi-instrument. |
-| `strategy.momentum_long_short.v1` | Momentum | Any | Cross-sectional: long winners, short losers. |
-| `strategy.cross_asset_momentum.v1` | Momentum | Any | Time-series momentum across asset classes. |
-| `strategy.crypto_regime_trend.v1` | Regime | Crypto | HMM regime detection combined with trend signals. |
-| `strategy.beglobal.v1` | Multi-asset | Global | Equity, bonds, commodities diversified allocation. |
-| `strategy.portfolio_optimizer.v1` | Optimization | Any | Mean-variance (max Sharpe, min variance, risk parity). |
-| `strategy.ml_prediction.v1` | ML | Any | Scikit-learn classifier/regressor for return prediction. |
-| `strategy.weighted_avg.v1` | Aggregator | - | Blends multiple strategy outputs by config weight. |
+<!-- BEGIN AUTO-GENERATED -->
+| ID | Description | Tags |
+|---|---|---|
+| `strategy.beglobal.v1` | BeGlobal core-satellite multi-asset strategy with dual momentum and volatility targeting | multi-asset, etf, core-satellite, momentum |
+| `strategy.carver_trend.v1` | Carver-style trend following with EWMAC and breakout rules | crypto, trend, carver |
+| `strategy.cross_asset_momentum.v1` | Cross-asset momentum (XSMOM) with core-satellite portfolio construction | crypto, momentum, xsmom, core-satellite |
+| `strategy.crypto_regime_trend.v1` | BTC regime-based long/short trend following with multi-window ensemble | crypto, trend, regime, long-short |
+| `strategy.crypto_trend.v1` | Crypto trend catcher - multi-asset volatility-targeted trend following | crypto, trend, momentum |
+| `strategy.ml_prediction.v1` | ML prediction strategy using sklearn models for return/direction forecasting | ml, prediction, sklearn |
+| `strategy.momentum_long_short.v1` | Long-short momentum strategy - market-neutral crypto factor | crypto, momentum, long-short |
+| `strategy.portfolio_optimizer.v1` | Mean-variance portfolio optimizer (max Sharpe, min variance, risk parity, equal weight) | optimization, mean-variance, multi-asset |
+| `strategy.weighted_avg.v1` | Weighted-average meta-strategy aggregator | aggregator, meta-strategy |
+<!-- END AUTO-GENERATED -->
 
 ## Strategy Selection Guide
 

@@ -11,10 +11,12 @@ They run as pre-trade checks: all risk plugins must pass before orders are execu
 
 ## Available Risk Plugins
 
-| ID | Description | Key params |
+<!-- BEGIN AUTO-GENERATED -->
+| ID | Description | Tags |
 |---|---|---|
-| `risk.trading_basic.v1` | Position limits, leverage caps, notional checks | `max_position_pct`, `max_leverage`, `max_notional` |
-| `risk.stress_test.v1` | Stress testing with synthetic scenarios | Scenario definitions |
+| `risk.stress_test.v1` | Stress-test risk plugin. Runs Monte Carlo stress scenarios (2008 crisis, COVID crash, etc.) and flags portfolios whose VaR, CVaR, or drawdown breach thresholds. | risk, stress-test, simulation |
+| `risk.trading_basic.v1` | Basic trading risk checks: leverage, concentration, negative weights, min notional, max order size. | trading, risk |
+<!-- END AUTO-GENERATED -->
 
 ## Risk Flow
 

@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# pre-commit hook: refresh quantbox skill docs from live codebase
+#
+# Runs scripts/refresh_skill.py to regenerate auto-generated sections
+# of the skill reference files (plugin catalogs, product index).
+# Any changed files are automatically staged so they're included in the commit.
+#
+# Setup (run once after cloning):
+#   git config core.hooksPath .githooks
+#
+# Or symlink:
+#   ln -sf ../../.githooks/pre-commit .git/hooks/pre-commit
+
+set -e
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+SCRIPT="$REPO_ROOT/scripts/refresh_skill.py"
+
+if [ ! -f "$SCRIPT" ]; then
+    exit 0
+fi
+
+# Only run if quantbox source or skill files are being committed
+CHANGED_FILES=$(git diff --cached --name-only)
+NEEDS_REFRESH=false
+
+for f in $CHANGED_FILES; do
+    case "$f" in
+        packages/quantbox-core/src/quantbox/plugins/*|\
+        packages/quantbox-core/src/quantbox/contracts.py|\
+        plugins/manifest.yaml|\
+        .claude/skills/quantbox/*)
+            NEEDS_REFRESH=true
+            break
+            ;;
+    esac
+done
+
+if [ "$NEEDS_REFRESH" = false ]; then
+    exit 0
+fi
+
+echo "Refreshing quantbox skill docs..."
+uv run python "$SCRIPT" 2>/dev/null
+
+# Stage any updated skill files
+git add -f "$REPO_ROOT/.claude/skills/quantbox/" 2>/dev/null || true
+
+echo "Skill docs refreshed and staged."

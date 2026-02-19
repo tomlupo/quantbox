@@ -11,12 +11,29 @@ execute trades, and store artifacts. They are the top-level entry point for any 
 
 ## Available Pipelines
 
-| ID | Kind | Description | Use when |
-|---|---|---|---|
-| `fund_selection.simple.v1` | research | Loads data, runs strategy, selects top-N assets | Screening, research |
-| `backtest.pipeline.v1` | research | Historical backtesting (vectorbt or rsims engine) | Measuring past performance |
-| `trade.full_pipeline.v1` | trading | Multi-strategy + risk + execution + artifacts | Paper or live trading |
-| `trade.allocations_to_orders.v1` | trading | Converts pre-computed weights to broker orders | External allocation source |
+<!-- BEGIN AUTO-GENERATED -->
+### Pipelines
+
+| ID | Description | Kind |
+|---|---|---|
+| `backtest.pipeline.v1` | Backtesting pipeline: same config as TradingPipeline but routes weights through vectorbt or rsims backtesting engines instead of broker execution. | research |
+| `fund_selection.simple.v1` | Simple ranking pipeline (research) | research |
+| `trade.allocations_to_orders.v1` | Bridge allocations -> targets/orders (+ execute). Supports multipliers, lot/step rules, FX (USD base). | trading |
+| `trade.full_pipeline.v1` | Full trading pipeline: strategy execution -> aggregation -> risk transforms -> order generation -> execution. Ported from quantlab trading workflow. | trading |
+
+### Rebalancing
+
+| ID | Description |
+|---|---|
+| `rebalancing.futures.v1` | Futures rebalancer: margin-based with signed position support |
+| `rebalancing.standard.v1` | Standard rebalancer: risk transforms + order generation |
+
+### Publishers
+
+| ID | Description |
+|---|---|
+| `telegram.publisher.v1` | Send trading results to Telegram (execution summary, rebalancing, orders). |
+<!-- END AUTO-GENERATED -->
 
 ## Execution Flow
 

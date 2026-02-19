@@ -11,13 +11,15 @@ Data plugins load market data for pipelines and strategies. All data is returned
 
 ## Available Data Plugins
 
-| ID | Source | API key needed | Description |
-|---|---|---|---|
-| `local_file_data` | Local files | No | Loads from Parquet files on disk |
-| `binance.live_data.v1` | Binance REST | No | Spot OHLCV + market cap for top coins |
-| `binance.futures_data.v1` | Binance REST | No | Futures OHLCV + funding rates |
-| `hyperliquid.data.v1` | Hyperliquid | No | Perpetuals OHLCV data |
-| `data.synthetic.v1` | Generated | No | Synthetic data via GBM for testing |
+<!-- BEGIN AUTO-GENERATED -->
+| ID | Description | Tags |
+|---|---|---|
+| `binance.futures_data.v1` | USDM futures data from Binance (OHLCV + funding rates, no API key). | binance, crypto, futures, live |
+| `binance.live_data.v1` | Live market data from Binance public API (no API key needed). | binance, crypto, live |
+| `data.synthetic.v1` | Synthetic market data generator using stochastic models (GBM, jump diffusion, mean reversion). Useful for strategy research, stress-testing, and CI pipelines. | synthetic, simulation, research |
+| `hyperliquid.data.v1` | Perpetual-futures data from Hyperliquid REST API (no API key). | hyperliquid, crypto, futures, live |
+| `local_file_data` | Load market data from local Parquet/CSV files via DuckDB | - |
+<!-- END AUTO-GENERATED -->
 
 ## Data Format Contract
 
