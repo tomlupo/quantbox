@@ -35,6 +35,7 @@ from .risk import (
     TradingRiskManager,
 )
 from .strategies import (
+    AltcoinCrashBounceStrategy,
     BeGlobalStrategy,
     CarverTrendStrategy,
     CrossAssetMomentumStrategy,
@@ -82,6 +83,7 @@ def builtins() -> dict[str, dict[str, type]]:
             DrawdownControlRiskManager,
         ),
         "strategy": _map(
+            AltcoinCrashBounceStrategy,
             BeGlobalStrategy,
             CryptoTrendStrategy,
             CarverTrendStrategy,
