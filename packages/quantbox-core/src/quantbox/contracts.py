@@ -31,6 +31,15 @@ classes with a class-level ``meta = PluginMeta(...)`` attribute.
 
 **PublisherPlugin** — sends notifications:
     publish(result, params) → None
+
+**FeaturePlugin** — computes derived features:
+    compute(data, params) → DataFrame
+
+**ValidationPlugin** — validates returns/weights:
+    validate(returns, weights, benchmark, params) → dict
+
+**MonitorPlugin** — checks run results for anomalies:
+    check(result, history, params) → [alerts]
 """
 
 from __future__ import annotations
@@ -41,7 +50,10 @@ from typing import Any, Literal, Protocol
 import pandas as pd
 
 Mode = Literal["backtest", "paper", "live"]
-PluginKind = Literal["pipeline", "broker", "data", "publisher", "risk", "strategy", "rebalancing"]
+PluginKind = Literal[
+    "pipeline", "broker", "data", "publisher", "risk", "strategy", "rebalancing",
+    "feature", "validation", "monitor",
+]
 PipelineKind = Literal["research", "trading"]
 
 
@@ -215,6 +227,41 @@ class RebalancingPlugin(Protocol):
         broker: BrokerPlugin,
         params: dict[str, Any],
     ) -> dict[str, Any]: ...
+
+
+class FeaturePlugin(Protocol):
+    """Computes derived features from market data (e.g. momentum, volatility)."""
+
+    meta: PluginMeta
+
+    def compute(self, data: dict[str, pd.DataFrame], params: dict[str, Any]) -> pd.DataFrame: ...
+
+
+class ValidationPlugin(Protocol):
+    """Validates portfolio returns/weights against benchmarks and constraints."""
+
+    meta: PluginMeta
+
+    def validate(
+        self,
+        returns: pd.DataFrame,
+        weights: pd.DataFrame,
+        benchmark: pd.DataFrame | None,
+        params: dict[str, Any],
+    ) -> dict[str, Any]: ...
+
+
+class MonitorPlugin(Protocol):
+    """Checks run results for anomalies and generates alerts."""
+
+    meta: PluginMeta
+
+    def check(
+        self,
+        result: RunResult,
+        history: list[RunResult] | None,
+        params: dict[str, Any],
+    ) -> list[dict[str, Any]]: ...
 
 
 class PipelinePlugin(Protocol):

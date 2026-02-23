@@ -7,11 +7,14 @@ from typing import Any
 from .contracts import (
     BrokerPlugin,
     DataPlugin,
+    FeaturePlugin,
+    MonitorPlugin,
     PipelinePlugin,
     PublisherPlugin,
     RebalancingPlugin,
     RiskPlugin,
     StrategyPlugin,
+    ValidationPlugin,
 )
 from .plugins.builtins import builtins as builtin_plugins
 
@@ -23,6 +26,9 @@ ENTRYPOINT_GROUPS = {
     "risk": "quantbox.risk",
     "strategy": "quantbox.strategies",
     "rebalancing": "quantbox.rebalancing",
+    "feature": "quantbox.features",
+    "validation": "quantbox.validations",
+    "monitor": "quantbox.monitors",
 }
 
 
@@ -43,6 +49,9 @@ class PluginRegistry:
     risk: dict[str, type[RiskPlugin]]
     strategies: dict[str, type[StrategyPlugin]] = field(default_factory=dict)
     rebalancing: dict[str, type[RebalancingPlugin]] = field(default_factory=dict)
+    features: dict[str, type[FeaturePlugin]] = field(default_factory=dict)
+    validations: dict[str, type[ValidationPlugin]] = field(default_factory=dict)
+    monitors: dict[str, type[MonitorPlugin]] = field(default_factory=dict)
 
     @staticmethod
     def discover() -> PluginRegistry:
@@ -55,4 +64,7 @@ class PluginRegistry:
             risk={**builtins["risk"], **_load_group(ENTRYPOINT_GROUPS["risk"])},
             strategies={**builtins.get("strategy", {}), **_load_group(ENTRYPOINT_GROUPS["strategy"])},
             rebalancing={**builtins.get("rebalancing", {}), **_load_group(ENTRYPOINT_GROUPS["rebalancing"])},
+            features={**builtins.get("feature", {}), **_load_group(ENTRYPOINT_GROUPS["feature"])},
+            validations={**builtins.get("validation", {}), **_load_group(ENTRYPOINT_GROUPS["validation"])},
+            monitors={**builtins.get("monitor", {}), **_load_group(ENTRYPOINT_GROUPS["monitor"])},
         )
