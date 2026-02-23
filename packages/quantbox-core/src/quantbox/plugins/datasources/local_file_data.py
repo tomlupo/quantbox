@@ -57,11 +57,15 @@ def _read_file(path: str, asof: str | None = None, symbols: list[str] | None = N
 
     # Ensure date index
     if "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"])
+        df["date"] = pd.to_datetime(df["date"], utc=True)
         df = df.set_index("date").sort_index()
     elif not isinstance(df.index, pd.DatetimeIndex):
-        df.index = pd.to_datetime(df.index)
+        df.index = pd.to_datetime(df.index, utc=True)
         df = df.sort_index()
+
+    # Normalize tz-aware index to UTC midnight (DuckDB may return local tz)
+    if isinstance(df.index, pd.DatetimeIndex) and df.index.tz is not None:
+        df.index = df.index.tz_convert("UTC").normalize()
 
     return df
 
