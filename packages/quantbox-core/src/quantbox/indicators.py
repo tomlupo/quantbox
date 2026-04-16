@@ -1,4 +1,4 @@
-"""Technical indicators for quantitative analysis.
+"""Single-series technical indicators for quantitative analysis.
 
 Provides common indicators as both static methods on ``TechnicalIndicators``
 and as module-level convenience functions::
@@ -8,6 +8,10 @@ and as module-level convenience functions::
 
 All functions accept a ``pd.Series`` and return a ``pd.Series``
 (or tuple of Series for multi-output indicators like MACD and Bollinger Bands).
+
+For **wide-format** (multi-symbol) feature computation, see
+``quantbox.features`` which provides vectorized functions operating on
+entire DataFrames (DatetimeIndex x symbol columns).
 """
 
 from __future__ import annotations

@@ -1,31 +1,28 @@
-"""
-Cross-Asset Momentum (XSMOM) with Core-Satellite Strategy
+"""Cross-Asset Momentum (XSMOM) with Core-Satellite Strategy.
 
 Systematic cross-sectional momentum strategy with volatility parity weighting
 and core-satellite portfolio construction.
 
-Based on Rockbridge Growth research.
+Generic implementation — works for any asset class (equities, fixed income,
+crypto, commodities). Configure ``exclude_tickers`` and ``risk_off_ticker``
+for your domain.
 
-## Algorithm
-1. Multi-window momentum: compute returns over [21, 63, 126, 189, 252] days
-2. Cross-sectional z-score: standardize returns across tickers per date
-3. Winsorize: clip at configurable percentile tails
-4. Rank & select top N: top assets by composite z-scored momentum
-5. EWMA volatility: exponential weighted vol, lambda=0.94
-6. Volatility parity: inverse EWMA vol weighting within selected assets
-7. Trend filter: price > SMA(100) binary filter
-8. Core-satellite: final = core_weight * passive + (1-core_weight) * active
+Algorithm:
+    1. Multi-window momentum: compute returns over configurable windows
+    2. Cross-sectional z-score: standardize returns across tickers per date
+    3. Winsorize: clip at configurable percentile tails
+    4. Rank & select top N: top assets by composite z-scored momentum
+    5. EWMA volatility parity: inverse vol weighting within selected assets
+    6. Trend filter: price > SMA binary filter (optional)
+    7. Core-satellite: final = core_weight * passive + (1-core_weight) * active
 
-## Quick Start
-```python
-from quantbox.plugins.strategies import CrossAssetMomentumStrategy
+Quick start::
 
-strategy = CrossAssetMomentumStrategy()
-result = strategy.run(data)
+    from quantbox.plugins.strategies import CrossAssetMomentumStrategy
 
-# Weights include risk-off allocation to USDT
-print(result['simple_weights'])
-```
+    strategy = CrossAssetMomentumStrategy(risk_off_ticker="t-bills")
+    result = strategy.run({"prices": prices_df})
+    print(result['simple_weights'])
 """
 
 from __future__ import annotations
@@ -41,7 +38,9 @@ from quantbox.contracts import PluginMeta
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_STABLECOINS = [
+# Crypto stablecoins — convenience default for crypto use cases.
+# For equities/fixed income, pass ``exclude_tickers=[]`` and set your own.
+CRYPTO_STABLECOINS = [
     "USDT",
     "USDC",
     "BUSD",
@@ -73,6 +72,9 @@ DEFAULT_STABLECOINS = [
     "BFUSD",
     "AEUR",
 ]
+
+# Backward compat alias
+DEFAULT_STABLECOINS = CRYPTO_STABLECOINS
 
 DEFAULT_MOMENTUM_WINDOWS = [21, 63, 126, 189, 252]
 
@@ -334,10 +336,13 @@ class CrossAssetMomentumStrategy:
     meta = PluginMeta(
         name="strategy.cross_asset_momentum.v1",
         kind="strategy",
-        version="0.1.0",
-        core_compat=">=0.1,<0.2",
+        version="1.0.0",
+        core_compat=">=0.1,<1.0",
         description="Cross-asset momentum (XSMOM) with core-satellite portfolio construction",
-        tags=("crypto", "momentum", "xsmom", "core-satellite"),
+        tags=("momentum", "xsmom", "core-satellite", "tactical"),
+        capabilities=("backtest", "live"),
+        inputs=("prices",),
+        outputs=("weights",),
     )
 
     # Momentum parameters
@@ -355,10 +360,11 @@ class CrossAssetMomentumStrategy:
 
     # Core-satellite
     core_weight: float = 0.6
-    risk_off_ticker: str = "USDT"
+    risk_off_ticker: str | None = None  # Must be set by caller (no crypto default)
 
-    # Universe filtering
-    exclude_tickers: list[str] = field(default_factory=lambda: DEFAULT_STABLECOINS.copy())
+    # Universe filtering — empty by default (generic); set to
+    # CRYPTO_STABLECOINS for crypto use cases.
+    exclude_tickers: list[str] = field(default_factory=list)
 
     # Output
     output_periods: int = 30
