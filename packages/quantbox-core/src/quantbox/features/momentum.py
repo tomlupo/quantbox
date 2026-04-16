@@ -160,7 +160,7 @@ def compute_tsmom(
     warmup_periods: int = 253,
     zscore_window: int = 756,
     winsorize_clip: float = 2.5,
-    use_vectorbt: bool = True,
+    use_vectorbt: bool = False,
 ) -> dict[str, pd.DataFrame]:
     """Time-series momentum (TSMOM) indicator suite.
 
