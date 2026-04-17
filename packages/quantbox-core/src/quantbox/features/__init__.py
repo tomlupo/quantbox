@@ -18,6 +18,10 @@ Modules:
 from quantbox.features.bundle import compute_features_bundle
 from quantbox.features.channels import compute_donchian
 from quantbox.features.covariance import (
+    rolling_covariance_ewma_lw,
+    rolling_covariance_ewma_lw_from_config,
+    rolling_covariance_lw,
+    rolling_covariance_lw_from_config,
     rolling_covariance_oas,
     rolling_covariance_oas_from_config,
 )
@@ -72,6 +76,10 @@ __all__ = [
     # covariance
     "rolling_covariance_oas",
     "rolling_covariance_oas_from_config",
+    "rolling_covariance_lw",
+    "rolling_covariance_lw_from_config",
+    "rolling_covariance_ewma_lw",
+    "rolling_covariance_ewma_lw_from_config",
     # bundle
     "compute_features_bundle",
 ]
