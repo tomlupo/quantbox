@@ -17,6 +17,10 @@ Modules:
 
 from quantbox.features.bundle import compute_features_bundle
 from quantbox.features.channels import compute_donchian
+from quantbox.features.covariance import (
+    rolling_covariance_oas,
+    rolling_covariance_oas_from_config,
+)
 from quantbox.features.cross_sectional import (
     compute_rank_cross_sectional,
     compute_zscore_cross_sectional,
@@ -65,6 +69,9 @@ __all__ = [
     "inverse_volatility_weights",
     # channels
     "compute_donchian",
+    # covariance
+    "rolling_covariance_oas",
+    "rolling_covariance_oas_from_config",
     # bundle
     "compute_features_bundle",
 ]
