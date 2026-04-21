@@ -1,15 +1,19 @@
 """Momentum features: total returns, momentum returns, TSMOM signals.
 
-All functions are pure, stateless, and operate on wide-format DataFrames
-(DatetimeIndex x symbol columns). Suitable for both equities/fixed income
-(trading_days=252) and crypto (trading_days=365).
+All functions accept **wide-format** prices (DatetimeIndex x symbol
+columns). Suitable for both equities/fixed income (trading_days=252)
+and crypto (trading_days=365).
 
 The TSMOM (time-series momentum) implementation follows Moskowitz, Ooi &
-Pedersen (2012) with extensions for fast/slow signal classification and
-configurable crossover windows.
+Pedersen (2012) with extensions for fast/slow signal classification
+and configurable crossover window selection.
 
-Where beneficial, vectorbt (free) is used for efficient moving-average
-crossover computation.
+``compute_tsmom`` returns a dict of long-format ``(date, ticker)``-indexed
+DataFrames (composite + intermediate signal tables). Long format is the
+natural shape for the per-``(date, ticker)`` composite aggregation and
+avoids the ambiguity of ``(signal, ticker)`` MultiIndex-column pandas
+operations. Callers that want wide can ``.unstack("ticker")`` at the
+boundary.
 """
 
 from __future__ import annotations
@@ -75,80 +79,68 @@ def compute_momentum_returns(
 # ---------------------------------------------------------------------------
 
 
-def _try_vbt_crossovers(
-    prices: pd.DataFrame,
-    sma_windows: list[int],
-    ewma_spans: list[int],
-) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
-    """Attempt to use vectorbt for fast MA crossover computation.
+# --- TSMOM helpers (long-format (date, ticker) operations) ---
 
-    Returns (sma_cross_signals, ewma_cross_signals) or (None, None) if
-    vectorbt is not available.
+
+def _sma_long(df: pd.DataFrame, window: int) -> pd.DataFrame:
+    """Simple moving average on a long-format ``(date, ticker)`` frame."""
+    return df.unstack("ticker").apply(lambda x: x.dropna().rolling(window).mean()).stack("ticker")
+
+
+def _ewma_long(df: pd.DataFrame, window: int) -> pd.DataFrame:
+    """EWMA on a long-format ``(date, ticker)`` frame."""
+    return df.unstack("ticker").apply(lambda x: x.dropna().ewm(span=window, adjust=False).mean()).stack("ticker")
+
+
+def _binary_signal(df: pd.DataFrame, threshold: float = 0) -> pd.DataFrame:
+    """Binary signal on a frame: 1 if value > threshold, else 0."""
+    s = (df > threshold).mask(pd.isna(df)) * 1
+    return s.add_suffix("_signal")
+
+
+def _crossover_pairs(
+    df: pd.DataFrame,
+    pair_indices: list[tuple[int, int]],
+) -> pd.DataFrame:
+    """Ratio crossovers between specified column pairs.
+
+    ``df`` has top-level columns like ``"prefix<w>"`` (e.g. ``"prices_sma50"``).
+    Returns a frame with one column per requested ``(i, j)`` pair named
+    ``"{prefix}_{col_i_suffix}div{col_j_suffix}"``.
     """
-    try:
-        import vectorbt as vbt
+    import os
 
-        sma_cross = None
-        if len(sma_windows) >= 2:
-            mas = {w: vbt.MA.run(prices, window=w, ewm=False).ma for w in sma_windows}
-            pairs = []
-            names = []
-            for i, w1 in enumerate(sma_windows):
-                for w2 in sma_windows[i + 1 :]:
-                    ratio = mas[w1] / mas[w2]
-                    pairs.append((ratio > 1).astype(float))
-                    names.append(f"sma_{w1}div{w2}")
-            if pairs:
-                sma_cross = pd.concat(pairs, axis=1, keys=names)
-
-        ewma_cross = None
-        if len(ewma_spans) >= 2:
-            emas = {s: vbt.MA.run(prices, window=s, ewm=True).ma for s in ewma_spans}
-            pairs = []
-            names = []
-            for i, s1 in enumerate(ewma_spans):
-                for s2 in ewma_spans[i + 1 :]:
-                    if s1 < s2:
-                        ratio = emas[s1] / emas[s2]
-                        pairs.append((ratio > 1).astype(float))
-                        names.append(f"ewma_{s1}div{s2}")
-            if pairs:
-                ewma_cross = pd.concat(pairs, axis=1, keys=names)
-
-        return sma_cross, ewma_cross
-    except (ImportError, Exception):
-        return None, None
+    dfs = []
+    cols = df.columns.get_level_values(0)
+    prefix = os.path.commonprefix(list(cols))
+    for i, j in pair_indices:
+        col1 = cols[i].replace(prefix, "")
+        col2 = cols[j].replace(prefix, "")
+        name = prefix + "_" + col1 + "div" + col2
+        res = df.iloc[:, i] / df.iloc[:, j]
+        res.name = name
+        dfs.append(res)
+    return pd.concat(dfs, axis=1)
 
 
-def _pandas_crossovers(
-    prices: pd.DataFrame,
-    sma_windows: list[int],
-    ewma_spans: list[int],
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Fallback SMA/EWMA crossover computation using pure pandas."""
-    sma_dict = {w: prices.rolling(window=w).mean() for w in sma_windows}
-    ewma_dict = {s: prices.ewm(span=s, adjust=False).mean() for s in ewma_spans}
+def _rolling_minmax(x: pd.Series | pd.DataFrame, window: int) -> pd.Series | pd.DataFrame:
+    """Rolling ``(x - min) / (max - min)``; constant-window ⇒ 0, not NaN.
 
-    sma_pairs = []
-    sma_names = []
-    for i, w1 in enumerate(sma_windows):
-        for w2 in sma_windows[i + 1 :]:
-            ratio = sma_dict[w1] / sma_dict[w2]
-            sma_pairs.append((ratio > 1).astype(float))
-            sma_names.append(f"sma_{w1}div{w2}")
+    Replacing the zero denominator with NaN silently drops the tail of
+    any signal in a persistently-constant regime — see robo's
+    ADR-0005 investigation. Replacing with 1 preserves warmup NaN (from
+    the numerator) and emits 0 for constant windows, which is the
+    semantically correct value.
+    """
+    rmin = x.rolling(window=window).min()
+    rmax = x.rolling(window=window).max()
+    denom = (rmax - rmin).replace(0, 1)
+    return (x - rmin) / denom
 
-    ewma_pairs = []
-    ewma_names = []
-    for i, s1 in enumerate(ewma_spans):
-        for s2 in ewma_spans[i + 1 :]:
-            if s1 < s2:
-                ratio = ewma_dict[s1] / ewma_dict[s2]
-                ewma_pairs.append((ratio > 1).astype(float))
-                ewma_names.append(f"ewma_{s1}div{s2}")
 
-    sma_cross = pd.concat(sma_pairs, axis=1, keys=sma_names) if sma_pairs else pd.DataFrame()
-    ewma_cross = pd.concat(ewma_pairs, axis=1, keys=ewma_names) if ewma_pairs else pd.DataFrame()
-    return sma_cross, ewma_cross
+# ---------------------------------------------------------------------------
+# TSMOM indicator suite
+# ---------------------------------------------------------------------------
 
 
 def compute_tsmom(
@@ -157,35 +149,53 @@ def compute_tsmom(
     tr_windows: list[int] | None = None,
     sma_windows: list[int] | None = None,
     ewma_spans: list[int] | None = None,
+    sma_pair_indices: list[tuple[int, int]] | None = None,
+    ewma_pair_indices: list[tuple[int, int]] | None = None,
     warmup_periods: int = 253,
     zscore_window: int = 756,
     winsorize_clip: float = 2.5,
-    use_vectorbt: bool = False,
 ) -> dict[str, pd.DataFrame]:
     """Time-series momentum (TSMOM) indicator suite.
 
-    Computes multi-window total returns, SMA/EWMA crossover signals,
-    standardizes via rolling z-score, winsorizes, normalizes to [0, 1],
-    and classifies signals into fast/slow components.
+    Implements Moskowitz-Ooi-Pedersen time-series momentum with:
+
+    * multi-window total-return binary signals,
+    * SMA and EWMA ratio-crossover binary signals on configurable pair
+      subsets (``sma_pair_indices`` / ``ewma_pair_indices``; ``None``
+      defaults to all unordered pairs over the given windows/spans),
+    * rolling z-score standardisation + winsorisation + [0, 1] min-max,
+    * per-``(date, ticker)`` fast/slow composite aggregation using rolling
+      std of per-signal absolute change to rank signals by reaction
+      speed,
+    * per-ticker warmup masking (each ticker's warmup is measured from
+      its own first valid observation, not a single cohort cutoff).
 
     Args:
         prices: Wide-format (DatetimeIndex x symbol columns).
-        tr_windows: Total return lookback windows. Default ``[21, 63, 126, 189, 252]``.
-        sma_windows: SMA windows for crossover signals. Default ``[1, 50, 100, 200]``.
-        ewma_spans: EWMA spans for crossover signals. Default ``[8, 16, 32, 64, 128, 256]``.
-        warmup_periods: Minimum observations before producing signals.
-        zscore_window: Rolling window for z-score standardization (default 3y = 756).
-        winsorize_clip: Clip z-scores to [-clip, clip].
-        use_vectorbt: Try vectorbt for crossover computation (falls back to pandas).
+        tr_windows: Total-return lookback windows. Default ``[21, 63, 126, 189, 252]``.
+        sma_windows: SMA windows. Default ``[1, 50, 100, 200]``.
+        ewma_spans: EWMA spans. Default ``[8, 16, 32, 64, 128, 256]``.
+        sma_pair_indices: List of (i, j) index tuples selecting which
+            SMA window pairs to cross. ``None`` = every unordered pair.
+        ewma_pair_indices: As above, for EWMA spans. ``None`` = every
+            unordered pair.
+        warmup_periods: Mask each ticker's signals until ``warmup_periods``
+            business days after that ticker's first valid price.
+        zscore_window: Rolling window for z-score / winsorize / min-max.
+            Default 3y = 756.
+        winsorize_clip: Clip z-scores to ``[-clip, clip]``.
 
     Returns:
-        Dict with keys:
+        Dict with the following long-format ``(date, ticker)``-indexed
+        DataFrames (callers wanting wide can ``.unstack("ticker")``):
 
-        - ``"total_returns"`` — multi-window total returns (wide, one col per window)
-        - ``"signals_raw"`` — raw binary signals before standardization
+        - ``"total_returns"`` — one column per window (``total_return_{w}``)
+        - ``"signals_raw"`` — raw binary signals, pre-standardisation
         - ``"signals_standardized"`` — rolling z-scored signals
-        - ``"signals_normalized"`` — winsorized + min-max normalized to [0, 1]
-        - ``"composite"`` — composite signals: TF_fast, TF_slow, TF (all), TF_zscore
+        - ``"signals_normalized"`` — winsorised + min-max normalised to [0, 1]
+        - ``"composite"`` — per-``(date, ticker)`` composites:
+          ``TF_fast``, ``TF_slow``, ``TF_zscore``,
+          ``TF_zscore_winsorized``, ``TF_zscore_winsorized_minmax``, ``TF``
     """
     if tr_windows is None:
         tr_windows = [21, 63, 126, 189, 252]
@@ -194,107 +204,124 @@ def compute_tsmom(
     if ewma_spans is None:
         ewma_spans = [8, 16, 32, 64, 128, 256]
 
-    tickers = prices.columns.tolist()
+    def _all_pairs(n: int) -> list[tuple[int, int]]:
+        return [(i, j) for i in range(n) for j in range(i + 1, n)]
 
-    # --- Total returns → binary signals ---
-    tr_dict = compute_total_returns(prices, tr_windows)
-    tr_signals = pd.concat(
-        [(df > 0).astype(float) for df in tr_dict.values()],
+    if sma_pair_indices is None:
+        sma_pair_indices = _all_pairs(len(sma_windows))
+    if ewma_pair_indices is None:
+        ewma_pair_indices = _all_pairs(len(ewma_spans))
+
+    # --- Total returns (long) → binary signals ---
+    tr = pd.concat(
+        [np.exp(np.log(prices / prices.shift(1)).rolling(window=w).sum()) - 1 for w in tr_windows],
         axis=1,
-        keys=[f"tr_{w}d_signal" for w in tr_windows],
+        keys=[f"total_return_{w}" for w in tr_windows],
+    )
+    tr = tr.stack(level=-1, future_stack=True).sort_index()
+    tr.index.names = ["date", "ticker"]
+
+    # --- Moving averages on a long-format price frame ---
+    prices_long = prices.stack()
+    prices_long.index.names = ["date", "ticker"]
+
+    prices_sma = pd.concat(
+        [_sma_long(prices_long, window=w) for w in sma_windows],
+        axis=1,
+        keys=[f"prices_sma{w}" for w in sma_windows],
+    )
+    prices_ewma = pd.concat(
+        [_ewma_long(prices_long, window=s) for s in ewma_spans],
+        axis=1,
+        keys=[f"prices_ewma{s}" for s in ewma_spans],
     )
 
     # --- Crossover signals ---
-    if use_vectorbt:
-        sma_cross, ewma_cross = _try_vbt_crossovers(prices, sma_windows, ewma_spans)
-    else:
-        sma_cross, ewma_cross = None, None
+    prices_sma_cross = _crossover_pairs(prices_sma, sma_pair_indices)
+    prices_ewma_cross = _crossover_pairs(prices_ewma, ewma_pair_indices)
 
-    if sma_cross is None or ewma_cross is None:
-        sma_cross_pd, ewma_cross_pd = _pandas_crossovers(prices, sma_windows, ewma_spans)
-        if sma_cross is None:
-            sma_cross = sma_cross_pd
-        if ewma_cross is None:
-            ewma_cross = ewma_cross_pd
+    # --- Binary signals ---
+    tr_signals = _binary_signal(tr, 0)
+    sma_signals = _binary_signal(prices_sma_cross, 1)
+    ewma_signals = _binary_signal(prices_ewma_cross, 1)
+    signals_raw = pd.concat([tr_signals, sma_signals, ewma_signals], axis=1).sort_index()
 
-    # Combine all raw signals
-    parts = [tr_signals]
-    if not sma_cross.empty:
-        parts.append(sma_cross)
-    if not ewma_cross.empty:
-        parts.append(ewma_cross)
-    signals_raw = pd.concat(parts, axis=1).sort_index()
-
-    # --- Apply warmup filter ---
+    # --- Per-ticker warmup filter ---
     start_dates = prices.shift(warmup_periods).apply(lambda x: x.first_valid_index())
-    for ticker in tickers:
-        if ticker in start_dates and start_dates[ticker] is not None:
-            # For wide-format: mask rows before warmup for each ticker
-            # signals_raw has multi-level columns (signal_name, ticker)
-            pass
-    # Simple warmup: drop rows where not enough data
-    first_valid = prices.apply(lambda x: x.first_valid_index())
-    warmup_cutoff = first_valid.max()
-    if warmup_cutoff is not None:
-        warmup_cutoff = prices.index[
-            min(
-                prices.index.get_loc(warmup_cutoff) + warmup_periods,
-                len(prices.index) - 1,
-            )
-        ]
-        signals_raw = signals_raw.loc[warmup_cutoff:]
+    signals_raw = (
+        signals_raw.groupby("ticker", group_keys=False)
+        .apply(lambda x: x[x.index.get_level_values("date") >= pd.Timestamp(start_dates[x.name])])
+        .sort_index()
+        .dropna(how="all")
+    )
 
-    # --- Standardize (rolling z-score) ---
+    # --- Standardise (rolling z-score; std=0 → 1, not NaN; see ADR-0005) ---
     signals_standardized = (
-        (signals_raw - signals_raw.rolling(window=zscore_window).mean())
-        / signals_raw.rolling(window=zscore_window).std().replace(0, np.nan)
-    ).dropna(how="all")
-
-    # --- Winsorize ---
-    signals_winsorized = signals_standardized.clip(lower=-winsorize_clip, upper=winsorize_clip)
-
-    # --- Normalize to [0, 1] (rolling min-max) ---
-    rmin = signals_winsorized.rolling(window=zscore_window).min()
-    rmax = signals_winsorized.rolling(window=zscore_window).max()
-    denom = (rmax - rmin).replace(0, np.nan)
-    signals_normalized = ((signals_winsorized - rmin) / denom).dropna(how="all")
-
-    # --- Fast / slow classification ---
-    signal_speed = (signals_standardized.diff().abs().rolling(window=zscore_window).std()).dropna(how="all")
-    signal_speed_rank = signal_speed.rank(axis=1, method="min")
-    n_signals = signal_speed_rank.shape[1]
-    slow_flag = signal_speed_rank <= n_signals / 2
-    fast_flag = signal_speed.rank(axis=1, method="max") >= n_signals / 2
-
-    # --- Composite signals ---
-    tf_fast = (
-        fast_flag.mul(signals_raw.reindex(fast_flag.index))
-        .sum(axis=1)
-        .div(fast_flag.sum(axis=1).replace(0, np.nan))
-        .rename("TF_fast")
+        signals_raw.groupby("ticker", group_keys=False)
+        .apply(
+            lambda x: (x - x.rolling(window=zscore_window).mean()) / x.rolling(window=zscore_window).std().replace(0, 1)
+        )
+        .dropna(how="all")
+        .sort_index()
     )
-    tf_slow = (
-        slow_flag.mul(signals_raw.reindex(slow_flag.index))
-        .sum(axis=1)
-        .div(slow_flag.sum(axis=1).replace(0, np.nan))
-        .rename("TF_slow")
+
+    # --- Winsorise z-scores ---
+    signals_winsorized = (
+        signals_standardized.groupby("ticker", group_keys=False)
+        .apply(lambda x: x.clip(lower=-winsorize_clip, upper=winsorize_clip))
+        .dropna(how="all")
+        .sort_index()
     )
-    tf_all = signals_raw.mean(axis=1).rename("TF")
+
+    # --- Min-max normalise to [0, 1] ---
+    signals_normalized = (
+        signals_winsorized.groupby("ticker", group_keys=False)
+        .apply(lambda x: _rolling_minmax(x, zscore_window))
+        .dropna(how="all")
+        .sort_index()
+    )
+
+    # --- Signal speed → fast/slow masks ---
+    signal_speed = (
+        signals_standardized.groupby("ticker", group_keys=False)
+        .apply(lambda x: x.diff().abs().rolling(window=zscore_window).std())
+        .dropna(how="any")
+    )
+    n_signals = signal_speed.shape[1]
+    signal_speed_rank_min = signal_speed.rank(axis=1, method="min")
+    signal_speed_rank_max = signal_speed.rank(axis=1, method="max")
+    slow_flag = signal_speed_rank_min <= n_signals / 2
+    fast_flag = signal_speed_rank_max >= n_signals / 2
+
+    # --- Composite per (date, ticker) ---
+    tf_fast = fast_flag.mul(signals_raw).sum(axis=1).div(fast_flag.sum(axis=1)).rename("TF_fast")
+    tf_slow = slow_flag.mul(signals_raw).sum(axis=1).div(slow_flag.sum(axis=1)).rename("TF_slow")
     tf_zscore = signals_standardized.mean(axis=1).rename("TF_zscore")
-    tf_normalized = signals_normalized.mean(axis=1).rename("TF_normalized")
+    tf_zscore_winsorized = signals_winsorized.mean(axis=1).rename("TF_zscore_winsorized")
+    tf_zscore_winsorized_minmax = signals_normalized.mean(axis=1).rename("TF_zscore_winsorized_minmax")
+    tf_all = signals_raw.mean(axis=1).rename("TF")
 
-    composite = pd.concat(
-        [tf_fast, tf_slow, tf_all, tf_zscore, tf_normalized],
-        axis=1,
-    ).dropna(how="all")
+    composite = (
+        pd.concat(
+            [
+                tf_fast,
+                tf_slow,
+                tf_zscore,
+                tf_zscore_winsorized,
+                tf_zscore_winsorized_minmax,
+                tf_all,
+            ],
+            axis=1,
+        )
+        .dropna(how="all")
+        .sort_index()
+    )
 
-    # --- Pack total returns as wide format ---
-    tr_wide = pd.concat(tr_dict.values(), axis=1, keys=tr_dict.keys())
-
-    return {
-        "total_returns": tr_wide,
+    results = {
+        "total_returns": tr,
         "signals_raw": signals_raw,
         "signals_standardized": signals_standardized,
         "signals_normalized": signals_normalized,
         "composite": composite,
     }
+    return {k: v.dropna(how="all").astype(float) for k, v in results.items()}

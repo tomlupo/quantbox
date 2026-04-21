@@ -113,13 +113,19 @@ class TrendFollowingStrategy:
         for sig_name in signal_cols:
             if sig_name not in composite.columns:
                 continue
-            signal = composite[sig_name]
+            # ``composite`` is long-format indexed by ``(date, ticker)``
+            # after the per-ticker-composite rewrite. Unstack the ticker
+            # level once so the per-ticker weight construction below can
+            # address tickers by column.
+            signal_wide = composite[sig_name].unstack("ticker")
 
             # Per-ticker: weight = signal value (continuous [0, 1])
             # or binary: 1 if signal > threshold, 0 otherwise
             w_parts = {}
             for ticker in tickers:
-                w_ticker = signal.rename(ticker).to_frame()
+                if ticker not in signal_wide.columns:
+                    continue
+                w_ticker = signal_wide[ticker].rename(ticker).to_frame()
                 ro = risk_off_map.get(ticker)
                 if ro:
                     w_ticker[ro] = 1 - w_ticker[ticker]
