@@ -18,6 +18,9 @@ Modules:
 from quantbox.features.bundle import compute_features_bundle
 from quantbox.features.channels import compute_donchian
 from quantbox.features.covariance import (
+    _FREQ_TO_PERIODS as FREQ_TO_PERIODS,
+)
+from quantbox.features.covariance import (
     rolling_covariance_ewma_lw,
     rolling_covariance_ewma_lw_from_config,
     rolling_covariance_lw,
@@ -45,6 +48,7 @@ from quantbox.features.signals import (
     rolling_zscore,
     winsorize,
 )
+from quantbox.features.simulations import parametric_mc, simulations_stats
 from quantbox.features.volatility import compute_ewm_vol, compute_rolling_vol
 
 __all__ = [
@@ -80,6 +84,11 @@ __all__ = [
     "rolling_covariance_lw_from_config",
     "rolling_covariance_ewma_lw",
     "rolling_covariance_ewma_lw_from_config",
+    # simulations
+    "parametric_mc",
+    "simulations_stats",
+    # frequency constants
+    "FREQ_TO_PERIODS",
     # bundle
     "compute_features_bundle",
 ]

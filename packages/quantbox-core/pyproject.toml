@@ -5,6 +5,7 @@ description = "Quant research & trading core with plugin marketplace (entry poin
 requires-python = ">=3.10"
 dependencies = [
   "pandas>=2.0",
+  "scipy>=1.10",
   "pyyaml>=6.0",
   "pyarrow>=14.0",
   "duckdb>=0.10.0",
