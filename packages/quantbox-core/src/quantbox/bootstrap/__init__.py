@@ -11,5 +11,6 @@ No dependency on pydantic — ``load_config`` just calls
 """
 
 from quantbox.bootstrap.config import load_config, load_yaml_merged
+from quantbox.bootstrap.logging import configure_logging
 
-__all__ = ["load_config", "load_yaml_merged"]
+__all__ = ["configure_logging", "load_config", "load_yaml_merged"]
