@@ -49,7 +49,11 @@ from quantbox.features.signals import (
     winsorize,
 )
 from quantbox.features.simulations import parametric_mc, simulations_stats
-from quantbox.features.volatility import compute_ewm_vol, compute_rolling_vol
+from quantbox.features.volatility import (
+    compute_ewm_vol,
+    compute_riskmetrics_vol,
+    compute_rolling_vol,
+)
 
 __all__ = [
     # returns
@@ -61,6 +65,7 @@ __all__ = [
     # volatility
     "compute_rolling_vol",
     "compute_ewm_vol",
+    "compute_riskmetrics_vol",
     # moving averages
     "compute_sma",
     "compute_ema",
