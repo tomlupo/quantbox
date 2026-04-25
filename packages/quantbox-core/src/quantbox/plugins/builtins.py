@@ -36,6 +36,7 @@ from .risk import (
 )
 from .strategies import (
     BeGlobalStrategy,
+    CarryStrategy,
     CarverTrendStrategy,
     CrossAssetMomentumStrategy,
     CryptoRegimeTrendStrategy,
@@ -83,6 +84,7 @@ def builtins() -> dict[str, dict[str, type]]:
         ),
         "strategy": _map(
             BeGlobalStrategy,
+            CarryStrategy,
             CryptoTrendStrategy,
             CarverTrendStrategy,
             MomentumLongShortStrategy,

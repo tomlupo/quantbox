@@ -225,7 +225,9 @@ class CarryStrategy:
         port_rets = (weights.shift(1) * returns).sum(axis=1)
         realized_vol = port_rets.ewm(span=self.vol_lookback, min_periods=5).std() * np.sqrt(365)
         scale = (self.target_vol / realized_vol.replace(0.0, np.nan)).clip(0.1, 3.0).fillna(1.0)
-        return weights.mul(scale.reindex(weights.index).fillna(1.0), axis=0)
+        scaled = weights.mul(scale.reindex(weights.index).fillna(1.0), axis=0)
+        # Re-apply concentration cap: vol-targeting can push individual weights above max_concentration
+        return scaled.clip(-self.max_concentration, self.max_concentration)
 
     # ------------------------------------------------------------------ #
     # StrategyPlugin interface

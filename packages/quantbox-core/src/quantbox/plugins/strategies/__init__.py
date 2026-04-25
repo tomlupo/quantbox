@@ -1,5 +1,6 @@
 from ._universe import DEFAULT_STABLECOINS, select_universe, select_universe_duckdb
 from .beglobal_strategy import BeGlobalStrategy
+from .carry import CarryStrategy
 from .carver_trend import CarverTrendStrategy
 from .cross_asset_momentum import CrossAssetMomentumStrategy, cross_asset_momentum
 from .crypto_regime_trend import CryptoRegimeTrendStrategy
@@ -11,6 +12,7 @@ from .weighted_avg_aggregator import WeightedAverageAggregator
 
 __all__ = [
     "BeGlobalStrategy",
+    "CarryStrategy",
     "CryptoTrendStrategy",
     "MomentumLongShortStrategy",
     "CarverTrendStrategy",
