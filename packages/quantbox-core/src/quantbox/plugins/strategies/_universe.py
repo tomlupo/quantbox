@@ -66,6 +66,7 @@ def select_universe(
     top_by_mcap: int = 30,
     top_by_volume: int = 10,
     exclude_tickers: list[str] | None = None,
+    volume_is_dollar: bool = False,
 ) -> pd.DataFrame:
     """Select tradable universe – vectorized pandas implementation.
 
@@ -84,7 +85,12 @@ def select_universe(
     prices : DataFrame
         Price DataFrame (date index, ticker columns).
     volume : DataFrame
-        Volume DataFrame aligned with *prices*.
+        Volume DataFrame aligned with *prices*.  If *volume_is_dollar* is
+        ``False`` (default) this must be base-asset quantity; dollar volume
+        is computed as ``prices * volume``.  If *volume_is_dollar* is
+        ``True`` the DataFrame is already in USD notional and is used
+        directly — pass this when loading from a source that provides
+        dollar volume (e.g. Binance ``quoteVolume`` / quantlab CSV).
     market_cap : DataFrame | None
         Market-cap DataFrame.  Pass ``None`` to skip the mcap tier.
     top_by_mcap : int
@@ -94,6 +100,9 @@ def select_universe(
         Final universe size (top N by dollar volume).
     exclude_tickers : list[str] | None
         Tickers to exclude.  Defaults to :data:`DEFAULT_STABLECOINS`.
+    volume_is_dollar : bool
+        Set ``True`` when *volume* is already in USD notional so the
+        function does not multiply by *prices* again.
 
     Returns
     -------
@@ -110,7 +119,11 @@ def select_universe(
 
     has_mcap = market_cap is not None and not market_cap.empty
 
-    dollar_vol = prices[valid_tickers] * volume.reindex(index=prices.index, columns=valid_tickers).fillna(0.0)
+    vol_aligned = volume.reindex(index=prices.index, columns=valid_tickers).fillna(0.0)
+    if volume_is_dollar:
+        dollar_vol = vol_aligned
+    else:
+        dollar_vol = prices[valid_tickers] * vol_aligned
 
     if has_mcap:
         # Stage 1: market-cap rank

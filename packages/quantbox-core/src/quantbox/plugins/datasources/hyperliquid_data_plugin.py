@@ -57,11 +57,19 @@ logger = logging.getLogger(__name__)
 HL_INFO_URL = "https://api.hyperliquid.xyz/info"
 
 
-def _post(payload: dict) -> Any:
-    """POST JSON to the Hyperliquid info endpoint."""
-    resp = requests.post(HL_INFO_URL, json=payload, timeout=30)
-    resp.raise_for_status()
-    return resp.json()
+def _post(payload: dict, max_retries: int = 5) -> Any:
+    """POST JSON to the Hyperliquid info endpoint with retry on 429."""
+    delay = 1.0
+    for attempt in range(max_retries):
+        resp = requests.post(HL_INFO_URL, json=payload, timeout=30)
+        if resp.status_code == 429:
+            logger.warning("Rate limited (429), sleeping %.1fs before retry %d/%d", delay, attempt + 1, max_retries)
+            time.sleep(delay)
+            delay = min(delay * 2, 30.0)
+            continue
+        resp.raise_for_status()
+        return resp.json()
+    resp.raise_for_status()  # raise on final failure
 
 
 @dataclass
@@ -184,7 +192,7 @@ class HyperliquidDataPlugin:
 
         for i, ticker in enumerate(tickers):
             if i > 0:
-                time.sleep(0.1)  # 100ms between calls
+                time.sleep(0.5)  # 500ms between tickers to stay under rate limit
 
             # --- OHLCV candles ---
             try:
@@ -210,23 +218,35 @@ class HyperliquidDataPlugin:
             except Exception:
                 logger.warning("Failed to fetch candles for %s", ticker, exc_info=True)
 
-            time.sleep(0.1)
+            time.sleep(0.5)
 
-            # --- Funding rates ---
+            # --- Funding rates (paginated — API returns ~20 days per call) ---
             try:
-                funding = _post(
-                    {
-                        "type": "fundingHistory",
-                        "coin": ticker,
-                        "startTime": start_ms,
-                        "endTime": end_ms,
-                    }
-                )
-                if funding:
-                    df_f = pd.DataFrame(funding)
+                _CHUNK_MS = 30 * 24 * 3600 * 1000  # 30-day chunks
+                all_records: list[dict] = []
+                chunk_start = start_ms
+                while chunk_start < end_ms:
+                    batch = _post(
+                        {
+                            "type": "fundingHistory",
+                            "coin": ticker,
+                            "startTime": chunk_start,
+                            "endTime": end_ms,
+                        }
+                    )
+                    if not batch:
+                        break
+                    all_records.extend(batch)
+                    last_ms = max(r["time"] for r in batch)
+                    if last_ms <= chunk_start:
+                        break
+                    chunk_start = last_ms + 1
+                    time.sleep(0.3)
+
+                if all_records:
+                    df_f = pd.DataFrame(all_records)
                     df_f["date"] = pd.to_datetime(df_f["time"], unit="ms", utc=True).dt.normalize()
                     df_f["rate"] = df_f["fundingRate"].astype(float)
-                    # Sum the 8h rates into a daily rate
                     daily_rate = df_f.groupby("date")["rate"].sum()
                     all_funding[ticker] = daily_rate
             except Exception:

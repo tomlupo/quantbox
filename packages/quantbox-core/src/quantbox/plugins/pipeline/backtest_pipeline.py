@@ -262,10 +262,27 @@ class BacktestPipeline:
         bt_prices = prices_wide.loc[common_idx, common_cols]
         bt_weights = weights_history.loc[common_idx, common_cols]
 
-        # Drop rows with any NaN prices (can't simulate without prices)
-        valid_rows = bt_prices.notna().all(axis=1)
-        bt_prices = bt_prices.loc[valid_rows]
-        bt_weights = bt_weights.loc[valid_rows]
+        # Drop columns with < 50% non-null prices first so a newly-listed coin
+        # doesn't truncate the entire simulation window to its listing date.
+        min_obs = max(30, int(len(bt_prices) * 0.5))
+        sufficient_cols = bt_prices.columns[bt_prices.notna().sum() >= min_obs].tolist()
+        dropped = [c for c in bt_prices.columns if c not in sufficient_cols]
+        if dropped:
+            logger.info("Dropped %d short-history columns: %s", len(dropped), dropped)
+        bt_prices = bt_prices[sufficient_cols]
+        bt_weights = bt_weights[sufficient_cols]
+
+        # Where a coin has no price yet (not yet listed), force weight to 0 so
+        # the backtest doesn't try to hold it, then forward-fill prices for
+        # simulation continuity.  This allows a broad dynamic pool where
+        # individual coins enter the universe at different dates without
+        # truncating the entire simulation window to the latest listing date.
+        # Any row that is ALL NaN (before any coin was available) is still dropped.
+        all_nan_rows = bt_prices.isna().all(axis=1)
+        bt_weights = bt_weights.where(bt_prices.notna(), 0.0)
+        bt_prices = bt_prices.ffill().bfill()
+        bt_prices = bt_prices.loc[~all_nan_rows]
+        bt_weights = bt_weights.loc[~all_nan_rows]
 
         logger.info(
             "Backtest window: %d dates x %d assets, engine=%s",

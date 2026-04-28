@@ -12,7 +12,6 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy.stats import norm
 
 from quantbox.contracts import PluginMeta
 
@@ -54,17 +53,17 @@ class StatisticalValidation:
         n_strategies_tested: int = params.get("n_strategies_tested", 1)
         trading_days: int = params.get("trading_days", 365)
 
-        rets = returns.iloc[:, 0].values
+        rets_col = "returns" if "returns" in returns.columns else returns.select_dtypes("number").columns[0]
+        rets = returns[rets_col].values
         n = len(rets)
 
         observed_sharpe = _annualized_sharpe(rets, trading_days)
 
         # Deflated Sharpe: simulate null distribution of Sharpe ratios
         rng = np.random.default_rng(42)
-        null_sharpes = np.array([
-            _annualized_sharpe(rng.normal(0, np.std(rets, ddof=1), size=n), trading_days)
-            for _ in range(n_trials)
-        ])
+        null_sharpes = np.array(
+            [_annualized_sharpe(rng.normal(0, np.std(rets, ddof=1), size=n), trading_days) for _ in range(n_trials)]
+        )
         pct_exceeding = float(np.mean(null_sharpes >= observed_sharpe))
         # Deflated Sharpe: observed if it passes the significance test,
         # otherwise scaled by how far it is into the null distribution
@@ -90,24 +89,25 @@ class StatisticalValidation:
         findings: list[dict[str, Any]] = []
 
         if deflated_sharpe <= 0:
-            findings.append({
-                "level": "warn",
-                "rule": "deflated_sharpe_not_significant",
-                "detail": (
-                    f"Deflated Sharpe ({deflated_sharpe:.4f}) is not positive, "
-                    f"suggesting observed Sharpe ({observed_sharpe:.4f}) may be a false positive."
-                ),
-            })
+            findings.append(
+                {
+                    "level": "warn",
+                    "rule": "deflated_sharpe_not_significant",
+                    "detail": (
+                        f"Deflated Sharpe ({deflated_sharpe:.4f}) is not positive, "
+                        f"suggesting observed Sharpe ({observed_sharpe:.4f}) may be a false positive."
+                    ),
+                }
+            )
 
         if ci_lower < 0:
-            findings.append({
-                "level": "warn",
-                "rule": "sharpe_ci_includes_zero",
-                "detail": (
-                    f"Bootstrap {confidence:.0%} CI [{ci_lower:.4f}, {ci_upper:.4f}] "
-                    f"includes zero."
-                ),
-            })
+            findings.append(
+                {
+                    "level": "warn",
+                    "rule": "sharpe_ci_includes_zero",
+                    "detail": (f"Bootstrap {confidence:.0%} CI [{ci_lower:.4f}, {ci_upper:.4f}] includes zero."),
+                }
+            )
 
         passed = len(findings) == 0
 

@@ -1,8 +1,32 @@
 # CLAUDE.md — Agent onboarding guide
 
+> **Modifying QuantBox?** Read [`docs/architecture/principles.md`](docs/architecture/principles.md) and [`docs/architecture/api-layers.md`](docs/architecture/api-layers.md) first. Every architectural decision downstream is shaped by them. This file describes the *current* code; the architecture docs describe the *target design and the rules*. When they conflict, architecture wins.
+
 ## What is QuantBox?
 
-Config-driven quant framework. Strategies, data, brokers, and risk are all plugins wired together via YAML configs. Same strategy params work across backtesting, paper trading, and live execution.
+A **template-driven SDK with adapters** for quant research and production. Three things, in order:
+
+1. **Conventions** — data layouts, run-artifact shape, lifecycle states, skill API. The owned moat.
+2. **Adapters** — thin wrappers around best-of-breed external libraries (vectorbt, MLflow, DVC, riskfolio, lightgbm, ...). The wheel does the wheel's work.
+3. **Skills + templates** — LLM-facing interface and project bootstrap, coupled to the SDK in this repo.
+
+The plugin runtime (`run_from_config`, CLI) is *one* of multiple entry points — see the [layered API](docs/architecture/api-layers.md) (L0–L5). Casual use defaults to L0/L1 (re-exports + convenience helpers). YAML pipelines are L4. Production is L5 with `--strict`.
+
+QuantBox is a **composing framework** — owned and opinionated, but composing external libraries (vectorbt, MLflow, riskfolio, optionally Qlib) rather than competing with them on their turf. See [ADR-0001](docs/adr/0001-library-not-framework.md).
+
+## Authoritative docs (read in order)
+
+| # | Doc | When |
+|---|---|---|
+| 1 | [`docs/architecture/principles.md`](docs/architecture/principles.md) | Read first, every time. The doctrine. |
+| 2 | [`docs/architecture/api-layers.md`](docs/architecture/api-layers.md) | The L0–L5 table. Operational rule for "which layer." |
+| 3 | [`docs/architecture/plugin-authoring.md`](docs/architecture/plugin-authoring.md) | Plugin types, `meta.status`, registration, naming, testing. |
+| 4 | [`docs/architecture/adapters.md`](docs/architecture/adapters.md) | Wrap-don't-rebuild rule. |
+| 5 | [`docs/architecture/skills.md`](docs/architecture/skills.md) | LLM-facing API, frontmatter contract, capability-gap branch. |
+| 6 | [`docs/architecture/lifecycle.md`](docs/architecture/lifecycle.md) | `meta.status` state machine, reproducibility, promotion. |
+| 7 | [`docs/architecture/templates.md`](docs/architecture/templates.md) | `quantbox new`, the four templates. |
+
+For step-by-step modifications, see [`docs/playbooks/`](docs/playbooks/). For historical decisions, see [`docs/adr/`](docs/adr/).
 
 ## Project layout
 
@@ -54,7 +78,7 @@ uv run pytest -q                            # run tests
 | Type | Protocol | Key method |
 |---|---|---|
 | Pipeline | `PipelinePlugin` | `run(mode, asof, params, data, store, broker, risk)` |
-| Strategy | `StrategyPlugin` | `compute_weights(market_data, universe, asof, params)` |
+| Strategy | `StrategyPlugin` | `run(data, params)` → dict with `"weights"` (date × symbol) |
 | Data | `DataPlugin` | `load_market_data(universe, asof, params) → Dict[str, DataFrame]` |
 | Broker | `BrokerPlugin` | `execute_rebalancing(weights)`, `describe()` |
 | Rebalancing | `RebalancingPlugin` | `rebalance(targets, positions, params)` |
@@ -133,7 +157,9 @@ Quantbox uses custom exceptions (see `quantbox.exceptions`):
 - Prefer additive changes and new plugin versions over breaking changes
 - Don't rename existing entry-point IDs
 - Add tests for new plugins or core behavior
-- See `CONTRIBUTING_LLM.md` for full guidelines
+- See `CONTRIBUTING_LLM.md` for LLM-specific guidelines
+
+**For any architectural change, the rules in [`docs/architecture/principles.md`](docs/architecture/principles.md) take precedence over this file.** Anti-patterns to refuse, decision rules for new features, and the layer-choice doctrine all live there.
 
 ## Multi-repo setup
 

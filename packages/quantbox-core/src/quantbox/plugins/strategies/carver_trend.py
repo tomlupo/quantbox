@@ -65,6 +65,9 @@ EWMAC_SPANS = [
 # Breakout windows
 BREAKOUT_WINDOWS = [20, 40, 80, 160]
 
+# Bollinger windows — Strategy v2 (2026-04-25). See docs/methodology/carver-trend-v2.md.
+BOLLINGER_WINDOWS = [20, 40, 80]
+
 
 # ============================================================================
 # Forecast Generation (Carver Style)
@@ -131,6 +134,36 @@ def breakout_forecast(
     forecast = (prices - midpoint) / (range_size / 2)
 
     return forecast.clip(-1, 1)
+
+
+def bollinger_forecast(
+    prices: pd.Series,
+    window: int,
+    n_std: float = 2.0,
+) -> pd.Series:
+    """
+    Bollinger-band forecast — position relative to MA bands.
+
+    Inherently vol-scaled (uses standard deviation), which is why it adds
+    diversification with a similar risk profile to EWMAC. Per Scott Phillips
+    research: "significantly more predictive on crypto and tradfi futures"
+    than EWMAC alone.
+
+    Forecast = (price - MA) / (n_std × std)
+    Roughly in [-1, +1] when within bands; can exceed on strong moves.
+
+    Args:
+        prices: Price series
+        window: Lookback window for MA + std
+        n_std: Bollinger band width in standard deviations (default 2.0)
+
+    Returns:
+        Forecast series approximately in [-1, +1] range
+    """
+    ma = prices.rolling(window, min_periods=window).mean()
+    std = prices.rolling(window, min_periods=window).std()
+    forecast = (prices - ma) / (n_std * std.replace(0, np.nan))
+    return forecast
 
 
 def scale_forecast(
@@ -207,30 +240,42 @@ def combine_forecasts(
 
 def generate_carver_forecast(
     prices: pd.Series,
-    ewmac_spans: list[tuple[int, int]] = None,
-    breakout_windows: list[int] = None,
+    ewmac_spans: list[tuple[int, int]] | None = None,
+    breakout_windows: list[int] | None = None,
+    bollinger_windows: list[int] | None = None,
     ewmac_weight: float = 0.6,
     breakout_weight: float = 0.4,
+    bollinger_weight: float = 0.0,
+    bollinger_n_std: float = 2.0,
 ) -> pd.Series:
     """
     Generate combined Carver-style forecast for one instrument.
 
-    Combines multiple EWMAC and breakout rules.
+    Combines multiple EWMAC, breakout, and (optionally) Bollinger rules.
+    Bollinger contributes only when ``bollinger_weight > 0``; default 0.0
+    keeps the original two-family combination for backward compatibility.
+
+    Weights should sum to 1.0; the function does not auto-normalize.
 
     Args:
         prices: Price series
         ewmac_spans: List of (fast, slow) spans for EWMAC
         breakout_windows: List of windows for breakout
-        ewmac_weight: Weight for EWMAC rules
-        breakout_weight: Weight for breakout rules
+        bollinger_windows: List of windows for Bollinger (default BOLLINGER_WINDOWS)
+        ewmac_weight: Weight for EWMAC family
+        breakout_weight: Weight for breakout family
+        bollinger_weight: Weight for Bollinger family (default 0.0 = disabled)
+        bollinger_n_std: Bollinger band width in standard deviations
 
     Returns:
-        Combined, scaled, capped forecast
+        Combined, scaled, capped forecast in approximately ±20 range
     """
     if ewmac_spans is None:
         ewmac_spans = EWMAC_SPANS
     if breakout_windows is None:
         breakout_windows = BREAKOUT_WINDOWS
+    if bollinger_windows is None:
+        bollinger_windows = BOLLINGER_WINDOWS
 
     all_forecasts = []
     all_weights = []
@@ -252,6 +297,16 @@ def generate_carver_forecast(
         f = cap_forecast(f, cap=20)
         all_forecasts.append(f)
         all_weights.append(breakout_weight / n_breakout)
+
+    # Bollinger forecasts (additive — only contributes when bollinger_weight > 0)
+    if bollinger_weight > 0:
+        n_bollinger = len(bollinger_windows)
+        for window in bollinger_windows:
+            f = bollinger_forecast(prices, window, n_std=bollinger_n_std)
+            f = f * 20  # naturally in [-1, +1], scale to ±20 like breakout
+            f = cap_forecast(f, cap=20)
+            all_forecasts.append(f)
+            all_weights.append(bollinger_weight / n_bollinger)
 
     # Combine
     combined = combine_forecasts(all_forecasts, all_weights)
@@ -382,10 +437,50 @@ class CarverTrendStrategy:
     meta = PluginMeta(
         name="strategy.carver_trend.v1",
         kind="strategy",
-        version="0.1.0",
+        version="0.2.0",
         core_compat=">=0.1,<0.2",
-        description="Carver-style trend following with EWMAC and breakout rules",
+        status="research",  # v0.2 methodology in DRAFT; flip via /promote-lock once validated
+        description="Carver-style trend following with EWMAC, breakout, and optional Bollinger rules.",
         tags=("crypto", "trend", "carver"),
+        capabilities=("backtest", "paper", "live"),
+        outputs=("strategy_weights",),
+        params_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "target_vol": {"type": "number", "minimum": 0.01, "maximum": 1.0, "default": 0.25},
+                "vol_lookback": {"type": "integer", "minimum": 10, "maximum": 252, "default": 36},
+                "idm": {"type": ["number", "null"], "minimum": 0.5, "maximum": 5.0, "default": None},
+                "max_position": {"type": "number", "minimum": 0.0, "maximum": 2.0, "default": 1.0},
+                "max_gross": {"type": "number", "minimum": 0.0, "maximum": 5.0, "default": 2.0},
+                "allow_shorts": {"type": "boolean", "default": True},
+                "ewmac_weight": {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.6},
+                "breakout_weight": {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.4},
+                "use_bollinger_feature": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "When True, applies Strategy v2 weights (ewmac=0.4, breakout=0.3, bollinger=0.3) and overrides ewmac_weight/breakout_weight.",
+                },
+                "bollinger_n_std": {"type": "number", "minimum": 0.5, "maximum": 4.0, "default": 2.0},
+                "use_universe_selection": {"type": "boolean", "default": False},
+                "top_by_mcap": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 30},
+                "top_by_volume": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 10},
+                "volume_is_dollar": {"type": "boolean", "default": True},
+                "output_periods": {"type": "integer", "minimum": 1, "maximum": 365, "default": 30},
+            },
+        },
+        examples=(
+            (
+                "plugins:\n"
+                "  strategies:\n"
+                "    - name: strategy.carver_trend.v1\n"
+                "      params:\n"
+                "        target_vol: 0.30\n"
+                "        use_universe_selection: true\n"
+                "        top_by_volume: 8\n"
+                "        use_bollinger_feature: true"
+            ),
+        ),
     )
 
     # Forecast parameters
@@ -393,6 +488,14 @@ class CarverTrendStrategy:
     breakout_windows: list[int] = field(default_factory=lambda: BREAKOUT_WINDOWS.copy())
     ewmac_weight: float = 0.6
     breakout_weight: float = 0.4
+
+    # Bollinger feature (Strategy v2, 2026-04-25 — additive, default off).
+    # When use_bollinger_feature=True, weights become (0.4, 0.3, 0.3)
+    # for (ewmac, breakout, bollinger). See docs/methodology/carver-trend-v2.md
+    # and notebook/projects/quantlab/scott-phillips-tweet-research.md.
+    use_bollinger_feature: bool = False
+    bollinger_windows: list[int] = field(default_factory=lambda: BOLLINGER_WINDOWS.copy())
+    bollinger_n_std: float = 2.0
 
     # Position sizing
     target_vol: float = 0.25
@@ -408,6 +511,7 @@ class CarverTrendStrategy:
     use_universe_selection: bool = False
     top_by_mcap: int = 30
     top_by_volume: int = 10
+    volume_is_dollar: bool = True  # All current sources (Binance, Hyperliquid) provide USD notional
 
     # Output
     output_periods: int = 30
@@ -463,42 +567,56 @@ class CarverTrendStrategy:
         valid_tickers = [t for t in prices.columns if t not in self.exclude_tickers]
         prices = prices[valid_tickers]
 
-        # 0. Universe selection — BEFORE forecasting so N is correct
-        #    Carver formula: position = forecast × vol_scalar × IDM / N
-        #    N must equal the number of instruments we actually trade.
+        # 0. Universe selection — time-varying, no look-ahead bias.
+        #    Computes a 0/1 mask for every date: top-N by trailing dollar-volume
+        #    at that date.  Signals are generated for ALL tickers; the mask is
+        #    applied to positions AFTER sizing so a coin only has non-zero weight
+        #    when it is actually in the top-N at that point in time.
+        universe_mask_ts: pd.DataFrame | None = None
         if self.use_universe_selection:
             from quantbox.plugins.strategies._universe import select_universe
 
             volume = data.get("volume", pd.DataFrame())
             market_cap = data.get("market_cap", pd.DataFrame())
-            universe_mask = select_universe(
+            universe_mask_ts = select_universe(
                 prices,
                 volume.reindex(index=prices.index, columns=prices.columns).fillna(0.0),
                 market_cap if not market_cap.empty else None,
                 self.top_by_mcap,
                 self.top_by_volume,
                 self.exclude_tickers,
+                volume_is_dollar=self.volume_is_dollar,
             )
-            latest_mask = universe_mask.iloc[-1]
-            selected = latest_mask[latest_mask > 0].index.tolist()
+            n_avg = universe_mask_ts.sum(axis=1).mean()
             logger.info(
-                "Universe selection: top %d by volume from %d available",
-                len(selected),
+                "Universe selection: avg %.1f active instruments from %d available (top-%d by volume)",
+                n_avg,
                 len(valid_tickers),
+                self.top_by_volume,
             )
-            prices = prices[selected]
 
         logger.info(f"Running CarverTrend on {len(prices.columns)} instruments")
 
-        # 1. Generate forecasts for each instrument
+        # 1. Generate forecasts for each instrument.
+        # Resolve effective forecast weights — when use_bollinger_feature is on,
+        # apply Strategy v2 spec defaults (0.4 / 0.3 / 0.3); otherwise the
+        # original two-family split (0.6 / 0.4 / 0.0) preserves backward compatibility.
+        if self.use_bollinger_feature:
+            ew_w, br_w, bo_w = 0.4, 0.3, 0.3
+        else:
+            ew_w, br_w, bo_w = self.ewmac_weight, self.breakout_weight, 0.0
+
         forecasts = {}
         for ticker in prices.columns:
             forecast = generate_carver_forecast(
                 prices[ticker],
-                self.ewmac_spans,
-                self.breakout_windows,
-                self.ewmac_weight,
-                self.breakout_weight,
+                ewmac_spans=self.ewmac_spans,
+                breakout_windows=self.breakout_windows,
+                bollinger_windows=self.bollinger_windows,
+                ewmac_weight=ew_w,
+                breakout_weight=br_w,
+                bollinger_weight=bo_w,
+                bollinger_n_std=self.bollinger_n_std,
             )
             forecasts[ticker] = forecast
 
@@ -525,6 +643,12 @@ class CarverTrendStrategy:
             max_position=self.max_position,
             max_gross=self.max_gross,
         )
+
+        # 5b. Apply time-varying universe mask: zero positions for coins that
+        #     are not in the top-N at each date (no look-ahead bias).
+        if universe_mask_ts is not None:
+            mask = universe_mask_ts.reindex(index=positions.index, columns=positions.columns).fillna(0.0)
+            positions = positions * mask
 
         # 6. Calculate exposure
         latest = positions.iloc[-1].dropna()

@@ -232,33 +232,40 @@ class LocalFileDataPlugin:
         """
         symbols = universe["symbol"].tolist() if not universe.empty and "symbol" in universe.columns else None
 
+        def _select_cols(df: pd.DataFrame) -> pd.DataFrame:
+            """For wide-format DataFrames, restrict to the requested symbol columns."""
+            if symbols and isinstance(df.index, pd.DatetimeIndex) and "symbol" not in df.columns:
+                available = [s for s in symbols if s in df.columns]
+                return df[available]
+            return df
+
         result: dict[str, pd.DataFrame] = {}
 
         # Prices
         ppath = params.get("prices_path") or params.get("path") or self.prices_path
         if ppath:
-            result["prices"] = _read_file(ppath, asof=asof, symbols=symbols)
+            result["prices"] = _select_cols(_read_file(ppath, asof=asof, symbols=symbols))
         else:
             result["prices"] = pd.DataFrame()
 
         # Volume
         vpath = params.get("volume_path") or self.volume_path
         if vpath:
-            result["volume"] = _read_file(vpath, asof=asof, symbols=symbols)
+            result["volume"] = _select_cols(_read_file(vpath, asof=asof, symbols=symbols))
         else:
             result["volume"] = pd.DataFrame()
 
         # Market cap
         mpath = params.get("market_cap_path") or self.market_cap_path
         if mpath:
-            result["market_cap"] = _read_file(mpath, asof=asof, symbols=symbols)
+            result["market_cap"] = _select_cols(_read_file(mpath, asof=asof, symbols=symbols))
         else:
             result["market_cap"] = pd.DataFrame()
 
         # Funding rates
         fpath = params.get("funding_rates_path") or self.funding_rates_path
         if fpath:
-            result["funding_rates"] = _read_file(fpath, asof=asof, symbols=symbols)
+            result["funding_rates"] = _select_cols(_read_file(fpath, asof=asof, symbols=symbols))
         else:
             result["funding_rates"] = pd.DataFrame()
 

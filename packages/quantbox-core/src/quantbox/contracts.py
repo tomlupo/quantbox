@@ -51,10 +51,33 @@ import pandas as pd
 
 Mode = Literal["backtest", "paper", "live"]
 PluginKind = Literal[
-    "pipeline", "broker", "data", "publisher", "risk", "strategy", "rebalancing",
-    "feature", "validation", "monitor",
+    "pipeline",
+    "broker",
+    "data",
+    "publisher",
+    "risk",
+    "strategy",
+    "rebalancing",
+    "feature",
+    "validation",
+    "monitor",
 ]
 PipelineKind = Literal["research", "trading"]
+PluginStatus = Literal["research", "locked", "production"]
+"""Lifecycle status of a plugin/methodology.
+
+- ``research`` — default; plugin is in development or its methodology spec is not LOCKED.
+  Acceptable for ad-hoc backtests and notebooks. ``--strict`` mode will refuse these.
+- ``locked`` — methodology spec frozen with ``status: LOCKED`` frontmatter and a
+  paired ``docs/methodology/{name}.md`` doc. Validation evidence recorded.
+  Not yet tagged for production.
+- ``production`` — has a ``prod-{subsystem}-vX.Y.Z-YYYYMMDD`` git tag. Reproducibility
+  pins required (uv.lock + dataset content-hashes + seeds). Subject to monthly
+  revalidation cron.
+
+State transitions are human-driven via ``/promote-lock`` and ``/promote``. The runtime
+never auto-promotes. See ``docs/architecture/lifecycle.md``.
+"""
 
 
 @dataclass(frozen=True)
@@ -66,6 +89,9 @@ class PluginMeta:
         kind: Plugin type — determines which protocol it implements.
         version: Semver version of this plugin.
         core_compat: Semver range of compatible quantbox-core versions.
+        status: Lifecycle status — ``research`` | ``locked`` | ``production``.
+            Defaults to ``"research"``. ``--strict`` mode rejects below ``locked``.
+            See ``docs/architecture/lifecycle.md``.
         description: Human/LLM-readable description of what this plugin does.
         tags: Searchable tags (e.g. ("crypto", "futures")).
         capabilities: Supported modes/features (e.g. ("paper", "live")).
@@ -80,6 +106,7 @@ class PluginMeta:
     kind: PluginKind
     version: str
     core_compat: str
+    status: PluginStatus = "research"
     description: str = ""
     tags: tuple[str, ...] = ()
     capabilities: tuple[str, ...] = ()

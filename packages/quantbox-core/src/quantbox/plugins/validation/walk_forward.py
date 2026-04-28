@@ -50,7 +50,8 @@ class WalkForwardValidation:
         train_ratio: float = params.get("train_ratio", 0.7)
         trading_days: int = params.get("trading_days", 365)
 
-        rets = returns.iloc[:, 0].values
+        rets_col = "returns" if "returns" in returns.columns else returns.select_dtypes("number").columns[0]
+        rets = returns[rets_col].values
         n = len(rets)
         fold_size = n // n_splits
 
@@ -80,21 +81,25 @@ class WalkForwardValidation:
         findings: list[dict[str, Any]] = []
 
         if oos_mean < 0:
-            findings.append({
-                "level": "warn",
-                "rule": "negative_oos_sharpe",
-                "detail": f"Mean OOS Sharpe is negative ({oos_mean:.4f}).",
-            })
+            findings.append(
+                {
+                    "level": "warn",
+                    "rule": "negative_oos_sharpe",
+                    "detail": f"Mean OOS Sharpe is negative ({oos_mean:.4f}).",
+                }
+            )
 
         if degradation < -0.5:
-            findings.append({
-                "level": "warn",
-                "rule": "sharpe_degradation_excessive",
-                "detail": (
-                    f"Sharpe degradation of {degradation:.4f} exceeds "
-                    f"-0.5 threshold (IS={is_mean:.4f}, OOS={oos_mean:.4f})."
-                ),
-            })
+            findings.append(
+                {
+                    "level": "warn",
+                    "rule": "sharpe_degradation_excessive",
+                    "detail": (
+                        f"Sharpe degradation of {degradation:.4f} exceeds "
+                        f"-0.5 threshold (IS={is_mean:.4f}, OOS={oos_mean:.4f})."
+                    ),
+                }
+            )
 
         passed = len(findings) == 0
 

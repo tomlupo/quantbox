@@ -61,10 +61,12 @@ class TurnoverValidation:
         cost_bps: float = params.get("cost_bps", 10)
         trading_days: int = params.get("trading_days", 365)
 
-        rets = returns.iloc[:, 0].values
+        rets_col = "returns" if "returns" in returns.columns else returns.select_dtypes("number").columns[0]
+        rets = returns[rets_col].values
 
         # Compute daily turnover: sum(abs(weight_diff)) / 2 per day, averaged
-        weight_diffs = weights.diff().iloc[1:]
+        weights_num = weights.select_dtypes("number")
+        weight_diffs = weights_num.diff().iloc[1:]
         daily_to = weight_diffs.abs().sum(axis=1) / 2
         daily_to_values = daily_to.values
 
@@ -87,21 +89,25 @@ class TurnoverValidation:
         findings: list[dict[str, Any]] = []
 
         if annual_turnover > 50:
-            findings.append({
-                "level": "warn",
-                "rule": "high_annual_turnover",
-                "detail": f"Annual turnover is {annual_turnover:.1f}x, which may erode returns.",
-            })
+            findings.append(
+                {
+                    "level": "warn",
+                    "rule": "high_annual_turnover",
+                    "detail": f"Annual turnover is {annual_turnover:.1f}x, which may erode returns.",
+                }
+            )
 
         if ca_sharpe < 0 < raw_sharpe:
-            findings.append({
-                "level": "warn",
-                "rule": "costs_eliminate_edge",
-                "detail": (
-                    f"Cost-adjusted Sharpe ({ca_sharpe:.4f}) is negative while "
-                    f"raw Sharpe ({raw_sharpe:.4f}) is positive at {cost_bps} bps."
-                ),
-            })
+            findings.append(
+                {
+                    "level": "warn",
+                    "rule": "costs_eliminate_edge",
+                    "detail": (
+                        f"Cost-adjusted Sharpe ({ca_sharpe:.4f}) is negative while "
+                        f"raw Sharpe ({raw_sharpe:.4f}) is positive at {cost_bps} bps."
+                    ),
+                }
+            )
 
         passed = len(findings) == 0
 

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
+import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+
+import pandas as pd
 
 from .contracts import (
     BrokerPlugin,
@@ -22,10 +27,135 @@ from .plugin_manifest import load_manifest, repo_root, resolve_profile
 from .store import FileArtifactStore
 from .validate import validate_config
 
-import logging
-import pandas as pd
-
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Local-source plugin loading
+# ---------------------------------------------------------------------------
+#
+# A plugin spec in YAML can take two forms:
+#
+#   - Registered:    {"name": "lab.strategy.regime_taa.v1", ...}
+#                    Looked up in the entry-point registry.
+#
+#   - Local-source:  {"source": "research/regime-taa/strategy.py:RegimeTaa", ...}
+#                    Imported from a local file at runtime; no package needed.
+#
+# Local-source is the scratch-plugin escape hatch — it lets LLM-authored or
+# one-shot research code participate in a normal pipeline without going through
+# package release. See:
+#   - docs/architecture/plugin-authoring.md (registration paths)
+#   - docs/architecture/skills.md (capability-gap branch)
+#   - docs/adr/0003-autoresearch-as-driver-not-runtime.md (where this fits)
+#
+# Safety rails:
+#   - Local-source is REFUSED for broker plugins (arbitrary order-submitting code).
+#   - Local-source is REFUSED in paper/live mode regardless of plugin kind.
+#   - Loaded classes must declare a ``meta`` attribute; ``meta.status`` defaults
+#     to "research" — production runs (``--strict``) should reject these.
+#
+# Local-source is allowed for: strategy, data, feature, validation, monitor,
+# rebalancing, risk, aggregator. Not allowed for: broker, pipeline.
+
+
+_LOCAL_SOURCE_FORBIDDEN_KINDS: frozenset[str] = frozenset({"broker", "pipeline"})
+
+
+def _load_local_source_class(source: str, expected_kind: str | None = None) -> type:
+    """Load a plugin class from a local file path.
+
+    Args:
+        source: ``"path/to/file.py:ClassName"`` (path may be relative to cwd
+            or absolute; resolved at load time).
+        expected_kind: Expected ``meta.kind`` value (e.g. ``"strategy"``).
+            If provided and the loaded class's ``meta.kind`` mismatches, raises.
+
+    Returns:
+        The plugin class (not an instance). Caller instantiates as usual.
+
+    Raises:
+        ValueError: malformed source string, or ``meta.kind`` mismatch.
+        FileNotFoundError: source file does not exist.
+        AttributeError: class not found in module, or class has no ``meta`` attr.
+    """
+    if ":" not in source:
+        raise ValueError(
+            f"Local source must be 'path:ClassName', got: {source!r}. "
+            f"Example: 'research/regime-taa/strategy.py:RegimeTaa'"
+        )
+    file_part, class_name = source.rsplit(":", 1)
+    path = Path(file_part).resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"Plugin source file not found: {path}")
+
+    # Use a unique-ish module name to avoid sys.modules collisions across runs.
+    module_name = f"_quantbox_localsource__{path.stem}__{abs(hash(str(path))) & 0xFFFFFFFF:x}"
+    spec_obj = importlib.util.spec_from_file_location(module_name, path)
+    if spec_obj is None or spec_obj.loader is None:
+        raise ImportError(f"Cannot create module spec for: {path}")
+    module = importlib.util.module_from_spec(spec_obj)
+    spec_obj.loader.exec_module(module)
+
+    cls = getattr(module, class_name, None)
+    if cls is None:
+        raise AttributeError(f"Class {class_name!r} not found in {path}")
+
+    meta = getattr(cls, "meta", None)
+    if meta is None:
+        raise AttributeError(
+            f"Plugin class {class_name!r} in {path} has no 'meta' attribute. "
+            f"Local-source plugins must declare ``meta = PluginMeta(...)`` like any other plugin."
+        )
+    if expected_kind is not None:
+        actual_kind = getattr(meta, "kind", None)
+        if actual_kind != expected_kind:
+            raise ValueError(
+                f"Plugin class {class_name!r} has meta.kind={actual_kind!r}, "
+                f"but config block requires meta.kind={expected_kind!r}"
+            )
+    return cls
+
+
+def _resolve_plugin_cls(
+    spec: dict[str, Any],
+    registry_dict: dict[str, type],
+    kind: str,
+    *,
+    mode: Mode,
+):
+    """Resolve a plugin class from a YAML spec — either registry name or local source.
+
+    Args:
+        spec: The plugin block dict from YAML (e.g. ``{"name": "..."}``
+            or ``{"source": "path:Class"}``).
+        registry_dict: The relevant registry slot (e.g. ``registry.strategies``).
+        kind: Expected plugin kind (e.g. ``"strategy"``); used for safety check
+            and for ``meta.kind`` validation when local-source is used.
+        mode: Run mode. Local-source is refused in paper/live mode.
+
+    Returns:
+        Plugin class, ready to instantiate with ``cls(**params_init)``.
+    """
+    if "source" in spec:
+        if kind in _LOCAL_SOURCE_FORBIDDEN_KINDS:
+            raise ValueError(
+                f"Local-source plugins are forbidden for kind={kind!r} (safety rail). "
+                f"Use a registered entry-point instead."
+            )
+        if mode in ("paper", "live"):
+            raise ValueError(
+                f"Local-source plugins are forbidden in mode={mode!r} (safety rail). "
+                f"Use a registered entry-point for production runs; local-source is research-only."
+            )
+        return _load_local_source_class(spec["source"], expected_kind=kind)
+
+    name = spec.get("name")
+    if name is None:
+        raise ValueError(f"Plugin spec must have either 'name' (registered) or 'source' (local), got: {spec!r}")
+    if name not in registry_dict:
+        raise PluginNotFoundError(name, kind, list(registry_dict.keys()))
+    return registry_dict[name]
 
 
 def _hash_config(cfg: dict[str, Any]) -> str:
@@ -97,13 +227,13 @@ def run_from_config(cfg: dict[str, Any], registry) -> RunResult:
         risk_cls = registry.risk[r["name"]]
         risk_plugins.append(risk_cls(**r.get("params_init", {})))
 
-    # --- Strategy plugins (new) ---
+    # --- Strategy plugins (registered or local-source) ---
     strategy_plugins: list[StrategyPlugin] | None = None
     strategies_cfg = cfg["plugins"].get("strategies", [])
     if strategies_cfg:
         strategy_plugins = []
         for s in strategies_cfg:
-            cls = registry.strategies[s["name"]]
+            cls = _resolve_plugin_cls(s, registry.strategies, "strategy", mode=mode)
             strategy_plugins.append(cls(**s.get("params_init", {})))
 
     # --- Aggregator (it's a strategy plugin) ---
@@ -147,7 +277,6 @@ def run_from_config(cfg: dict[str, Any], registry) -> RunResult:
         rebalancer=rebalancer,
         aggregator=aggregator,
     )
-
 
     # --- Validation plugins (post-backtest) ---
     validation_cfg = cfg["plugins"].get("validation", []) or []
@@ -236,8 +365,6 @@ def run_from_config(cfg: dict[str, Any], registry) -> RunResult:
         schema_path = schema_dir / f"{logical}.schema.json"
         if schema_path.exists() and path.endswith(".parquet"):
             try:
-                import pandas as pd
-
                 df = pd.read_parquet(path)
                 schema = load_schema(schema_path)
                 manifest["warnings"].extend([f"{logical}:{w}" for w in validate_table(df, schema)])

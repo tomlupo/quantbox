@@ -1,0 +1,356 @@
+# Quantbox Binance Account Configuration
+# Token policy: allowlist mode (safer - new tokens require explicit approval)
+
+account_name: "binance"
+exchange: "binance"
+base_currency: "USDC"
+
+# Data configuration
+lookback_days: 365
+top_coins: 100
+
+# Strategy configuration
+strategies:
+  - name: "crypto_trend_catcher"
+    weight: 1.0
+
+# Risk management
+max_leverage: 1.0
+min_trade_size: 0.01
+
+# =============================================================================
+# TOKEN POLICY - Allowlist mode (opt-in, safer than quantlab's opt-out)
+# =============================================================================
+token_policy:
+  mode: "allowlist"           # Only trade tokens explicitly in 'allowed' list
+  alert_on_new: true          # Alert when new token appears in top_n_monitor
+  top_n_monitor: 100          # Monitor top N for new entries
+  
+  # ---------------------------------------------------------------------------
+  # ALLOWED TOKENS - Can be traded
+  # ---------------------------------------------------------------------------
+  allowed:
+    # Major cryptocurrencies
+    - BTC    # Bitcoin
+    - ETH    # Ethereum
+    - BNB    # Binance Coin
+    - SOL    # Solana
+    - XRP    # Ripple
+    - ADA    # Cardano
+    - DOGE   # Dogecoin
+    - TRX    # Tron
+    - AVAX   # Avalanche
+    - LINK   # Chainlink
+    - DOT    # Polkadot
+    - MATIC  # Polygon
+    - SHIB   # Shiba Inu
+    - LTC    # Litecoin
+    - BCH    # Bitcoin Cash
+    - ATOM   # Cosmos
+    - UNI    # Uniswap
+    - XLM    # Stellar
+    - ETC    # Ethereum Classic
+    - APT    # Aptos
+    - NEAR   # NEAR Protocol
+    - FIL    # Filecoin
+    - ICP    # Internet Computer
+    - HBAR   # Hedera
+    - VET    # VeChain
+    - IMX    # Immutable X
+    - INJ    # Injective
+    - OP     # Optimism
+    - ARB    # Arbitrum
+    - SUI    # Sui
+    - SEI    # Sei
+    - AAVE   # Aave
+    - MKR    # Maker
+    - GRT    # The Graph
+    - SNX    # Synthetix
+    - CRV    # Curve
+    - LDO    # Lido
+    - RUNE   # THORChain
+    - FTM    # Fantom
+    - ALGO   # Algorand
+    - MANA   # Decentraland
+    - SAND   # The Sandbox
+    - AXS    # Axie Infinity
+    - GALA   # Gala
+    - ENJ    # Enjin
+    - CHZ    # Chiliz
+    - THETA  # Theta
+    - EGLD   # MultiversX
+    - FLOW   # Flow
+    - KAVA   # Kava
+    - ZIL    # Zilliqa
+    - ENS    # Ethereum Name Service
+    - 1INCH  # 1inch
+    - COMP   # Compound
+    - YFI    # yearn.finance
+    - BAL    # Balancer
+    - SUSHI  # SushiSwap
+    - EOS    # EOS
+    - XTZ    # Tezos
+    - NEO    # Neo
+    - WAVES  # Waves
+    - IOTA   # IOTA
+    - ZRX    # 0x
+    - BAT    # Basic Attention Token
+    - ANKR   # Ankr
+    - CELO   # Celo
+    - ONE    # Harmony
+    - ROSE   # Oasis
+    - QTUM   # Qtum
+    - ICX    # ICON
+    - OMG    # OMG Network
+    - STORJ  # Storj
+    - SKL    # SKALE
+    - AUDIO  # Audius
+    - MASK   # Mask Network
+    - DYDX   # dYdX
+    - GMX    # GMX
+    - PENGU  # Pudgy Penguins
+    - WLD    # Worldcoin
+    - PEPE   # Pepe
+    - BONK   # Bonk
+    - FLOKI  # Floki
+    - WIF    # dogwifhat
+    - JUP    # Jupiter
+    - PYTH   # Pyth Network
+    - TIA    # Celestia
+    - STRK   # Starknet
+    - TAO    # Bittensor
+    - RENDER # Render
+    - FET    # Fetch.ai
+    - AGIX   # SingularityNET
+    - RNDR   # Render Token
+    - OCEAN  # Ocean Protocol
+    - JASMY  # JasmyCoin
+    - BLUR   # Blur
+    - MAGIC  # Magic
+    - APE    # ApeCoin
+    - LUNC   # Terra Classic
+    - ETHFI  # ether.fi
+    - ENA    # Ethena
+    - BOME   # Book of Meme
+    - NOT    # Notcoin
+    - TON    # Toncoin
+    - ONDO   # Ondo
+    - STX    # Stacks
+    # Added 2026-02-06 based on top 100 review
+    - POL    # Polygon (new ticker, was MATIC)
+    - QNT    # Quant Network (interoperability)
+    - NEXO   # Nexo lending platform
+    - MORPHO # Morpho DeFi lending protocol
+    
+  # ---------------------------------------------------------------------------
+  # DENIED TOKENS - Never trade (with reasons)
+  # ---------------------------------------------------------------------------
+  denied:
+    # === STABLECOINS ===
+    - symbol: USDT
+      reason: "Stablecoin - used as quote currency, not for trading"
+    - symbol: USDC
+      reason: "Stablecoin - used as quote currency, not for trading"
+    - symbol: BUSD
+      reason: "Stablecoin - Binance USD, being phased out"
+    - symbol: DAI
+      reason: "Decentralized stablecoin - not for trading strategies"
+    - symbol: TUSD
+      reason: "Stablecoin - TrueUSD"
+    - symbol: USDP
+      reason: "Stablecoin - Pax Dollar"
+    - symbol: GUSD
+      reason: "Stablecoin - Gemini Dollar"
+    - symbol: FRAX
+      reason: "Algorithmic stablecoin"
+    - symbol: LUSD
+      reason: "Stablecoin - Liquity USD"
+    - symbol: FDUSD
+      reason: "Stablecoin - First Digital USD"
+    - symbol: USDe
+      reason: "Newer algorithmic stablecoin; Binance cautious"
+    - symbol: USDS
+      reason: "Stablecoin variant"
+    - symbol: PYUSD
+      reason: "PayPal stablecoin; regulatory concerns"
+    - symbol: USD1
+      reason: "Stablecoin"
+    - symbol: USDF
+      reason: "Unknown stablecoin variant"
+      
+    # === EXCHANGE TOKENS (conflict of interest / not listed) ===
+    - symbol: HYPE
+      reason: "Hyperliquid exchange token; Binance conflict of interest"
+    - symbol: LEO
+      reason: "Bitfinex exchange token; never listed on Binance"
+    - symbol: BGB
+      reason: "Bitget exchange token; competitor conflict"
+    - symbol: OKB
+      reason: "OKX exchange token; competitor, not listed"
+    - symbol: GT
+      reason: "Gate.io exchange token; competitor conflict"
+    - symbol: KCS
+      reason: "KuCoin exchange token; competitor, not listed"
+    - symbol: CRO
+      reason: "Crypto.com exchange token; competitor"
+    - symbol: MX
+      reason: "MEXC exchange token"
+    - symbol: HT
+      reason: "Huobi exchange token"
+    - symbol: WBT
+      reason: "WhiteBIT exchange token"
+    
+    # === PRIVACY COINS (regulatory issues) ===
+    - symbol: XMR
+      reason: "Monero - delisted by Binance 2024 due to privacy regulations"
+    - symbol: ZEC
+      reason: "Zcash - privacy features may face regulatory issues"
+    - symbol: DASH
+      reason: "Privacy features - regulatory concerns"
+    - symbol: SCRT
+      reason: "Secret Network - privacy coin"
+    
+    # === NOT LISTED ON BINANCE / LOW LIQUIDITY ===
+    - symbol: PI
+      reason: "Pi Network - not fully launched, IOU tokens only"
+    - symbol: IP
+      reason: "Newer/lower-liquidity project; no Binance listing"
+    - symbol: PAXG
+      reason: "PAX Gold - no USDT pair on Binance"
+    - symbol: XAUt
+      reason: "Tether Gold - delisted from Binance 2023"
+    - symbol: XAUT
+      reason: "Tether Gold variant"
+    - symbol: KAS
+      reason: "Kaspa - may not meet Binance listing requirements"
+    - symbol: FLR
+      reason: "Flare - newer project, insufficient volume"
+    - symbol: SKY
+      reason: "Skycoin - liquidity/regulatory concerns"
+    - symbol: AERO
+      reason: "Aerodrome - Base L2 native, low liquidity"
+    - symbol: XDC
+      reason: "XDC Network - may not meet Binance criteria"
+    - symbol: MNT
+      reason: "Mantle - newer L2, insufficient volume"
+    - symbol: CC
+      reason: "Unknown/unverified token"
+    - symbol: FIGR_HELOC
+      reason: "Unknown DeFi product; not tradable"
+    - symbol: RAIN
+      reason: "Unknown; requires verification"
+    - symbol: MYX
+      reason: "Unknown; not verified"
+    - symbol: USDG
+      reason: "Unknown stablecoin"
+    - symbol: USDD
+      reason: "TRON stablecoin; depegging risk"
+    - symbol: NIGHT
+      reason: "Unknown; not verified"
+    - symbol: EURC
+      reason: "Euro stablecoin"
+    - symbol: LIT
+      reason: "Litentry - low liquidity"
+    - symbol: STABLE
+      reason: "Stablecoin/unknown"
+    - symbol: NFT
+      reason: "NFT token - unclear utility"
+    
+    # === MEME/NOVELTY COINS (high risk) ===
+    - symbol: SPX
+      reason: "Meme/derivative product; too risky"
+    - symbol: PUMP
+      reason: "High volatility meme token; insufficient safety"
+    - symbol: FARTCOIN
+      reason: "Meme/novelty coin; fails listing standards"
+    - symbol: BRETT
+      reason: "Meme coin; high volatility"
+    - symbol: MOG
+      reason: "Meme coin"
+    - symbol: POPCAT
+      reason: "Meme coin"
+      
+    # === WRAPPED/BRIDGED TOKENS (trade underlying instead) ===
+    - symbol: WBTC
+      reason: "Wrapped BTC - trade BTC directly"
+    - symbol: WETH
+      reason: "Wrapped ETH - trade ETH directly"
+    - symbol: stETH
+      reason: "Staked ETH derivative"
+    - symbol: cbETH
+      reason: "Coinbase staked ETH"
+    - symbol: rETH
+      reason: "Rocket Pool staked ETH"
+    - symbol: WBETH
+      reason: "Wrapped Beacon ETH"
+    
+    # === OTHER EXCLUSIONS ===
+    - symbol: BTT
+      reason: "BitTorrent - insufficient volume/quality"
+    - symbol: FORM
+      reason: "Formation Finance - insufficient liquidity"
+    - symbol: USTC
+      reason: "TerraClassicUSD - depegged, high risk"
+    - symbol: LUNC
+      reason: "Terra Classic - post-collapse, high risk"
+    
+    # === ADDED 2026-02-06 (top 100 review) ===
+    # Stablecoins
+    - symbol: USDE
+      reason: "Ethena stablecoin - not for trading"
+    - symbol: BFUSD
+      reason: "Stablecoin variant"
+    - symbol: RLUSD
+      reason: "Ripple stablecoin"
+    - symbol: USDTB
+      reason: "Stablecoin variant"
+    - symbol: USTB
+      reason: "Stablecoin/tokenized treasury"
+    - symbol: USDY
+      reason: "Ondo yield stablecoin"
+    - symbol: USD0
+      reason: "Usual stablecoin"
+    - symbol: USDAI
+      reason: "AI-related stablecoin"
+    - symbol: GHO
+      reason: "Aave stablecoin - not for trading"
+    # Exchange tokens
+    - symbol: HTX
+      reason: "Huobi exchange token; competitor"
+    # Political/meme
+    - symbol: WLFI
+      reason: "World Liberty Financial - Trump-related, regulatory risk"
+    - symbol: TRUMP
+      reason: "Political meme coin - high volatility, regulatory risk"
+    # Tokenized securities/funds
+    - symbol: BUIDL
+      reason: "BlackRock tokenized fund - not tradable on Binance"
+    - symbol: USYC
+      reason: "Hashnote tokenized treasury"
+    - symbol: OUSG
+      reason: "Ondo tokenized US Treasuries"
+    - symbol: EUTBL
+      reason: "Tokenized Euro bonds"
+    - symbol: JTRSY
+      reason: "Tokenized treasury product"
+    # Unknown/unverified
+    - symbol: M
+      reason: "M^0 stablecoin protocol"
+    - symbol: HASH
+      reason: "Unknown/unverified token"
+    - symbol: JAAA
+      reason: "Unknown tokenized product"
+    - symbol: A7A5
+      reason: "Unknown token"
+    - symbol: ASTER
+      reason: "Astar Network - insufficient Binance liquidity"
+    # Privacy
+    - symbol: BDX
+      reason: "Beldex privacy coin - regulatory concerns"
+    - symbol: FTN
+      reason: "Fasttoken - gambling/gaming token, insufficient liquidity"
+
+# =============================================================================
+# STATE FILE LOCATION
+# =============================================================================
+# seen_tokens tracked in: ~/workspace/quantbox/data/seen_tokens.json
