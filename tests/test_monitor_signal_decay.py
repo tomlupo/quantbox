@@ -9,7 +9,6 @@ from __future__ import annotations
 import pytest
 
 from quantbox.contracts import RunResult
-
 from quantbox.plugins.monitor.signal_decay import SignalDecayMonitor
 
 

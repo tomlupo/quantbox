@@ -8,8 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from quantbox.contracts import PluginMeta, RunResult
-
+from quantbox.contracts import RunResult
 from quantbox.plugins.monitor.drawdown import DrawdownMonitor
 
 

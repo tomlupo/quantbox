@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from quantbox.registry import PluginRegistry
 
-
 EXPECTED_VALIDATION_PLUGINS = [
     "validation.walk_forward.v1",
     "validation.statistical.v1",

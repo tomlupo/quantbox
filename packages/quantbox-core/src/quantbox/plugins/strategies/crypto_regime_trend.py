@@ -33,11 +33,11 @@ import pandas as pd
 
 from quantbox.contracts import PluginMeta
 
+from ._universe import select_universe
 from .crypto_trend import (
     DEFAULT_STABLECOINS,
     compute_volatility_scalers,
 )
-from ._universe import select_universe
 
 logger = logging.getLogger(__name__)
 

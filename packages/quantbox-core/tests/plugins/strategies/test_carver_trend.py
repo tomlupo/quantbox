@@ -52,8 +52,6 @@ def test_bollinger_forecast_shape_and_range():
 
 def test_bollinger_forecast_zero_when_at_ma():
     """When price equals its rolling MA, the forecast is zero."""
-    flat = pd.Series([100.0] * 100)
-    fc = bollinger_forecast(flat, window=20)
     # Std of constant series is 0 → division gives NaN, not 0; that's fine.
     # Verify a near-flat case instead.
     nearly_flat = pd.Series(100.0 + np.linspace(0, 0.001, 100))
