@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,7 +13,22 @@ class ValidationFinding:
     message: str
 
 
+def _check_legacy_dataset_params(cfg: dict) -> None:
+    data = (cfg.get("plugins") or {}).get("data") or {}
+    params = data.get("params_init") or {}
+    has_legacy = "dataset_root" in params or "dataset" in params
+    has_new = "dataset_id" in params
+    if has_legacy and not has_new:
+        warnings.warn(
+            "config uses legacy dataset_root/dataset params; switch to dataset_id "
+            "(see quantbox-qute/docs/decisions/0004-quantbox-dataset-plugin-tiers.md)",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+
 def validate_config(cfg: dict[str, Any]) -> list[ValidationFinding]:
+    _check_legacy_dataset_params(cfg)
     findings: list[ValidationFinding] = []
     for k in ("run", "artifacts", "plugins"):
         if k not in cfg:
