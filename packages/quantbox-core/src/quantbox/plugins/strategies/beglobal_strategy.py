@@ -356,6 +356,21 @@ class BeGlobalStrategy:
                     setattr(self, key, value)
 
         prices: pd.DataFrame = data["prices"]
+
+        # Strategy uses date-based slicing on the prices index to assemble
+        # per-asset history. A non-unique index makes ``get_loc`` / ``.loc[:date]``
+        # ambiguous (returns a slice instead of a scalar position) which has
+        # historically masqueraded as a cryptic ``slice + int`` TypeError. Detect
+        # and refuse to run with a clear message instead.
+        if not prices.index.is_unique:
+            raise ValueError(
+                "BeGlobalStrategy requires prices with a unique index, but the "
+                f"input has {len(prices.index) - prices.index.nunique()} duplicate "
+                "timestamps. This typically indicates upstream data corruption "
+                "(e.g. a RangeIndex coerced to datetime via "
+                "pd.to_datetime(int_values))."
+            )
+
         base_allocation = RISK_PROFILE_ALLOCATIONS.get(
             self.risk_profile,
             RISK_PROFILE_ALLOCATIONS["mixed"],
@@ -402,13 +417,18 @@ class BeGlobalStrategy:
         rows: list[dict[str, float]] = []
         row_dates: list = []
 
-        for date in dates:
-            loc = prices.index.get_loc(date)
+        # Iterate with explicit positional offset into ``prices`` (= ``warmup + i``)
+        # rather than re-resolving via ``get_loc(date)`` per iteration. This is
+        # both faster and immune to any ambiguity in the index.
+        for i, date in enumerate(dates):
+            pos = warmup + i
 
-            # Slice prices up to current date
+            # Slice prices up to current date. Per-asset series may be shorter
+            # than ``prices`` (leading NaNs dropped for late-listing assets), so
+            # we slice by date label, not by position in the full prices frame.
             prices_to_date: dict[str, pd.Series] = {}
             for asset_key, series in asset_prices.items():
-                sliced = series.iloc[: loc + 1]
+                sliced = series.loc[:date]
                 if len(sliced) > 0:
                     prices_to_date[asset_key] = sliced
 
@@ -435,7 +455,7 @@ class BeGlobalStrategy:
                 combined[asset] = core.get(asset, 0.0) + satellite.get(asset, 0.0)
 
             # -- Volatility targeting --
-            port_ret_to_date = portfolio_ret.iloc[: loc + 1].dropna()
+            port_ret_to_date = portfolio_ret.iloc[: pos + 1].dropna()
             if len(port_ret_to_date) > self.vol_lookback:
                 scalar = _volatility_scalar(
                     port_ret_to_date,
