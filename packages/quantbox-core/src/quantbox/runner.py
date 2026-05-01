@@ -217,43 +217,6 @@ def _plugin_meta(plugin: Any, fallback_name: str | None = None) -> dict[str, Any
     }
 
 
-def _dataset_evidence(data: DataPlugin) -> dict[str, Any]:
-    dataset_root = getattr(data, "dataset_root", None)
-    dataset = getattr(data, "dataset", None)
-    evidence: dict[str, Any] = {}
-    if dataset_root is not None:
-        evidence["dataset_root"] = str(dataset_root)
-    if dataset is not None:
-        evidence["dataset"] = str(dataset)
-
-    if dataset_root and dataset:
-        dataset_path = Path(str(dataset_root)) / str(dataset)
-        manifest_path = dataset_path / "manifest.yaml"
-        instruments_path = dataset_path / "instruments.parquet"
-        evidence.update(
-            {
-                "dataset_path": str(dataset_path),
-                "manifest_path": str(manifest_path),
-                "manifest_sha256": _sha256_file(manifest_path),
-                "instrument_registry_path": str(instruments_path),
-                "instrument_registry_present": instruments_path.exists(),
-            }
-        )
-        try:
-            import yaml  # type: ignore[import-not-found]
-
-            manifest = yaml.safe_load(manifest_path.read_text()) if manifest_path.exists() else {}
-            if isinstance(manifest, dict):
-                evidence["date_range"] = manifest.get("date_range")
-                evidence["data_fields"] = manifest.get("data_fields")
-                evidence["source"] = manifest.get("source")
-                evidence["mode"] = getattr(data, "mode", None)
-        except Exception as exc:
-            evidence["manifest_warning"] = f"manifest_read_error:{exc}"
-
-    return evidence
-
-
 def _dataset_block(data: Any) -> dict[str, Any]:
     """Return the typed dataset evidence block for run_manifest.json.
 
@@ -539,10 +502,8 @@ def run_from_config(
             "broker": getattr(getattr(broker, "meta", None), "name", broker_block["name"]) if broker else None,
         },
         "plugin_versions": plugin_versions,
-        "data": {
-            "source_identity": _dataset_evidence(data),
-            "asof": result.asof,
-        },
+        "dataset": _dataset_block(data),
+        "capability_results": _run_capability_checks(data, run_ctx=None),
         "artifacts": result.artifacts,
         "metrics": result.metrics,
         "warnings": [],
@@ -559,6 +520,19 @@ def run_from_config(
                 manifest["warnings"].extend([f"{logical}:{w}" for w in validate_table(df, schema)])
             except Exception as e:
                 manifest["warnings"].append(f"{logical}:schema_check_error:{e}")
+
+    strict_mode = bool(cfg.get("run", {}).get("strict")) or result.mode == "promotion"
+    if strict_mode:
+        if manifest["dataset"]["tier"] == "raw":
+            store.put_json("run_manifest", manifest)
+            raise RuntimeError(
+                "strict mode rejects Tier-0 raw ingest — see "
+                "quantbox-qute/docs/decisions/0004-quantbox-dataset-plugin-tiers.md"
+            )
+        failures = [c for c, r in manifest["capability_results"].items() if not r["passed"]]
+        if failures:
+            store.put_json("run_manifest", manifest)
+            raise RuntimeError(f"strict mode capability failures: {failures}")
 
     store.put_json("run_manifest", manifest)
     store.append_event(event_line("RUN_END", run_id=run_id, metrics=result.metrics, warnings=len(manifest["warnings"])))

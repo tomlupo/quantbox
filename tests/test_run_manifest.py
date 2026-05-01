@@ -31,5 +31,6 @@ def test_manifest_includes_reproducibility_evidence(tmp_path):
     assert manifest["config"]["git_blob_sha"]
     assert manifest["git"]["commit"]
     assert manifest["plugin_versions"]["pipeline"]["name"]
-    assert "source_identity" in manifest["data"]
+    assert "dataset" in manifest
+    assert "tier" in manifest["dataset"]
     assert isinstance(manifest["warnings"], list)
