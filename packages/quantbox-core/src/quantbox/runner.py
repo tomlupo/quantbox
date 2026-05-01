@@ -26,6 +26,7 @@ from .exceptions import ConfigValidationError, PluginNotFoundError
 from .llm_utils import event_line, load_schema, validate_table
 from .plugin_manifest import load_manifest, repo_root, resolve_profile
 from .store import FileArtifactStore
+from .strict import get_capability
 from .validate import validate_config
 
 logger = logging.getLogger(__name__)
@@ -253,6 +254,73 @@ def _dataset_evidence(data: DataPlugin) -> dict[str, Any]:
     return evidence
 
 
+def _dataset_block(data: Any) -> dict[str, Any]:
+    """Return the typed dataset evidence block for run_manifest.json.
+
+    Accepts a DataPlugin. If the DataPlugin exposes ``.resolve()`` returning a
+    DatasetPlugin (Tier 1+), evidence is read from it. Otherwise (Tier 0)
+    a raw marker is emitted.
+    """
+    plugin = None
+    if hasattr(data, "resolve"):
+        try:
+            plugin = data.resolve()
+        except Exception:
+            plugin = None
+    if plugin is None and hasattr(data, "dataset_id") and hasattr(data, "manifest_hash"):
+        plugin = data  # caller passed a DatasetPlugin directly (used by tests)
+
+    if plugin is None:
+        return {"tier": "raw", "warning": "no dataset plugin used"}
+    try:
+        m = plugin.manifest()
+    except Exception as exc:
+        return {
+            "tier": "plugin",
+            "id": getattr(plugin, "dataset_id", None),
+            "warning": f"manifest_error:{exc}",
+        }
+    return {
+        "tier": "plugin",
+        "id": plugin.dataset_id,
+        "version": plugin.dataset_version,
+        "plugin_name": getattr(getattr(plugin, "meta", None), "name", None),
+        "manifest": {
+            "format": "yaml",
+            "sha256": plugin.manifest_hash(),
+            "name": m.name,
+            "version": m.version,
+            "date_range": dict(m.date_range),
+            "symbols_count": m.symbols_count,
+            "data_fields": list(m.data_fields),
+        },
+        "coverage_report": {"present": plugin.coverage_report() is not None},
+        "capabilities_declared": list(plugin.capabilities),
+    }
+
+
+def _run_capability_checks(data: Any, run_ctx: Any) -> dict[str, dict[str, Any]]:
+    plugin = None
+    if hasattr(data, "resolve"):
+        try:
+            plugin = data.resolve()
+        except Exception:
+            plugin = None
+    if plugin is None and hasattr(data, "capabilities"):
+        plugin = data
+    if plugin is None:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for cap in getattr(plugin, "capabilities", ()) or ():
+        chk = get_capability(cap)
+        if chk is None:
+            out[cap] = {"passed": False, "message": "unknown_capability"}
+            continue
+        r = chk.check(plugin, run_ctx)
+        out[cap] = {"passed": r.passed, "details": dict(r.details), "message": r.message}
+    return out
+
+
 def _run_id(asof: str, pipeline_name: str, cfg_hash: str) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     safe = pipeline_name.replace(".", "_")
@@ -461,9 +529,7 @@ def run_from_config(
             "sha256": cfg_hash_full,
             "file_sha256": _sha256_file(config_path_obj) if config_path_obj else None,
             "git_blob_sha": (
-                _git_value(["hash-object", str(config_path_obj)], Path.cwd())
-                if config_path_obj
-                else None
+                _git_value(["hash-object", str(config_path_obj)], Path.cwd()) if config_path_obj else None
             ),
         },
         "git": _git_info(Path.cwd()),
