@@ -61,6 +61,7 @@ PluginKind = Literal[
     "feature",
     "validation",
     "monitor",
+    "dataset",
 ]
 PipelineKind = Literal["research", "trading"]
 PluginStatus = Literal["research", "locked", "production"]

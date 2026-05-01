@@ -29,6 +29,8 @@ ENTRYPOINT_GROUPS = {
     "feature": "quantbox.features",
     "validation": "quantbox.validations",
     "monitor": "quantbox.monitors",
+    "dataset": "quantbox.datasets",
+    "capability": "quantbox.capabilities",
 }
 
 
@@ -52,10 +54,24 @@ class PluginRegistry:
     features: dict[str, type[FeaturePlugin]] = field(default_factory=dict)
     validations: dict[str, type[ValidationPlugin]] = field(default_factory=dict)
     monitors: dict[str, type[MonitorPlugin]] = field(default_factory=dict)
+    datasets: dict[str, type] = field(default_factory=dict)
+    capabilities: dict[str, type] = field(default_factory=dict)
 
     @staticmethod
     def discover() -> PluginRegistry:
         builtins = builtin_plugins()
+        capability_classes = {
+            **builtins.get("capability", {}),
+            **_load_group(ENTRYPOINT_GROUPS["capability"]),
+        }
+        # Side-effect: register each capability class instance into the strict registry.
+        from .strict import register_capability  # local import to avoid cycle
+
+        for _name, _cls in capability_classes.items():
+            try:
+                register_capability(_name, _cls())
+            except Exception:
+                pass
         return PluginRegistry(
             pipelines={**builtins["pipeline"], **_load_group(ENTRYPOINT_GROUPS["pipeline"])},
             brokers={**builtins["broker"], **_load_group(ENTRYPOINT_GROUPS["broker"])},
@@ -67,4 +83,6 @@ class PluginRegistry:
             features={**builtins.get("feature", {}), **_load_group(ENTRYPOINT_GROUPS["feature"])},
             validations={**builtins.get("validation", {}), **_load_group(ENTRYPOINT_GROUPS["validation"])},
             monitors={**builtins.get("monitor", {}), **_load_group(ENTRYPOINT_GROUPS["monitor"])},
+            datasets={**builtins.get("dataset", {}), **_load_group(ENTRYPOINT_GROUPS["dataset"])},
+            capabilities=capability_classes,
         )
