@@ -45,4 +45,6 @@ plugins:
   data:
     name: "local_file_data"
     params_init:
-      data_dir: "./data/etf-daily"
+      prices_path: "../quantbox-datasets/datasets/etf-daily/prices.parquet"
+      volume_path: "../quantbox-datasets/datasets/etf-daily/volume.parquet"
+      universe_path: "../quantbox-datasets/datasets/etf-daily/universe.parquet"
