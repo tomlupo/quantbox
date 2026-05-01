@@ -187,6 +187,9 @@ class LocalFileDataPlugin:
     universe_path: str | None = None
     funding_rates_path: str | None = None
     fx_path: str | None = None
+    dataset_root: str | None = None
+    dataset: str | None = None
+    mode: str | None = None
 
     def load_universe(self, params: dict[str, Any]) -> pd.DataFrame:
         """Load trading universe from file or params.

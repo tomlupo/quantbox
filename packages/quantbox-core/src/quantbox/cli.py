@@ -320,7 +320,7 @@ def run(
         return
 
     reg = PluginRegistry.discover()
-    result = run_from_config(cfg, reg)
+    result = run_from_config(cfg, reg, config_path=config)
     print("RUN_ID:", result.run_id)
     print("PIPELINE:", result.pipeline_name)
     print("METRICS:", result.metrics)

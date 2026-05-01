@@ -5,15 +5,11 @@
     "columns": {
       "const": [
         {
-          "name": "asof",
+          "name": "date",
           "type": "string"
         },
         {
-          "name": "cash_usd",
-          "type": "number"
-        },
-        {
-          "name": "portfolio_value_usd",
+          "name": "portfolio_value",
           "type": "number"
         }
       ]

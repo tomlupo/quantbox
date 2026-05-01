@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import logging
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -163,13 +164,107 @@ def _hash_config(cfg: dict[str, Any]) -> str:
     return hashlib.sha256(b).hexdigest()[:12]
 
 
+def _hash_config_full(cfg: dict[str, Any]) -> str:
+    b = json.dumps(cfg, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(b).hexdigest()
+
+
+def _sha256_file(path: Path) -> str | None:
+    try:
+        h = hashlib.sha256()
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def _git_value(args: list[str], cwd: Path) -> str | None:
+    try:
+        out = subprocess.check_output(
+            ["git", *args],
+            cwd=cwd,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except Exception:
+        return None
+    return out or None
+
+
+def _git_info(cwd: Path | None = None) -> dict[str, Any]:
+    root = cwd or Path.cwd()
+    return {
+        "repo_root": _git_value(["rev-parse", "--show-toplevel"], root),
+        "branch": _git_value(["branch", "--show-current"], root),
+        "commit": _git_value(["rev-parse", "HEAD"], root),
+        "dirty": _git_value(["status", "--porcelain"], root) not in (None, ""),
+    }
+
+
+def _plugin_meta(plugin: Any, fallback_name: str | None = None) -> dict[str, Any] | None:
+    if plugin is None and fallback_name is None:
+        return None
+    meta = getattr(plugin, "meta", None)
+    return {
+        "name": getattr(meta, "name", fallback_name),
+        "kind": getattr(meta, "kind", None),
+        "version": getattr(meta, "version", None),
+        "schema_version": getattr(meta, "schema_version", None),
+        "core_compat": getattr(meta, "core_compat", None),
+    }
+
+
+def _dataset_evidence(data: DataPlugin) -> dict[str, Any]:
+    dataset_root = getattr(data, "dataset_root", None)
+    dataset = getattr(data, "dataset", None)
+    evidence: dict[str, Any] = {}
+    if dataset_root is not None:
+        evidence["dataset_root"] = str(dataset_root)
+    if dataset is not None:
+        evidence["dataset"] = str(dataset)
+
+    if dataset_root and dataset:
+        dataset_path = Path(str(dataset_root)) / str(dataset)
+        manifest_path = dataset_path / "manifest.yaml"
+        instruments_path = dataset_path / "instruments.parquet"
+        evidence.update(
+            {
+                "dataset_path": str(dataset_path),
+                "manifest_path": str(manifest_path),
+                "manifest_sha256": _sha256_file(manifest_path),
+                "instrument_registry_path": str(instruments_path),
+                "instrument_registry_present": instruments_path.exists(),
+            }
+        )
+        try:
+            import yaml  # type: ignore[import-not-found]
+
+            manifest = yaml.safe_load(manifest_path.read_text()) if manifest_path.exists() else {}
+            if isinstance(manifest, dict):
+                evidence["date_range"] = manifest.get("date_range")
+                evidence["data_fields"] = manifest.get("data_fields")
+                evidence["source"] = manifest.get("source")
+                evidence["mode"] = getattr(data, "mode", None)
+        except Exception as exc:
+            evidence["manifest_warning"] = f"manifest_read_error:{exc}"
+
+    return evidence
+
+
 def _run_id(asof: str, pipeline_name: str, cfg_hash: str) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     safe = pipeline_name.replace(".", "_")
     return f"{asof}__{safe}__{cfg_hash}__{ts}"
 
 
-def run_from_config(cfg: dict[str, Any], registry) -> RunResult:
+def run_from_config(
+    cfg: dict[str, Any],
+    registry,
+    *,
+    config_path: str | Path | None = None,
+) -> RunResult:
     run_cfg = cfg["run"]
     if "plugins" in cfg and cfg["plugins"].get("profile"):
         profile_name = str(cfg["plugins"]["profile"])
@@ -190,6 +285,7 @@ def run_from_config(cfg: dict[str, Any], registry) -> RunResult:
     pipeline_key: str = run_cfg["pipeline"]
 
     cfg_hash = _hash_config(cfg)
+    cfg_hash_full = _hash_config_full(cfg)
     run_id = _run_id(asof, pipeline_key, cfg_hash)
 
     store = FileArtifactStore(cfg["artifacts"]["root"], run_id)
@@ -331,6 +427,7 @@ def run_from_config(cfg: dict[str, Any], registry) -> RunResult:
             "mode": result.mode,
             "asof": result.asof,
             "config_hash": cfg_hash,
+            "config_sha256": cfg_hash_full,
             "artifacts": result.artifacts,
             "metrics": result.metrics,
             "notes": result.notes,
@@ -343,16 +440,42 @@ def run_from_config(cfg: dict[str, Any], registry) -> RunResult:
         pub.publish(result, p.get("params", {}))
 
     # LLM-friendly manifest (single file to understand the run)
+    config_path_obj = Path(config_path).resolve() if config_path is not None else None
+    plugin_versions = {
+        "pipeline": _plugin_meta(pipeline, pipe_name),
+        "data": _plugin_meta(data, data_name),
+        "broker": _plugin_meta(broker, broker_block["name"]) if broker_block and broker else None,
+        "risk": [_plugin_meta(plugin) for plugin in risk_plugins],
+        "strategies": [_plugin_meta(plugin) for plugin in strategy_plugins or []],
+        "aggregator": _plugin_meta(aggregator) if aggregator else None,
+        "rebalancer": _plugin_meta(rebalancer) if rebalancer else None,
+    }
     manifest = {
         "run_id": result.run_id,
         "asof": result.asof,
         "mode": result.mode,
         "pipeline": result.pipeline_name,
         "config_hash": cfg_hash,
+        "config": {
+            "path": str(config_path_obj) if config_path_obj else None,
+            "sha256": cfg_hash_full,
+            "file_sha256": _sha256_file(config_path_obj) if config_path_obj else None,
+            "git_blob_sha": (
+                _git_value(["hash-object", str(config_path_obj)], Path.cwd())
+                if config_path_obj
+                else None
+            ),
+        },
+        "git": _git_info(Path.cwd()),
         "plugins": {
             "pipeline": getattr(getattr(pipeline, "meta", None), "name", pipe_name),
             "data": getattr(getattr(data, "meta", None), "name", data_name),
             "broker": getattr(getattr(broker, "meta", None), "name", broker_block["name"]) if broker else None,
+        },
+        "plugin_versions": plugin_versions,
+        "data": {
+            "source_identity": _dataset_evidence(data),
+            "asof": result.asof,
         },
         "artifacts": result.artifacts,
         "metrics": result.metrics,
