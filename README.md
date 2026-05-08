@@ -37,10 +37,6 @@ See [backtesting guide](docs/guides/backtesting.md) for engine options and param
 quantbox run -c cookbook/configs/run_futures_paper_crypto_trend.yaml
 ```
 
-### Live trading
-
-Configured via [quantbox-live](https://github.com/tomlupo/quantbox-live).
-
 ## Plugins
 
 All plugins are config-driven and discovered automatically. List registered plugins:
