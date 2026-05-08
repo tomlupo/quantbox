@@ -9,7 +9,7 @@ date: 2026-04-25
 
 ## Context
 
-[ADR-0001](0001-library-not-framework.md) established that QuantBox is a composing framework — owned and opinionated, but composing external libraries rather than competing with them. That decision alone doesn't decide *how* the surface is shaped. We saw a recurring failure mode:
+[ADR-0001](DEC-0001-library-not-framework.md) established that QuantBox is a composing framework — owned and opinionated, but composing external libraries rather than competing with them. That decision alone doesn't decide *how* the surface is shaped. We saw a recurring failure mode:
 
 - A user wants to do something simple (try a backtest idea).
 - The skill points at the runner with YAML.
@@ -85,6 +85,6 @@ Every step adds one level of structure; users pick the lowest one that meets the
 ## Notes
 
 - Operationalized in [architecture/api-layers.md](../architecture/api-layers.md) — the canonical layer table.
-- Adapter rule that supports L0 is in [architecture/adapters.md](../architecture/adapters.md) and [ADR-0001](0001-library-not-framework.md).
+- Adapter rule that supports L0 is in [architecture/adapters.md](../architecture/adapters.md) and [ADR-0001](DEC-0001-library-not-framework.md).
 - Skill frontmatter contract is in [architecture/skills.md](../architecture/skills.md).
 - Pre-existing `quantbox.backtesting.*` modules will be reorganized to fit this layering — see migration plan in `docs/plans/`.

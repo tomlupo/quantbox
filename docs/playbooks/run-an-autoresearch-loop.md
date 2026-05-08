@@ -219,6 +219,6 @@ Over months, you build a body of empirical knowledge per client — auditable, r
 ## See also
 
 - [architecture/autoresearch.md](../architecture/autoresearch.md) — full design.
-- [ADR-0003](../adr/0003-autoresearch-as-driver-not-runtime.md) — design decision.
+- [ADR-0003](../decisions/DEC-0003-autoresearch-as-driver-not-runtime.md) — design decision.
 - [promote-a-methodology.md](promote-a-methodology.md) — what happens after the loop produces a candidate.
 - [add-a-plugin.md](add-a-plugin.md) — if you need to author a custom `VariantProposerPlugin`.

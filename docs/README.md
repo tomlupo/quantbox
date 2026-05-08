@@ -6,7 +6,7 @@
 |--------|-------------|
 | [architecture/](architecture/) | **Read first when modifying.** Principles, API layers, plugin/adapter/skill conventions, lifecycle, templates, autoresearch. |
 | [playbooks/](playbooks/) | Step-by-step how-tos: add-an-adapter, add-a-plugin, add-a-skill, promote-a-methodology, run-an-autoresearch-loop |
-| [adr/](adr/) | Architecture Decision Records — *why* the design is the way it is |
+| [decisions/](decisions/) | Architecture Decision Records — *why* the design is the way it is |
 | [methodology/](methodology/) | *Why* a model/algorithm works — research-side reasoning + LOCKED specs (one per locked plugin) |
 | [runbooks/](runbooks/) | Operational procedures — cron jobs, deploys, brokers, recovery scenarios |
 | [datasets/](datasets/) | Human-readable schema/semantics docs paired with `schemas/*.schema.json` |

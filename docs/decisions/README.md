@@ -35,9 +35,9 @@ For the fill-in scaffold, use [`_template.md`](_template.md). It includes the re
 
 | # | Title | Status | Date |
 |---|---|---|---|
-| [0001](0001-library-not-framework.md) | Composing framework, not competing framework | accepted | 2026-04-25 |
+| [0001](DEC-0001-library-not-framework.md) | Composing framework, not competing framework | accepted | 2026-04-25 |
 | [0002](0002-layered-api.md) | Layered API (L0–L5) | accepted | 2026-04-25 |
-| [0003](0003-autoresearch-as-driver-not-runtime.md) | Autoresearch as L4 driver, not runtime mode | accepted | 2026-04-25 |
+| [0003](DEC-0003-autoresearch-as-driver-not-runtime.md) | Autoresearch as L4 driver, not runtime mode | accepted | 2026-04-25 |
 
 (Add new entries at the bottom; renumber-cleanup is forbidden — numbers are stable references.)
 

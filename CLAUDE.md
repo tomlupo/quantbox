@@ -12,7 +12,7 @@ A **template-driven SDK with adapters** for quant research and production. Three
 
 The plugin runtime (`run_from_config`, CLI) is *one* of multiple entry points — see the [layered API](docs/architecture/api-layers.md) (L0–L5). Casual use defaults to L0/L1 (re-exports + convenience helpers). YAML pipelines are L4. Production is L5 with `--strict`.
 
-QuantBox is a **composing framework** — owned and opinionated, but composing external libraries (vectorbt, MLflow, riskfolio, optionally Qlib) rather than competing with them on their turf. See [ADR-0001](docs/adr/0001-library-not-framework.md).
+QuantBox is a **composing framework** — owned and opinionated, but composing external libraries (vectorbt, MLflow, riskfolio, optionally Qlib) rather than competing with them on their turf. See [ADR-0001](docs/decisions/DEC-0001-library-not-framework.md).
 
 ## Authoritative docs (read in order)
 
@@ -26,7 +26,7 @@ QuantBox is a **composing framework** — owned and opinionated, but composing e
 | 6 | [`docs/architecture/lifecycle.md`](docs/architecture/lifecycle.md) | `meta.status` state machine, reproducibility, promotion. |
 | 7 | [`docs/architecture/templates.md`](docs/architecture/templates.md) | `quantbox new`, the four templates. |
 
-For step-by-step modifications, see [`docs/playbooks/`](docs/playbooks/). For historical decisions, see [`docs/adr/`](docs/adr/).
+For step-by-step modifications, see [`docs/playbooks/`](docs/playbooks/). For historical decisions, see [`docs/decisions/`](docs/decisions/).
 
 ## Project layout
 

@@ -17,4 +17,4 @@ Read these in order. The first two are mandatory before modifying anything; the 
 Once you've read principles + api-layers, the others are reference material — pull what's relevant.
 
 For step-by-step how-tos, see [../playbooks/](../playbooks/).
-For historical decisions, see [../adr/](../adr/).
+For historical decisions, see [../decisions/](../decisions/).

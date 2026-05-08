@@ -1,5 +1,5 @@
 ---
-adr: NNNN                                    # next number — see adr/README.md index
+decision: DEC-NNNN                                    # next number — see decisions/README.md index
 title: Short, decision-shaped title          # imperative voice, names the choice
 status: proposed                              # proposed | accepted | superseded | deprecated
 date: YYYY-MM-DD
