@@ -96,6 +96,60 @@ def validate_ohlcv(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
 
 
 # ============================================================================
+# Data Frequency Normalization
+# ============================================================================
+
+FREQUENCY_ALIASES: dict[str, str] = {
+    "daily": "1d",
+    "day": "1d",
+    "d": "1d",
+    "1day": "1d",
+    "hourly": "1h",
+    "hour": "1h",
+    "h": "1h",
+    "1hour": "1h",
+    "4hourly": "4h",
+    "4hour": "4h",
+    "weekly": "1w",
+    "week": "1w",
+    "w": "1w",
+    "monthly": "1M",
+    "month": "1M",
+    "1min": "1m",
+    "5min": "5m",
+    "15min": "15m",
+    "30min": "30m",
+}
+
+_VALID_INTERVALS = {"1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"}
+
+
+def normalize_data_frequency(frequency: str) -> str:
+    """Normalize frequency strings to Binance-compatible interval identifiers.
+
+    Accepts semantic names ("daily", "hourly") and Binance-native intervals
+    ("1d", "1h"). Returns the Binance interval string.
+
+    Examples:
+        >>> normalize_data_frequency("daily")
+        '1d'
+        >>> normalize_data_frequency("hourly")
+        '1h'
+        >>> normalize_data_frequency("4h")
+        '4h'
+    """
+    freq_lower = frequency.lower().strip()
+    if freq_lower in _VALID_INTERVALS:
+        return freq_lower
+    if freq_lower in FREQUENCY_ALIASES:
+        return FREQUENCY_ALIASES[freq_lower]
+    if frequency == "1M":
+        return "1M"
+    logger.warning("Unknown data frequency %r, passing through as-is", frequency)
+    return frequency
+
+
+# ============================================================================
 # Transient Error Classification (used by tenacity)
 # ============================================================================
 
