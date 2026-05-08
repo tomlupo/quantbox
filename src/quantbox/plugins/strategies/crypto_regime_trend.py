@@ -167,13 +167,19 @@ def select_regime_universe(
     """
     mcap = market_cap if not market_cap.empty else None
     long_universe = select_universe(
-        prices, volume, market_cap=mcap,
-        top_by_mcap=coins_to_trade, top_by_volume=long_max,
+        prices,
+        volume,
+        market_cap=mcap,
+        top_by_mcap=coins_to_trade,
+        top_by_volume=long_max,
         exclude_tickers=exclude_tickers,
     )
     short_universe = select_universe(
-        prices, volume, market_cap=mcap,
-        top_by_mcap=coins_to_trade, top_by_volume=short_max,
+        prices,
+        volume,
+        market_cap=mcap,
+        top_by_mcap=coins_to_trade,
+        top_by_volume=short_max,
         exclude_tickers=exclude_tickers,
     )
     return long_universe, short_universe

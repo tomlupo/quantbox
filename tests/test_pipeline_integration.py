@@ -1,4 +1,5 @@
 """Tests for validation and monitor plugin integration in runner.py."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -25,6 +26,7 @@ class TestValidationIntegration:
     def test_runner_imports_validation_support(self):
         """runner.py should handle validation config without errors."""
         from quantbox.runner import run_from_config
+
         # Just verify the function exists and can be imported
         assert callable(run_from_config)
 

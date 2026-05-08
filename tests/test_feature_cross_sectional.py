@@ -69,9 +69,7 @@ class TestCrossSectionalFeatures:
 
     # ---- z-score computation ----
 
-    def test_zscore_columns_present(
-        self, plugin: CrossSectionalFeatures, sample_data: dict[str, pd.DataFrame]
-    ) -> None:
+    def test_zscore_columns_present(self, plugin: CrossSectionalFeatures, sample_data: dict[str, pd.DataFrame]) -> None:
         result = plugin.compute(sample_data, {"methods": ["zscore"]})
         for h in [5, 10, 20, 60]:
             assert f"return_{h}d_zscore" in result.columns
@@ -131,9 +129,7 @@ class TestCrossSectionalFeatures:
 
     # ---- both methods together ----
 
-    def test_both_methods_default(
-        self, plugin: CrossSectionalFeatures, sample_data: dict[str, pd.DataFrame]
-    ) -> None:
+    def test_both_methods_default(self, plugin: CrossSectionalFeatures, sample_data: dict[str, pd.DataFrame]) -> None:
         result = plugin.compute(sample_data, {})
         for h in [5, 10, 20, 60]:
             assert f"return_{h}d_zscore" in result.columns

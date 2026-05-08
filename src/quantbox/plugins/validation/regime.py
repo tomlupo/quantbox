@@ -98,26 +98,30 @@ class RegimeValidation:
             total_ret = float(np.sum(regime_rets))
             pct_time = len(regime_rets) / total_days
 
-            regime_breakdown.append({
-                "regime": regime_name,
-                "sharpe": sharpe,
-                "return": total_ret,
-                "pct_time": pct_time,
-            })
+            regime_breakdown.append(
+                {
+                    "regime": regime_name,
+                    "sharpe": sharpe,
+                    "return": total_ret,
+                    "pct_time": pct_time,
+                }
+            )
 
         findings: list[dict[str, Any]] = []
 
         # Flag regimes with notably poor performance
         for entry in regime_breakdown:
             if entry["sharpe"] < -1.0 and entry["pct_time"] > 0.1:
-                findings.append({
-                    "level": "warn",
-                    "rule": "poor_regime_performance",
-                    "detail": (
-                        f"Regime '{entry['regime']}' has Sharpe {entry['sharpe']:.2f} "
-                        f"over {entry['pct_time']:.0%} of the period."
-                    ),
-                })
+                findings.append(
+                    {
+                        "level": "warn",
+                        "rule": "poor_regime_performance",
+                        "detail": (
+                            f"Regime '{entry['regime']}' has Sharpe {entry['sharpe']:.2f} "
+                            f"over {entry['pct_time']:.0%} of the period."
+                        ),
+                    }
+                )
 
         passed = len(findings) == 0
 

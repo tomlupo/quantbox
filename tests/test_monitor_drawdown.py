@@ -49,9 +49,7 @@ class TestDrawdownMonitor:
     # ----------------------------------------------------------------
     def test_halt_action_produces_error(self, monitor: DrawdownMonitor) -> None:
         result = _make_result(max_drawdown=-0.25)
-        alerts = monitor.check(
-            result, history=None, params={"max_drawdown": -0.20, "action": "halt"}
-        )
+        alerts = monitor.check(result, history=None, params={"max_drawdown": -0.20, "action": "halt"})
 
         dd_alerts = [a for a in alerts if a["rule"] == "max_drawdown_exceeded"]
         assert len(dd_alerts) == 1
@@ -63,9 +61,7 @@ class TestDrawdownMonitor:
     # ----------------------------------------------------------------
     def test_no_alert_within_limits(self, monitor: DrawdownMonitor) -> None:
         result = _make_result(max_drawdown=-0.10, total_return=0.05)
-        alerts = monitor.check(
-            result, history=None, params={"max_drawdown": -0.20, "max_loss": -0.30}
-        )
+        alerts = monitor.check(result, history=None, params={"max_drawdown": -0.20, "max_loss": -0.30})
         assert alerts == []
 
     # ----------------------------------------------------------------
@@ -73,9 +69,7 @@ class TestDrawdownMonitor:
     # ----------------------------------------------------------------
     def test_max_loss_exceeded(self, monitor: DrawdownMonitor) -> None:
         result = _make_result(max_drawdown=-0.10, total_return=-0.35)
-        alerts = monitor.check(
-            result, history=None, params={"max_drawdown": -0.05, "max_loss": -0.30}
-        )
+        alerts = monitor.check(result, history=None, params={"max_drawdown": -0.05, "max_loss": -0.30})
 
         loss_alerts = [a for a in alerts if a["rule"] == "max_loss_exceeded"]
         assert len(loss_alerts) == 1

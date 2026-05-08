@@ -22,8 +22,7 @@ def test_all_validation_plugins_discoverable() -> None:
 
     for name in EXPECTED_VALIDATION_PLUGINS:
         assert name in reg.validations, (
-            f"Validation plugin '{name}' not found in registry. "
-            f"Available: {list(reg.validations.keys())}"
+            f"Validation plugin '{name}' not found in registry. Available: {list(reg.validations.keys())}"
         )
 
 
@@ -31,8 +30,7 @@ def test_validation_plugin_count() -> None:
     reg = PluginRegistry.discover()
 
     assert len(reg.validations) >= len(EXPECTED_VALIDATION_PLUGINS), (
-        f"Expected at least {len(EXPECTED_VALIDATION_PLUGINS)} validation plugins, "
-        f"found {len(reg.validations)}"
+        f"Expected at least {len(EXPECTED_VALIDATION_PLUGINS)} validation plugins, found {len(reg.validations)}"
     )
 
 
@@ -52,6 +50,4 @@ def test_validation_plugins_are_instantiable() -> None:
     for name in EXPECTED_VALIDATION_PLUGINS:
         plugin_cls = reg.validations[name]
         instance = plugin_cls()
-        assert hasattr(instance, "validate"), (
-            f"Plugin '{name}' instance does not have a 'validate' method"
-        )
+        assert hasattr(instance, "validate"), f"Plugin '{name}' instance does not have a 'validate' method"

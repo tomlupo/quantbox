@@ -72,15 +72,14 @@ class DrawdownMonitor:
         actual_drawdown = result.metrics.get("max_drawdown")
 
         if actual_drawdown is not None and actual_drawdown < max_drawdown_threshold:
-            alerts.append({
-                "level": level,
-                "rule": "max_drawdown_exceeded",
-                "detail": (
-                    f"Max drawdown {actual_drawdown:.4f} breaches "
-                    f"threshold {max_drawdown_threshold:.4f}."
-                ),
-                "action": action,
-            })
+            alerts.append(
+                {
+                    "level": level,
+                    "rule": "max_drawdown_exceeded",
+                    "detail": (f"Max drawdown {actual_drawdown:.4f} breaches threshold {max_drawdown_threshold:.4f}."),
+                    "action": action,
+                }
+            )
 
         max_loss_threshold = params.get("max_loss")
         if max_loss_threshold is not None:
@@ -88,14 +87,15 @@ class DrawdownMonitor:
             actual_return = result.metrics.get("total_return")
 
             if actual_return is not None and actual_return < max_loss_threshold:
-                alerts.append({
-                    "level": level,
-                    "rule": "max_loss_exceeded",
-                    "detail": (
-                        f"Total return {actual_return:.4f} breaches "
-                        f"max loss threshold {max_loss_threshold:.4f}."
-                    ),
-                    "action": action,
-                })
+                alerts.append(
+                    {
+                        "level": level,
+                        "rule": "max_loss_exceeded",
+                        "detail": (
+                            f"Total return {actual_return:.4f} breaches max loss threshold {max_loss_threshold:.4f}."
+                        ),
+                        "action": action,
+                    }
+                )
 
         return alerts
