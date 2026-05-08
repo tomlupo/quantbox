@@ -36,7 +36,7 @@ quantbox run -c cookbook/configs/run_fund_selection.yaml
 quantbox run -c cookbook/configs/run_backtest_crypto_trend.yaml
 ```
 
-See [backtesting guide](docs/guides/backtesting.md) for engine options and parameters.
+See [backtesting guide](docs/playbooks/backtesting.md) for engine options and parameters.
 
 ### Paper trading
 
@@ -165,10 +165,8 @@ Copy-paste scaffolds for methodology specs, dataset docs, and runbooks are in [`
 ## Documentation
 
 See [docs/](docs/) for full documentation:
-- [Backtesting guide](docs/guides/backtesting.md)
-- [Multi-repo workflow](docs/guides/multi-repo-workflow.md)
-- [Trading bridge](docs/guides/trading-bridge.md)
-- [Approval gate](docs/guides/approval-gate.md)
-- [Integration guide](docs/guides/quantbox-integration-guide.md)
-- [LLM operations reference](docs/reference/llm-operations.md)
-- [Broker secrets](docs/reference/broker-secrets.md)
+- [Backtesting guide](docs/playbooks/backtesting.md)
+- [Multi-repo workflow](docs/playbooks/multi-repo-workflow.md)
+- [Trading bridge](docs/playbooks/trading-bridge.md)
+- [Approval gate](docs/playbooks/approval-gate.md)
+- [Integration guide](docs/playbooks/quantbox-integration-guide.md)
