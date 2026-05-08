@@ -15,6 +15,7 @@ import pandas as pd
 
 from quantbox.contracts import PluginMeta
 
+from ._utils import normalize_data_frequency
 from .binance_futures_data import BinanceFuturesDataFetcher
 
 logger = logging.getLogger(__name__)
@@ -129,11 +130,13 @@ class BinanceFuturesDataPlugin:
 
         tickers = universe["symbol"].tolist()
         lookback = int(params.get("lookback_days", 365))
+        interval = normalize_data_frequency(params.get("frequency", "1d"))
 
         data = self._fetcher.get_market_data(
             tickers=tickers,
             lookback_days=lookback,
             end_date=asof,
+            interval=interval,
         )
 
         logger.info(

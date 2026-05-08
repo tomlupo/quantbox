@@ -22,6 +22,7 @@ import pandas as pd
 from quantbox.plugins.datasources._utils import (
     MarketCapProvider,
     OHLCVCache,
+    interval_step,
     retry_transient,
     validate_ohlcv,
 )
@@ -190,8 +191,8 @@ class BinanceFuturesDataFetcher:
             return None
 
         # Check cache first
-        if self._ohlcv_cache is not None and interval == "1d":
-            cached = self._ohlcv_cache.get_cached(ticker, start_date, end_date)
+        if self._ohlcv_cache is not None:
+            cached = self._ohlcv_cache.get_cached(ticker, start_date, end_date, interval=interval)
             if cached is not None and not cached.empty:
                 last_cached = cached["date"].max()
                 target_end = pd.Timestamp(end_date)
@@ -212,22 +213,22 @@ class BinanceFuturesDataFetcher:
 
         # Incremental fetch start
         fetch_start = start_date
-        if self._ohlcv_cache is not None and interval == "1d":
-            last_cached_date = self._ohlcv_cache.get_last_date(ticker)
+        if self._ohlcv_cache is not None:
+            last_cached_date = self._ohlcv_cache.get_last_date(ticker, interval=interval)
             if last_cached_date is not None:
-                next_day = (last_cached_date + timedelta(days=1)).strftime("%Y-%m-%d")
-                if next_day > start_date:
-                    fetch_start = next_day
+                next_bar = (last_cached_date + interval_step(interval)).strftime("%Y-%m-%d %H:%M:%S")
+                if next_bar > start_date:
+                    fetch_start = next_bar
 
         try:
             df = self._fetch_ohlcv_with_retry(symbol, fetch_start, end_date, interval)
 
-            if df is not None and not df.empty and self._ohlcv_cache is not None and interval == "1d":
-                self._ohlcv_cache.store(ticker, df)
+            if df is not None and not df.empty and self._ohlcv_cache is not None:
+                self._ohlcv_cache.store(ticker, df, interval=interval)
 
             # Merge with cached data
-            if self._ohlcv_cache is not None and interval == "1d":
-                full = self._ohlcv_cache.get_cached(ticker, start_date, end_date)
+            if self._ohlcv_cache is not None:
+                full = self._ohlcv_cache.get_cached(ticker, start_date, end_date, interval=interval)
                 if full is not None and not full.empty:
                     df = full
 
@@ -245,8 +246,8 @@ class BinanceFuturesDataFetcher:
 
         except Exception as exc:
             logger.error("Error fetching OHLCV for %s: %s", ticker, exc)
-            if self._ohlcv_cache is not None and interval == "1d":
-                cached = self._ohlcv_cache.get_cached(ticker, start_date, end_date)
+            if self._ohlcv_cache is not None:
+                cached = self._ohlcv_cache.get_cached(ticker, start_date, end_date, interval=interval)
                 if cached is not None and not cached.empty:
                     logger.info("Serving stale cache for %s after fetch failure", ticker)
                     cached["ticker"] = ticker
@@ -438,6 +439,7 @@ class BinanceFuturesDataFetcher:
         tickers: list[str],
         lookback_days: int = 400,
         end_date: str | None = None,
+        interval: str = "1d",
     ) -> dict[str, pd.DataFrame]:
         """Fetch prices, volume, funding rates, and estimated market cap.
 
@@ -464,7 +466,7 @@ class BinanceFuturesDataFetcher:
                 continue
 
             # OHLCV
-            df = self.get_ohlcv(ticker, start_date, end_date)
+            df = self.get_ohlcv(ticker, start_date, end_date, interval=interval)
             if df is not None and not df.empty:
                 df_idx = df.set_index("date")
                 prices_data[ticker] = df_idx["close"]

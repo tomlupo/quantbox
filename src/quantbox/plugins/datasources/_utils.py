@@ -124,6 +124,18 @@ FREQUENCY_ALIASES: dict[str, str] = {
 _VALID_INTERVALS = {"1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"}
 
 
+def interval_step(interval: str) -> timedelta:
+    """Return the duration of one bar for the given Binance interval string."""
+    import re
+
+    m = re.match(r"^(\d+)([mhdwM])$", interval)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        seconds = {"m": 60, "h": 3600, "d": 86400, "w": 604800, "M": 2592000}
+        return timedelta(seconds=seconds.get(unit, 86400) * n)
+    return timedelta(days=1)
+
+
 def normalize_data_frequency(frequency: str) -> str:
     """Normalize frequency strings to Binance-compatible interval identifiers.
 
@@ -214,21 +226,22 @@ class OHLCVCache:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.fresh_ttl_hours = fresh_ttl_hours
 
-    def _ticker_dir(self, ticker: str) -> Path:
-        return self.cache_dir / "ohlcv" / ticker.upper()
+    def _ticker_dir(self, ticker: str, interval: str = "1d") -> Path:
+        return self.cache_dir / "ohlcv" / ticker.upper() / interval
 
     def get_cached(
         self,
         ticker: str,
         start_date: str,
         end_date: str,
+        interval: str = "1d",
     ) -> pd.DataFrame | None:
         """Read cached OHLCV from Parquet via DuckDB.
 
         Returns DataFrame with columns [date, open, high, low, close, volume]
         or None if no cache exists.
         """
-        tdir = self._ticker_dir(ticker)
+        tdir = self._ticker_dir(ticker, interval)
         if not tdir.exists():
             return None
 
@@ -249,9 +262,9 @@ class OHLCVCache:
             logger.debug("Cache read failed for %s: %s", ticker, exc)
             return None
 
-    def get_last_date(self, ticker: str) -> pd.Timestamp | None:
+    def get_last_date(self, ticker: str, interval: str = "1d") -> pd.Timestamp | None:
         """Get the most recent cached date for a ticker."""
-        tdir = self._ticker_dir(ticker)
+        tdir = self._ticker_dir(ticker, interval)
         if not tdir.exists():
             return None
 
@@ -266,38 +279,39 @@ class OHLCVCache:
         except Exception:
             return None
 
-    def is_fresh(self, ticker: str, end_date: str) -> bool:
+    def is_fresh(self, ticker: str, end_date: str, interval: str = "1d") -> bool:
         """Check if cached data is fresh enough to skip re-fetching."""
-        last = self.get_last_date(ticker)
+        last = self.get_last_date(ticker, interval)
         if last is None:
             return False
         target = pd.Timestamp(end_date)
         return (target - last) < timedelta(hours=self.fresh_ttl_hours)
 
-    def store(self, ticker: str, df: pd.DataFrame) -> None:
+    def store(self, ticker: str, df: pd.DataFrame, interval: str = "1d") -> None:
         """Append new OHLCV data to the cache.
 
-        Deduplicates by date before writing.
+        Deduplicates by exact timestamp before writing (handles intraday correctly).
         """
         if df.empty:
             return
 
-        tdir = self._ticker_dir(ticker)
+        tdir = self._ticker_dir(ticker, interval)
         tdir.mkdir(parents=True, exist_ok=True)
 
         # Ensure date is datetime
         store_df = df[["date", "open", "high", "low", "close", "volume"]].copy()
         store_df["date"] = pd.to_datetime(store_df["date"])
 
-        # Deduplicate against existing cache
+        # Deduplicate against existing cache using exact timestamps
         existing = self.get_cached(
             ticker,
             store_df["date"].min().strftime("%Y-%m-%d"),
             store_df["date"].max().strftime("%Y-%m-%d"),
+            interval=interval,
         )
         if existing is not None and not existing.empty:
-            existing_dates = set(existing["date"].dt.normalize())
-            store_df = store_df[~store_df["date"].dt.normalize().isin(existing_dates)]
+            existing_ts = set(existing["date"])
+            store_df = store_df[~store_df["date"].isin(existing_ts)]
 
         if store_df.empty:
             return
@@ -308,12 +322,17 @@ class OHLCVCache:
         store_df.to_parquet(path, engine="pyarrow", index=False)
         logger.debug("Cached %d rows for %s -> %s", len(store_df), ticker, path)
 
-    def clear(self, ticker: str | None = None) -> None:
-        """Clear cache for a ticker, or all tickers if None."""
+    def clear(self, ticker: str | None = None, interval: str | None = None) -> None:
+        """Clear cache for a ticker/interval, or all data if both None."""
         import shutil
 
-        if ticker:
-            tdir = self._ticker_dir(ticker)
+        if ticker and interval:
+            tdir = self._ticker_dir(ticker, interval)
+            if tdir.exists():
+                shutil.rmtree(tdir)
+        elif ticker:
+            # Remove all intervals for this ticker
+            tdir = self.cache_dir / "ohlcv" / ticker.upper()
             if tdir.exists():
                 shutil.rmtree(tdir)
         else:

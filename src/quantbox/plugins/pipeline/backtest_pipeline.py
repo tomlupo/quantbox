@@ -55,6 +55,7 @@ from quantbox.contracts import (
     RunResult,
     StrategyPlugin,
 )
+from quantbox.plugins.datasources._utils import interval_step, normalize_data_frequency
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +194,30 @@ class BacktestPipeline:
 
         # --- Stage 1: Universe & Market Data ---
         universe_params = params.get("universe", {})
-        prices_params = params.get("prices", {"lookback_days": 365})
+        prices_params = dict(params.get("prices", {"lookback_days": 365}))
+
+        # Auto-derive minimum lookback from strategy warmup requirements.
+        # Strategies may declare min_lookback_periods (in bars); convert to
+        # days based on the requested frequency and take the max with whatever
+        # the config already specifies.
+        if strategies:
+            min_bars = max(
+                (getattr(s, "min_lookback_periods", 0) for s in strategies),
+                default=0,
+            )
+            if min_bars > 0:
+                step = interval_step(normalize_data_frequency(prices_params.get("frequency", "1d")))
+                import math
+
+                min_days = math.ceil(min_bars * step.total_seconds() / 86400)
+                prices_params["lookback_days"] = max(int(prices_params.get("lookback_days", 0)), min_days)
+                logger.info(
+                    "Auto-derived lookback: %d bars → %d days (frequency=%s)",
+                    min_bars,
+                    prices_params["lookback_days"],
+                    prices_params.get("frequency", "1d"),
+                )
+
         universe = data.load_universe(universe_params)
         market_data_dict = data.load_market_data(universe, asof, prices_params)
 
