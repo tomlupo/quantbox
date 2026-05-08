@@ -37,7 +37,7 @@ If you can do the work at L1, do it at L1. Reach for plugins only when the contr
 
 When in doubt about which type, prefer `FeaturePlugin` — it's the catch-all for derived signals/computations and accepts the broadest input.
 
-Don't invent new plugin types unilaterally. New types require an ADR; see [lifecycle.md](lifecycle.md) and [decisions/README.md](../decisions/README.md).
+Don't invent new plugin types unilaterally. New types require an ADR; see [lifecycle.md](lifecycle.md).
 
 ---
 

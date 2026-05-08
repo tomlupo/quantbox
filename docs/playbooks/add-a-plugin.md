@@ -21,7 +21,7 @@ Decide what type:
 
 When unsure, **prefer `FeaturePlugin`** — broadest input/output, easiest to refactor later.
 
-If none fit, do **not** invent a new plugin type. New protocols require an ADR. See [adr/README.md](../decisions/README.md).
+If none fit, do **not** invent a new plugin type. New protocols require an ADR. See [decisions/](../decisions/).
 
 ---
 

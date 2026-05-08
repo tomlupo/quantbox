@@ -1,5 +1,16 @@
+<!--
+When to write: decision is hard to reverse, reasonable engineers could disagree,
+or it shapes downstream design. Don't write for reversible choices or things
+already in architecture/.
+
+Rules:
+- Never edit an accepted decision — supersede with a new one.
+- Never reuse a number — even rejected drafts burn the number.
+- LLMs draft only — humans accept.
+- File name: DEC-NNNN-short-slug.md (next number = highest existing + 1).
+-->
 ---
-decision: DEC-NNNN                                    # next number — see decisions/README.md index
+decision: DEC-NNNN                                    # next available number
 title: Short, decision-shaped title          # imperative voice, names the choice
 status: proposed                              # proposed | accepted | superseded | deprecated
 date: YYYY-MM-DD
@@ -9,7 +20,7 @@ status_changes:                              # add a row each time status change
   # - YYYY-MM-DD: <change description>
 ---
 
-# ADR-NNNN: Short, decision-shaped title
+# DEC-NNNN: Short, decision-shaped title
 
 ## Context
 
