@@ -1,6 +1,6 @@
 # Datasets
 
-Human-readable schema and semantics docs for each artifact type QuantBox produces or consumes. Pairs with the machine-readable JSON schemas in [`../../schemas/`](../../schemas/).
+Human-readable schema and semantics docs for each artifact type QuantBox produces or consumes. Pairs with the machine-readable JSON schemas in [`src/quantbox/artifact_schemas/`](../../src/quantbox/artifact_schemas/).
 
 For the template, see [`_template.md`](_template.md).
 
@@ -8,7 +8,7 @@ For the template, see [`_template.md`](_template.md).
 
 ## When to write a dataset doc
 
-- A new artifact type is added to `schemas/` — every `*.schema.json` should have a paired prose doc.
+- A new artifact type is added to `src/quantbox/artifact_schemas/` — every `*.schema.json` should have a paired prose doc.
 - Existing artifact's semantics evolve in a way the JSON schema doesn't capture (NULL conventions, monotonicity guarantees, freshness contracts, business meaning).
 - A pipeline's output is consumed by ≥2 downstream pipelines and the contract needs to be explicit and auditable.
 
@@ -61,16 +61,16 @@ The file lives next to its peers in this directory; cross-references use relativ
 
 | Anticipated doc | Pairs with |
 |---|---|
-| `prices.md` | [`schemas/prices.schema.json`](../../schemas/prices.schema.json) |
-| `strategy-weights.md` | [`schemas/strategy_weights.schema.json`](../../schemas/strategy_weights.schema.json) |
-| `allocations.md` | [`schemas/allocations.schema.json`](../../schemas/allocations.schema.json) |
-| `scores.md` | [`schemas/scores.schema.json`](../../schemas/scores.schema.json) |
-| `rankings.md` | [`schemas/rankings.schema.json`](../../schemas/rankings.schema.json) |
+| `prices.md` | [`schemas/prices.schema.json`](../../src/quantbox/artifact_schemas/prices.schema.json) |
+| `strategy-weights.md` | [`schemas/strategy_weights.schema.json`](../../src/quantbox/artifact_schemas/strategy_weights.schema.json) |
+| `allocations.md` | [`schemas/allocations.schema.json`](../../src/quantbox/artifact_schemas/allocations.schema.json) |
+| `scores.md` | [`schemas/scores.schema.json`](../../src/quantbox/artifact_schemas/scores.schema.json) |
+| `rankings.md` | [`schemas/rankings.schema.json`](../../src/quantbox/artifact_schemas/rankings.schema.json) |
 | `orders.md`, `fills.md`, `targets.md`, `rebalancing.md` | trading artifacts |
 | `experiments-jsonl.md` | autoresearch memory format |
 
 ## See also
 
 - [`_template.md`](_template.md) — fill-in scaffold for new dataset docs.
-- [`../../schemas/`](../../schemas/) — machine-readable JSON schemas.
+- [`src/quantbox/artifact_schemas/`](../../src/quantbox/artifact_schemas/) — machine-readable JSON schemas.
 - [`../architecture/plugin-authoring.md`](../architecture/plugin-authoring.md) — how plugins declare their output schema.

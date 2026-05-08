@@ -98,7 +98,7 @@ Data (Parquet) → DuckDB (data plugin) → Pipeline plugin → Artifacts (alloc
 ```
 
 - **Runner** loads manifest, resolves plugins, runs pipeline (and broker when in paper/live).
-- **Artifacts** are written under `artifacts/<run_id>/` with schemas in `schemas/*.schema.json`.
+- **Artifacts** are written under `artifacts/<run_id>/` with schemas in `src/quantbox/artifact_schemas/`.
 - **Approval gate** (when enabled) requires an approval file before broker execution.
 
 ---
@@ -178,7 +178,7 @@ Data (Parquet) → DuckDB (data plugin) → Pipeline plugin → Artifacts (alloc
 
 **Requirements:**
 
-- All artifacts have a schema in `schemas/*.schema.json`
+- All artifacts have a schema in `src/quantbox/artifact_schemas/`
 - Parquet where applicable; schemas documented in `schemas/README.md`
 
 **Current v1 artifacts:**
@@ -263,29 +263,17 @@ quantbox/
 │   ├── guides/                 # How-to: chaining, trading bridge, approval
 │   ├── reference/              # LLM ops, broker secrets
 │   └── architecture/          # Design/contracts when added
-├── packages/
-│   └── quantbox-core/          # Core: registry, runner, store, CLI, builtin plugins
-│       └── src/quantbox/
-│           ├── plugins/        # data, pipeline, broker builtins
-│           ├── cli.py, runner.py, store.py, registry.py, contracts.py, ...
-│           └── ...
-├── plugins/
-│   ├── manifest.yaml           # Plugin list and profiles (research, trading)
-│   └── manifest.schema.json
-├── docs/playbooks/             # How-to guides (add plugin, add adapter, promote, ...)
-├── schemas/                    # JSON schemas for artifacts
-│   ├── allocations.schema.json
-│   ├── prices.schema.json
-│   ├── orders.schema.json
-│   ├── fills.schema.json
-│   ├── targets.schema.json
-│   ├── portfolio_daily.schema.json
-│   ├── rankings.schema.json
-│   ├── scores.schema.json
-│   └── universe.schema.json
-├── scripts/
-│   ├── make_sample_data.py     # Generate sample prices (and optional FX)
-│   └── approve_orders.py       # Create approval file for a run
+├── src/quantbox/               # Installable library
+│   ├── plugins/                # data, pipeline, broker builtins
+│   │   ├── manifest.yaml       # Plugin profiles (bundled package data)
+│   │   └── manifest.schema.json
+│   ├── artifact_schemas/       # JSON schemas for artifacts (bundled package data)
+│   │   ├── allocations.schema.json
+│   │   ├── prices.schema.json
+│   │   ├── orders.schema.json
+│   │   └── ...
+│   ├── cli.py, runner.py, store.py, registry.py, contracts.py, ...
+│   └── ...
 ├── tests/
 └── data/                       # Local data (e.g. data/curated/prices.parquet)
 ```
@@ -345,5 +333,5 @@ Future possibilities:
 - **Artifacts:** `schemas/README.md`
 - **Approval:** [guides/approval-gate.md](guides/approval-gate.md)
 - **Trading bridge:** [guides/trading-bridge.md](guides/trading-bridge.md)
-- **LLM usage:** [reference/llm-operations.md](reference/llm-operations.md), `CONTRIBUTING_LLM.md`
+- **LLM usage:** [reference/llm-operations.md](reference/llm-operations.md), [CLAUDE.md](../CLAUDE.md)
 - **Chaining:** [guides/pipeline-chaining.md](guides/pipeline-chaining.md)

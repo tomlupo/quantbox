@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-quantbox = { git = "https://github.com/tomlupo/quantbox", subdirectory = "packages/quantbox-core" }
+quantbox = { git = "https://github.com/tomlupo/quantbox" }
 ```
 
 Then sync:
@@ -223,14 +223,14 @@ uv sync --upgrade
 
 # Pin to specific commit
 [tool.uv.sources]
-quantbox = { git = "https://github.com/tomlupo/quantbox", rev = "abc123", subdirectory = "packages/quantbox-core" }
+quantbox = { git = "https://github.com/tomlupo/quantbox", rev = "abc123" }
 ```
 
 ---
 
 ## Best Practices
 
-1. **Use quantbox-core first** - Check `list_plugins()` before building custom
+1. **Use built-in plugins first** - Check `quantbox plugins list` before building custom
 2. **Build custom only when needed** - Keep custom plugins minimal
 3. **Port mature plugins** - When a custom plugin is stable, contribute it back to quantbox
 4. **Use the artifact store** - Consistent output management with manifests

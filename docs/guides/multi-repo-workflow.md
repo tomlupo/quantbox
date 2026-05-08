@@ -15,7 +15,7 @@ Both `quantbox-live` and `quantbox-lab` consume `quantbox` as a git dependency v
 ### quantbox-live: pinned to tags on `main`
 
 ```toml
-"quantbox[ccxt] @ git+https://github.com/tomlupo/quantbox.git@v0.1.0#subdirectory=packages/quantbox-core"
+"quantbox[ccxt] @ git+https://github.com/tomlupo/quantbox.git@v0.1.0"
 ```
 
 Tags are:
@@ -26,7 +26,7 @@ Tags are:
 ### quantbox-lab: tracks `dev` branch
 
 ```toml
-"quantbox[full] @ git+https://github.com/tomlupo/quantbox.git@dev#subdirectory=packages/quantbox-core"
+"quantbox[full] @ git+https://github.com/tomlupo/quantbox.git@dev"
 ```
 
 Lab always gets the latest development code. Refresh with:

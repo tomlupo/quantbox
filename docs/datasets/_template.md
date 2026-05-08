@@ -10,7 +10,7 @@ A {wide | long}-format DataFrame of <thing>, emitted by <producer plugin/pipelin
 
 ## Schema
 
-Machine-readable: [`schemas/{name}.schema.json`](../../schemas/{name}.schema.json)
+Machine-readable: [`schemas/{name}.schema.json`](../../src/quantbox/artifact_schemas/{name}.schema.json)
 
 | Column | Type | Semantics | Source |
 |---|---|---|---|
@@ -93,7 +93,7 @@ duckdb -c "SELECT COUNT(*), MIN(date), MAX(date)
 
 ## See also
 
-- Schema (machine-readable): [`schemas/{name}.schema.json`](../../schemas/{name}.schema.json)
+- Schema (machine-readable): [`schemas/{name}.schema.json`](../../src/quantbox/artifact_schemas/{name}.schema.json)
 - Producer plugin: [`src/{path}/plugin.py`](../../src/{path}/plugin.py)
 - Methodology: [`../methodology/{methodology-slug}.md`](../methodology/{methodology-slug}.md)
 - Lifecycle: [`../architecture/lifecycle.md`](../architecture/lifecycle.md)
