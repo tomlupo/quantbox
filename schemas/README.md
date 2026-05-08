@@ -1,5 +1,9 @@
 # Artifact Schemas
 
+> **Note:** The JSON schema files have moved to `src/quantbox/artifact_schemas/` as bundled
+> package data. They are accessed at runtime via `importlib.resources.files("quantbox")`.
+> This directory exists only as documentation.
+
 JSON schemas for all QuantBox run artifacts. Used by `runner.py` for
 post-run validation and by LLM agents for contract inspection.
 
