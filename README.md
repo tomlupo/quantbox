@@ -2,15 +2,7 @@
 
 Quant research and trading framework with a plugin architecture. Config-driven pipelines for backtesting, paper trading, and live execution.
 
-## Repositories
-
-| Repo | Purpose | Quantbox pin |
-|---|---|---|
-| **quantbox** (this) | Library: strategies, plugins, protocols, core runtime | (source) |
-| [quantbox-live](https://github.com/tomlupo/quantbox-live) | Production: daily automated trading | `@v0.1.0` (stable tag) |
-| [quantbox-lab](https://github.com/tomlupo/quantbox-lab) | Research: backtesting, notebooks, experiments | `@dev` (latest) |
-
-See [multi-repo workflow](docs/guides/multi-repo-workflow.md) for versioning and promotion.
+See [multi-repo workflow](docs/guides/multi-repo-workflow.md) for versioning and promotion across repos.
 
 ## Install
 
