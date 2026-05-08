@@ -121,7 +121,7 @@ quantbox plugins list
 
 ## Plugin manifest and profiles
 
-The manifest at `plugins/manifest.yaml` defines available profiles:
+The bundled manifest defines available profiles:
 
 ```yaml
 plugins:
@@ -129,6 +129,7 @@ plugins:
 ```
 
 Profiles bundle a set of plugins so you don't repeat them in every config.
+Override the manifest via `QUANTBOX_MANIFEST=path/to/manifest.yaml`.
 
 ## CLI reference
 
@@ -136,9 +137,13 @@ Profiles bundle a set of plugins so you don't repeat them in every config.
 quantbox plugins list              # list all registered plugins
 quantbox plugins list --json       # JSON output
 quantbox plugins info --name <id>  # plugin details
+quantbox plugins doctor            # health check: schemas, entry points, config refs
 quantbox validate -c <config>      # validate config without running
 quantbox run -c <config>           # run a pipeline
 quantbox run --dry-run -c <config> # dry run (no side effects)
+quantbox approve --run-dir <path>  # write approval file for a run's orders
+quantbox warehouse tables          # list warehouse tables
+quantbox warehouse query -q <sql>  # run SQL against the artifact warehouse
 ```
 
 ## Artifacts
@@ -148,7 +153,7 @@ Each run writes to `artifacts/<run_id>/`:
 - `events.jsonl` — structured event log
 - Strategy-specific outputs (weights, orders, fills, metrics)
 
-Artifact schemas are in `/schemas/*.schema.json`.
+Artifact schemas are bundled at `src/quantbox/artifact_schemas/` and validated at runtime via `importlib.resources`.
 
 ## Development
 
@@ -158,7 +163,7 @@ make dev-full  # install all extras + dev deps
 pytest -q      # run tests
 ```
 
-See [CONTRIBUTING_LLM.md](CONTRIBUTING_LLM.md) for LLM development guidelines.
+See [CLAUDE.md](CLAUDE.md) for agent and LLM development guidelines.
 
 ## Documentation
 

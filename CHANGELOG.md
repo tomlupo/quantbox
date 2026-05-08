@@ -9,13 +9,19 @@ versioned per [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 - Custom exception hierarchy (`quantbox.exceptions`): `QuantboxError`, `ConfigValidationError`, `PluginNotFoundError`, `PluginLoadError`, `DataLoadError`, `BrokerExecutionError`
 - Ruff linting config + GitHub Actions CI (`ci.yml`)
-- `examples/` folder with 3 runnable scripts
+- `cookbook/` with `configs/` and `scripts/` (replaces separate `config/` and `examples/`)
 - `.env.example` template for environment variables
 - Environment variables and error handling docs in `CLAUDE.md`
+- `quantbox approve` CLI subcommand for the human approval gate
+- `quantbox warehouse` CLI subcommand (init, tables, query, describe, ingest, register-dataset)
+- `quantbox plugins doctor` health check for schemas, entry points, and config refs
+- Artifact schemas bundled as package data at `src/quantbox/artifact_schemas/` (accessed via `importlib.resources`)
+- Plugin manifest bundled at `src/quantbox/plugins/manifest.yaml` with `QUANTBOX_MANIFEST` env override
 
 ### Changed
 - `runner.py` raises `ConfigValidationError` and `PluginNotFoundError` instead of bare `ValueError`/`KeyError`
 - `cli.py` raises `PluginNotFoundError` instead of `SystemExit` for missing plugins
+- Flat `src/` layout replaces `packages/quantbox-core/` workspace structure
 
 ## [0.1.0] — 2026-02-07
 
