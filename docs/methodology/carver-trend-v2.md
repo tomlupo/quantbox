@@ -5,7 +5,7 @@ status: DRAFT
 date_locked:
 supersedes: v0.1.0
 src_paths:
-  - packages/quantbox-core/src/quantbox/plugins/strategies/carver_trend.py
+  - src/quantbox/plugins/strategies/carver_trend.py
 seeds:
   numpy: 42
 revalidation:
@@ -206,7 +206,7 @@ Bollinger increases turnover by ~35%. Breakeven cost drops from 107.6 to 81bps â
 
 ## See also
 
-- Plugin: [`packages/quantbox-core/src/quantbox/plugins/strategies/carver_trend.py`](../../packages/quantbox-core/src/quantbox/plugins/strategies/carver_trend.py)
-- Tests: [`packages/quantbox-core/tests/plugins/strategies/test_carver_trend.py`](../../packages/quantbox-core/tests/plugins/strategies/test_carver_trend.py)
+- Plugin: [`src/quantbox/plugins/strategies/carver_trend.py`](../../src/quantbox/plugins/strategies/carver_trend.py)
+- Tests: [`tests/plugins/strategies/test_carver_trend.py`](../../tests/plugins/strategies/test_carver_trend.py)
 - Lifecycle: [`../architecture/lifecycle.md`](../architecture/lifecycle.md)
 - Promotion playbook: [`../playbooks/promote-a-methodology.md`](../playbooks/promote-a-methodology.md)

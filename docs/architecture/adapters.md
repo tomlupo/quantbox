@@ -14,7 +14,7 @@ If you find yourself writing logic that exists in the underlying library, stop. 
 
 ## Structure
 
-Each adapter lives at `packages/quantbox-core/src/quantbox/adapters/{lib}.py` (or `/{lib}/` for larger ones).
+Each adapter lives at `src/quantbox/adapters/{lib}.py` (or `/{lib}/` for larger ones).
 
 Minimum:
 
@@ -101,7 +101,7 @@ Don't add an adapter:
 
 ## Walkthrough — adding the riskfolio adapter
 
-1. **Create the file**: `packages/quantbox-core/src/quantbox/adapters/riskfolio.py`.
+1. **Create the file**: `src/quantbox/adapters/riskfolio.py`.
 2. **Re-export**:
    ```python
    import riskfolio as rp

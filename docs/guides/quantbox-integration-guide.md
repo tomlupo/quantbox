@@ -278,5 +278,5 @@ print(f"Metrics: {result.metrics}")
 ## Links
 
 - [Quantbox Repository](https://github.com/tomlupo/quantbox)
-- [Plugin Contracts](https://github.com/tomlupo/quantbox/blob/main/packages/quantbox-core/src/quantbox/contracts.py)
-- [Built-in Plugins](https://github.com/tomlupo/quantbox/tree/main/packages/quantbox-core/src/quantbox/plugins)
+- [Plugin Contracts](https://github.com/tomlupo/quantbox/blob/main/src/quantbox/contracts.py)
+- [Built-in Plugins](https://github.com/tomlupo/quantbox/tree/main/src/quantbox/plugins)

@@ -24,7 +24,7 @@ from .contracts import (
 )
 from .exceptions import ConfigValidationError, PluginNotFoundError
 from .llm_utils import event_line, load_schema, validate_table
-from .plugin_manifest import load_manifest, repo_root, resolve_profile
+from .plugin_manifest import load_manifest, resolve_profile
 from .store import FileArtifactStore
 from .strict import get_capability
 from .validate import validate_config
@@ -510,7 +510,9 @@ def run_from_config(
     }
 
     # Validate artifacts against JSON schemas when available (best-effort)
-    schema_dir = repo_root() / "schemas"
+    from importlib.resources import files as _res_files
+
+    schema_dir = Path(str(_res_files("quantbox").joinpath("artifact_schemas")))
     for logical, path in (result.artifacts or {}).items():
         schema_path = schema_dir / f"{logical}.schema.json"
         if schema_path.exists() and path.endswith(".parquet"):

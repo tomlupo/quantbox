@@ -15,7 +15,7 @@
 ### Task 1: Add FeaturePlugin, ValidationPlugin, MonitorPlugin protocols to contracts.py
 
 **Files:**
-- Modify: `packages/quantbox-core/src/quantbox/contracts.py`
+- Modify: `src/quantbox/contracts.py`
 - Test: `tests/test_contracts_new_protocols.py`
 
 **Step 1: Write failing test**
@@ -154,14 +154,14 @@ Expected: PASS (3 tests)
 **Step 5: Commit**
 
 ```bash
-git add packages/quantbox-core/src/quantbox/contracts.py tests/test_contracts_new_protocols.py
+git add src/quantbox/contracts.py tests/test_contracts_new_protocols.py
 git commit -m "feat: add FeaturePlugin, ValidationPlugin, MonitorPlugin protocols"
 ```
 
 ### Task 2: Extend registry to support new plugin types
 
 **Files:**
-- Modify: `packages/quantbox-core/src/quantbox/registry.py`
+- Modify: `src/quantbox/registry.py`
 - Test: `tests/test_registry_new_types.py`
 
 **Step 1: Write failing test**
@@ -242,7 +242,7 @@ Expected: PASS
 **Step 5: Commit**
 
 ```bash
-git add packages/quantbox-core/src/quantbox/registry.py tests/test_registry_new_types.py
+git add src/quantbox/registry.py tests/test_registry_new_types.py
 git commit -m "feat: extend PluginRegistry with feature, validation, monitor types"
 ```
 
@@ -253,8 +253,8 @@ git commit -m "feat: extend PluginRegistry with feature, validation, monitor typ
 ### Task 3: Create features.technical.v1 plugin
 
 **Files:**
-- Create: `packages/quantbox-core/src/quantbox/plugins/features/__init__.py`
-- Create: `packages/quantbox-core/src/quantbox/plugins/features/technical.py`
+- Create: `src/quantbox/plugins/features/__init__.py`
+- Create: `src/quantbox/plugins/features/technical.py`
 - Test: `tests/test_feature_technical.py`
 
 **Step 1: Write failing test**
@@ -333,14 +333,14 @@ Expected: FAIL — `ModuleNotFoundError`
 
 **Step 3: Implement**
 
-Create `packages/quantbox-core/src/quantbox/plugins/features/__init__.py`:
+Create `src/quantbox/plugins/features/__init__.py`:
 ```python
 from .technical import TechnicalFeatures
 
 __all__ = ["TechnicalFeatures"]
 ```
 
-Create `packages/quantbox-core/src/quantbox/plugins/features/technical.py`:
+Create `src/quantbox/plugins/features/technical.py`:
 
 Extract and refactor the `_FeatureEngineer` from `ml_strategy.py` into a standalone FeaturePlugin. The plugin takes wide-format DataFrames (`prices`, optional `volume`) and returns a stacked `(date, symbol)` MultiIndex DataFrame.
 
@@ -366,15 +366,15 @@ Expected: PASS (5 tests)
 **Step 5: Commit**
 
 ```bash
-git add packages/quantbox-core/src/quantbox/plugins/features/ tests/test_feature_technical.py
+git add src/quantbox/plugins/features/ tests/test_feature_technical.py
 git commit -m "feat: add features.technical.v1 plugin (extracted from ml_strategy)"
 ```
 
 ### Task 4: Create features.cross_sectional.v1 plugin
 
 **Files:**
-- Create: `packages/quantbox-core/src/quantbox/plugins/features/cross_sectional.py`
-- Modify: `packages/quantbox-core/src/quantbox/plugins/features/__init__.py`
+- Create: `src/quantbox/plugins/features/cross_sectional.py`
+- Modify: `src/quantbox/plugins/features/__init__.py`
 - Test: `tests/test_feature_cross_sectional.py`
 
 **Step 1: Write failing test**
@@ -450,14 +450,14 @@ Params: `methods` (list of `"zscore"`, `"percentile"`), `horizons` (list of ints
 **Step 5: Commit**
 
 ```bash
-git add packages/quantbox-core/src/quantbox/plugins/features/ tests/test_feature_cross_sectional.py
+git add src/quantbox/plugins/features/ tests/test_feature_cross_sectional.py
 git commit -m "feat: add features.cross_sectional.v1 plugin"
 ```
 
 ### Task 5: Register feature plugins in builtins.py
 
 **Files:**
-- Modify: `packages/quantbox-core/src/quantbox/plugins/builtins.py`
+- Modify: `src/quantbox/plugins/builtins.py`
 - Test: `tests/test_feature_discovery.py`
 
 **Step 1: Write failing test**
@@ -489,7 +489,7 @@ Add imports and `"feature": _map(TechnicalFeatures, CrossSectionalFeatures)` to 
 **Step 5: Commit**
 
 ```bash
-git add packages/quantbox-core/src/quantbox/plugins/builtins.py tests/test_feature_discovery.py
+git add src/quantbox/plugins/builtins.py tests/test_feature_discovery.py
 git commit -m "feat: register feature plugins in builtins"
 ```
 
@@ -500,8 +500,8 @@ git commit -m "feat: register feature plugins in builtins"
 ### Task 6: Create validation.walk_forward.v1 plugin
 
 **Files:**
-- Create: `packages/quantbox-core/src/quantbox/plugins/validation/__init__.py`
-- Create: `packages/quantbox-core/src/quantbox/plugins/validation/walk_forward.py`
+- Create: `src/quantbox/plugins/validation/__init__.py`
+- Create: `src/quantbox/plugins/validation/walk_forward.py`
 - Test: `tests/test_validation_walk_forward.py`
 
 **Step 1: Write failing test**
@@ -581,15 +581,15 @@ Params: `n_splits` (int, default 5), `train_ratio` (float, default 0.7), `tradin
 **Step 5: Commit**
 
 ```bash
-git add packages/quantbox-core/src/quantbox/plugins/validation/ tests/test_validation_walk_forward.py
+git add src/quantbox/plugins/validation/ tests/test_validation_walk_forward.py
 git commit -m "feat: add validation.walk_forward.v1 plugin"
 ```
 
 ### Task 7: Create validation.statistical.v1 plugin
 
 **Files:**
-- Create: `packages/quantbox-core/src/quantbox/plugins/validation/statistical.py`
-- Modify: `packages/quantbox-core/src/quantbox/plugins/validation/__init__.py`
+- Create: `src/quantbox/plugins/validation/statistical.py`
+- Modify: `src/quantbox/plugins/validation/__init__.py`
 - Test: `tests/test_validation_statistical.py`
 
 **Step 1: Write failing test**
@@ -661,15 +661,15 @@ Params: `n_trials` (int, default 100), `n_bootstrap` (int, default 1000), `confi
 **Step 5: Commit**
 
 ```bash
-git add packages/quantbox-core/src/quantbox/plugins/validation/ tests/test_validation_statistical.py
+git add src/quantbox/plugins/validation/ tests/test_validation_statistical.py
 git commit -m "feat: add validation.statistical.v1 plugin (Deflated Sharpe, bootstrap CI)"
 ```
 
 ### Task 8: Create validation.turnover.v1 plugin
 
 **Files:**
-- Create: `packages/quantbox-core/src/quantbox/plugins/validation/turnover.py`
-- Modify: `packages/quantbox-core/src/quantbox/plugins/validation/__init__.py`
+- Create: `src/quantbox/plugins/validation/turnover.py`
+- Modify: `src/quantbox/plugins/validation/__init__.py`
 - Test: `tests/test_validation_turnover.py`
 
 **Step 1: Write failing test**
@@ -738,14 +738,14 @@ Params: `cost_bps` (float, default 10), `trading_days` (int, default 365)
 **Step 5: Commit**
 
 ```bash
-git add packages/quantbox-core/src/quantbox/plugins/validation/ tests/test_validation_turnover.py
+git add src/quantbox/plugins/validation/ tests/test_validation_turnover.py
 git commit -m "feat: add validation.turnover.v1 plugin"
 ```
 
 ### Task 9: Create validation.regime.v1 plugin
 
 **Files:**
-- Create: `packages/quantbox-core/src/quantbox/plugins/validation/regime.py`
+- Create: `src/quantbox/plugins/validation/regime.py`
 - Test: `tests/test_validation_regime.py`
 
 **Step 1: Write failing test**
@@ -812,14 +812,14 @@ Params: `window` (int, default 60), `regime_method` (str, default "vol_return")
 **Step 5: Commit**
 
 ```bash
-git add packages/quantbox-core/src/quantbox/plugins/validation/ tests/test_validation_regime.py
+git add src/quantbox/plugins/validation/ tests/test_validation_regime.py
 git commit -m "feat: add validation.regime.v1 plugin"
 ```
 
 ### Task 10: Create validation.benchmark.v1 plugin
 
 **Files:**
-- Create: `packages/quantbox-core/src/quantbox/plugins/validation/benchmark.py`
+- Create: `src/quantbox/plugins/validation/benchmark.py`
 - Test: `tests/test_validation_benchmark.py`
 
 **Step 1: Write failing test**
@@ -883,15 +883,15 @@ Params: `trading_days` (int, default 365)
 **Step 5: Commit**
 
 ```bash
-git add packages/quantbox-core/src/quantbox/plugins/validation/ tests/test_validation_benchmark.py
+git add src/quantbox/plugins/validation/ tests/test_validation_benchmark.py
 git commit -m "feat: add validation.benchmark.v1 plugin"
 ```
 
 ### Task 11: Register all validation plugins in builtins.py
 
 **Files:**
-- Modify: `packages/quantbox-core/src/quantbox/plugins/validation/__init__.py`
-- Modify: `packages/quantbox-core/src/quantbox/plugins/builtins.py`
+- Modify: `src/quantbox/plugins/validation/__init__.py`
+- Modify: `src/quantbox/plugins/builtins.py`
 - Test: `tests/test_validation_discovery.py`
 
 **Step 1: Write failing test**
@@ -926,7 +926,7 @@ Add `"validation": _map(...)` to `builtins()` dict.
 **Step 5: Commit**
 
 ```bash
-git add packages/quantbox-core/src/quantbox/plugins/validation/__init__.py packages/quantbox-core/src/quantbox/plugins/builtins.py tests/test_validation_discovery.py
+git add src/quantbox/plugins/validation/__init__.py src/quantbox/plugins/builtins.py tests/test_validation_discovery.py
 git commit -m "feat: register all validation plugins in builtins"
 ```
 
@@ -937,8 +937,8 @@ git commit -m "feat: register all validation plugins in builtins"
 ### Task 12: Create monitor.drawdown.v1 plugin
 
 **Files:**
-- Create: `packages/quantbox-core/src/quantbox/plugins/monitor/__init__.py`
-- Create: `packages/quantbox-core/src/quantbox/plugins/monitor/drawdown.py`
+- Create: `src/quantbox/plugins/monitor/__init__.py`
+- Create: `src/quantbox/plugins/monitor/drawdown.py`
 - Test: `tests/test_monitor_drawdown.py`
 
 **Step 1: Write failing test**
@@ -999,14 +999,14 @@ Params: `max_drawdown` (float, default -0.20), `max_loss` (float, default -0.30)
 **Step 5: Commit**
 
 ```bash
-git add packages/quantbox-core/src/quantbox/plugins/monitor/ tests/test_monitor_drawdown.py
+git add src/quantbox/plugins/monitor/ tests/test_monitor_drawdown.py
 git commit -m "feat: add monitor.drawdown.v1 plugin"
 ```
 
 ### Task 13: Create monitor.signal_decay.v1 plugin
 
 **Files:**
-- Create: `packages/quantbox-core/src/quantbox/plugins/monitor/signal_decay.py`
+- Create: `src/quantbox/plugins/monitor/signal_decay.py`
 - Test: `tests/test_monitor_signal_decay.py`
 
 **Step 1: Write failing test**
@@ -1062,15 +1062,15 @@ def test_signal_decay_meta():
 **Step 5: Commit**
 
 ```bash
-git add packages/quantbox-core/src/quantbox/plugins/monitor/ tests/test_monitor_signal_decay.py
+git add src/quantbox/plugins/monitor/ tests/test_monitor_signal_decay.py
 git commit -m "feat: add monitor.signal_decay.v1 plugin"
 ```
 
 ### Task 14: Register monitor plugins in builtins.py
 
 **Files:**
-- Modify: `packages/quantbox-core/src/quantbox/plugins/monitor/__init__.py`
-- Modify: `packages/quantbox-core/src/quantbox/plugins/builtins.py`
+- Modify: `src/quantbox/plugins/monitor/__init__.py`
+- Modify: `src/quantbox/plugins/builtins.py`
 - Test: `tests/test_monitor_discovery.py`
 
 Similar pattern as Task 11. Register `DrawdownMonitor` and `SignalDecayMonitor`.
@@ -1088,7 +1088,7 @@ git commit -m "feat: register monitor plugins in builtins"
 ### Task 15: Create risk.factor_exposure.v1 plugin
 
 **Files:**
-- Create: `packages/quantbox-core/src/quantbox/plugins/risk/factor_exposure.py`
+- Create: `src/quantbox/plugins/risk/factor_exposure.py`
 - Test: `tests/test_risk_factor_exposure.py`
 
 **Step 1: Write failing test**
@@ -1146,14 +1146,14 @@ Params: `max_single_weight`, `max_sector_weight`, `sectors` (dict mapping sector
 **Step 5: Commit**
 
 ```bash
-git add packages/quantbox-core/src/quantbox/plugins/risk/ tests/test_risk_factor_exposure.py
+git add src/quantbox/plugins/risk/ tests/test_risk_factor_exposure.py
 git commit -m "feat: add risk.factor_exposure.v1 plugin"
 ```
 
 ### Task 16: Create risk.drawdown_control.v1 plugin
 
 **Files:**
-- Create: `packages/quantbox-core/src/quantbox/plugins/risk/drawdown_control.py`
+- Create: `src/quantbox/plugins/risk/drawdown_control.py`
 - Test: `tests/test_risk_drawdown_control.py`
 
 **Step 1: Write failing test**
@@ -1209,8 +1209,8 @@ git commit -m "feat: add risk.drawdown_control.v1 plugin"
 ### Task 17: Register new risk plugins and update manifest
 
 **Files:**
-- Modify: `packages/quantbox-core/src/quantbox/plugins/risk/__init__.py`
-- Modify: `packages/quantbox-core/src/quantbox/plugins/builtins.py`
+- Modify: `src/quantbox/plugins/risk/__init__.py`
+- Modify: `src/quantbox/plugins/builtins.py`
 - Modify: `plugins/manifest.yaml`
 
 Register `FactorExposureRiskManager` and `DrawdownControlRiskManager` in builtins and add all new plugins to the manifest.
@@ -1226,8 +1226,8 @@ git commit -m "feat: register new risk plugins, update manifest with all new plu
 ### Task 18: Add validation support to backtest pipeline
 
 **Files:**
-- Modify: `packages/quantbox-core/src/quantbox/runner.py`
-- Modify: `packages/quantbox-core/src/quantbox/plugins/pipeline/backtest_pipeline.py`
+- Modify: `src/quantbox/runner.py`
+- Modify: `src/quantbox/plugins/pipeline/backtest_pipeline.py`
 - Test: `tests/test_backtest_with_validation.py`
 
 **Step 1: Write failing test**
@@ -1285,14 +1285,14 @@ if validation_cfg and mode == "backtest":
 **Step 5: Commit**
 
 ```bash
-git add packages/quantbox-core/src/quantbox/runner.py tests/test_backtest_with_validation.py
+git add src/quantbox/runner.py tests/test_backtest_with_validation.py
 git commit -m "feat: add validation plugin support to runner and backtest pipeline"
 ```
 
 ### Task 19: Add monitor support to trading pipeline
 
 **Files:**
-- Modify: `packages/quantbox-core/src/quantbox/runner.py`
+- Modify: `src/quantbox/runner.py`
 - Test: `tests/test_trading_with_monitors.py`
 
 Similar to Task 18 but for `mode in ("paper", "live")`. After pipeline run, resolve and execute monitor plugins. If any alert has `action: "halt"`, write `halt.json` to artifacts.

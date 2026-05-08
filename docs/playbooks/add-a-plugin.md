@@ -33,7 +33,7 @@ If none fit, do **not** invent a new plugin type. New protocols require an ADR. 
 |---|---|
 | `research/{study}/strat.py` (scratch-plugin) | Single-study experiment, may be thrown away |
 | `src/{project}/plugins/{kind}/{slug}.py` (project entry-pointed) | Project-specific, reusable within the project |
-| `packages/quantbox-core/src/quantbox/plugins/{kind}/{slug}.py` | Cross-project utility, has earned upstream status |
+| `src/quantbox/plugins/{kind}/{slug}.py` | Cross-project utility, has earned upstream status |
 
 Default: start in `research/` or in the project. Promote upstream only after the second project would benefit.
 

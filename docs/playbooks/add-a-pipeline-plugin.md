@@ -6,10 +6,10 @@ Two options:
 
 ### 1. Create the module
 
-Add a new file under `packages/quantbox-core/src/quantbox/plugins/pipeline/`.
+Add a new file under `src/quantbox/plugins/pipeline/`.
 
 ```python
-# packages/quantbox-core/src/quantbox/plugins/pipeline/my_pipeline.py
+# src/quantbox/plugins/pipeline/my_pipeline.py
 
 from __future__ import annotations
 

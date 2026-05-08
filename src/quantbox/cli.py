@@ -76,7 +76,6 @@ def cmd_plugins_info(reg: PluginRegistry, name: str, as_json: bool = False):
 def cmd_plugins_doctor(as_json: bool = False, strict: bool = False):
     import importlib.metadata
 
-    from .plugin_manifest import repo_root
     from .plugins.builtins import builtins as builtin_plugins
     from .registry import ENTRYPOINT_GROUPS
 
@@ -158,7 +157,7 @@ def cmd_plugins_doctor(as_json: bool = False, strict: bool = False):
             )
 
     # Schemas for built-in plugins
-    schema_dir = repo_root() / "schemas"
+    schema_dir = Path(str(_res_files("quantbox").joinpath("artifact_schemas")))
     for group, mapping in builtins.items():
         for name, cls in mapping.items():
             meta = getattr(cls, "meta", None)
@@ -184,7 +183,7 @@ def cmd_plugins_doctor(as_json: bool = False, strict: bool = False):
     except Exception:
         reg = None
     manifest = load_manifest()
-    config_dir = repo_root() / "cookbook" / "configs"
+    config_dir = Path.cwd() / "cookbook" / "configs"
     if config_dir.exists():
         for cfg_path in sorted(config_dir.glob("*.yaml")):
             try:

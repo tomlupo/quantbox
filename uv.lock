@@ -11,12 +11,6 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 
-[manifest]
-members = [
-    "quantbox",
-    "quantbox-workspace",
-]
-
 [[package]]
 name = "aiodns"
 version = "4.0.0"
@@ -2696,7 +2690,7 @@ wheels = [
 [[package]]
 name = "quantbox"
 version = "0.1.0"
-source = { editable = "packages/quantbox-core" }
+source = { editable = "." }
 dependencies = [
     { name = "duckdb" },
     { name = "httpx" },
@@ -2743,6 +2737,12 @@ viz = [
     { name = "seaborn" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "ruff" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "arch", marker = "extra == 'full'", specifier = ">=8.0" },
@@ -2770,23 +2770,6 @@ requires-dist = [
     { name = "vectorbt", specifier = ">=0.26" },
 ]
 provides-extras = ["ibkr", "binance", "ccxt", "ml", "simulation", "viz", "full"]
-
-[[package]]
-name = "quantbox-workspace"
-version = "0.0.0"
-source = { editable = "." }
-dependencies = [
-    { name = "quantbox" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "quantbox", editable = "packages/quantbox-core" }]
 
 [package.metadata.requires-dev]
 dev = [

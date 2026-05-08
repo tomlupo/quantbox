@@ -23,14 +23,14 @@ If any answer is "no," don't add an adapter — just `import` the lib where you 
 Single-file libs:
 
 ```bash
-touch packages/quantbox-core/src/quantbox/adapters/{lib}.py
+touch src/quantbox/adapters/{lib}.py
 ```
 
 Larger ones get a directory:
 
 ```bash
-mkdir packages/quantbox-core/src/quantbox/adapters/{lib}
-touch packages/quantbox-core/src/quantbox/adapters/{lib}/__init__.py
+mkdir src/quantbox/adapters/{lib}
+touch src/quantbox/adapters/{lib}/__init__.py
 ```
 
 ### 2. Re-export
@@ -54,7 +54,7 @@ __all__ = ["rp"]
 
 ### 3. Add the optional dependency
 
-In `packages/quantbox-core/pyproject.toml`:
+In `pyproject.toml`:
 
 ```toml
 [project.optional-dependencies]
@@ -88,7 +88,7 @@ Skip this step on first add. Wait for the second consumer to confirm what idiom 
 If the adapter serves a top-level capability (`quantbox.bt`, `quantbox.opt`, `quantbox.score`):
 
 ```python
-# packages/quantbox-core/src/quantbox/opt.py
+# src/quantbox/opt.py
 from .adapters.riskfolio import max_sharpe, rp
 __all__ = ["max_sharpe", "rp"]
 ```

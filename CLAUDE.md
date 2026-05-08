@@ -31,28 +31,28 @@ For step-by-step modifications, see [`docs/playbooks/`](docs/playbooks/). For hi
 ## Project layout
 
 ```
-packages/quantbox-core/src/quantbox/   ← core library
-  contracts.py       Protocol definitions (start here)
-  runner.py          Config → plugin instantiation → pipeline.run()
-  registry.py        Plugin discovery (builtins + entry points)
-  cli.py             CLI entry point (quantbox command)
-  store.py           Artifact storage (Parquet + JSON)
-  schemas.py         Runtime schema validation
+src/quantbox/              ← installable library (uv add quantbox)
+  contracts.py             Protocol definitions (start here)
+  runner.py                Config → plugin instantiation → pipeline.run()
+  registry.py              Plugin discovery (builtins + entry points)
+  cli.py                   CLI entry point (quantbox command)
+  store.py                 Artifact storage (Parquet + JSON)
+  schemas.py               Runtime schema validation
+  artifact_schemas/        JSON schemas for artifacts (bundled as package data)
   plugins/
-    builtins.py      Plugin registration map
-    strategies/      Strategy plugins (compute target weights)
-    pipeline/        Pipeline plugins (orchestrate full runs)
-    datasources/     Data plugins (OHLCV, market cap, funding rates)
-    broker/          Broker plugins (paper + live execution)
-    rebalancing/     Rebalancing plugins (weights → orders)
-    risk/            Risk plugins (pre-trade validation)
-    publisher/       Publisher plugins (notifications)
-    backtesting/     Backtest engines (vectorbt, rsims)
+    manifest.yaml          Default plugin profiles (bundled as package data)
+    builtins.py            Plugin registration map
+    strategies/            Strategy plugins (compute target weights)
+    pipeline/              Pipeline plugins (orchestrate full runs)
+    datasources/           Data plugins (OHLCV, market cap, funding rates)
+    broker/                Broker plugins (paper + live execution)
+    rebalancing/           Rebalancing plugins (weights → orders)
+    risk/                  Risk plugins (pre-trade validation)
+    publisher/             Publisher plugins (notifications)
+    backtesting/           Backtest engines (vectorbt, rsims)
 cookbook/
-  configs/          Example YAML pipeline configs (research, trading, paper, live)
-  scripts/          Runnable example scripts (quickstart, custom plugin, artifact inspection)
-schemas/             JSON schemas for artifact validation
-plugins/manifest.yaml  Plugin profiles (research, trading, futures_paper)
+  configs/                 Example YAML pipeline configs (research, trading, paper, live)
+  scripts/                 Runnable example scripts (quickstart, custom plugin, artifact inspection)
 ```
 
 ## Key commands

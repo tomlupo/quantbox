@@ -6,10 +6,10 @@ Two options:
 
 ### 1. Create the module
 
-Add a new file under `packages/quantbox-core/src/quantbox/plugins/broker/`.
+Add a new file under `src/quantbox/plugins/broker/`.
 
 ```python
-# packages/quantbox-core/src/quantbox/plugins/broker/my_exchange.py
+# src/quantbox/plugins/broker/my_exchange.py
 
 from __future__ import annotations
 

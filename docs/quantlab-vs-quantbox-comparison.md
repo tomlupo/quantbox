@@ -4,7 +4,7 @@
 
 | Aspect | Quantlab (prod) | Quantbox (quantbox-core) |
 |--------|-----------------|--------------------------|
-| **Location** | `/home/tom/workspace/prod/quantlab/` | `/home/tom/workspace/projects/quantbox/packages/quantbox-core/` |
+| **Location** | `/home/tom/workspace/prod/quantlab/` | `/home/tom/workspace/projects/quantbox/` |
 | **Architecture** | Monolithic: modules import each other directly | Plugin-based: Protocol contracts + registry + dataclass plugins |
 | **Python version** | >=3.12 | >=3.10 |
 | **Package manager** | uv | uv |

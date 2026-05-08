@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 import os
+from importlib.resources import files as _res_files
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 
-def _repo_root_from_here() -> Path:
-    # quantbox/plugin_manifest.py -> quantbox -> src -> quantbox-core -> packages -> repo
-    return Path(__file__).resolve().parents[4]
-
-
 def repo_root() -> Path:
-    return _repo_root_from_here()
+    # src/quantbox/plugin_manifest.py -> src/quantbox -> src -> repo root
+    # Only valid when running from a git clone; not available in installed packages.
+    return Path(__file__).resolve().parents[2]
+
+
+def _bundled_manifest_path() -> Path:
+    return Path(str(_res_files("quantbox.plugins").joinpath("manifest.yaml")))
 
 
 def default_manifest_path() -> Path:
@@ -25,8 +27,7 @@ def default_manifest_path() -> Path:
     if cwd_path.exists():
         return cwd_path
 
-    repo_path = repo_root() / "plugins" / "manifest.yaml"
-    return repo_path
+    return _bundled_manifest_path()
 
 
 def load_manifest() -> dict[str, Any]:

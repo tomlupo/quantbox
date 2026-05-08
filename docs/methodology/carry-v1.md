@@ -6,8 +6,8 @@ date_locked:
 supersedes:
 superseded_by:
 src_paths:
-  - packages/quantbox-core/src/quantbox/plugins/strategies/carry.py
-  - packages/quantbox-core/src/quantbox/plugins/datasources/hyperliquid_data_plugin.py
+  - src/quantbox/plugins/strategies/carry.py
+  - src/quantbox/plugins/datasources/hyperliquid_data_plugin.py
 seeds:
   numpy: 42
 revalidation:
@@ -153,6 +153,6 @@ Use `mega_tc_tight.yaml` in quantbox-lab as the reference config.
 
 ## See also
 
-- Plugin: `packages/quantbox-core/src/quantbox/plugins/strategies/carry.py`
+- Plugin: `src/quantbox/plugins/strategies/carry.py`
 - Reference configs: `quantbox-lab/cookbook/configs/mega_tc_tight.yaml`, `mega_5yr_binance.yaml`
 - Lifecycle: `docs/architecture/lifecycle.md`
