@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import importlib.metadata
 from dataclasses import dataclass, field
 from typing import Any
@@ -68,10 +69,8 @@ class PluginRegistry:
         from .strict import register_capability  # local import to avoid cycle
 
         for _name, _cls in capability_classes.items():
-            try:
+            with contextlib.suppress(Exception):
                 register_capability(_name, _cls())
-            except Exception:
-                pass
         return PluginRegistry(
             pipelines={**builtins["pipeline"], **_load_group(ENTRYPOINT_GROUPS["pipeline"])},
             brokers={**builtins["broker"], **_load_group(ENTRYPOINT_GROUPS["broker"])},

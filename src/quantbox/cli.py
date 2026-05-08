@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from importlib.resources import files as _res_files
+from pathlib import Path
+
 import typer
 import yaml
 
