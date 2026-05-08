@@ -158,6 +158,8 @@ pytest -q      # run tests
 
 See [CLAUDE.md](CLAUDE.md) for agent and LLM development guidelines.
 
+Copy-paste scaffolds for methodology specs, dataset docs, and runbooks are in [`templates/`](templates/).
+
 ## Documentation
 
 See [docs/](docs/) for full documentation:
