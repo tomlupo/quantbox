@@ -7,7 +7,7 @@
 A **template-driven SDK with adapters** for quant research and production. Three things, in order:
 
 1. **Conventions** — data layouts, run-artifact shape, lifecycle states, skill API. The owned moat.
-2. **Adapters** — thin wrappers around best-of-breed external libraries (vectorbt, MLflow, DVC, riskfolio, lightgbm, ...). The wheel does the wheel's work.
+2. **Adapters** — thin wrappers around best-of-breed external libraries (vectorbt, riskfolio, ...). The wheel does the wheel's work. A core adapter is added only when ≥2 consumers need the same bridge; single-consumer libraries (mlflow, dvc) are imported directly in the downstream repo.
 3. **Skills + templates** — LLM-facing interface and project bootstrap, coupled to the SDK in this repo.
 
 The plugin runtime (`run_from_config`, CLI) is *one* of multiple entry points — see the [layered API](docs/architecture/api-layers.md) (L0–L5). Casual use defaults to L0/L1 (re-exports + convenience helpers). YAML pipelines are L4. Production is L5 with `--strict`.

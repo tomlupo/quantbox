@@ -1375,7 +1375,7 @@ class TradingPipeline:
         Returns ``None`` when no token-policy configuration is present
         (backward-compatible).
         """
-        from quantbox.plugins.trading.quantlab.token_policy import TokenPolicy
+        from quantbox.plugins.trading.token_policy import TokenPolicy
 
         tp_cfg = universe_params.get("token_policy")
         tp_file = universe_params.get("token_policy_file")

@@ -37,7 +37,7 @@ When a skill is unsure, **start at L1.** Escalate only when the task demands it.
 
 | Module | Purpose | Layer |
 |---|---|---|
-| `quantbox.adapters.{lib}` | Re-exports + thin helpers (`vbt`, `mlflow`, `riskfolio`, ...) | L0 |
+| `quantbox.adapters.{lib}` | Re-exports + thin helpers (`vbt`, ...) — added when ≥2 consumers need same bridge | L0 |
 | `quantbox.bt` | Convenience for backtesting (most common idiom) | L1 |
 | `quantbox.opt` | Convenience for portfolio optimization | L1 |
 | `quantbox.score` | Convenience for ranking/scoring | L1 |

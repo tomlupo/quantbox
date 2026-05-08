@@ -9,7 +9,7 @@
 A **composing framework** — owned, opinionated, layered. Three things, in order of importance:
 
 1. **Conventions** — your data layouts, your run-artifact shape, your lifecycle states, your skill API. The part nobody else can build for you.
-2. **Adapters** — thin wrappers around best-of-breed libraries (vectorbt, MLflow, DVC, riskfolio, lightgbm, ...). The wheel does the wheel's work.
+2. **Adapters** — thin wrappers around best-of-breed libraries (vectorbt, riskfolio, lightgbm, ...). The wheel does the wheel's work. An adapter lives in core only when ≥2 consumers need the same bridge; single-consumer libraries are imported directly in the consuming repo.
 3. **Skills + templates** — the LLM-facing interface and the project bootstrap shape. Coupled to the SDK in this repo so they never drift.
 
 By the strict IoC sense (the runtime calls *your* code at L4/L5), it is a framework. By the colloquial sense ("my framework for X"), it's also a framework. The question isn't whether to call it one — it's *what kind*. See [ADR-0001](../adr/0001-library-not-framework.md).
@@ -18,15 +18,15 @@ By the strict IoC sense (the runtime calls *your* code at L4/L5), it is a framew
 
 | Capability | The wheel | QuantBox's role |
 |---|---|---|
-| Backtest engine | vectorbt | adapter + run-artifact layer |
-| Model registry / experiment tracking | MLflow | adapter |
-| Data versioning | DVC | adapter |
-| Portfolio optimization | riskfolio, PyPortfolioOpt, skfolio | adapter at L1 (`quantbox.opt`) |
-| Factor research / ML for finance | Qlib (optional) | adapter when needed |
+| Backtest engine | vectorbt | adapter in core (`adapters.vectorbt`, `quantbox.bt`) |
+| Portfolio optimization | riskfolio, PyPortfolioOpt, skfolio | adapter in core when ≥2 consumers need it |
+| ML training | scikit-learn, lightgbm | import directly in plugin; adapter in core when ≥2 plugins need it |
+| Experiment tracking / model registry | MLflow | import directly in quantbox-lab; no core adapter until ≥2 repos need same bridge |
+| Data versioning | DVC | import directly in quantbox-lab; no core adapter until ≥2 repos need same bridge |
+| Factor research | Qlib (optional) | import directly where needed |
 | Live broker | ccxt, native broker APIs | adapter + plugin |
-| ML training | scikit-learn, lightgbm | adapter |
 
-If a feature request implies reimplementing what one of these libraries already does, the answer is to add an adapter — not to rebuild it.
+If a feature request implies reimplementing what one of these libraries already does, the answer is to use the library directly — and to add a core adapter only once the idiom recurs across ≥2 consumers.
 
 ---
 
@@ -38,7 +38,7 @@ QuantBox is a framework — owned, opinionated, with IoC at L4/L5. The question 
 
 Three failure modes to refuse:
 
-- **Competing with the wheel** — reimplementing what vectorbt, MLflow, Qlib, riskfolio already do. Compose them via adapters instead.
+- **Competing with the wheel** — reimplementing what vectorbt, MLflow, Qlib, riskfolio already do. Use them directly, or compose via adapters when the idiom recurs.
 - **Monolithic surface** — forcing every user up to L4/L5 with no escape hatch. The layered API (L0–L5) prevents this.
 - **Ceremony over conventions** — requiring plugin scaffolding for trivial work. Conventions inherit; ceremony gets bypassed.
 

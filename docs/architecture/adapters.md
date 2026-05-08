@@ -82,19 +82,20 @@ Don't add an adapter:
 
 ---
 
-## Existing/planned adapters
+## Adapter inventory
 
-| Adapter | Underlying library | Layer it serves | Status |
-|---|---|---|---|
-| `adapters.vectorbt` | vectorbt | L0/L1 (`quantbox.bt`) | planned |
-| `adapters.mlflow` | mlflow | L0/L1 (experiment tracking, model registry) | planned |
-| `adapters.dvc` | dvc | L0/L1 (data versioning) | planned |
-| `adapters.riskfolio` | Riskfolio-Lib | L0/L1 (`quantbox.opt`) | planned |
-| `adapters.pyportfolioopt` | PyPortfolioOpt | L0/L1 (`quantbox.opt` alternative) | optional |
-| `adapters.lightgbm` | lightgbm | L0/L1 (ML strategies) | planned |
-| `adapters.qlib` | Microsoft Qlib | L0/L1 (factor research) | optional, when needed |
+| Adapter | Underlying library | Layer it serves | Status | Notes |
+|---|---|---|---|---|
+| `adapters.vectorbt` | vectorbt | L0/L1 (`quantbox.bt`) | ✅ shipped | Used by `bt.py`, backtest engine, strategy tests — ≥2 consumers |
+| `adapters.riskfolio` | Riskfolio-Lib | L0/L1 (`quantbox.opt`) | deferred | Add when a second consumer beyond `portfolio_optimizer` needs it |
+| `adapters.lightgbm` | lightgbm | L0/L1 (ML strategies) | deferred | `ml_strategy.py` imports it directly — add adapter when a second plugin needs it |
+| `adapters.mlflow` | mlflow | experiment tracking, model registry | **not in core** | Single consumer (quantbox-lab); lab imports mlflow directly. Migrate here if ≥2 repos need the same `RunResult → mlflow` bridge |
+| `adapters.dvc` | dvc | data versioning | **not in core** | Single consumer (quantbox-lab); lab imports dvc.api directly. Migrate here if ≥2 repos need the same data-versioning idiom |
+| `adapters.qlib` | Microsoft Qlib | factor research | not in core | Optional; add if a Qlib-based plugin is ever built |
 
-`optional` means: don't add unless a real consumer needs it. The adapter exists in the docs to claim the namespace; the file shouldn't exist until use case demands it.
+**Rule for "not in core":** the library is used in one downstream repo (quantbox-lab). That repo imports it directly. If a second repo (quantbox-live, quantbox-qute) needs the same bridge, extract to a core adapter then. Premature extraction adds ceremony without DRY benefit.
+
+**Rule for "deferred":** the library touches quantbox-core but only one plugin currently uses it. Add the adapter file when a second plugin or downstream project needs the same idiom — not before.
 
 ---
 
