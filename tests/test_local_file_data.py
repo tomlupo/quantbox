@@ -115,7 +115,7 @@ class TestLocalFileDataPlugin:
         result = plugin_with_paths.load_market_data(universe, asof, {})
         prices = result["prices"]
         assert not prices.empty
-        assert prices.index.max() <= pd.Timestamp(asof)
+        assert prices.index.max() <= pd.Timestamp(asof, tz="UTC")
 
     def test_date_filtering_start_and_end_via_read_file(self, tmp_path, symbols, dates, rng):
         """_read_file with asof parameter limits rows to <= asof."""
@@ -123,7 +123,7 @@ class TestLocalFileDataPlugin:
         _write_wide_parquet(path, symbols, dates, rng)
         df = _read_file(str(path), asof="2026-01-10")
         assert not df.empty
-        assert df.index.max() <= pd.Timestamp("2026-01-10")
+        assert df.index.max() <= pd.Timestamp("2026-01-10", tz="UTC")
 
     # -- 3. prices key always present --------------------------------------
 
@@ -298,7 +298,7 @@ class TestLocalFileDataPlugin:
         df = _read_file(str(path), asof="2026-01-20")
         assert not df.empty
         assert isinstance(df.index, pd.DatetimeIndex)
-        assert df.index.max() <= pd.Timestamp("2026-01-20")
+        assert df.index.max() <= pd.Timestamp("2026-01-20", tz="UTC")
 
     @pytest.mark.skipif(not DUCKDB_AVAILABLE, reason="duckdb not installed")
     def test_duckdb_long_format_with_symbol_filter(self, tmp_path, symbols, dates, rng):

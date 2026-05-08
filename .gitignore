@@ -5,3 +5,6 @@ __pycache__/
 artifacts/
 data/
 .env
+.claude/settings.local.json
+.claude/skill-use-log.jsonl
+validation_report.json
