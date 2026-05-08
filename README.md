@@ -2,6 +2,13 @@
 
 Quant research and trading framework with a plugin architecture. Config-driven pipelines for backtesting, paper trading, and live execution.
 
+**Not building:** HFT or real-time tick infrastructure, custom exchange gateways, or black-box LLM trading. Math and signals stay deterministic; LLM is for analysis and tool use only.
+
+**Who uses it:**
+- **Researcher** — runs research pipelines, adjusts plugins, inspects artifacts
+- **Automation** — scheduled jobs producing allocations → orders → fills
+- **AI assistant** — calls `validate`, `--dry-run`, `plugins list --json`; no direct trading authority
+
 ## Install
 
 ```bash
@@ -154,7 +161,6 @@ See [CLAUDE.md](CLAUDE.md) for agent and LLM development guidelines.
 ## Documentation
 
 See [docs/](docs/) for full documentation:
-- [Product requirements (PRD)](docs/PRD.md)
 - [Backtesting guide](docs/guides/backtesting.md)
 - [Multi-repo workflow](docs/guides/multi-repo-workflow.md)
 - [Trading bridge](docs/guides/trading-bridge.md)
