@@ -140,7 +140,7 @@ Data (Parquet) → DuckDB (data plugin) → Pipeline plugin → Artifacts (alloc
 **Requirements:**
 
 - Config-driven; pipeline chosen by name in run config
-- Inputs/outputs defined by artifact contracts (see `contracts/ARTIFACTS.md` and `schemas/`)
+- Inputs/outputs defined by artifact contracts (see `schemas/README.md`)
 - Reproducible from config + data + asof
 
 **Current pipelines:**
@@ -179,7 +179,7 @@ Data (Parquet) → DuckDB (data plugin) → Pipeline plugin → Artifacts (alloc
 **Requirements:**
 
 - All artifacts have a schema in `schemas/*.schema.json`
-- Parquet where applicable; contracts documented in `contracts/ARTIFACTS.md`
+- Parquet where applicable; schemas documented in `schemas/README.md`
 
 **Current v1 artifacts:**
 
@@ -342,7 +342,7 @@ Future possibilities:
 
 ## References
 
-- **Artifacts:** `contracts/ARTIFACTS.md`
+- **Artifacts:** `schemas/README.md`
 - **Approval:** [guides/approval-gate.md](guides/approval-gate.md)
 - **Trading bridge:** [guides/trading-bridge.md](guides/trading-bridge.md)
 - **LLM usage:** [reference/llm-operations.md](reference/llm-operations.md), `CONTRIBUTING_LLM.md`
