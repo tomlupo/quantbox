@@ -155,7 +155,7 @@ If this works, the plugin is sound. Wiring into L4 (YAML config) is a separate s
 
 ### 6. Add a YAML config example
 
-`configs/{slug}_example.yaml`:
+`config/{slug}_example.yaml`:
 
 ```yaml
 run:
@@ -176,8 +176,8 @@ plugins:
 Test:
 
 ```bash
-quantbox validate -c configs/{slug}_example.yaml
-quantbox run -c configs/{slug}_example.yaml
+quantbox validate -c config/{slug}_example.yaml
+quantbox run -c config/{slug}_example.yaml
 ```
 
 ### 7. Document

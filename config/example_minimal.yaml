@@ -2,11 +2,11 @@
 # Minimal QuantBox config — every field explained
 # ============================================================
 # Copy this file, adjust params, and run:
-#   uv run quantbox run -c configs/example_minimal.yaml
+#   uv run quantbox run -c config/example_minimal.yaml
 # Validate before running:
-#   uv run quantbox validate -c configs/example_minimal.yaml
+#   uv run quantbox validate -c config/example_minimal.yaml
 # Preview without executing:
-#   uv run quantbox run --dry-run -c configs/example_minimal.yaml
+#   uv run quantbox run --dry-run -c config/example_minimal.yaml
 # ============================================================
 
 # --- Run settings ---

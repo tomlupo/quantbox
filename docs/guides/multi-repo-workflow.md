@@ -80,7 +80,7 @@ uv sync
 Test, then commit and push:
 
 ```bash
-uv run quantbox run --dry-run -c configs/carver_hyperliquid.yaml
+uv run quantbox run --dry-run -c config/carver_hyperliquid.yaml
 git add pyproject.toml uv.lock
 git commit -m "Bump quantbox to v0.x.y"
 git push

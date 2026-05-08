@@ -6,10 +6,10 @@ QuantBox pipelines currently run independently. To chain pipelines (e.g. researc
 
 ```bash
 # Step 1: research pipeline produces allocations.parquet
-uv run quantbox run -c configs/run_fund_selection.yaml
+uv run quantbox run -c config/run_fund_selection.yaml
 
 # Step 2: trading pipeline consumes the artifact path
-uv run quantbox run -c configs/run_trade_from_allocations.yaml
+uv run quantbox run -c config/run_trade_from_allocations.yaml
 ```
 
 The trading config references the research output via `allocations_run_id` or an explicit file path in its params.

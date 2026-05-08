@@ -1,5 +1,5 @@
 run:
-  mode: live
+  mode: paper
   asof: "2026-01-31"
   pipeline: "trade.allocations_to_orders.v1"
 
@@ -11,7 +11,7 @@ plugins:
     name: "trade.allocations_to_orders.v1"
     params:
       allocations_path: "./artifacts/<FUND_RUN_ID>/allocations.parquet"
-      instrument_map: \"./configs/instruments.yaml\"
+      instrument_map: \"./config/instruments.yaml\"
       prices:
         lookback_days: 5
 
@@ -22,12 +22,13 @@ plugins:
       fx_path: "./data/curated/fx.parquet"
 
   broker:
-    name: "binance.live.v1"
+    name: "ibkr.paper.stub.v1"
     params_init:
-      api_key_env: "BINANCE_API_KEY"
-      api_secret_env: "BINANCE_API_SECRET"
-      testnet: false
-      readonly: true  # switch to false to enable orders
+      host: "127.0.0.1"
+      port: 7497
+      client_id: 7
+      account: "DUXXXX"
+      readonly: true   # switch to false to enable orders
 
   publishers: []
   risk: []

@@ -48,7 +48,7 @@ packages/quantbox-core/src/quantbox/   ← core library
     risk/            Risk plugins (pre-trade validation)
     publisher/       Publisher plugins (notifications)
     backtesting/     Backtest engines (vectorbt, rsims)
-configs/             Example YAML configs for all pipeline types
+config/             Example YAML configs for all pipeline types
 schemas/             JSON schemas for artifact validation
 plugins/manifest.yaml  Plugin profiles (research, trading, futures_paper)
 ```

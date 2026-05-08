@@ -127,7 +127,7 @@ Position limits applied after sizing: per-instrument cap (`max_position`), gross
 Universe: top 8 Hyperliquid perps by volume (CHIP/TRUMP excluded — short history; 6 established coins retained after pipeline filter).  
 Period: 2025-04-26 → 2026-04-25 (365 simulation days; 900 days fetched for signal warmup).  
 Engine: vectorbt, 1bps fees, daily rebalancing.  
-Configs: `quantbox-lab/configs/carver_bollinger_{off,on}.yaml`
+Configs: `quantbox-lab/config/carver_bollinger_{off,on}.yaml`
 
 | Run | Run ID | Sharpe | Deflated Sharpe | Max DD | Calmar | Ann. Turnover | Notes |
 |---|---|---|---|---|---|---|---|

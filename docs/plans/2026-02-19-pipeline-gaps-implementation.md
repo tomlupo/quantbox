@@ -1447,7 +1447,7 @@ git commit -m "feat: add fundamental data module (yfinance quarterly)"
 """Run a full research pipeline: backtest + validation + report.
 
 Usage:
-    python scripts/run_research.py -c configs/research/crypto_trend_validation.yaml
+    python scripts/run_research.py -c config/research/crypto_trend_validation.yaml
 """
 ```
 
@@ -1497,12 +1497,12 @@ git commit -m "feat: add strategy comparison script"
 ### Task 26: Create research YAML configs
 
 **Files:**
-- Create: `configs/research/crypto_trend_validation.yaml`
-- Create: `configs/research/ml_prediction_walkforward.yaml`
-- Create: `configs/research/cross_asset_momentum_study.yaml`
-- Create: `configs/research/strategy_comparison.yaml`
-- Create: `configs/data/fetch_crypto.yaml`
-- Create: `configs/data/fetch_equities.yaml`
+- Create: `config/research/crypto_trend_validation.yaml`
+- Create: `config/research/ml_prediction_walkforward.yaml`
+- Create: `config/research/cross_asset_momentum_study.yaml`
+- Create: `config/research/strategy_comparison.yaml`
+- Create: `config/data/fetch_crypto.yaml`
+- Create: `config/data/fetch_equities.yaml`
 
 Each config uses the new validation plugins. Example `crypto_trend_validation.yaml`:
 
@@ -1568,7 +1568,7 @@ git commit -m "feat: add research YAML configs for all pipeline types"
 
 **Files:**
 - Create: `scripts/fetch_data.py`
-- Create: `configs/data/fetch_macro.yaml`
+- Create: `config/data/fetch_macro.yaml`
 
 `fetch_data.py` reads a data config and calls quantbox-datasets to fetch and cache data locally.
 
@@ -1606,7 +1606,7 @@ git commit -m "fix: resolve integration issues from full test suite"
 
 ```bash
 cd /home/tom/workspace/projects/quantbox-lab
-python scripts/run_research.py -c configs/research/crypto_trend_validation.yaml
+python scripts/run_research.py -c config/research/crypto_trend_validation.yaml
 ```
 
 Verify:

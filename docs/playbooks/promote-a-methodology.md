@@ -71,8 +71,8 @@ In your project's `research/{study}/STATUS.md`, move the entry from "In Flight" 
 ### 4. Run validation
 
 ```bash
-quantbox validate -c configs/{slug}.yaml
-quantbox run -c configs/{slug}.yaml
+quantbox validate -c config/{slug}.yaml
+quantbox run -c config/{slug}.yaml
 ```
 
 Verify metrics meet `baseline_metrics`. If they don't, *don't* lock yet. Fix the methodology or revisit thresholds.

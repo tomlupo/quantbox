@@ -5,7 +5,7 @@ QuantBox includes two backtesting engines accessible through the `backtest.pipel
 ## Quick start
 
 ```bash
-quantbox run -c configs/run_backtest_crypto_trend.yaml
+quantbox run -c config/run_backtest_crypto_trend.yaml
 ```
 
 ## Engines

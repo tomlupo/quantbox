@@ -1,7 +1,7 @@
 # Backtest on synthetic data — no external API calls needed.
 # Useful for CI pipelines, strategy prototyping, and testing.
 #
-# Usage: quantbox run -c configs/run_synthetic_backtest.yaml
+# Usage: quantbox run -c config/run_synthetic_backtest.yaml
 
 run:
   mode: backtest

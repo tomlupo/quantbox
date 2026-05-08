@@ -7,7 +7,7 @@
 
 ## Instrument map
 
-Provide YAML/CSV. Example: `configs/instruments.yaml`
+Provide YAML/CSV. Example: `config/instruments.yaml`
 
 Fields:
 - symbol (required)

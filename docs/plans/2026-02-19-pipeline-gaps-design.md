@@ -173,7 +173,7 @@ Plugin calls quantbox-datasets, caches to `data/curated/`, returns standard wide
 
 ```
 quantbox-lab/
-├── configs/
+├── config/
 │   ├── research/
 │   │   ├── crypto_trend_validation.yaml
 │   │   ├── ml_prediction_walkforward.yaml
