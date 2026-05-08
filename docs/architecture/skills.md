@@ -109,7 +109,7 @@ Default to L1.
 ## L4 — logged experiment
 
 [YAML example with comments]
-[reference to recipes/]
+[reference config/{name}.yaml]
 
 ## When the existing plugin set is missing capability
 
@@ -186,7 +186,7 @@ The repo CI runs a smoke check that all skill examples (in fenced ```yaml or ```
 | Skill describes a stale API | Bump `requires_quantbox_min`; update body |
 | Skill duplicates content from another skill | Cross-reference, don't restate |
 | Skill silently invents a new plugin type | Refuse; route to `quantbox-contract-rfc` |
-| Skill body doesn't reference recipes/ or schemas/ | Add references — single source of truth |
+| Skill body doesn't reference config/ or schemas/ | Add references — single source of truth |
 
 ---
 

@@ -45,6 +45,6 @@ You do **not** need to change the quantbox repo. In your own repo or package:
    "my_research.momentum.v1" = "my_plugins.pipeline:MomentumPipeline"
    ```
 
-3. Install your package in the same environment as `quantbox`. Run from your project: use your own `configs/` and `plugins/manifest.yaml` (the runner uses the manifest under current working directory). The registry merges built-in and entry-point plugins by name.
+3. Install your package in the same environment as `quantbox`. Run from your project: use your own `config/` and `plugins/manifest.yaml` (the runner uses the manifest under current working directory). The registry merges built-in and entry-point plugins by name.
 
-See `recipes/add_pipeline_plugin.md` and `recipes/add_broker_plugin.md` in the repo for Option A (built-in) vs Option B (external entry points).
+See `docs/playbooks/add-a-pipeline-plugin.md` and `docs/playbooks/add-a-broker-plugin.md` in the repo for Option A (built-in) vs Option B (external entry points).

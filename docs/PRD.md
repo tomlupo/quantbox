@@ -272,7 +272,7 @@ quantbox/
 ├── plugins/
 │   ├── manifest.yaml           # Plugin list and profiles (research, trading)
 │   └── manifest.schema.json
-├── recipes/                    # How-to: add broker plugin, add pipeline plugin
+├── docs/playbooks/             # How-to guides (add plugin, add adapter, promote, ...)
 ├── schemas/                    # JSON schemas for artifacts
 │   ├── allocations.schema.json
 │   ├── prices.schema.json
