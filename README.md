@@ -2,8 +2,6 @@
 
 Quant research and trading framework with a plugin architecture. Config-driven pipelines for backtesting, paper trading, and live execution.
 
-See [multi-repo workflow](docs/guides/multi-repo-workflow.md) for versioning and promotion across repos.
-
 ## Install
 
 ```bash
