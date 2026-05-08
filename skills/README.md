@@ -11,7 +11,7 @@ LLM-facing API. Skills produce YAML configs (or, when capability is missing, sca
 ```
 skills/
 ├── quantbox-core/SKILL.md              # mental model — contracts, registry, runner, ArtifactStore
-├── quantbox-config/SKILL.md            # YAML grammar + validation
+├── quantbox-cookbook/configs/SKILL.md            # YAML grammar + validation
 ├── quantbox-cli/SKILL.md               # quantbox plugins/validate/run/new
 ├── quantbox-research/SKILL.md          # capability — checks/composes/authors
 ├── quantbox-backtest/SKILL.md          # capability — vectorbt at L1, pipeline at L4

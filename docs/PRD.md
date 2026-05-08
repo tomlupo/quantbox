@@ -249,13 +249,13 @@ Data (Parquet) → DuckDB (data plugin) → Pipeline plugin → Artifacts (alloc
 
 ```
 quantbox/
-├── config/                    # Run configs (research, trading, broker-specific)
-│   ├── instruments.yaml        # Instrument map (multiplier, lot size, FX, etc.)
-│   ├── run_fund_selection.yaml
-│   ├── run_trade_from_allocations.yaml
-│   └── run_trade_from_allocations_*_live|paper.yaml
-├── contracts/
-│   └── ARTIFACTS.md            # Artifact contracts and schema references
+├── cookbook/
+│   ├── configs/                # Example YAML configs (research, trading, broker-specific)
+│   │   ├── instruments.yaml    # Instrument map (multiplier, lot size, FX, etc.)
+│   │   ├── run_fund_selection.yaml
+│   │   ├── run_trade_from_allocations.yaml
+│   │   └── run_trade_from_allocations_*_live|paper.yaml
+│   └── scripts/                # Runnable examples (quickstart, custom plugin, artifact inspection)
 ├── docs/
 │   ├── README.md               # This index
 │   ├── PRD.md                  # This document

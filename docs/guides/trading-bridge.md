@@ -7,7 +7,7 @@
 
 ## Instrument map
 
-Provide YAML/CSV. Example: `config/instruments.yaml`
+Provide YAML/CSV. Example: `cookbook/configs/instruments.yaml`
 
 Fields:
 - symbol (required)

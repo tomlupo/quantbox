@@ -25,8 +25,8 @@ If any are uncertain, fix them before starting. Autoresearch with broken validat
 The baseline is the config the loop varies *from*. It must run end-to-end successfully on its own:
 
 ```bash
-quantbox validate -c config/clients/X/strategy.yaml
-quantbox run -c config/clients/X/strategy.yaml
+quantbox validate -c cookbook/configs/clients/X/strategy.yaml
+quantbox run -c cookbook/configs/clients/X/strategy.yaml
 ```
 
 If this fails, fix it first.
@@ -116,8 +116,8 @@ The `min_lift` filter prevents Discord spam — the loop only surfaces candidate
 ### 7. Validate and dry-run
 
 ```bash
-quantbox autoresearch validate -c config/clients/X/autoresearch.yaml
-quantbox autoresearch run --dry-run -c config/clients/X/autoresearch.yaml --max-trials 1
+quantbox autoresearch validate -c cookbook/configs/clients/X/autoresearch.yaml
+quantbox autoresearch run --dry-run -c cookbook/configs/clients/X/autoresearch.yaml --max-trials 1
 ```
 
 `--dry-run --max-trials 1` runs exactly one iteration end-to-end without committing to a multi-hour loop. Verifies the proposer, runner, evaluator, and memory all wire correctly.
@@ -125,7 +125,7 @@ quantbox autoresearch run --dry-run -c config/clients/X/autoresearch.yaml --max-
 ### 8. Run
 
 ```bash
-quantbox autoresearch run -c config/clients/X/autoresearch.yaml
+quantbox autoresearch run -c cookbook/configs/clients/X/autoresearch.yaml
 ```
 
 The loop persists state to `EXPERIMENTS.jsonl` after every trial — interrupting and resuming is safe.
@@ -133,7 +133,7 @@ The loop persists state to `EXPERIMENTS.jsonl` after every trial — interruptin
 For continuous (cron-based) operation, use `tick`:
 
 ```bash
-quantbox autoresearch tick -c config/clients/X/autoresearch.yaml --max-trials 5
+quantbox autoresearch tick -c cookbook/configs/clients/X/autoresearch.yaml --max-trials 5
 ```
 
 Wire into Iris's schedule:
@@ -146,13 +146,13 @@ Wire into Iris's schedule:
 ### 9. Monitor
 
 ```bash
-quantbox autoresearch status -c config/clients/X/autoresearch.yaml
+quantbox autoresearch status -c cookbook/configs/clients/X/autoresearch.yaml
 ```
 
 Outputs:
 
 ```
-Loop:        config/clients/X/autoresearch.yaml
+Loop:        cookbook/configs/clients/X/autoresearch.yaml
 State:       running (tick 12 of 50)
 Best:        T0042 — sharpe_oos 1.23 (+18% vs baseline 1.04)
 Budget:      trials 12/50, llm $4.20/$25, compute $0.30/$5, wall 1h12m/4h

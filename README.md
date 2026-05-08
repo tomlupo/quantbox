@@ -30,13 +30,13 @@ uv sync --extra full      # all of the above
 ### Research (fund selection)
 
 ```bash
-quantbox run -c config/run_fund_selection.yaml
+quantbox run -c cookbook/configs/run_fund_selection.yaml
 ```
 
 ### Backtest
 
 ```bash
-quantbox run -c config/run_backtest_crypto_trend.yaml
+quantbox run -c cookbook/configs/run_backtest_crypto_trend.yaml
 ```
 
 See [backtesting guide](docs/guides/backtesting.md) for engine options and parameters.
@@ -44,7 +44,7 @@ See [backtesting guide](docs/guides/backtesting.md) for engine options and param
 ### Paper trading
 
 ```bash
-quantbox run -c config/run_futures_paper_crypto_trend.yaml
+quantbox run -c cookbook/configs/run_futures_paper_crypto_trend.yaml
 ```
 
 ### Live trading

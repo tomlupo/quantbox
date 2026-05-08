@@ -12,7 +12,7 @@ QuantBox exposes every capability at multiple layers so users (humans, scripts, 
 | **L1** Convenience helpers | `quantbox.bt.run(...)`, `quantbox.opt.max_sharpe(...)`, `quantbox.score.peer_z(...)` | Common idiom — one function call. No plugin/config layer. | `qbt.run(prices, signals, fees=0.001)` |
 | **L2** Composable units (planned) | `quantbox.functions.run_strategy(strategy, data)` | Building a notebook, composing two ideas, no run_id ceremony. | `result = run_strategy(my_strat, data)` |
 | **L3** Plugin instances | Instantiate `Strategy()`, `DataPlugin()`, call directly | You want validation and contracts but not the YAML/runner. | `MyStrat().run(data, params)` |
-| **L4** Full pipeline | `quantbox.run_from_config(yaml_path)` | Logged experiment, ArtifactStore manifest, EXPERIMENTS.md entry. | `run_from_config("config/research.yaml")` |
+| **L4** Full pipeline | `quantbox.run_from_config(yaml_path)` | Logged experiment, ArtifactStore manifest, EXPERIMENTS.md entry. | `run_from_config("cookbook/configs/research.yaml")` |
 | **L5** CLI | `quantbox run -c config.yaml` | Production cron, reproducibility-pinned, lifecycle-tracked. | scheduled job in agent-cron / systemd |
 
 ---
@@ -142,7 +142,7 @@ The runner. YAML config. Validated. Produces a `RunResult` with manifest, lineag
 
 ```python
 from quantbox import run_from_config
-result = run_from_config("config/research/regime_taa.yaml")
+result = run_from_config("cookbook/configs/research/regime_taa.yaml")
 ```
 
 This is what the EXPERIMENTS.md log references. Use this when you want the run to be *part of the record*.
@@ -154,7 +154,7 @@ This is what the EXPERIMENTS.md log references. Use this when you want the run t
 Production. Combined with `--strict`, enforces reproducibility pins (uv.lock + dataset hashes + seeds).
 
 ```bash
-quantbox run -c config/prod/dm_evo_fund_selection.yaml --strict
+quantbox run -c cookbook/configs/prod/dm_evo_fund_selection.yaml --strict
 ```
 
 Used by cron jobs and agent-cron schedules. Not for interactive use.

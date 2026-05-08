@@ -41,7 +41,7 @@ A runbook that lacks any of these is unfinished.
 - One file per operation. If two operations share 80% of steps, factor common bits into a third runbook and reference it.
 - Steps are **commands**, not narrative. `curl -fsS $URL` beats "make a GET request to the URL."
 - Every command output is described — what does success *look like*?
-- Sensitive paths (env vars, API keys, secret locations) are referenced by *path* (`~/.config/...`), never inlined.
+- Sensitive paths (env vars, API keys, secret locations) are referenced by *path* (`~/.cookbook/configs/...`), never inlined.
 
 ## Index
 

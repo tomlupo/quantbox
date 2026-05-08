@@ -88,16 +88,16 @@ Lives at `quantbox.autoresearch.driver`. Top-level API:
 ```python
 from quantbox.autoresearch import AutoResearchDriver, AutoResearchConfig
 
-driver = AutoResearchDriver.from_config("config/clients/X/autoresearch.yaml")
+driver = AutoResearchDriver.from_config("cookbook/configs/clients/X/autoresearch.yaml")
 report = driver.run()
 ```
 
 Exposes the same shape at L5:
 
 ```bash
-quantbox autoresearch run -c config/clients/X/autoresearch.yaml
-quantbox autoresearch tick -c config/clients/X/autoresearch.yaml   # one iteration
-quantbox autoresearch status -c config/clients/X/autoresearch.yaml # current state
+quantbox autoresearch run -c cookbook/configs/clients/X/autoresearch.yaml
+quantbox autoresearch tick -c cookbook/configs/clients/X/autoresearch.yaml   # one iteration
+quantbox autoresearch status -c cookbook/configs/clients/X/autoresearch.yaml # current state
 ```
 
 `tick` is the cron-friendly mode — does N trials within tight budget, persists state, exits.
@@ -132,7 +132,7 @@ Each iteration is fully reproducible — uses the standard ArtifactStore, run_id
 
 ```yaml
 autoresearch:
-  baseline: config/clients/X/strategy.yaml      # starting point
+  baseline: cookbook/configs/clients/X/strategy.yaml      # starting point
   search_space:                                  # what's tunable
     params.lookback_days: { range: [30, 252], step: 5 }
     params.vol_target:    { range: [0.08, 0.25], step: 0.01 }
@@ -267,7 +267,7 @@ The driver refuses to start if `evaluation:` is missing any of these. No "skip f
 For background continuous improvement, the driver exposes `tick`:
 
 ```bash
-quantbox autoresearch tick -c config/clients/X/autoresearch.yaml --max-trials 5
+quantbox autoresearch tick -c cookbook/configs/clients/X/autoresearch.yaml --max-trials 5
 ```
 
 Wired into Iris's schedule via `agent-cron`:

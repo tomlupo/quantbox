@@ -4,7 +4,7 @@ Shows the minimum code needed to implement a StrategyPlugin
 that can be used with any pipeline.
 
 Usage:
-    uv run python examples/02_custom_strategy.py
+    uv run python cookbook/scripts/02_custom_strategy.py
 """
 
 from dataclasses import dataclass

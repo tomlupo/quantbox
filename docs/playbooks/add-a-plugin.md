@@ -155,7 +155,7 @@ If this works, the plugin is sound. Wiring into L4 (YAML config) is a separate s
 
 ### 6. Add a YAML config example
 
-`config/{slug}_example.yaml`:
+`cookbook/configs/{slug}_example.yaml`:
 
 ```yaml
 run:
@@ -176,8 +176,8 @@ plugins:
 Test:
 
 ```bash
-quantbox validate -c config/{slug}_example.yaml
-quantbox run -c config/{slug}_example.yaml
+quantbox validate -c cookbook/configs/{slug}_example.yaml
+quantbox run -c cookbook/configs/{slug}_example.yaml
 ```
 
 ### 7. Document

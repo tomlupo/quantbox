@@ -154,5 +154,5 @@ Use `mega_tc_tight.yaml` in quantbox-lab as the reference config.
 ## See also
 
 - Plugin: `packages/quantbox-core/src/quantbox/plugins/strategies/carry.py`
-- Reference configs: `quantbox-lab/config/mega_tc_tight.yaml`, `mega_5yr_binance.yaml`
+- Reference configs: `quantbox-lab/cookbook/configs/mega_tc_tight.yaml`, `mega_5yr_binance.yaml`
 - Lifecycle: `docs/architecture/lifecycle.md`

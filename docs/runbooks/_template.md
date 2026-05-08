@@ -15,7 +15,7 @@
 
 Operator can verify each before starting:
 
-- [ ] Environment variable `X` set (lives in `~/.config/path.env`, mode 600)
+- [ ] Environment variable `X` set (lives in `~/.cookbook/configs/path.env`, mode 600)
 - [ ] Service `Y` running: `systemctl --user is-active Y`
 - [ ] Healthcheck endpoint reachable: `curl -fsS $URL`
 - [ ] Disk has > N GB free: `df -h /`

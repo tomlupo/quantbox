@@ -21,7 +21,7 @@
 | Aspect | Quantlab | Quantbox |
 |--------|----------|----------|
 | **Entry script** | `run_trading_bot_paper1.py` calls `engine.run_process(process_name=...)` | `runner.py:run_from_config(config_path)` |
-| **Config loading** | `load_yaml()` on `config/accounts/{name}.yaml` + per-strategy `config/strategies/{name}.yaml` | Single YAML config; profiles resolved via `plugins/manifest.yaml` |
+| **Config loading** | `load_yaml()` on `cookbook/configs/accounts/{name}.yaml` + per-strategy `cookbook/configs/strategies/{name}.yaml` | Single YAML config; profiles resolved via `plugins/manifest.yaml` |
 | **Env vars** | `python-dotenv` loads `.env` (API keys, tokens) | Same, via `.env` or env vars |
 | **Dynamic dispatch** | `importlib.import_module(f'workflow.{task_module}')` + `getattr(module, task_function)` | `PluginRegistry.discover()` merges builtins + entry points; plugins instantiated via `params_init` |
 | **Orchestrator** | `engine/core.py` with `@log_execution()` decorator (timing, error handling, artifact saving) | `runner.py` with event log (JSONL), schema validation, run manifest |

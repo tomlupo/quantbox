@@ -25,9 +25,8 @@ dev = [
 target-version = "py310"
 line-length = 120
 exclude = [
-    "packages/quantbox-core/src/quantbox/plugins/trading/quantlab/",
     "scripts/",
-    "config/",
+    "cookbook/configs/",
 ]
 
 [tool.ruff.lint]

@@ -11,7 +11,7 @@ A template is a directory under `templates/` containing:
 - Pre-wired `pyproject.toml` with quantbox SDK pinned + sensible defaults.
 - `CLAUDE.md` and `AGENTS.md` reflecting quantbox conventions.
 - `.claude/skills/` and `.claude/rules/` with foundation pieces installed.
-- Project structure (`src/`, `config/`, `research/`, `data/`, `output/`).
+- Project structure (`src/`, `cookbook/configs/`, `research/`, `data/`, `output/`).
 - One working example pipeline (config + script) that proves the install end-to-end.
 - `.github/workflows/` with CI for tests + schema validation.
 
@@ -64,7 +64,7 @@ Behavior:
 5. Install rules from `quantbox/rules/` into `target_dir/.claude/rules/`.
 6. Generate `pyproject.toml` with quantbox SDK pinned at current version.
 7. Run `git init && uv sync` (unless `--no-init`).
-8. Run the example pipeline as a smoke test (`quantbox run -c config/example.yaml`).
+8. Run the example pipeline as a smoke test (`quantbox run -c cookbook/configs/example.yaml`).
 9. Print "next steps" — including how to upgrade later.
 
 The smoke test step is the contract: if it fails, the template is broken.
@@ -125,11 +125,11 @@ templates/research/
 ├── src/{{ project_name }}/                 # project package
 │   ├── __init__.py
 │   └── plugins/                            # placeholder for project plugins
-├── config/
+├── cookbook/configs/
 │   ├── example_backtest.yaml               # working example
 │   └── example_research.yaml
 ├── pipelines/
-│   └── example_backtest.py                 # the script that runs config/example_backtest.yaml
+│   └── example_backtest.py                 # the script that runs cookbook/configs/example_backtest.yaml
 ├── research/                               # scratch-plugins land here
 ├── data/
 │   ├── raw/.gitkeep

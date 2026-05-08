@@ -4,7 +4,7 @@ Shows how to list runs, open a specific run, and read its artifacts
 using the FileArtifactStore API.
 
 Usage:
-    uv run python examples/03_inspect_artifacts.py [artifacts_root]
+    uv run python cookbook/scripts/03_inspect_artifacts.py [artifacts_root]
 """
 
 import sys

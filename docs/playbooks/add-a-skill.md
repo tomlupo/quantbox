@@ -90,7 +90,7 @@ Default to **L1**.
 ## L4 — logged experiment
 
 [YAML example, with comments]
-[reference config/{name}.yaml]
+[reference cookbook/configs/{name}.yaml]
 
 ## When the existing plugin set is missing capability
 
@@ -130,13 +130,13 @@ A new plugin file at `research/{study}/{slug}.py` with `meta.status="research"`.
 
 ### 4. Reference recipes (don't restate them)
 
-If a working YAML config already exists in `config/`, reference it:
+If a working YAML config already exists in `cookbook/configs/`, reference it:
 
 ```markdown
-For a complete L4 config, see [config/run_backtest_crypto_trend.yaml](../../config/run_backtest_crypto_trend.yaml).
+For a complete L4 config, see [cookbook/configs/run_backtest_crypto_trend.yaml](../../cookbook/configs/run_backtest_crypto_trend.yaml).
 ```
 
-Single source of truth — `config/` holds the canonical YAML examples; skills point at them.
+Single source of truth — `cookbook/configs/` holds the canonical YAML examples; skills point at them.
 
 ### 5. Test the skill manually
 
@@ -175,7 +175,7 @@ If foundation skills are auto-installed by `quantbox new`, update the install li
 
 - [ ] Frontmatter has `name`, `description`, `default_layer`, `escalation_rules`, `requires_quantbox_min`.
 - [ ] First section of the body is the "Pick the layer" table (capability skills only).
-- [ ] Examples reference `config/` instead of inlining full YAML.
+- [ ] Examples reference `cookbook/configs/` instead of inlining full YAML.
 - [ ] Trigger phrases in `description` are realistic (test by asking Claude to do the task).
 - [ ] No code that drifts from current plugin contracts.
 - [ ] Skill passes a manual smoke test (trigger + output validates/runs).
@@ -188,7 +188,7 @@ If foundation skills are auto-installed by `quantbox new`, update the install li
 |---|---|
 | Skill defaults to L4/L5 | Reset `default_layer: L1`; escalate only when necessary |
 | Skill writes Python by default | Configs first; code only when capability is missing |
-| Skill restates a config | Reference `config/` |
+| Skill restates a config | Reference `cookbook/configs/` |
 | Skill describes a stale API | Bump `requires_quantbox_min`; test against current contracts |
 | Skill is project-specific but lives in `quantbox/skills/` | Move to the project's `.claude/skills/` |
 | Skill body is too long (> 300 lines) | Move detail to `references/` and link |
