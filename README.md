@@ -156,6 +156,8 @@ make dev-full  # install all extras + dev deps
 pytest -q      # run tests
 ```
 
+**Broker safety:** start with `readonly: true`, use `--dry-run` to inspect the plan, check `orders.parquet` before enabling live order placement.
+
 See [CLAUDE.md](CLAUDE.md) for agent and LLM development guidelines.
 
 Copy-paste scaffolds for methodology specs, dataset docs, and runbooks are in [`templates/`](templates/).
