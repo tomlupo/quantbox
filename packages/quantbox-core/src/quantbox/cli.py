@@ -184,7 +184,7 @@ def cmd_plugins_doctor(as_json: bool = False, strict: bool = False):
     except Exception:
         reg = None
     manifest = load_manifest()
-    config_dir = repo_root() / "configs"
+    config_dir = repo_root() / "cookbook" / "configs"
     if config_dir.exists():
         for cfg_path in sorted(config_dir.glob("*.yaml")):
             try:
@@ -419,6 +419,38 @@ def warehouse(
         )
     finally:
         wh.close()
+
+
+@app.command()
+def approve(
+    run_dir: str = typer.Option(..., "--run-dir", help="Path to artifacts/<run_id>/"),
+    who: str = typer.Option("human", "--who", help="Approver identity"),
+    note: str = typer.Option("approved", "--note", help="Approval note"),
+):
+    """Write an approval file for the orders in a run directory."""
+    import json
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    run_path = Path(run_dir)
+    od = run_path / "orders_digest.json"
+    if not od.exists():
+        raise typer.BadParameter(f"orders_digest.json not found in {run_dir}")
+
+    digest = json.loads(od.read_text(encoding="utf-8"))["orders_digest"]
+    out_dir = Path("approvals")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"{digest}.json"
+
+    payload = {
+        "approved": True,
+        "orders_digest": digest,
+        "who": who,
+        "when": datetime.now(timezone.utc).isoformat(),
+        "note": note,
+    }
+    out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print("Wrote approval:", out)
 
 
 def main():
