@@ -182,8 +182,8 @@ quantbox run -c cookbook/configs/{slug}_example.yaml
 
 ### 7. Document
 
-- Add a row to the relevant table in `docs/reference/plugins.md` (or create one).
-- If methodology, add a spec in `docs/methodology/{slug}.md` (DRAFT status).
+- Update the plugin table in the project `README.md`.
+- If this plugin has a methodology, copy `quantbox/templates/methodology.md` into your project's `docs/methodology/{slug}.md` (DRAFT status).
 - EXPERIMENTS.md entry referencing the plugin name and any backtest results.
 
 ---

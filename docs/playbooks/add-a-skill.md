@@ -159,7 +159,7 @@ Skills can call scripts via Bash. Keep scripts < 100 lines; if larger, refactor 
 
 ### 7. Document
 
-Add a one-line entry in `quantbox/skills/README.md` (or `quantbox/docs/reference/skills.md`):
+Add a one-line entry in `quantbox/skills/README.md`:
 
 ```
 | {skill-name} | {default_layer} | {one-line description} |

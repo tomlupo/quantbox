@@ -2,6 +2,8 @@
 
 Walks a methodology from `research` → `locked` → `production`. Read [architecture/lifecycle.md](../architecture/lifecycle.md) first.
 
+> **Note:** Methodology specs live in your project's own `docs/methodology/`, not in quantbox. Use `quantbox/templates/methodology.md` as the starting point.
+
 ---
 
 ## Pre-flight — is this ready to lock?

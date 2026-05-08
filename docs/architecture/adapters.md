@@ -126,7 +126,7 @@ Don't add an adapter:
    opt-riskfolio = ["riskfolio-lib>=4.0"]
    ```
 6. **Test** the convenience helper with a tiny synthetic returns DataFrame. Don't test riskfolio itself — that's their job.
-7. **Document** in `docs/reference/adapters.md` (one-line entry) and in this file's table.
+7. **Document** in this file's adapters table.
 
 That's the whole flow. No plugin needed at this stage. A plugin (`risk.opt.riskfolio.max_sharpe.v1`) can come later if a pipeline needs it at L4.
 

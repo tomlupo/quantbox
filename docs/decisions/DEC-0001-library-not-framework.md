@@ -99,4 +99,4 @@ QuantBox owns conventions, plugin contracts, and the runtime; everything else is
 - Decision was made after a long iterative discussion comparing Qlib, Kedro, vectorbt, NautilusTrader, and the emerging dm-evo + quantlab use cases.
 - Encoded in [architecture/principles.md](../architecture/principles.md) as principle #1.
 - Operationalized in [architecture/api-layers.md](../architecture/api-layers.md) and [architecture/adapters.md](../architecture/adapters.md).
-- Implications for skills and templates are captured in [architecture/skills.md](../architecture/skills.md) and [architecture/templates.md](../architecture/templates.md).
+- Implications for skills are captured in [architecture/skills.md](../architecture/skills.md).

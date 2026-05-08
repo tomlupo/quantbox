@@ -11,7 +11,7 @@ requires_quantbox_min: "0.3.0"
 
 # quantbox-autoresearch
 
-> **Status: stub.** The `AutoResearchDriver` is not yet implemented. This skill describes the target shape so the LLM-facing API is locked in alongside the architecture. See [docs/architecture/autoresearch.md](../../docs/architecture/autoresearch.md) and [ADR-0003](../../docs/adr/0003-autoresearch-as-driver-not-runtime.md) for the design.
+> **Status: stub.** The `AutoResearchDriver` is not yet implemented. This skill describes the target shape so the LLM-facing API is locked in alongside the architecture. See [docs/architecture/autoresearch.md](../../docs/architecture/autoresearch.md) and [DEC-0003](../../docs/decisions/DEC-0003-autoresearch-as-driver-not-runtime.md) for the design.
 
 ---
 
@@ -164,6 +164,6 @@ The skill's job ends here. Promotion is human-driven via `/promote-lock` (existi
 
 - [architecture/autoresearch.md](../../docs/architecture/autoresearch.md) — full design.
 - [playbooks/run-an-autoresearch-loop.md](../../docs/playbooks/run-an-autoresearch-loop.md) — step-by-step.
-- [ADR-0003](../../docs/adr/0003-autoresearch-as-driver-not-runtime.md) — why driver, not runtime mode.
+- [DEC-0003](../../docs/decisions/DEC-0003-autoresearch-as-driver-not-runtime.md) — why driver, not runtime mode.
 - `quantbox-strategy-author` — when you need to author a new capability before tuning.
 - `quantbox-promote` — what happens after a candidate is selected.

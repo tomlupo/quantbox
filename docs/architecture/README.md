@@ -10,9 +10,8 @@ Read these in order. The first two are mandatory before modifying anything; the 
 | 4 | [**adapters.md**](adapters.md) | The wrap-don't-rebuild rule with examples. When to add an adapter, when not. |
 | 5 | [**skills.md**](skills.md) | LLM-facing API conventions. Frontmatter contract, capability-gap branch, authoring skills. |
 | 6 | [**lifecycle.md**](lifecycle.md) | `meta.status` state machine, reproducibility pins, promotion, revalidation cadence. |
-| 7 | [**templates.md**](templates.md) | Project bootstrap (`quantbox new`), the four templates, convergence model. |
-| 8 | [**autoresearch.md**](autoresearch.md) | LLM-driven continuous improvement loops over strategies — `AutoResearchDriver` (L4). |
-| 9 | [**pipeline-design.md**](pipeline-design.md) | Why imperative orchestration over declarative pipelines (existing). |
+| 7 | [**autoresearch.md**](autoresearch.md) | LLM-driven continuous improvement loops over strategies — `AutoResearchDriver` (L4). |
+| 8 | [**pipeline-design.md**](pipeline-design.md) | Why imperative orchestration over declarative pipelines (existing). |
 
 Once you've read principles + api-layers, the others are reference material — pull what's relevant.
 

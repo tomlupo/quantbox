@@ -79,6 +79,7 @@ quantbox plugins list
 | `local_file_data` | Local Parquet files via DuckDB |
 | `binance.live_data.v1` | Binance spot OHLCV + market data |
 | `binance.futures_data.v1` | Binance USDM futures + funding rates |
+| `hyperliquid.data.v1` | Hyperliquid market data |
 
 ### Brokers
 
@@ -118,7 +119,7 @@ The bundled manifest defines available profiles:
 
 ```yaml
 plugins:
-  profile: research       # or: trading, trading_full, futures_paper
+  profile: research       # or: trading, trading_full, futures_paper, stress_test
 ```
 
 Profiles bundle a set of plugins so you don't repeat them in every config.

@@ -8,6 +8,8 @@ plugins:
     data:
       - local_file_data
       - binance.live_data.v1
+      - binance.futures_data.v1
+      - hyperliquid.data.v1
       - data.synthetic.v1
     brokers:
       - sim.paper.v1

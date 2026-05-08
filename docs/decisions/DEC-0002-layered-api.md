@@ -87,4 +87,4 @@ Every step adds one level of structure; users pick the lowest one that meets the
 - Operationalized in [architecture/api-layers.md](../architecture/api-layers.md) — the canonical layer table.
 - Adapter rule that supports L0 is in [architecture/adapters.md](../architecture/adapters.md) and [ADR-0001](DEC-0001-library-not-framework.md).
 - Skill frontmatter contract is in [architecture/skills.md](../architecture/skills.md).
-- Pre-existing `quantbox.backtesting.*` modules will be reorganized to fit this layering — see migration plan in `docs/plans/`.
+- Pre-existing `quantbox.backtesting.*` modules will be reorganized to fit this layering.

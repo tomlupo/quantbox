@@ -118,7 +118,6 @@ Don't test the underlying library's behavior. That's their job.
 Add a one-line entry in:
 
 - `docs/architecture/adapters.md` — table of existing adapters
-- `docs/reference/adapters.md` — if a per-adapter reference doc exists
 - `CHANGELOG.md` — under "Added"
 
 ### 8. (Optional) Add an L3 plugin wrapper

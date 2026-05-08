@@ -150,7 +150,6 @@ In all three cases, slow down. Don't paper over the principle with a special cas
 4. [plugin-authoring.md](plugin-authoring.md) — how to add capability when adapters aren't enough.
 5. [skills.md](skills.md) — LLM-facing API conventions.
 6. [lifecycle.md](lifecycle.md) — status states, reproducibility, promotion.
-7. [templates.md](templates.md) — project bootstrap shape.
-8. [decisions/](../decisions/) — historical decisions, why we are where we are.
+7. [decisions/](../decisions/) — historical decisions, why we are where we are.
 
 After this, the [playbooks/](../playbooks/) directory has step-by-step how-tos for common modifications.
