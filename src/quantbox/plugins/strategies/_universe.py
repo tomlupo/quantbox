@@ -37,6 +37,10 @@ DEFAULT_STABLECOINS = [
     "PYUSD",
     "USD1",
     "USDJ",
+    "RLUSD",
+    "USDE",
+    "CHIP",
+    "MEGA",
     # EUR stablecoins
     "EUR",
     "EURC",
@@ -46,13 +50,20 @@ DEFAULT_STABLECOINS = [
     # Gold / commodity tokens
     "PAXG",
     "XAUT",
-    # Wrapped tokens
+    # Wrapped tokens (price equals an underlying we already hold)
     "WBTC",
     "WETH",
     "BETH",
+    "WBETH",
     "ETHW",
     "CBBTC",
     "CBETH",
+    "LBTC",
+    "STETH",
+    "WSTETH",
+    "RETH",
+    "EZETH",
+    "WEETH",
     # Other non-tradeable
     "BFUSD",
     "AEUR",

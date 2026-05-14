@@ -44,6 +44,7 @@ from .strategies import (
     MLPredictionStrategy,
     MomentumLongShortStrategy,
     PortfolioOptimizerStrategy,
+    StaticWeightsStrategy,
 )
 from .strategies.weighted_avg_aggregator import WeightedAverageAggregator
 from .validation import (
@@ -92,6 +93,7 @@ def builtins() -> dict[str, dict[str, type]]:
             CryptoRegimeTrendStrategy,
             MLPredictionStrategy,
             PortfolioOptimizerStrategy,
+            StaticWeightsStrategy,
             WeightedAverageAggregator,
         ),
         "rebalancing": _map(StandardRebalancer, FuturesRebalancer),

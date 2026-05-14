@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Backtest Report</title>
   <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
     :root {
       --bg: #f5f6fa; --card: #fff; --accent: #1f77b4;
@@ -37,6 +38,64 @@
     /* Two-column grid */
     .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
     @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+
+    /* Narrative blocks (methodology, findings) */
+    .narrative { padding: 18px 24px 20px; line-height: 1.55; font-size: 0.95em; }
+    .narrative h1, .narrative h2, .narrative h3 {
+      font-weight: 700; margin: 16px 0 8px; color: var(--text);
+    }
+    .narrative h1 { font-size: 1.25em; }
+    .narrative h2 { font-size: 1.10em; }
+    .narrative h3 { font-size: 1.00em; color: var(--muted); }
+    .narrative p { margin: 6px 0 10px; }
+    .narrative ul, .narrative ol { margin: 4px 0 10px 22px; }
+    .narrative li { margin: 2px 0; }
+    .narrative code {
+      background: #f3f4f6; padding: 1px 5px; border-radius: 3px;
+      font-family: 'Menlo', 'Monaco', monospace; font-size: 0.9em;
+    }
+    .narrative pre {
+      background: #f3f4f6; padding: 10px 12px; border-radius: 6px;
+      overflow-x: auto; font-size: 0.85em; margin: 8px 0;
+    }
+    .narrative table {
+      border-collapse: collapse; margin: 8px 0; font-size: 0.9em;
+    }
+    .narrative th, .narrative td {
+      border: 1px solid var(--border); padding: 5px 10px; text-align: left;
+    }
+    .narrative th { background: #fafbfc; font-weight: 600; }
+    .narrative blockquote {
+      border-left: 3px solid var(--accent); padding: 4px 12px;
+      color: var(--muted); margin: 8px 0;
+    }
+
+    /* Reproducibility appendix */
+    .repro-grid { display: grid; grid-template-columns: 200px 1fr; gap: 6px 16px;
+                  padding: 14px 24px 18px; font-size: 0.85em; }
+    .repro-grid .k { color: var(--muted); text-transform: uppercase;
+                     letter-spacing: 0.04em; font-size: 0.78em; }
+    .repro-grid .v { font-family: 'Menlo', 'Monaco', monospace; word-break: break-all; }
+    .repro-grid pre {
+      grid-column: 1 / -1; background: #f3f4f6; padding: 10px 12px;
+      border-radius: 6px; font-size: 0.82em; overflow-x: auto; margin-top: 4px;
+    }
+
+    /* Section divider for per-variant blocks */
+    .variant-section { margin: 32px 0 20px; }
+    .variant-section .section-header {
+      display: flex; align-items: baseline; gap: 14px; padding: 0 4px 8px;
+      border-bottom: 2px solid var(--border); margin-bottom: 16px;
+    }
+    .variant-section h2 {
+      font-size: 1.15em; font-weight: 700; color: var(--text); letter-spacing: 0.01em;
+    }
+    .variant-section .sub {
+      font-size: 0.82em; color: var(--muted); font-family: 'Menlo', monospace;
+    }
+    .toc { padding: 10px 18px 14px; font-size: 0.85em; color: var(--muted); }
+    .toc a { color: var(--accent); text-decoration: none; margin-right: 12px; }
+    .toc a:hover { text-decoration: underline; }
   </style>
 
   <script>
@@ -51,55 +110,190 @@
   <p class="run-meta" id="run-meta"></p>
 </header>
 
-<!-- Metrics -->
-<div class="card">
+<!-- Table of contents (jump links, only shown in multi-variant mode) -->
+<div class="card" id="toc-card" style="display:none">
+  <div class="card-title">Sections</div>
+  <div class="toc" id="toc"></div>
+</div>
+
+<!-- Executive summary: methodology -->
+<div class="card" id="narrative-methodology-card" style="display:none">
+  <div class="card-title">Methodology</div>
+  <div class="narrative" id="narrative-methodology"></div>
+</div>
+
+<!-- Executive summary: key findings -->
+<div class="card" id="narrative-findings-card" style="display:none">
+  <div class="card-title">Key Findings</div>
+  <div class="narrative" id="narrative-findings"></div>
+</div>
+
+<!-- Top-level metrics (single-strategy flow only) -->
+<div class="card" id="metrics-card">
   <div class="card-title">Performance Metrics</div>
   <div class="metrics-strip" id="metrics-strip"></div>
 </div>
 
-<!-- Main portfolio chart -->
-<div class="card">
-  <div class="card-title">Portfolio — Equity &amp; Drawdown</div>
-  <div class="chart-wrap"><div id="chart-portfolio"></div></div>
-</div>
-
-<!-- Monthly heatmap + contribution side-by-side -->
-<div class="two-col">
-  <div class="card">
-    <div class="card-title">Monthly Returns (%)</div>
-    <div class="chart-wrap"><div id="chart-monthly"></div></div>
+<!-- Cross-variant overview (only rendered in multi-variant mode) -->
+<div id="cross-variant-section">
+  <div class="card" id="equity_overlay-card" style="display:none">
+    <div class="card-title">Variants — Equity Curves (base 100)</div>
+    <div class="chart-wrap"><div id="chart-equity_overlay"></div></div>
   </div>
-  <div class="card">
-    <div class="card-title">Per-Ticker Contribution</div>
-    <div class="chart-wrap"><div id="chart-contrib"></div></div>
+
+  <div class="card" id="per_variant_table-card" style="display:none">
+    <div class="card-title">Per-Variant Performance</div>
+    <div class="chart-wrap"><div id="chart-per_variant_table"></div></div>
+  </div>
+
+  <div class="two-col">
+    <div class="card" id="gross_exposure_overlay-card" style="display:none">
+      <div class="card-title">Gross Exposure by Variant</div>
+      <div class="chart-wrap"><div id="chart-gross_exposure_overlay"></div></div>
+    </div>
+    <div class="card" id="btc_weight_overlay-card" style="display:none">
+      <div class="card-title">BTC Weight by Variant</div>
+      <div class="chart-wrap"><div id="chart-btc_weight_overlay"></div></div>
+    </div>
+  </div>
+
+  <div class="card" id="universe_size-card" style="display:none">
+    <div class="card-title">Universe Coverage Over Time</div>
+    <div class="chart-wrap"><div id="chart-universe_size"></div></div>
   </div>
 </div>
 
-<!-- Weight heatmap -->
-<div class="card">
-  <div class="card-title">Portfolio Weight Heatmap — Top 20 Tickers (weekly avg)</div>
-  <div class="chart-wrap"><div id="chart-weights"></div></div>
+<!-- Per-variant sections injected here by JS (multi-variant mode only) -->
+<div id="per-variant-sections"></div>
+
+<!-- Single-strategy fallback charts (only rendered when no variants) -->
+<div id="single-strategy-section">
+  <!-- Strategy diagnostic: regime overlay -->
+  <div class="card" id="regime_overlay-card" style="display:none">
+    <div class="card-title">Regime &amp; Trend Overlay</div>
+    <div class="chart-wrap"><div id="chart-regime_overlay"></div></div>
+  </div>
+
+  <div class="two-col">
+    <div class="card" id="signal_count-card" style="display:none">
+      <div class="card-title">Signal Count (with cap)</div>
+      <div class="chart-wrap"><div id="chart-signal_count"></div></div>
+    </div>
+    <div class="card" id="position_stack-card" style="display:none">
+      <div class="card-title">Active Positions — Stacked Membership</div>
+      <div class="chart-wrap"><div id="chart-position_stack"></div></div>
+    </div>
+  </div>
+
+  <div class="card" id="portfolio-card" style="display:none">
+    <div class="card-title">Portfolio — Equity &amp; Drawdown</div>
+    <div class="chart-wrap"><div id="chart-portfolio"></div></div>
+  </div>
+
+  <div class="two-col">
+    <div class="card" id="monthly-card" style="display:none">
+      <div class="card-title">Monthly Returns (%)</div>
+      <div class="chart-wrap"><div id="chart-monthly"></div></div>
+    </div>
+    <div class="card" id="contrib-card" style="display:none">
+      <div class="card-title">Per-Ticker Contribution</div>
+      <div class="chart-wrap"><div id="chart-contrib"></div></div>
+    </div>
+  </div>
+
+  <div class="card" id="weights-card" style="display:none">
+    <div class="card-title">Portfolio Weight Heatmap — Top 20 Tickers (weekly avg)</div>
+    <div class="chart-wrap"><div id="chart-weights"></div></div>
+  </div>
+
+  <div class="card" id="trades-card" style="display:none">
+    <div class="card-title">Trade Log</div>
+    <div class="chart-wrap"><div id="chart-trades"></div></div>
+  </div>
 </div>
 
-<!-- Trade log (only shown if data present) -->
-<div class="card" id="trades-card" style="display:none">
-  <div class="card-title">Trade Log</div>
-  <div class="chart-wrap"><div id="chart-trades"></div></div>
+<!-- Reproducibility appendix -->
+<div class="card" id="repro-card" style="display:none">
+  <div class="card-title">Reproducibility Appendix</div>
+  <div class="repro-grid" id="repro-grid"></div>
 </div>
 
 <script>
   const D = DATA;
   const cfg = { responsive: true, displayModeBar: 'hover' };
+  const variantMetrics = D.variant_metrics || {};
+  const variantNames = Object.keys(variantMetrics);
+  const isMulti = variantNames.length >= 2;
 
-  // Header
-  document.getElementById('page-title').textContent =
-    'Backtest Report — ' + (D.strategies || []).join(' | ');
+  // Header — use narrative title if provided, else fall back to strategies list
+  const titleText = (D.narrative && D.narrative.title)
+    ? D.narrative.title
+    : 'Backtest Report — ' + (D.strategies || []).join(' | ');
+  document.getElementById('page-title').textContent = titleText;
   document.getElementById('run-meta').innerHTML =
     '<strong>Run:</strong> ' + D.run_id +
     ' &nbsp;·&nbsp; <strong>As of:</strong> ' + D.asof +
     ' &nbsp;·&nbsp; <strong>Period:</strong> ' + D.period_start + ' → ' + D.period_end;
 
-  // Metrics strip
+  // Narrative sections: render markdown if present
+  function renderNarrative(slotKey) {
+    const md = (D.narrative && D.narrative[slotKey]) ? D.narrative[slotKey] : '';
+    if (!md || !md.trim()) return;
+    const target = document.getElementById('narrative-' + slotKey);
+    const card = document.getElementById('narrative-' + slotKey + '-card');
+    if (!target || !card) return;
+    target.innerHTML = (typeof marked !== 'undefined') ? marked.parse(md) : md;
+    card.style.display = '';
+  }
+  renderNarrative('methodology');
+  renderNarrative('findings');
+
+  // Multi-variant mode: hide top-level metrics strip (each variant has its own)
+  // and the single-strategy fallback section.
+  if (isMulti) {
+    const mc = document.getElementById('metrics-card');
+    if (mc) mc.style.display = 'none';
+    const sg = document.getElementById('single-strategy-section');
+    if (sg) sg.style.display = 'none';
+  }
+
+  // Reproducibility appendix
+  (function renderRepro() {
+    const r = D.reproducibility || {};
+    if (!r || Object.keys(r).length === 0) return;
+    const grid = document.getElementById('repro-grid');
+    const card = document.getElementById('repro-card');
+    if (!grid || !card) return;
+    function addRow(label, val) {
+      if (val === undefined || val === null || val === '') return;
+      const k = document.createElement('div'); k.className = 'k'; k.textContent = label;
+      const v = document.createElement('div'); v.className = 'v';
+      v.textContent = (typeof val === 'object') ? JSON.stringify(val) : String(val);
+      grid.appendChild(k); grid.appendChild(v);
+    }
+    function addJsonBlock(label, val) {
+      if (!val || (typeof val === 'object' && Object.keys(val).length === 0)) return;
+      const k = document.createElement('div'); k.className = 'k'; k.textContent = label;
+      const v = document.createElement('div'); v.className = 'v'; v.textContent = '';
+      grid.appendChild(k); grid.appendChild(v);
+      const pre = document.createElement('pre');
+      pre.textContent = JSON.stringify(val, null, 2);
+      grid.appendChild(pre);
+    }
+    addRow('Run ID', r.run_id);
+    addRow('As of', r.asof);
+    addRow('Period', (r.period_start || '?') + ' → ' + (r.period_end || '?'));
+    addRow('Pipeline', r.pipeline);
+    addRow('Engine commit', r.engine_commit);
+    addJsonBlock('Engine config', r.engine_config);
+    addJsonBlock('Data', r.data);
+    addJsonBlock('Universe', r.universe);
+    addJsonBlock('Prices', r.prices);
+    addJsonBlock('Variants', r.variants);
+    if (grid.children.length > 0) card.style.display = '';
+  })();
+
+  // Metrics definition shared by top-level and per-variant strips
   const METRICS = [
     ['Total Return', 'total_return', 'pct'],
     ['CAGR',         'cagr',         'pct'],
@@ -112,26 +306,142 @@
     ['Win Rate',     'win_rate',     'pct'],
     ['Profit Factor','profit_factor','f2'],
   ];
-  const strip = document.getElementById('metrics-strip');
-  for (const [label, key, fmt] of METRICS) {
-    const v = D.metrics[key] ?? 0;
-    let fv, cls;
-    if (fmt === 'pct') { fv = (v * 100).toFixed(1) + '%'; cls = v < 0 ? 'neg' : 'pos'; }
-    else if (fmt === 'days') { fv = Math.round(v) + 'd'; cls = 'neu'; }
-    else { fv = v.toFixed(2); cls = v < 0 ? 'neg' : 'neu'; }
-    strip.insertAdjacentHTML('beforeend',
-      `<div class="metric">
-         <div class="metric-label">${label}</div>
-         <div class="metric-value ${cls}">${fv}</div>
-       </div>`);
+  function renderMetricsStrip(stripEl, metricsObj) {
+    for (const [label, key, fmt] of METRICS) {
+      const v = metricsObj[key] ?? 0;
+      let fv, cls;
+      if (fmt === 'pct') { fv = (v * 100).toFixed(1) + '%'; cls = v < 0 ? 'neg' : 'pos'; }
+      else if (fmt === 'days') { fv = Math.round(v) + 'd'; cls = 'neu'; }
+      else { fv = v.toFixed(2); cls = v < 0 ? 'neg' : 'neu'; }
+      stripEl.insertAdjacentHTML('beforeend',
+        `<div class="metric">
+           <div class="metric-label">${label}</div>
+           <div class="metric-value ${cls}">${fv}</div>
+         </div>`);
+    }
+  }
+
+  // Top-level metrics strip (single-strategy mode only — hidden when isMulti)
+  if (!isMulti) {
+    const strip = document.getElementById('metrics-strip');
+    if (strip) renderMetricsStrip(strip, D.metrics || {});
+  }
+
+  // Per-variant sections — each variant gets its own card block with metrics
+  // strip + framework charts (portfolio, regime/signal diagnostics, monthly +
+  // contrib, position_stack + weights) in a consistent layout.
+  function makeChartCard(parent, title, chartKey, opts = {}) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.id = chartKey + '-card';
+    const t = document.createElement('div');
+    t.className = 'card-title';
+    t.textContent = title;
+    const wrap = document.createElement('div');
+    wrap.className = 'chart-wrap';
+    const inner = document.createElement('div');
+    inner.id = 'chart-' + chartKey;
+    wrap.appendChild(inner);
+    card.appendChild(t);
+    card.appendChild(wrap);
+    if (opts.hidden) card.style.display = 'none';
+    parent.appendChild(card);
+    return card;
+  }
+  function makeTwoCol(parent) {
+    const row = document.createElement('div');
+    row.className = 'two-col';
+    parent.appendChild(row);
+    return row;
+  }
+
+  if (isMulti) {
+    const host = document.getElementById('per-variant-sections');
+    const toc = document.getElementById('toc');
+    const tocCard = document.getElementById('toc-card');
+    for (const vname of variantNames) {
+      const m = variantMetrics[vname] || {};
+      const sect = document.createElement('section');
+      sect.className = 'variant-section';
+      sect.id = 'section-' + vname;
+      const hdr = document.createElement('div');
+      hdr.className = 'section-header';
+      hdr.innerHTML =
+        `<h2>${vname}</h2>` +
+        (m._strategy_name ? `<span class="sub">${m._strategy_name}</span>` : '');
+      sect.appendChild(hdr);
+
+      // Metrics strip card
+      const metricsCard = document.createElement('div');
+      metricsCard.className = 'card';
+      const mTitle = document.createElement('div');
+      mTitle.className = 'card-title';
+      mTitle.textContent = 'Performance Metrics';
+      const mStrip = document.createElement('div');
+      mStrip.className = 'metrics-strip';
+      metricsCard.appendChild(mTitle);
+      metricsCard.appendChild(mStrip);
+      sect.appendChild(metricsCard);
+      renderMetricsStrip(mStrip, m);
+
+      // Portfolio equity & drawdown
+      makeChartCard(sect, 'Portfolio — Equity & Drawdown', vname + '__portfolio', { hidden: true });
+
+      // Strategy diagnostics (if emitted): regime overlay full-width, signal count + position stack side-by-side
+      makeChartCard(sect, 'Regime & Trend Overlay', vname + '__regime_overlay', { hidden: true });
+      const diagRow = makeTwoCol(sect);
+      makeChartCard(diagRow, 'Signal Count (with cap)', vname + '__signal_count', { hidden: true });
+      makeChartCard(diagRow, 'Active Positions — Stacked Membership', vname + '__position_stack', { hidden: true });
+
+      // Monthly + contribution side-by-side
+      const r2 = makeTwoCol(sect);
+      makeChartCard(r2, 'Monthly Returns (%)', vname + '__monthly', { hidden: true });
+      makeChartCard(r2, 'Per-Ticker Contribution', vname + '__contrib', { hidden: true });
+
+      // Weight heatmap
+      makeChartCard(sect, 'Portfolio Weight Heatmap — Top 20 Tickers (weekly avg)', vname + '__weights', { hidden: true });
+
+      host.appendChild(sect);
+
+      if (toc) {
+        const a = document.createElement('a');
+        a.href = '#section-' + vname;
+        a.textContent = vname;
+        toc.appendChild(a);
+      }
+    }
+    if (variantNames.length && tocCard) tocCard.style.display = '';
+  }
+
+  // Auto-card slot for any unknown chart key (defensive fallback)
+  const autoHost = document.createElement('div');
+  autoHost.id = 'auto-charts';
+  document.body.appendChild(autoHost);
+  function ensureChartSlot(key) {
+    let el = document.getElementById('chart-' + key);
+    if (el) return el;
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.id = key + '-card';
+    const title = document.createElement('div');
+    title.className = 'card-title';
+    title.textContent = key.replace(/__/g, ' · ').replace(/_/g, ' ');
+    const wrap = document.createElement('div');
+    wrap.className = 'chart-wrap';
+    el = document.createElement('div');
+    el.id = 'chart-' + key;
+    wrap.appendChild(el);
+    card.appendChild(title);
+    card.appendChild(wrap);
+    autoHost.appendChild(card);
+    return el;
   }
 
   // Render each chart
   for (const [key, fig] of Object.entries(D.charts || {})) {
-    const el = document.getElementById('chart-' + key);
+    const el = ensureChartSlot(key);
     if (!el || !fig || !fig.data) continue;
     Plotly.newPlot(el, fig.data, fig.layout ?? {}, cfg);
-    // Show optional cards
     const card = document.getElementById(key + '-card');
     if (card) card.style.display = '';
   }
