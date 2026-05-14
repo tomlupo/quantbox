@@ -92,7 +92,19 @@ uv run pytest -q                            # run tests
 DataPlugin returns `Dict[str, pd.DataFrame]` of **wide-format** DataFrames:
 - Index: date
 - Columns: symbol names
-- Keys: `"prices"` (required), `"volume"`, `"market_cap"`, `"funding_rates"` (optional)
+- Keys:
+  - `"prices"` (required) — close prices
+  - `"volume"` — quote-currency dollar volume
+  - `"high"` / `"low"` — daily high/low (needed for ATR-based strategies)
+  - `"market_cap"` — monthly mcap snapshots (typically forward-filled to daily)
+  - `"funding_rates"` — perp funding (futures datasets)
+  - `"eligibility_mask"` — boolean wide DataFrame; top-N-by-mcap gate that
+    strategies can consume via `data.get("eligibility_mask")` for PIT-correct
+    daily universe rotation
+
+  Optional keys are `setdefault`-ed to empty DataFrames by the engine, so
+  strategies can always `data.get(key)` safely. Data plugins may emit
+  additional non-canonical keys, but only the list above is guaranteed.
 
 ## Config structure
 

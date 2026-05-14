@@ -49,6 +49,8 @@ plugins:
       - strategy.portfolio_optimizer.v1
       - strategy.ml_prediction.v1
       - strategy.weighted_avg.v1
+      - strategy.static_weights.v1
+      - strategy.trend_catcher.v1
     rebalancing:
       - rebalancing.standard.v1
       - rebalancing.futures.v1

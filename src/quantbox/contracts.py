@@ -8,7 +8,9 @@ classes with a class-level ``meta = PluginMeta(...)`` attribute.
 
 **DataPlugin** — loads market data:
     load_universe(params) → DataFrame[symbol]
-    load_market_data(universe, asof, params) → {"prices": wide_df, "volume": wide_df, ...}
+    load_market_data(universe, asof, params) → {"prices": wide_df, "volume": wide_df,
+        "high": wide_df, "low": wide_df, "market_cap": wide_df, "funding_rates": wide_df,
+        "eligibility_mask": wide_df, ...}
     load_fx(asof, params) → DataFrame | None
 
 **BrokerPlugin** — executes orders:
@@ -146,6 +148,7 @@ class ArtifactStore(Protocol):
 
     def put_parquet(self, name: str, df: pd.DataFrame) -> str: ...
     def put_json(self, name: str, obj: dict[str, Any]) -> str: ...
+    def put_text(self, name: str, content: str) -> str: ...
     def get_path(self, name: str) -> str: ...
     def read_parquet(self, name: str) -> pd.DataFrame: ...
     def read_json(self, name: str) -> dict[str, Any]: ...
@@ -163,8 +166,19 @@ class DataPlugin(Protocol):
     Methods:
         load_universe: Returns DataFrame with ``symbol`` column.
         load_market_data: Returns dict of wide DataFrames. Required key:
-            ``"prices"`` (close prices). Optional: ``"volume"``,
-            ``"market_cap"``, ``"funding_rates"``.
+            ``"prices"`` (close prices). Recognised optional keys (the engine
+            will ``setdefault`` each to an empty DataFrame if the plugin omits
+            it, so strategies can always ``data.get(key)`` safely):
+              - ``"volume"`` — quote-currency dollar volume
+              - ``"high"`` — daily high (for ATR / true-range calcs)
+              - ``"low"`` — daily low
+              - ``"market_cap"`` — monthly mcap snapshots (typically forward-filled)
+              - ``"funding_rates"`` — perp funding (futures datasets)
+              - ``"eligibility_mask"`` — boolean wide DataFrame, top-N-by-mcap
+                gate. Strategies that consume it get notebook-style daily
+                universe rotation; strategies that ignore it keep working.
+            Data plugins may emit additional keys, but only the canonical set
+            above is guaranteed to be present in ``market_data``.
         load_fx: Returns FX rate DataFrame, or None if not applicable.
 
     Example:

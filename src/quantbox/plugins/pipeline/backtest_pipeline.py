@@ -65,7 +65,7 @@ class BacktestPipeline:
     meta = PluginMeta(
         name="backtest.pipeline.v1",
         kind="pipeline",
-        version="0.1.0",
+        version="0.2.0",
         core_compat=">=0.1,<0.2",
         description=(
             "Backtesting pipeline: same config as TradingPipeline but "
@@ -225,7 +225,7 @@ class BacktestPipeline:
 
         market_data: dict[str, Any] = {"universe": universe}
         market_data.update(market_data_dict)
-        for key in ("prices", "volume", "market_cap", "funding_rates"):
+        for key in ("prices", "volume", "high", "low", "market_cap", "funding_rates", "eligibility_mask"):
             market_data.setdefault(key, pd.DataFrame())
 
         prices_wide = market_data["prices"]
@@ -236,6 +236,32 @@ class BacktestPipeline:
             prices_wide.index[0] if len(prices_wide) else "?",
             prices_wide.index[-1] if len(prices_wide) else "?",
         )
+
+        # --- Variants branch ---
+        # When the config declares `variants:`, each variant runs an independent
+        # backtest with its own strategy + optional overrides; results are
+        # overlaid in a single combined report. Single-strategy flow is unchanged
+        # when `variants:` is absent.
+        variants_cfg = params.get("variants") or []
+        variant_plugins = kwargs.get("variant_plugins") or {}
+        if variants_cfg:
+            return self._run_variants_flow(
+                mode=mode,
+                asof=asof,
+                params=params,
+                store=store,
+                market_data=market_data,
+                variants_cfg=variants_cfg,
+                variant_plugins=variant_plugins,
+                risk=risk,
+                engine=engine,
+                fees=fees,
+                fixed_fees=fixed_fees,
+                slippage_val=slippage_val,
+                rebalancing_freq=rebalancing_freq,
+                threshold=threshold,
+                trading_days=trading_days,
+            )
 
         # --- Stage 2: Strategy Execution ---
         strategies_cfg = params.get("_strategies_cfg", params.get("strategies", []))
@@ -356,6 +382,67 @@ class BacktestPipeline:
         a_returns = store.put_parquet("returns", returns_series.to_frame("returns").reset_index())
         a_port = store.put_parquet("portfolio_daily", portfolio_daily.reset_index())
         a_metrics = store.put_json("metrics", metrics)
+
+        # --- Stage 7: Reports ---
+        from quantbox.plugins.pipeline._report import (
+            build_reproducibility,
+            generate_html_report,
+            generate_report_data,
+            generate_summary_md,
+            report_data_to_json,
+            resolve_narrative,
+        )
+
+        period_start = str(returns_series.index[0])[:10] if len(returns_series) else asof
+        period_end = str(returns_series.index[-1])[:10] if len(returns_series) else asof
+        report_strategy_names = [sc["name"] for sc in strategies_cfg]
+        report_metrics = {**metrics, "n_assets": float(len(common_cols)), "n_dates": float(len(bt_prices))}
+        strategy_details = {
+            sname: sinfo["result"].get("details", {}) or {} for sname, sinfo in strategy_results.items()
+        }
+        narrative = resolve_narrative(params.get("narrative"))
+        reproducibility = build_reproducibility(
+            run_id=store.run_id,
+            asof=asof,
+            pipeline_name=self.meta.name,
+            pipeline_version=self.meta.version,
+            params=params,
+            period_start=period_start,
+            period_end=period_end,
+        )
+
+        store.put_text(
+            "summary.md",
+            generate_summary_md(
+                run_id=store.run_id,
+                asof=asof,
+                metrics=report_metrics,
+                strategy_names=report_strategy_names,
+                period_start=period_start,
+                period_end=period_end,
+            ),
+        )
+        try:
+            rd = generate_report_data(
+                run_id=store.run_id,
+                asof=asof,
+                metrics=report_metrics,
+                portfolio_daily=portfolio_daily,
+                returns=returns_series,
+                weights_history=wh_save,
+                bt_prices=bt_prices,
+                strategy_names=report_strategy_names,
+                period_start=period_start,
+                period_end=period_end,
+                vbt_portfolio=result_data.get("vbt_portfolio"),
+                strategy_details=strategy_details,
+                narrative=narrative,
+                reproducibility=reproducibility,
+            )
+            store.put_text("report_data.json", report_data_to_json(rd))
+            store.put_text("report.html", generate_html_report(rd))
+        except Exception as _report_exc:
+            logger.warning("HTML report generation failed: %s", _report_exc)
 
         # --- Risk checks on latest targets ---
         targets = pd.DataFrame(agg_records)
@@ -517,6 +604,257 @@ class BacktestPipeline:
                 aligned = df.reindex(index=all_idx, columns=sorted(all_cols)).fillna(0)
                 result += aligned * w
             return result
+
+    # ==================================================================
+    # Multi-variant orchestration
+    # ==================================================================
+    def _run_variants_flow(
+        self,
+        *,
+        mode: Mode,
+        asof: str,
+        params: dict[str, Any],
+        store: ArtifactStore,
+        market_data: dict[str, Any],
+        variants_cfg: list[dict[str, Any]],
+        variant_plugins: dict[str, StrategyPlugin],
+        risk: list[RiskPlugin],
+        engine: str,
+        fees: float,
+        fixed_fees: float,
+        slippage_val: float,
+        rebalancing_freq: Any,
+        threshold: Any,
+        trading_days: int,
+    ) -> RunResult:
+        """Run N independent variants and emit a combined report.
+
+        Each variant has: name, strategy (registry name), optional strategy.params,
+        optional overrides (fees, threshold, rebalancing_freq, risk: {...}).
+        Reuses _run_strategy_plugins, _aggregate_weights_history,
+        _apply_risk_transforms_ts, and _run_vectorbt for parity with the
+        single-variant path.
+        """
+        prices_wide = market_data["prices"]
+        base_risk_cfg = dict(params.get("risk", {}) or {})
+
+        variant_results: dict[str, dict[str, Any]] = {}
+
+        for v in variants_cfg:
+            vname = str(v["name"])
+            strat_cfg = v.get("strategy") or {}
+            sname = strat_cfg.get("name") if isinstance(strat_cfg, dict) else str(strat_cfg)
+            if not sname:
+                raise ValueError(f"Variant {vname!r}: missing strategy.name")
+            splugin = variant_plugins.get(vname) or variant_plugins.get(sname)
+            if splugin is None:
+                raise ValueError(f"Variant {vname!r}: no resolved plugin for strategy {sname!r}")
+            strat_params = (strat_cfg.get("params") or {}) if isinstance(strat_cfg, dict) else {}
+
+            # Per-variant overrides
+            ov = dict(v.get("overrides", {}) or {})
+            v_fees = float(ov.get("fees", fees))
+            v_fixed = float(ov.get("fixed_fees", fixed_fees))
+            v_slip = float(ov.get("slippage", slippage_val))
+            v_freq = ov.get("rebalancing_freq", rebalancing_freq)
+            v_thresh = ov.get("threshold", threshold)
+            v_risk_cfg = {**base_risk_cfg, **(ov.get("risk", {}) or {})}
+
+            v_strategies_cfg = [{"name": sname, "weight": 1.0, "params": strat_params}]
+
+            # Stage 2: strategy
+            s_results = self._run_strategy_plugins([splugin], v_strategies_cfg, market_data)
+
+            # Stage 3: aggregate (trivial for single strategy)
+            wh = self._aggregate_weights_history(s_results, {"_strategies_cfg": v_strategies_cfg})
+
+            # Stage 4: risk transforms
+            wh = self._apply_risk_transforms_ts(wh, v_risk_cfg)
+
+            # Stage 5: align + engine
+            common_idx = prices_wide.index.intersection(wh.index)
+            common_cols = [c for c in wh.columns if c in prices_wide.columns]
+            if not common_cols:
+                raise ValueError(f"Variant {vname!r}: no overlapping tickers")
+            bt_p = prices_wide.loc[common_idx, common_cols]
+            bt_w = wh.loc[common_idx, common_cols]
+            min_obs = max(30, int(len(bt_p) * 0.5))
+            sufficient_cols = bt_p.columns[bt_p.notna().sum() >= min_obs].tolist()
+            bt_p = bt_p[sufficient_cols]
+            bt_w = bt_w[sufficient_cols]
+            all_nan = bt_p.isna().all(axis=1)
+            bt_w = bt_w.where(bt_p.notna(), 0.0)
+            bt_p = bt_p.ffill().bfill().loc[~all_nan]
+            bt_w = bt_w.loc[~all_nan]
+
+            if engine != "vectorbt":
+                raise ValueError(f"Variants flow currently supports engine='vectorbt' only (got {engine!r})")
+            res = self._run_vectorbt(
+                bt_p,
+                bt_w,
+                fees=v_fees,
+                fixed_fees=v_fixed,
+                slippage=v_slip,
+                rebalancing_freq=v_freq,
+                threshold=v_thresh,
+                trading_days=trading_days,
+            )
+
+            details_by_strategy = {
+                k: (info.get("result") or {}).get("details", {}) or {} for k, info in s_results.items()
+            }
+
+            variant_results[vname] = {
+                "name": vname,
+                "strategy_name": sname,
+                "returns": res["returns"],
+                "metrics": res["metrics"],
+                "portfolio_daily": res["portfolio_daily"],
+                "vbt_portfolio": res.get("vbt_portfolio"),
+                "weights_history": wh,
+                "bt_prices": bt_p,
+                "strategy_details": details_by_strategy,
+                "config": {
+                    "strategy_params": strat_params,
+                    "fees": v_fees,
+                    "rebalancing_freq": v_freq,
+                    "threshold": v_thresh,
+                    "risk": v_risk_cfg,
+                },
+            }
+            logger.info(
+                "Variant %r done — total_return=%.4f sharpe=%.4f maxdd=%.4f",
+                vname,
+                res["metrics"].get("total_return", 0),
+                res["metrics"].get("sharpe", 0),
+                res["metrics"].get("max_drawdown", 0),
+            )
+
+        if not variant_results:
+            raise ValueError("Variants flow: no variants produced results")
+
+        # Primary variant (first) provides top-level artifacts for backwards compat
+        primary_name = next(iter(variant_results))
+        primary = variant_results[primary_name]
+
+        a_returns = store.put_parquet("returns", primary["returns"].to_frame("returns").reset_index())
+        a_port = store.put_parquet("portfolio_daily", primary["portfolio_daily"].reset_index())
+        a_metrics = store.put_json("metrics", primary["metrics"])
+
+        # Per-variant metrics table
+        metric_rows = []
+        for n, r in variant_results.items():
+            row = {"variant": n, "strategy": r["strategy_name"]}
+            for k, v_ in r["metrics"].items():
+                if isinstance(v_, (int, float)):
+                    row[k] = float(v_)
+            metric_rows.append(row)
+        a_var_metrics = store.put_parquet("variant_metrics", pd.DataFrame(metric_rows))
+
+        period_start = str(primary["returns"].index[0])[:10] if len(primary["returns"]) else asof
+        period_end = str(primary["returns"].index[-1])[:10] if len(primary["returns"]) else asof
+
+        # Reports
+        try:
+            from quantbox.plugins.pipeline._report import (
+                build_reproducibility,
+                generate_html_report,
+                generate_report_data,
+                generate_summary_md,
+                report_data_to_json,
+                resolve_narrative,
+            )
+
+            report_metrics = {
+                **primary["metrics"],
+                "n_assets": float(len(primary["bt_prices"].columns)),
+                "n_dates": float(len(primary["bt_prices"])),
+            }
+            narrative = resolve_narrative(params.get("narrative"))
+            reproducibility = build_reproducibility(
+                run_id=store.run_id,
+                asof=asof,
+                pipeline_name=self.meta.name,
+                pipeline_version=self.meta.version,
+                params=params,
+                period_start=period_start,
+                period_end=period_end,
+                variant_results=variant_results,
+            )
+            store.put_text(
+                "summary.md",
+                generate_summary_md(
+                    run_id=store.run_id,
+                    asof=asof,
+                    metrics=report_metrics,
+                    strategy_names=list(variant_results.keys()),
+                    period_start=period_start,
+                    period_end=period_end,
+                ),
+            )
+            rd = generate_report_data(
+                run_id=store.run_id,
+                asof=asof,
+                metrics=report_metrics,
+                portfolio_daily=primary["portfolio_daily"],
+                returns=primary["returns"],
+                weights_history=primary["weights_history"],
+                bt_prices=primary["bt_prices"],
+                strategy_names=list(variant_results.keys()),
+                period_start=period_start,
+                period_end=period_end,
+                vbt_portfolio=primary["vbt_portfolio"],
+                strategy_details={
+                    vname: (next(iter(r["strategy_details"].values()), {}) or {})
+                    for vname, r in variant_results.items()
+                },
+                variant_results=variant_results,
+                narrative=narrative,
+                reproducibility=reproducibility,
+            )
+            store.put_text("report_data.json", report_data_to_json(rd))
+            store.put_text("report.html", generate_html_report(rd))
+        except Exception as _exc:
+            logger.warning("Multi-variant report generation failed: %s", _exc)
+
+        # Risk checks on primary variant's latest targets
+        latest = primary["weights_history"].iloc[-1] if len(primary["weights_history"]) else pd.Series(dtype=float)
+        agg_records = [{"symbol": str(k), "weight": float(v)} for k, v in latest.items() if v != 0]
+        risk_findings: list[dict[str, Any]] = []
+        for rp in risk:
+            try:
+                risk_findings.extend(rp.check_targets(pd.DataFrame(agg_records), base_risk_cfg))
+            except Exception as exc:
+                logger.warning("Risk check failed: %s", exc)
+
+        flat_metrics: dict[str, float] = {
+            "n_variants": float(len(variant_results)),
+            "n_dates": float(len(primary["returns"])),
+        }
+        for n, r in variant_results.items():
+            for k, v_ in r["metrics"].items():
+                if isinstance(v_, (int, float)):
+                    flat_metrics[f"{n}__{k}"] = float(v_)
+
+        return RunResult(
+            run_id=store.run_id,
+            pipeline_name=self.meta.name,
+            mode=mode,
+            asof=asof,
+            artifacts={
+                "returns": a_returns,
+                "portfolio_daily": a_port,
+                "metrics": a_metrics,
+                "variant_metrics": a_var_metrics,
+            },
+            metrics=flat_metrics,
+            notes={
+                "kind": "backtest-variants",
+                "engine": engine,
+                "variants": list(variant_results.keys()),
+                "risk_findings": risk_findings,
+            },
+        )
 
     # ==================================================================
     # Stage 4: Risk transforms on full time series

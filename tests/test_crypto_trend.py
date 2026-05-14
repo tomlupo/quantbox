@@ -228,7 +228,19 @@ class TestUniverseSelection:
         volume = pd.DataFrame(rng.uniform(1e5, 1e7, (50, 5)), index=dates, columns=symbols)
         market_cap = pd.DataFrame(rng.uniform(1e9, 1e11, (50, 5)), index=dates, columns=symbols)
 
-        universe = select_universe(prices, volume, market_cap, top_by_mcap=5, top_by_volume=5)
+        # Quantbox is domain-agnostic: it doesn't carry a default stablecoin list
+        # of its own (that lives in quantbox-datasets'
+        # catalog/asset_categories.yaml). Pass the exclusion explicitly so the
+        # test is self-contained — DEFAULT_STABLECOINS resolves to [] when
+        # quantbox-datasets isn't installed (e.g. CI).
+        universe = select_universe(
+            prices,
+            volume,
+            market_cap,
+            top_by_mcap=5,
+            top_by_volume=5,
+            exclude_tickers=["USDT", "USDC"],
+        )
 
         assert (universe["USDT"] == 0.0).all()
         assert (universe["USDC"] == 0.0).all()
@@ -277,7 +289,8 @@ class TestUniverseSelection:
         volume = pd.DataFrame(1.0, index=dates, columns=symbols)
         market_cap = pd.DataFrame(1e9, index=dates, columns=symbols)
 
-        universe = select_universe(prices, volume, market_cap)
+        # Pass exclusions explicitly (see test_excludes_stablecoins for why).
+        universe = select_universe(prices, volume, market_cap, exclude_tickers=["USDT", "USDC", "BUSD"])
 
         assert (universe == 0.0).all().all()
 

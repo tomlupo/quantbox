@@ -68,6 +68,7 @@ from quantbox.plugins.datasources._utils import (
     retry_transient,
     validate_ohlcv,
 )
+from quantbox.plugins.strategies._universe import DEFAULT_STABLECOINS
 
 logger = logging.getLogger(__name__)
 
@@ -86,25 +87,12 @@ except ImportError:
 # Constants
 # ============================================================================
 
-# Default stablecoins to exclude
-DEFAULT_STABLECOINS = [
-    "USDT",
-    "USDC",
-    "BUSD",
-    "TUSD",
-    "DAI",
-    "MIM",
-    "USTC",
-    "FDUSD",
-    "USDP",
-    "GUSD",
-    "FRAX",
-    "LUSD",
-    "USDD",
-    "PYUSD",
-    "EURC",
-    "EURT",
-]
+# DEFAULT_STABLECOINS is re-exported from quantbox.plugins.strategies._universe
+# (imported above) so existing callers
+# `from quantbox.plugins.datasources.binance_data import DEFAULT_STABLECOINS`
+# keep working. The authoritative source is quantbox-datasets'
+# catalog/asset_categories.yaml; an empty list is returned if datasets isn't
+# installed (quantbox stays domain-agnostic).
 
 # Binance API endpoints
 BINANCE_API_BASE = "https://api.binance.com"

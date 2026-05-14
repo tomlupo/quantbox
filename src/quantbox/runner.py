@@ -392,6 +392,19 @@ def run_from_config(
             merged_risk_params.update(r.get("params", {}))
         pipeline_params["_risk_cfg"] = merged_risk_params
 
+    # --- Variant strategies (multi-variant pipelines) ---
+    variant_plugins: dict[str, Any] = {}
+    variants_cfg = pipeline_params.get("variants") or []
+    for v in variants_cfg:
+        vname = str(v["name"])
+        strat_cfg = v.get("strategy") or {}
+        sname = strat_cfg.get("name") if isinstance(strat_cfg, dict) else str(strat_cfg)
+        if not sname:
+            raise ValueError(f"Variant {vname!r}: missing strategy.name")
+        cls = _resolve_plugin_cls({"name": sname}, registry.strategies, "strategy", mode=mode)
+        params_init = strat_cfg.get("params_init", {}) if isinstance(strat_cfg, dict) else {}
+        variant_plugins[vname] = cls(**params_init)
+
     result = pipeline.run(
         mode=mode,
         asof=asof,
@@ -403,6 +416,7 @@ def run_from_config(
         strategies=strategy_plugins,
         rebalancer=rebalancer,
         aggregator=aggregator,
+        variant_plugins=variant_plugins or None,
     )
 
     # --- Validation plugins (post-backtest) ---

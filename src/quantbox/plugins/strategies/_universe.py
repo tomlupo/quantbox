@@ -18,45 +18,25 @@ except ImportError:
     duckdb = None  # type: ignore[assignment]
     DUCKDB_AVAILABLE = False
 
-# Single source of truth for stablecoin / non-tradeable exclusion list.
-DEFAULT_STABLECOINS = [
-    # USD stablecoins
-    "USDT",
-    "USDC",
-    "BUSD",
-    "TUSD",
-    "DAI",
-    "MIM",
-    "USTC",
-    "FDUSD",
-    "USDP",
-    "GUSD",
-    "FRAX",
-    "LUSD",
-    "USDD",
-    "PYUSD",
-    "USD1",
-    "USDJ",
-    # EUR stablecoins
-    "EUR",
-    "EURC",
-    "EURT",
-    "EURS",
-    "EUROC",
-    # Gold / commodity tokens
-    "PAXG",
-    "XAUT",
-    # Wrapped tokens
-    "WBTC",
-    "WETH",
-    "BETH",
-    "ETHW",
-    "CBBTC",
-    "CBETH",
-    # Other non-tradeable
-    "BFUSD",
-    "AEUR",
-]
+
+# Non-tradeable-crypto exclusion list. The authoritative source is
+# ``catalog/asset_categories.yaml`` in the ``quantbox-datasets`` package; it's
+# loaded lazily so quantbox itself stays domain-agnostic. If ``quantbox-datasets``
+# is not installed the list is empty — quantbox does not carry an opinion about
+# which tickers are stablecoins / wrapped / staked. Callers that need an
+# exclusion list either install ``quantbox-datasets`` or pass their own
+# ``exclude_tickers`` explicitly.
+def _load_default_stablecoins() -> list[str]:
+    try:
+        from quantbox_datasets.asset_categories import non_tradeable_crypto_symbols
+    except ImportError:
+        return []
+    return list(non_tradeable_crypto_symbols())
+
+
+# Resolved at import time so existing consumers
+# (``from ._universe import DEFAULT_STABLECOINS``) keep working unchanged.
+DEFAULT_STABLECOINS: list[str] = _load_default_stablecoins()
 
 
 def select_universe(

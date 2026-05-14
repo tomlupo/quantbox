@@ -26,6 +26,7 @@ from quantbox.plugins.datasources._utils import (
     retry_transient,
     validate_ohlcv,
 )
+from quantbox.plugins.strategies._universe import DEFAULT_STABLECOINS
 
 logger = logging.getLogger(__name__)
 
@@ -38,25 +39,9 @@ except ImportError:
     CCXT_AVAILABLE = False
     logger.warning("ccxt not installed — futures OHLCV/funding fetching unavailable")
 
-# Stablecoins to exclude from universe discovery
-DEFAULT_STABLECOINS = [
-    "USDT",
-    "USDC",
-    "BUSD",
-    "TUSD",
-    "DAI",
-    "MIM",
-    "USTC",
-    "FDUSD",
-    "USDP",
-    "GUSD",
-    "FRAX",
-    "LUSD",
-    "USDD",
-    "PYUSD",
-    "EURC",
-    "EURT",
-]
+# DEFAULT_STABLECOINS is re-exported above from
+# quantbox.plugins.strategies._universe so existing imports work; the
+# authoritative source is quantbox-datasets' catalog/asset_categories.yaml.
 
 FAPI_BASE = "https://fapi.binance.com"
 DEFAULT_REQUEST_DELAY_MS = 100
