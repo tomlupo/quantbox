@@ -26,6 +26,7 @@ from quantbox.plugins.datasources._utils import (
     retry_transient,
     validate_ohlcv,
 )
+from quantbox.plugins.strategies._universe import DEFAULT_STABLECOINS
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +39,9 @@ except ImportError:
     CCXT_AVAILABLE = False
     logger.warning("ccxt not installed — futures OHLCV/funding fetching unavailable")
 
-# Canonical non-tradeable-crypto exclusion list. Re-exported here so existing
-# callers keep working; the source of truth lives in
-# quantbox-datasets/catalog/asset_categories.yaml (with a hardcoded fallback in
-# _universe.py for standalone installs).
-from quantbox.plugins.strategies._universe import DEFAULT_STABLECOINS
+# DEFAULT_STABLECOINS is re-exported above from
+# quantbox.plugins.strategies._universe so existing imports work; the
+# authoritative source is quantbox-datasets' catalog/asset_categories.yaml.
 
 FAPI_BASE = "https://fapi.binance.com"
 DEFAULT_REQUEST_DELAY_MS = 100

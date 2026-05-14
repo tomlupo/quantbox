@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
 from typing import Any
@@ -250,30 +251,22 @@ def _build_variant_framework_charts(
         out["portfolio"] = _build_portfolio_chart_manual(portfolio_daily, returns, bt_prices)
 
     if returns is not None:
-        try:
+        with contextlib.suppress(Exception):
             out["monthly"] = _build_monthly_chart(returns)
-        except Exception:
-            pass
 
     if isinstance(weights_history, pd.DataFrame) and isinstance(bt_prices, pd.DataFrame):
-        try:
+        with contextlib.suppress(Exception):
             c = _build_contrib_chart(weights_history, bt_prices)
             if c is not None:
                 out["contrib"] = c
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             w = _build_weights_chart(weights_history)
             if w is not None:
                 out["weights"] = w
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             ps = _build_position_stack_chart(weights_history)
             if ps is not None:
                 out["position_stack"] = ps
-        except Exception:
-            pass
     return out
 
 
@@ -823,46 +816,34 @@ def generate_report_data(
         else:
             charts["portfolio"] = _build_portfolio_chart_manual(portfolio_daily, returns, bt_prices)
 
-        try:
+        with contextlib.suppress(Exception):
             charts["monthly"] = _build_monthly_chart(returns)
-        except Exception:
-            pass
 
-        try:
+        with contextlib.suppress(Exception):
             contrib = _build_contrib_chart(weights_history, bt_prices)
             if contrib is not None:
                 charts["contrib"] = contrib
-        except Exception:
-            pass
 
-        try:
+        with contextlib.suppress(Exception):
             wt = _build_weights_chart(weights_history)
             if wt is not None:
                 charts["weights"] = wt
-        except Exception:
-            pass
 
         if vbt_portfolio is not None:
-            try:
+            with contextlib.suppress(Exception):
                 trades_fig = vbt_portfolio.trades.plot()
                 charts["trades"] = _fig_to_dict(trades_fig)
-            except Exception:
-                pass
 
-        try:
+        with contextlib.suppress(Exception):
             ps = _build_position_stack_chart(weights_history)
             if ps is not None:
                 charts["position_stack"] = ps
-        except Exception:
-            pass
 
     # Framework-level: universe coverage (cross-variant, always rendered)
-    try:
+    with contextlib.suppress(Exception):
         u = _build_universe_size_chart(bt_prices)
         if u is not None:
             charts["universe_size"] = u
-    except Exception:
-        pass
 
     # Strategy-emitted diagnostics — dispatched via _DIAGNOSTIC_BUILDERS registry.
     # Contract: strategy.run() returns details["diagnostics"] = {type: payload, ...}.
@@ -870,7 +851,7 @@ def generate_report_data(
     # the same type, the chart key is prefixed with the strategy name.
     sd = strategy_details or {}
     type_counts: dict[str, int] = {}
-    for sname, sdetails in sd.items():
+    for _sname, sdetails in sd.items():
         diagnostics = (sdetails or {}).get("diagnostics") or {}
         for dtype in diagnostics:
             type_counts[dtype] = type_counts.get(dtype, 0) + 1
