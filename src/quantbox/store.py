@@ -44,6 +44,11 @@ class FileArtifactStore:
         path.write_text(json.dumps(obj, ensure_ascii=False, indent=2))
         return str(path)
 
+    def put_text(self, name: str, content: str) -> str:
+        path = self.root / name
+        path.write_text(content, encoding="utf-8")
+        return str(path)
+
     def append_event(self, line: str) -> str:
         path = self.root / "events.jsonl"
         with path.open("a", encoding="utf-8") as f:

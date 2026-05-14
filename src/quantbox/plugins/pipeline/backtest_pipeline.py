@@ -357,6 +357,42 @@ class BacktestPipeline:
         a_port = store.put_parquet("portfolio_daily", portfolio_daily.reset_index())
         a_metrics = store.put_json("metrics", metrics)
 
+        # --- Stage 7: Reports ---
+        from quantbox.plugins.pipeline._report import generate_html_report, generate_summary_md
+
+        period_start = str(returns_series.index[0])[:10] if len(returns_series) else asof
+        period_end = str(returns_series.index[-1])[:10] if len(returns_series) else asof
+        report_strategy_names = [sc["name"] for sc in strategies_cfg]
+        report_metrics = {**metrics, "n_assets": float(len(common_cols)), "n_dates": float(len(bt_prices))}
+
+        store.put_text(
+            "summary.md",
+            generate_summary_md(
+                run_id=store.run_id,
+                asof=asof,
+                metrics=report_metrics,
+                strategy_names=report_strategy_names,
+                period_start=period_start,
+                period_end=period_end,
+            ),
+        )
+        try:
+            store.put_text(
+                "report.html",
+                generate_html_report(
+                    run_id=store.run_id,
+                    asof=asof,
+                    metrics=report_metrics,
+                    portfolio_daily=portfolio_daily,
+                    returns=returns_series,
+                    weights_history=wh_save,
+                    bt_prices=bt_prices,
+                    strategy_names=report_strategy_names,
+                ),
+            )
+        except Exception as _report_exc:
+            logger.warning("HTML report generation failed: %s", _report_exc)
+
         # --- Risk checks on latest targets ---
         targets = pd.DataFrame(agg_records)
         risk_findings: list[dict[str, Any]] = []
