@@ -86,25 +86,12 @@ except ImportError:
 # Constants
 # ============================================================================
 
-# Default stablecoins to exclude
-DEFAULT_STABLECOINS = [
-    "USDT",
-    "USDC",
-    "BUSD",
-    "TUSD",
-    "DAI",
-    "MIM",
-    "USTC",
-    "FDUSD",
-    "USDP",
-    "GUSD",
-    "FRAX",
-    "LUSD",
-    "USDD",
-    "PYUSD",
-    "EURC",
-    "EURT",
-]
+# Canonical non-tradeable-crypto exclusion list. Re-exported here so existing
+# callers (`from quantbox.plugins.datasources.binance_data import DEFAULT_STABLECOINS`)
+# keep working unchanged, while the source of truth stays in one place
+# (quantbox-datasets' catalog/asset_categories.yaml, with a hardcoded fallback
+# in _universe.py for standalone installs).
+from quantbox.plugins.strategies._universe import DEFAULT_STABLECOINS
 
 # Binance API endpoints
 BINANCE_API_BASE = "https://api.binance.com"

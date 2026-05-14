@@ -38,25 +38,11 @@ except ImportError:
     CCXT_AVAILABLE = False
     logger.warning("ccxt not installed — futures OHLCV/funding fetching unavailable")
 
-# Stablecoins to exclude from universe discovery
-DEFAULT_STABLECOINS = [
-    "USDT",
-    "USDC",
-    "BUSD",
-    "TUSD",
-    "DAI",
-    "MIM",
-    "USTC",
-    "FDUSD",
-    "USDP",
-    "GUSD",
-    "FRAX",
-    "LUSD",
-    "USDD",
-    "PYUSD",
-    "EURC",
-    "EURT",
-]
+# Canonical non-tradeable-crypto exclusion list. Re-exported here so existing
+# callers keep working; the source of truth lives in
+# quantbox-datasets/catalog/asset_categories.yaml (with a hardcoded fallback in
+# _universe.py for standalone installs).
+from quantbox.plugins.strategies._universe import DEFAULT_STABLECOINS
 
 FAPI_BASE = "https://fapi.binance.com"
 DEFAULT_REQUEST_DELAY_MS = 100
