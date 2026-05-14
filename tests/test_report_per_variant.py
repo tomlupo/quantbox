@@ -117,10 +117,7 @@ def _common_kwargs(variant_results: dict) -> dict:
         strategy_names=list(variant_results.keys()),
         period_start="2020-01-01",
         period_end="2020-07-18",
-        strategy_details={
-            v["name"]: list(v["strategy_details"].values())[0]
-            for v in variant_results.values()
-        },
+        strategy_details={v["name"]: list(v["strategy_details"].values())[0] for v in variant_results.values()},
         variant_results=variant_results,
     )
 
@@ -157,12 +154,8 @@ class TestMultiVariantReport:
         # BTC_BAH only holds BTC → contrib and position_stack are uninformative.
         rd = generate_report_data(**_common_kwargs(two_variant_results))
         charts = rd["charts"]
-        assert "BTC_BAH__contrib" not in charts, (
-            "single-asset variant should not emit a contrib chart"
-        )
-        assert "BTC_BAH__position_stack" not in charts, (
-            "single-asset variant should not emit a position_stack chart"
-        )
+        assert "BTC_BAH__contrib" not in charts, "single-asset variant should not emit a contrib chart"
+        assert "BTC_BAH__position_stack" not in charts, "single-asset variant should not emit a position_stack chart"
 
     def test_multi_asset_variant_emits_contrib_and_position_stack(self, two_variant_results):
         rd = generate_report_data(**_common_kwargs(two_variant_results))

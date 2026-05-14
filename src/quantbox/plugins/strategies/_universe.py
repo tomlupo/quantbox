@@ -18,6 +18,7 @@ except ImportError:
     duckdb = None  # type: ignore[assignment]
     DUCKDB_AVAILABLE = False
 
+
 # Non-tradeable-crypto exclusion list. The authoritative source is
 # ``catalog/asset_categories.yaml`` in the ``quantbox-datasets`` package; it's
 # loaded lazily so quantbox itself stays domain-agnostic. If ``quantbox-datasets``

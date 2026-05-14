@@ -290,9 +290,7 @@ class TestUniverseSelection:
         market_cap = pd.DataFrame(1e9, index=dates, columns=symbols)
 
         # Pass exclusions explicitly (see test_excludes_stablecoins for why).
-        universe = select_universe(
-            prices, volume, market_cap, exclude_tickers=["USDT", "USDC", "BUSD"]
-        )
+        universe = select_universe(prices, volume, market_cap, exclude_tickers=["USDT", "USDC", "BUSD"])
 
         assert (universe == 0.0).all().all()
 

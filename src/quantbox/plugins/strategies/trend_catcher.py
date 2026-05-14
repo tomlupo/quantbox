@@ -124,12 +124,7 @@ class TrendCatcherStrategy:
             #   atr = tr.rolling(14).mean() / close
             #   inverse_vol = (1/atr).div(sum_per_row)
             #   weight = (inverse_vol * selected).div(sum_per_row) * weights_ew.sum()
-            if (
-                isinstance(high, pd.DataFrame)
-                and isinstance(low, pd.DataFrame)
-                and not high.empty
-                and not low.empty
-            ):
+            if isinstance(high, pd.DataFrame) and isinstance(low, pd.DataFrame) and not high.empty and not low.empty:
                 high_a = high.reindex(index=prices.index, columns=prices.columns)
                 low_a = low.reindex(index=prices.index, columns=prices.columns)
                 close_shift = prices.shift(1)

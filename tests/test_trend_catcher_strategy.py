@@ -34,9 +34,7 @@ def _make_synthetic_data(n_days: int = 200, n_assets: int = 8, seed: int = 0):
     # Synthetic high/low: small range around close
     high_df = close_df * (1 + np.abs(rng.normal(0, 0.005, size=closes.shape)))
     low_df = close_df * (1 - np.abs(rng.normal(0, 0.005, size=closes.shape)))
-    volume_df = pd.DataFrame(
-        rng.lognormal(15, 0.5, size=closes.shape) * closes, index=dates, columns=symbols
-    )
+    volume_df = pd.DataFrame(rng.lognormal(15, 0.5, size=closes.shape) * closes, index=dates, columns=symbols)
     elig = pd.DataFrame(True, index=dates, columns=symbols)
     return {
         "prices": close_df,
