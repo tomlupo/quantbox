@@ -18,40 +18,19 @@ except ImportError:
     duckdb = None  # type: ignore[assignment]
     DUCKDB_AVAILABLE = False
 
-# Hardcoded fallback for the non-tradeable-crypto exclusion list. The
-# authoritative source is ``catalog/asset_categories.yaml`` in quantbox-datasets;
-# we read it via ``quantbox_datasets.asset_categories.non_tradeable_crypto_symbols``
-# when datasets is installed (the typical lab / live setup). Otherwise fall
-# back to the embedded list below so quantbox remains usable as a standalone
-# library with no downstream dependency.
-_FALLBACK_DEFAULT_STABLECOINS = [
-    # USD stablecoins
-    "USDT", "USDC", "BUSD", "TUSD", "DAI", "MIM", "USTC", "FDUSD",
-    "USDP", "GUSD", "FRAX", "LUSD", "USDD", "PYUSD", "USD1", "USDJ",
-    "RLUSD", "USDE", "USDS", "BFUSD",
-    # Binance promo / quasi-stable tokens
-    "CHIP", "MEGA",
-    # EUR stablecoins
-    "EUR", "EURC", "EURT", "EURS", "EUROC", "AEUR",
-    # Gold / commodity-pegged tokens
-    "PAXG", "XAUT",
-    # Wrapped tokens (price tracks an underlying we already hold)
-    "WBTC", "WETH", "BETH", "WBETH", "ETHW", "CBBTC", "CBETH", "LBTC",
-    # Liquid-staked ETH derivatives
-    "STETH", "WSTETH", "RETH", "EZETH", "WEETH",
-]
-
-
+# Non-tradeable-crypto exclusion list. The authoritative source is
+# ``catalog/asset_categories.yaml`` in the ``quantbox-datasets`` package; it's
+# loaded lazily so quantbox itself stays domain-agnostic. If ``quantbox-datasets``
+# is not installed the list is empty — quantbox does not carry an opinion about
+# which tickers are stablecoins / wrapped / staked. Callers that need an
+# exclusion list either install ``quantbox-datasets`` or pass their own
+# ``exclude_tickers`` explicitly.
 def _load_default_stablecoins() -> list[str]:
-    """Prefer the authoritative YAML in quantbox-datasets; fall back to the
-    hardcoded list when datasets isn't installed.
-    """
     try:
         from quantbox_datasets.asset_categories import non_tradeable_crypto_symbols
     except ImportError:
-        return list(_FALLBACK_DEFAULT_STABLECOINS)
-    syms = non_tradeable_crypto_symbols()
-    return syms if syms else list(_FALLBACK_DEFAULT_STABLECOINS)
+        return []
+    return list(non_tradeable_crypto_symbols())
 
 
 # Resolved at import time so existing consumers
