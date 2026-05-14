@@ -358,7 +358,12 @@ class BacktestPipeline:
         a_metrics = store.put_json("metrics", metrics)
 
         # --- Stage 7: Reports ---
-        from quantbox.plugins.pipeline._report import generate_html_report, generate_summary_md
+        from quantbox.plugins.pipeline._report import (
+            generate_html_report,
+            generate_report_data,
+            generate_summary_md,
+            report_data_to_json,
+        )
 
         period_start = str(returns_series.index[0])[:10] if len(returns_series) else asof
         period_end = str(returns_series.index[-1])[:10] if len(returns_series) else asof
@@ -377,19 +382,21 @@ class BacktestPipeline:
             ),
         )
         try:
-            store.put_text(
-                "report.html",
-                generate_html_report(
-                    run_id=store.run_id,
-                    asof=asof,
-                    metrics=report_metrics,
-                    portfolio_daily=portfolio_daily,
-                    returns=returns_series,
-                    weights_history=wh_save,
-                    bt_prices=bt_prices,
-                    strategy_names=report_strategy_names,
-                ),
+            rd = generate_report_data(
+                run_id=store.run_id,
+                asof=asof,
+                metrics=report_metrics,
+                portfolio_daily=portfolio_daily,
+                returns=returns_series,
+                weights_history=wh_save,
+                bt_prices=bt_prices,
+                strategy_names=report_strategy_names,
+                period_start=period_start,
+                period_end=period_end,
+                vbt_portfolio=result_data.get("vbt_portfolio"),
             )
+            store.put_text("report_data.json", report_data_to_json(rd))
+            store.put_text("report.html", generate_html_report(rd))
         except Exception as _report_exc:
             logger.warning("HTML report generation failed: %s", _report_exc)
 

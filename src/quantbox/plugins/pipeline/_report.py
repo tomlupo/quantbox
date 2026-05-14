@@ -1,10 +1,32 @@
-"""Backtest report generation — summary.md and report.html."""
+"""Backtest report generation — summary.md, report_data.json, and report.html."""
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+_TEMPLATE_PATH = Path(__file__).parent / "templates" / "research_report.html"
+
+
+class _NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        try:
+            import numpy as np
+
+            if isinstance(obj, np.integer):
+                return int(obj)
+            if isinstance(obj, np.floating):
+                return float(obj)
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+        except ImportError:
+            pass
+        if isinstance(obj, pd.Timestamp):
+            return str(obj)
+        return super().default(obj)
 
 
 def _pct(v: float) -> str:
@@ -64,27 +86,21 @@ def generate_summary_md(
 """
 
 
-def generate_html_report(
-    run_id: str,
-    asof: str,
-    metrics: dict[str, Any],
+def _fig_to_dict(fig) -> dict:
+    """Convert a plotly Figure/FigureWidget to a clean JSON-serializable dict."""
+    return json.loads(fig.to_json())
+
+
+def _build_portfolio_chart_manual(
     portfolio_daily: pd.DataFrame,
     returns: pd.Series,
-    weights_history: pd.DataFrame,
     bt_prices: pd.DataFrame,
-    strategy_names: list[str],
-) -> str:
-    try:
-        import numpy as np
-        import plotly.graph_objects as go
-        import plotly.io as pio
-        from plotly.subplots import make_subplots
-    except ImportError:
-        return "<html><body><p>plotly not available — install plotly to enable HTML reports</p></body></html>"
+) -> dict:
+    """Fallback portfolio chart — 4-subplot manual figure."""
+    import numpy as np
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
 
-    strategy_str = " | ".join(strategy_names) if strategy_names else run_id
-
-    # Portfolio value normalised to 100
     pv_col = "portfolio_value" if "portfolio_value" in portfolio_daily.columns else portfolio_daily.columns[0]
     pv_idx = (
         portfolio_daily.index
@@ -93,21 +109,11 @@ def generate_html_report(
     )
     pv = pd.Series(portfolio_daily[pv_col].values, index=pv_idx)
     pv = pv * (100.0 / pv.iloc[0])
-
-    # Drawdown
     drawdown = (pv - pv.cummax()) / pv.cummax() * 100
 
-    # Monthly returns heatmap
     ret = returns.copy()
     if not isinstance(ret.index, pd.DatetimeIndex):
         ret.index = pd.DatetimeIndex(ret.index)
-    monthly_pct = ((1 + ret).resample("ME").prod() - 1) * 100
-    monthly_df = pd.DataFrame({"ret": monthly_pct, "year": monthly_pct.index.year, "month": monthly_pct.index.month})
-    pivot = monthly_df.pivot(index="year", columns="month", values="ret")
-    month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-    pivot.columns = [month_names[c - 1] for c in pivot.columns]
-
-    # Rolling Sharpe — auto-detect bar spacing for annualisation
     if len(ret) > 1:
         step_secs = max((ret.index[1] - ret.index[0]).total_seconds(), 60)
         bars_per_day = int(86400 / step_secs)
@@ -117,31 +123,24 @@ def generate_html_report(
     annualise = np.sqrt(365 * bars_per_day)
     roll_sharpe = ret.rolling(roll_window).mean() / ret.rolling(roll_window).std() * annualise
 
-    # Active positions count from weights_history
-    wh = weights_history
-    active_pos = (wh > 0).sum(axis=1) if isinstance(wh.index, pd.DatetimeIndex) else None
-
-    # BTC benchmark
     btc_col = next((c for c in bt_prices.columns if c in ("BTC", "BTCUSDT")), None)
+    btc_norm = None
     if btc_col is not None:
         btc_raw = bt_prices[btc_col].dropna()
         btc_norm = btc_raw * (100.0 / btc_raw.iloc[0])
-    else:
-        btc_norm = None
-
-    # Build main figure
-    n_rows = 4 if active_pos is not None else 3
-    row_heights = [0.35, 0.20, 0.20, 0.25] if n_rows == 4 else [0.40, 0.25, 0.35]
-    titles = ["Portfolio Value (base 100)", "Drawdown %", f"Rolling Sharpe ({roll_window} bars)"]
-    if n_rows == 4:
-        titles.append("Active Positions")
 
     fig = make_subplots(
-        rows=n_rows, cols=1, shared_xaxes=True, row_heights=row_heights, subplot_titles=titles, vertical_spacing=0.06
+        rows=3,
+        cols=1,
+        shared_xaxes=True,
+        row_heights=[0.40, 0.25, 0.35],
+        subplot_titles=["Portfolio Value (base 100)", "Drawdown %", f"Rolling Sharpe ({roll_window} bars)"],
+        vertical_spacing=0.06,
     )
-
     fig.add_trace(
-        go.Scatter(x=pv.index, y=pv.round(2).values, name="Strategy", line=dict(color="#1f77b4", width=2)), row=1, col=1
+        go.Scatter(x=pv.index, y=pv.round(2).values, name="Strategy", line=dict(color="#1f77b4", width=2)),
+        row=1,
+        col=1,
     )
     if btc_norm is not None:
         fig.add_trace(
@@ -154,7 +153,6 @@ def generate_html_report(
             row=1,
             col=1,
         )
-
     fig.add_trace(
         go.Scatter(
             x=drawdown.index,
@@ -167,7 +165,6 @@ def generate_html_report(
         row=2,
         col=1,
     )
-
     roll_clean = roll_sharpe.dropna()
     fig.add_trace(
         go.Scatter(
@@ -180,65 +177,30 @@ def generate_html_report(
         col=1,
     )
     fig.add_hline(y=0, line_dash="dash", line_color="rgba(0,0,0,0.25)", row=3, col=1)
-
-    if active_pos is not None:
-        fig.add_trace(
-            go.Scatter(
-                x=active_pos.index,
-                y=active_pos.values,
-                name="Active Positions",
-                fill="tozeroy",
-                line=dict(color="#9467bd", width=1),
-                fillcolor="rgba(148,103,189,0.15)",
-            ),
-            row=4,
-            col=1,
-        )
-
     fig.update_layout(
-        title=dict(text=f"Backtest Report — {strategy_str}<br><sub>{run_id} | as of {asof}</sub>", font_size=15),
-        height=900 if n_rows == 4 else 750,
+        height=750,
         template="plotly_white",
         legend=dict(orientation="h", y=1.02, x=1, xanchor="right"),
-        margin=dict(t=100, b=60),
+        margin=dict(t=80, b=40),
     )
+    return _fig_to_dict(fig)
 
-    # Metrics table
-    m = metrics
-    rows_data = [
-        ("Total Return", f"{m.get('total_return', 0) * 100:.1f}%"),
-        ("CAGR", f"{m.get('cagr', 0) * 100:.1f}%"),
-        ("Sharpe", f"{m.get('sharpe', 0):.2f}"),
-        ("Sortino", f"{m.get('sortino', 0):.2f}"),
-        ("Max Drawdown", f"{m.get('max_drawdown', 0) * 100:.1f}%"),
-        ("Max DD Duration", f"{m.get('max_drawdown_duration_days', 0):.0f} days"),
-        ("Annual Vol", f"{m.get('annual_volatility', 0) * 100:.1f}%"),
-        ("Calmar", f"{m.get('calmar', 0):.2f}"),
-        ("Win Rate", f"{m.get('win_rate', 0) * 100:.1f}%"),
-        ("Profit Factor", f"{m.get('profit_factor', 0):.2f}"),
-        ("VaR 95%", f"{m.get('var_95', 0) * 100:.2f}%"),
-        ("CVaR 95%", f"{m.get('cvar_95', 0) * 100:.2f}%"),
-    ]
-    names_col, vals_col = zip(*rows_data, strict=True)
-    stripe = ["white" if i % 2 == 0 else "#f7f9ff" for i in range(len(rows_data))]
-    metrics_fig = go.Figure(
-        data=[
-            go.Table(
-                header=dict(
-                    values=["Metric", "Value"], fill_color="#1f77b4", font=dict(color="white", size=13), align="left"
-                ),
-                cells=dict(
-                    values=[list(names_col), list(vals_col)], fill_color=[stripe, stripe], font_size=12, align="left"
-                ),
-            )
-        ]
-    )
-    metrics_fig.update_layout(title="Performance Metrics", height=420, margin=dict(t=50, b=20), template="plotly_white")
 
-    # Monthly heatmap
+def _build_monthly_chart(returns: pd.Series) -> dict:
+    import plotly.graph_objects as go
+
+    ret = returns.copy()
+    if not isinstance(ret.index, pd.DatetimeIndex):
+        ret.index = pd.DatetimeIndex(ret.index)
+    monthly_pct = ((1 + ret).resample("ME").prod() - 1) * 100
+    monthly_df = pd.DataFrame({"ret": monthly_pct, "year": monthly_pct.index.year, "month": monthly_pct.index.month})
+    pivot = monthly_df.pivot(index="year", columns="month", values="ret")
+    month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    pivot.columns = [month_names[c - 1] for c in pivot.columns]
+
     z = [[float(v) if pd.notna(v) else None for v in row] for row in pivot.values]
     text = [[f"{v:.1f}%" if pd.notna(v) else "" for v in row] for row in pivot.values]
-    heat_fig = go.Figure(
+    fig = go.Figure(
         data=go.Heatmap(
             z=z,
             x=pivot.columns.tolist(),
@@ -251,104 +213,158 @@ def generate_html_report(
             colorbar=dict(title="%"),
         )
     )
-    heat_fig.update_layout(
-        title="Monthly Returns (%)",
+    fig.update_layout(
         xaxis_title="Month",
         yaxis_title="Year",
         height=max(220, 80 * len(pivot) + 120),
-        margin=dict(t=50, b=40),
+        margin=dict(t=20, b=40),
         template="plotly_white",
     )
+    return _fig_to_dict(fig)
 
-    # Weight heatmap — top 20 tickers by cumulative allocation
-    wh_num = wh.select_dtypes(include="number") if isinstance(wh.index, pd.DatetimeIndex) else pd.DataFrame()
-    weight_html = ""
-    contrib_html = ""
-    if not wh_num.empty and not bt_prices.empty:
-        top_tickers = wh_num.sum().nlargest(20).index.tolist()
-        wh_top = wh_num[top_tickers]
-        # Resample to weekly mean for readability
-        wh_weekly = wh_top.resample("W").mean()
-        weight_fig = go.Figure(
-            data=go.Heatmap(
-                z=wh_weekly.T.values.tolist(),
-                x=[str(d.date()) for d in wh_weekly.index],
-                y=wh_weekly.columns.tolist(),
-                colorscale="Blues",
-                zmin=0,
-                showscale=True,
-                colorbar=dict(title="Weight"),
-            )
+
+def _build_contrib_chart(weights_history: pd.DataFrame, bt_prices: pd.DataFrame) -> dict | None:
+    import plotly.graph_objects as go
+
+    wh_num = (
+        weights_history.select_dtypes(include="number")
+        if isinstance(weights_history.index, pd.DatetimeIndex)
+        else pd.DataFrame()
+    )
+    if wh_num.empty or bt_prices.empty:
+        return None
+
+    price_ret = bt_prices.pct_change()
+    wh_aligned = wh_num.reindex(price_ret.index).reindex(columns=price_ret.columns)
+    attribution = (wh_aligned.shift(1) * price_ret).sum()
+    attribution = attribution[attribution != 0].sort_values()
+    n_show = min(20, len(attribution))
+    contrib_tickers = pd.concat([attribution.head(n_show // 2), attribution.tail(n_show - n_show // 2)])
+    colors = ["#d62728" if v < 0 else "#1f77b4" for v in contrib_tickers.values]
+
+    fig = go.Figure(
+        data=go.Bar(
+            x=(contrib_tickers * 100).round(2).values,
+            y=contrib_tickers.index.tolist(),
+            orientation="h",
+            marker_color=colors,
         )
-        weight_fig.update_layout(
-            title="Portfolio Weight Heatmap — Top 20 Tickers (weekly avg)",
-            xaxis_title="Date",
-            yaxis_title="Ticker",
-            height=500,
-            margin=dict(t=60, b=60),
-            template="plotly_white",
+    )
+    fig.update_layout(
+        xaxis_title="Contribution (%)",
+        height=max(300, 25 * len(contrib_tickers) + 100),
+        margin=dict(t=20, b=40, l=80),
+        template="plotly_white",
+    )
+    return _fig_to_dict(fig)
+
+
+def _build_weights_chart(weights_history: pd.DataFrame) -> dict | None:
+    import plotly.graph_objects as go
+
+    wh_num = (
+        weights_history.select_dtypes(include="number")
+        if isinstance(weights_history.index, pd.DatetimeIndex)
+        else pd.DataFrame()
+    )
+    if wh_num.empty:
+        return None
+
+    top_tickers = wh_num.sum().nlargest(20).index.tolist()
+    wh_top = wh_num[top_tickers]
+    wh_weekly = wh_top.resample("W").mean()
+
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=wh_weekly.T.values.tolist(),
+            x=[str(d.date()) for d in wh_weekly.index],
+            y=wh_weekly.columns.tolist(),
+            colorscale="Blues",
+            zmin=0,
+            showscale=True,
+            colorbar=dict(title="Weight"),
         )
-        weight_html = pio.to_html(weight_fig, full_html=False, include_plotlyjs=False)
+    )
+    fig.update_layout(
+        xaxis_title="Date",
+        yaxis_title="Ticker",
+        height=500,
+        margin=dict(t=20, b=60),
+        template="plotly_white",
+    )
+    return _fig_to_dict(fig)
 
-        # Per-ticker return contribution
-        price_ret = bt_prices.pct_change()
-        wh_aligned = wh_num.reindex(price_ret.index).reindex(columns=price_ret.columns)
-        attribution = (wh_aligned.shift(1) * price_ret).sum()
-        attribution = attribution[attribution != 0].sort_values()
-        n_show = min(20, len(attribution))
-        contrib_tickers = pd.concat([attribution.head(n_show // 2), attribution.tail(n_show - n_show // 2)])
-        colors = ["#d62728" if v < 0 else "#1f77b4" for v in contrib_tickers.values]
-        contrib_fig = go.Figure(
-            data=go.Bar(
-                x=(contrib_tickers * 100).round(2).values,
-                y=contrib_tickers.index.tolist(),
-                orientation="h",
-                marker_color=colors,
-            )
-        )
-        contrib_fig.update_layout(
-            title="Per-Ticker Return Contribution (%)",
-            xaxis_title="Contribution (%)",
-            height=max(300, 25 * len(contrib_tickers) + 100),
-            margin=dict(t=60, b=40, l=80),
-            template="plotly_white",
-        )
-        contrib_html = pio.to_html(contrib_fig, full_html=False, include_plotlyjs=False)
 
-    main_html = pio.to_html(fig, full_html=False, include_plotlyjs="cdn")
-    metrics_html = pio.to_html(metrics_fig, full_html=False, include_plotlyjs=False)
-    heat_html = pio.to_html(heat_fig, full_html=False, include_plotlyjs=False)
+def generate_report_data(
+    run_id: str,
+    asof: str,
+    metrics: dict[str, Any],
+    portfolio_daily: pd.DataFrame,
+    returns: pd.Series,
+    weights_history: pd.DataFrame,
+    bt_prices: pd.DataFrame,
+    strategy_names: list[str],
+    period_start: str = "",
+    period_end: str = "",
+    vbt_portfolio=None,
+) -> dict[str, Any]:
+    charts: dict[str, Any] = {}
 
-    weight_card = f'<div class="card">{weight_html}</div>' if weight_html else ""
-    contrib_card = f'<div class="card">{contrib_html}</div>' if contrib_html else ""
+    # Portfolio chart — prefer vbt native figure
+    if vbt_portfolio is not None:
+        try:
+            charts["portfolio"] = _fig_to_dict(vbt_portfolio.plot())
+        except Exception:
+            charts["portfolio"] = _build_portfolio_chart_manual(portfolio_daily, returns, bt_prices)
+    else:
+        charts["portfolio"] = _build_portfolio_chart_manual(portfolio_daily, returns, bt_prices)
 
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>Backtest Report — {strategy_str}</title>
-  <style>
-    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f6fa; margin: 0; padding: 24px; color: #222; }}
-    h1 {{ margin: 0 0 4px; font-size: 1.6em; color: #1a1a2e; }}
-    .meta {{ color: #666; font-size: 0.9em; margin-bottom: 24px; }}
-    .card {{ background: white; border-radius: 10px; box-shadow: 0 1px 6px rgba(0,0,0,0.08); padding: 16px; margin-bottom: 20px; }}
-    .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }}
-    .grid .card {{ margin-bottom: 0; }}
-  </style>
-</head>
-<body>
-  <h1>Backtest Report</h1>
-  <p class="meta">
-    <strong>Run:</strong> {run_id} &nbsp;·&nbsp;
-    <strong>As of:</strong> {asof} &nbsp;·&nbsp;
-    <strong>Strategies:</strong> {strategy_str}
-  </p>
-  <div class="card">{main_html}</div>
-  <div class="grid">
-    <div class="card">{metrics_html}</div>
-    <div class="card">{heat_html}</div>
-  </div>
-  {weight_card}
-  {contrib_card}
-</body>
-</html>"""
+    # Monthly returns heatmap
+    try:
+        charts["monthly"] = _build_monthly_chart(returns)
+    except Exception:
+        pass
+
+    # Per-ticker contribution
+    try:
+        contrib = _build_contrib_chart(weights_history, bt_prices)
+        if contrib is not None:
+            charts["contrib"] = contrib
+    except Exception:
+        pass
+
+    # Weight heatmap
+    try:
+        wt = _build_weights_chart(weights_history)
+        if wt is not None:
+            charts["weights"] = wt
+    except Exception:
+        pass
+
+    # Trade log — vbt trades plot
+    if vbt_portfolio is not None:
+        try:
+            trades_fig = vbt_portfolio.trades.plot()
+            charts["trades"] = _fig_to_dict(trades_fig)
+        except Exception:
+            pass
+
+    return {
+        "run_id": run_id,
+        "asof": asof,
+        "period_start": period_start,
+        "period_end": period_end,
+        "strategies": strategy_names,
+        "metrics": metrics,
+        "charts": charts,
+    }
+
+
+def report_data_to_json(report_data: dict[str, Any]) -> str:
+    return json.dumps(report_data, cls=_NumpyEncoder)
+
+
+def generate_html_report(report_data: dict[str, Any]) -> str:
+    template = _TEMPLATE_PATH.read_text(encoding="utf-8")
+    json_str = report_data_to_json(report_data)
+    return template.replace("{{REPORT_DATA}}", json_str)

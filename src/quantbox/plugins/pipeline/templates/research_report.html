@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Backtest Report</title>
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+  <style>
+    :root {
+      --bg: #f5f6fa; --card: #fff; --accent: #1f77b4;
+      --text: #1a1a2e; --muted: #6b7280; --border: #e5e7eb;
+      --green: #2ca02c; --red: #d62728;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+           background: var(--bg); color: var(--text); padding: 24px; min-width: 800px; }
+    header { margin-bottom: 20px; }
+    h1 { font-size: 1.45em; font-weight: 700; }
+    .run-meta { color: var(--muted); font-size: 0.82em; margin-top: 4px; }
+    .card { background: var(--card); border-radius: 10px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.07); margin-bottom: 20px; overflow: hidden; }
+    .card-title { padding: 12px 18px 0; font-size: 0.75em; font-weight: 700;
+                  color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+    .chart-wrap { padding: 8px 4px 4px; }
+
+    /* Metrics strip */
+    .metrics-strip { display: flex; flex-wrap: wrap; gap: 1px; background: var(--border);
+                     border-top: 1px solid var(--border); }
+    .metric { background: var(--card); padding: 14px 20px; flex: 1; min-width: 130px; }
+    .metric-label { font-size: 0.72em; color: var(--muted); text-transform: uppercase;
+                    letter-spacing: 0.05em; }
+    .metric-value { font-size: 1.35em; font-weight: 700; margin-top: 3px; }
+    .pos { color: var(--green); }
+    .neg { color: var(--red); }
+    .neu { color: var(--text); }
+
+    /* Two-column grid */
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+  </style>
+
+  <script>
+    /* eslint-disable */
+    const DATA = {{REPORT_DATA}};
+  </script>
+</head>
+<body>
+
+<header>
+  <h1 id="page-title"></h1>
+  <p class="run-meta" id="run-meta"></p>
+</header>
+
+<!-- Metrics -->
+<div class="card">
+  <div class="card-title">Performance Metrics</div>
+  <div class="metrics-strip" id="metrics-strip"></div>
+</div>
+
+<!-- Main portfolio chart -->
+<div class="card">
+  <div class="card-title">Portfolio — Equity &amp; Drawdown</div>
+  <div class="chart-wrap"><div id="chart-portfolio"></div></div>
+</div>
+
+<!-- Monthly heatmap + contribution side-by-side -->
+<div class="two-col">
+  <div class="card">
+    <div class="card-title">Monthly Returns (%)</div>
+    <div class="chart-wrap"><div id="chart-monthly"></div></div>
+  </div>
+  <div class="card">
+    <div class="card-title">Per-Ticker Contribution</div>
+    <div class="chart-wrap"><div id="chart-contrib"></div></div>
+  </div>
+</div>
+
+<!-- Weight heatmap -->
+<div class="card">
+  <div class="card-title">Portfolio Weight Heatmap — Top 20 Tickers (weekly avg)</div>
+  <div class="chart-wrap"><div id="chart-weights"></div></div>
+</div>
+
+<!-- Trade log (only shown if data present) -->
+<div class="card" id="trades-card" style="display:none">
+  <div class="card-title">Trade Log</div>
+  <div class="chart-wrap"><div id="chart-trades"></div></div>
+</div>
+
+<script>
+  const D = DATA;
+  const cfg = { responsive: true, displayModeBar: 'hover' };
+
+  // Header
+  document.getElementById('page-title').textContent =
+    'Backtest Report — ' + (D.strategies || []).join(' | ');
+  document.getElementById('run-meta').innerHTML =
+    '<strong>Run:</strong> ' + D.run_id +
+    ' &nbsp;·&nbsp; <strong>As of:</strong> ' + D.asof +
+    ' &nbsp;·&nbsp; <strong>Period:</strong> ' + D.period_start + ' → ' + D.period_end;
+
+  // Metrics strip
+  const METRICS = [
+    ['Total Return', 'total_return', 'pct'],
+    ['CAGR',         'cagr',         'pct'],
+    ['Sharpe',       'sharpe',       'f2'],
+    ['Sortino',      'sortino',      'f2'],
+    ['Max Drawdown', 'max_drawdown', 'pct'],
+    ['DD Duration',  'max_drawdown_duration_days', 'days'],
+    ['Annual Vol',   'annual_volatility', 'pct'],
+    ['Calmar',       'calmar',       'f2'],
+    ['Win Rate',     'win_rate',     'pct'],
+    ['Profit Factor','profit_factor','f2'],
+  ];
+  const strip = document.getElementById('metrics-strip');
+  for (const [label, key, fmt] of METRICS) {
+    const v = D.metrics[key] ?? 0;
+    let fv, cls;
+    if (fmt === 'pct') { fv = (v * 100).toFixed(1) + '%'; cls = v < 0 ? 'neg' : 'pos'; }
+    else if (fmt === 'days') { fv = Math.round(v) + 'd'; cls = 'neu'; }
+    else { fv = v.toFixed(2); cls = v < 0 ? 'neg' : 'neu'; }
+    strip.insertAdjacentHTML('beforeend',
+      `<div class="metric">
+         <div class="metric-label">${label}</div>
+         <div class="metric-value ${cls}">${fv}</div>
+       </div>`);
+  }
+
+  // Render each chart
+  for (const [key, fig] of Object.entries(D.charts || {})) {
+    const el = document.getElementById('chart-' + key);
+    if (!el || !fig || !fig.data) continue;
+    Plotly.newPlot(el, fig.data, fig.layout ?? {}, cfg);
+    // Show optional cards
+    const card = document.getElementById(key + '-card');
+    if (card) card.style.display = '';
+  }
+</script>
+</body>
+</html>
