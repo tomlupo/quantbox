@@ -9,6 +9,7 @@ from .ml_strategy import MLPredictionStrategy
 from .momentum_long_short import MomentumLongShortStrategy
 from .portfolio_optimizer import PortfolioOptimizerStrategy
 from .static_weights import StaticWeightsStrategy
+from .trend_catcher import TrendCatcherStrategy
 from .weighted_avg_aggregator import WeightedAverageAggregator
 
 __all__ = [
@@ -23,6 +24,7 @@ __all__ = [
     "MLPredictionStrategy",
     "PortfolioOptimizerStrategy",
     "StaticWeightsStrategy",
+    "TrendCatcherStrategy",
     "WeightedAverageAggregator",
     "select_universe",
     "select_universe_duckdb",
