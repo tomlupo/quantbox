@@ -260,9 +260,67 @@ def generate_html_report(
         template="plotly_white",
     )
 
+    # Weight heatmap — top 20 tickers by cumulative allocation
+    wh_num = wh.select_dtypes(include="number") if isinstance(wh.index, pd.DatetimeIndex) else pd.DataFrame()
+    weight_html = ""
+    contrib_html = ""
+    if not wh_num.empty and not bt_prices.empty:
+        top_tickers = wh_num.sum().nlargest(20).index.tolist()
+        wh_top = wh_num[top_tickers]
+        # Resample to weekly mean for readability
+        wh_weekly = wh_top.resample("W").mean()
+        weight_fig = go.Figure(
+            data=go.Heatmap(
+                z=wh_weekly.T.values.tolist(),
+                x=[str(d.date()) for d in wh_weekly.index],
+                y=wh_weekly.columns.tolist(),
+                colorscale="Blues",
+                zmin=0,
+                showscale=True,
+                colorbar=dict(title="Weight"),
+            )
+        )
+        weight_fig.update_layout(
+            title="Portfolio Weight Heatmap — Top 20 Tickers (weekly avg)",
+            xaxis_title="Date",
+            yaxis_title="Ticker",
+            height=500,
+            margin=dict(t=60, b=60),
+            template="plotly_white",
+        )
+        weight_html = pio.to_html(weight_fig, full_html=False, include_plotlyjs=False)
+
+        # Per-ticker return contribution
+        price_ret = bt_prices.pct_change()
+        wh_aligned = wh_num.reindex(price_ret.index).reindex(columns=price_ret.columns)
+        attribution = (wh_aligned.shift(1) * price_ret).sum()
+        attribution = attribution[attribution != 0].sort_values()
+        n_show = min(20, len(attribution))
+        contrib_tickers = pd.concat([attribution.head(n_show // 2), attribution.tail(n_show - n_show // 2)])
+        colors = ["#d62728" if v < 0 else "#1f77b4" for v in contrib_tickers.values]
+        contrib_fig = go.Figure(
+            data=go.Bar(
+                x=(contrib_tickers * 100).round(2).values,
+                y=contrib_tickers.index.tolist(),
+                orientation="h",
+                marker_color=colors,
+            )
+        )
+        contrib_fig.update_layout(
+            title="Per-Ticker Return Contribution (%)",
+            xaxis_title="Contribution (%)",
+            height=max(300, 25 * len(contrib_tickers) + 100),
+            margin=dict(t=60, b=40, l=80),
+            template="plotly_white",
+        )
+        contrib_html = pio.to_html(contrib_fig, full_html=False, include_plotlyjs=False)
+
     main_html = pio.to_html(fig, full_html=False, include_plotlyjs="cdn")
     metrics_html = pio.to_html(metrics_fig, full_html=False, include_plotlyjs=False)
     heat_html = pio.to_html(heat_fig, full_html=False, include_plotlyjs=False)
+
+    weight_card = f'<div class="card">{weight_html}</div>' if weight_html else ""
+    contrib_card = f'<div class="card">{contrib_html}</div>' if contrib_html else ""
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -274,6 +332,8 @@ def generate_html_report(
     h1 {{ margin: 0 0 4px; font-size: 1.6em; color: #1a1a2e; }}
     .meta {{ color: #666; font-size: 0.9em; margin-bottom: 24px; }}
     .card {{ background: white; border-radius: 10px; box-shadow: 0 1px 6px rgba(0,0,0,0.08); padding: 16px; margin-bottom: 20px; }}
+    .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }}
+    .grid .card {{ margin-bottom: 0; }}
   </style>
 </head>
 <body>
@@ -284,7 +344,11 @@ def generate_html_report(
     <strong>Strategies:</strong> {strategy_str}
   </p>
   <div class="card">{main_html}</div>
-  <div class="card">{metrics_html}</div>
-  <div class="card">{heat_html}</div>
+  <div class="grid">
+    <div class="card">{metrics_html}</div>
+    <div class="card">{heat_html}</div>
+  </div>
+  {weight_card}
+  {contrib_card}
 </body>
 </html>"""
