@@ -46,6 +46,7 @@ from .strategies import (
     PortfolioOptimizerStrategy,
     StaticWeightsStrategy,
     TrendCatcherStrategy,
+    VolMatchedBuyHoldStrategy,
 )
 from .strategies.weighted_avg_aggregator import WeightedAverageAggregator
 from .validation import (
@@ -96,6 +97,7 @@ def builtins() -> dict[str, dict[str, type]]:
             PortfolioOptimizerStrategy,
             StaticWeightsStrategy,
             TrendCatcherStrategy,
+            VolMatchedBuyHoldStrategy,
             WeightedAverageAggregator,
         ),
         "rebalancing": _map(StandardRebalancer, FuturesRebalancer),
