@@ -10,6 +10,7 @@ from .momentum_long_short import MomentumLongShortStrategy
 from .portfolio_optimizer import PortfolioOptimizerStrategy
 from .static_weights import StaticWeightsStrategy
 from .trend_catcher import TrendCatcherStrategy
+from .vol_matched_buy_hold import VolMatchedBuyHoldStrategy
 from .weighted_avg_aggregator import WeightedAverageAggregator
 
 __all__ = [
@@ -25,6 +26,7 @@ __all__ = [
     "PortfolioOptimizerStrategy",
     "StaticWeightsStrategy",
     "TrendCatcherStrategy",
+    "VolMatchedBuyHoldStrategy",
     "WeightedAverageAggregator",
     "select_universe",
     "select_universe_duckdb",

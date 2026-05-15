@@ -51,6 +51,7 @@ plugins:
       - strategy.weighted_avg.v1
       - strategy.static_weights.v1
       - strategy.trend_catcher.v1
+      - strategy.vol_matched_buy_hold.v1
     rebalancing:
       - rebalancing.standard.v1
       - rebalancing.futures.v1
