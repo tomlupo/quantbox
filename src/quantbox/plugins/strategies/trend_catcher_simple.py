@@ -47,6 +47,7 @@ class TrendCatcherSimpleStrategy:
     universe_top_n_volume: int = 30
     max_positions: int = 10
     position_size: float = 0.10
+    close_on_regime_flip: bool = False
 
     @property
     def min_lookback_periods(self) -> int:
@@ -131,6 +132,15 @@ class TrendCatcherSimpleStrategy:
             cand_rank = ranked.rank(axis=1, ascending=True, method="first")
             position = position & (cand_rank <= self.max_positions).fillna(False)
 
+        # --- 6b. Optionally close on regime flip ------------------------------
+        # When True: positions close immediately on the day BTC regime
+        # disagrees, instead of holding until the coin's own MA20 exit.
+        # PDF is silent on this; default is the conservative "hold until own
+        # exit" interpretation. Set True to test whether bull-rebound losses
+        # on the short side are reduced.
+        if self.close_on_regime_flip:
+            position = position.where(regime_ok, False)
+
         # --- 7. Weights ---------------------------------------------------------
         sign = 1.0 if self.side == "long" else -1.0
         weights = position.astype(float) * (self.position_size * sign)
@@ -147,6 +157,7 @@ class TrendCatcherSimpleStrategy:
                 "signal_ma": self.signal_ma,
                 "universe_top_n_volume": self.universe_top_n_volume,
                 "max_positions": self.max_positions,
+                "close_on_regime_flip": self.close_on_regime_flip,
                 "position_size": self.position_size,
                 "regime_long_days": int(regime_ok.sum()) if self.side == "long" else None,
                 "regime_short_days": int(regime_ok.sum()) if self.side == "short" else None,

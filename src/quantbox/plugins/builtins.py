@@ -45,6 +45,7 @@ from .strategies import (
     MomentumLongShortStrategy,
     PortfolioOptimizerStrategy,
     StaticWeightsStrategy,
+    TrendCatcherSimpleStrategy,
     TrendCatcherStrategy,
     VolMatchedBuyHoldStrategy,
 )
