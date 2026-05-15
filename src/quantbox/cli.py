@@ -329,6 +329,78 @@ def run(
 
 
 @app.command()
+def sweep(
+    config: str = typer.Option(..., "-c", "--config", help="Path to sweep config YAML"),
+):
+    """Run a parameter-grid sweep from a YAML config.
+
+    Reads a YAML config describing a strategy, base/sweep params, market data
+    location, and heatmap settings. Iterates rebalancing bands, runs each grid
+    combination through the vbt backtest engine, and saves heatmap PNGs +
+    grid.parquet to the configured output directory.
+
+    Expected YAML schema (relative paths resolve from the config file):
+
+        strategy: strategy.crypto_regime_trend.v1
+        data:
+          root: ../../quantbox-datasets/datasets/crypto-spot-daily
+          frames: [prices, volume, market_cap]
+          align_to: prices
+        base_params: { ... strategy kwargs ... }
+        sweep_params: { window_pairs: [...] }
+        bands: [0.0, 0.05]
+        heatmap:
+          index: window_pairs
+          columns: [vol_target, tranches]
+          metrics: [sharpe_ratio, ...]
+        backtest:
+          fees: 0.005
+          rebalancing_freq: 1D
+        output_dir: heatmaps
+    """
+    from .analysis import load_parquet_market_data, run_grid
+
+    config_path = Path(config).resolve()
+    with config_path.open(encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+
+    reg = PluginRegistry.discover()
+    strategy_name = cfg["strategy"]
+    if strategy_name not in reg.strategies:
+        raise PluginNotFoundError(strategy_name, "strategy", list(reg.strategies.keys()))
+    strategy_cls = reg.strategies[strategy_name]
+
+    config_dir = config_path.parent
+    data_cfg = cfg.get("data", {}) or {}
+    data_root = (config_dir / data_cfg["root"]).resolve()
+    market_data = load_parquet_market_data(
+        data_root,
+        names=tuple(data_cfg.get("frames", ["prices", "volume", "market_cap"])),
+        align_to=data_cfg.get("align_to", "prices"),
+    )
+
+    output_dir = (config_dir / cfg.get("output_dir", "heatmaps")).resolve()
+    heatmap = cfg.get("heatmap", {}) or {}
+    backtest = cfg.get("backtest", {}) or {}
+
+    grid = run_grid(
+        strategy_cls=strategy_cls,
+        base_params=cfg.get("base_params", {}) or {},
+        sweep_params=cfg.get("sweep_params", {}) or {},
+        market_data=market_data,
+        bands=cfg.get("bands", [0.0, 0.05]),
+        output_dir=output_dir,
+        heatmap_index=heatmap.get("index"),
+        heatmap_columns=heatmap.get("columns"),
+        metrics=tuple(heatmap.get("metrics") or DEFAULT_METRICS),
+        fees=float(backtest.get("fees", 0.005)),
+        rebalancing_freq=backtest.get("rebalancing_freq", "1D"),
+        shift_signal=int(backtest.get("shift_signal", 1)),
+    )
+    print(f"SWEEP: {len(grid)} rows  ->  {output_dir}")
+
+
+@app.command()
 def warehouse(
     action: str = typer.Argument(help="Action: init, tables, query, describe, ingest, register-dataset"),
     root: str = typer.Option("./warehouse", "-r", "--root", help="Warehouse root directory"),
