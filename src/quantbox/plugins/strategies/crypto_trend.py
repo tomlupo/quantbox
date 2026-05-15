@@ -292,9 +292,7 @@ def compute_inv_vol_track(
             out[("inv_vol", t, col)] = iv_t[col]
 
     df = pd.DataFrame(out)
-    df.columns = pd.MultiIndex.from_tuples(
-        df.columns, names=["vol_target", "tranches", "ticker"]
-    )
+    df.columns = pd.MultiIndex.from_tuples(df.columns, names=["vol_target", "tranches", "ticker"])
     return df
 
 

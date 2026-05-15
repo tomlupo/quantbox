@@ -126,9 +126,12 @@ def select_universe(
         first_valid = prices[valid_tickers].apply(lambda s: s.first_valid_index())
         # Broadcast per-column first-valid-date to a date×ticker matrix of days-since-listing
         days_since = pd.DataFrame(
-            {t: (prices.index - first_valid[t]).days if first_valid[t] is not None
-                 else pd.Series(-1, index=prices.index)
-             for t in valid_tickers},
+            {
+                t: (prices.index - first_valid[t]).days
+                if first_valid[t] is not None
+                else pd.Series(-1, index=prices.index)
+                for t in valid_tickers
+            },
             index=prices.index,
         )
         listing_mask = days_since >= min_listing_days
@@ -148,9 +151,7 @@ def select_universe(
     # the top-N-by-volume cut without materially changing which large-caps
     # dominate.
     if volume_rolling_window > 1:
-        dollar_vol = dollar_vol.rolling(
-            volume_rolling_window, min_periods=max(1, volume_rolling_window // 2)
-        ).mean()
+        dollar_vol = dollar_vol.rolling(volume_rolling_window, min_periods=max(1, volume_rolling_window // 2)).mean()
 
     if has_mcap:
         # Stage 1: market-cap rank
@@ -176,9 +177,13 @@ def select_universe(
         #    coins into the top-30 (VET/FIL/ICP/MKR/ARB observed during
         #    the trend_catcher v2 audit) and change which names compete in
         #    the subsequent top-by-volume cut.
-        mcap_full = market_cap if exclude_tickers is None else market_cap.drop(  # type: ignore[union-attr]
-            columns=[c for c in market_cap.columns if c in exclude_tickers],  # type: ignore[union-attr]
-            errors="ignore",
+        mcap_full = (
+            market_cap
+            if exclude_tickers is None
+            else market_cap.drop(  # type: ignore[union-attr]
+                columns=[c for c in market_cap.columns if c in exclude_tickers],  # type: ignore[union-attr]
+                errors="ignore",
+            )
         )
         mc = mcap_full.reindex(index=prices.index, method="ffill").fillna(0.0)
         mc_rank_full = mc.rank(axis=1, ascending=False, method="min")

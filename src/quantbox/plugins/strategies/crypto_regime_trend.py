@@ -500,9 +500,7 @@ class CryptoRegimeTrendStrategy:
                     self.tranches,
                     vol_lookback=self.vol_lookback,
                 )
-                multi_weights = pd.concat([multi_weights, iv_track], axis=1).sort_index(
-                    axis=1, level="ticker"
-                )
+                multi_weights = pd.concat([multi_weights, iv_track], axis=1).sort_index(axis=1, level="ticker")
 
             output_weights = multi_weights.tail(self.output_periods)
         else:

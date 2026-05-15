@@ -244,9 +244,7 @@ class TestBestPracticeUniverseKnobs:
             (w.index >= prices.index[100]) & (w.index < prices.index[160]),
             "COIN8",
         ]
-        assert (new_listing_window.abs() < 1e-9).all(), (
-            "Coin within listing cool-off should never receive weight"
-        )
+        assert (new_listing_window.abs() < 1e-9).all(), "Coin within listing cool-off should never receive weight"
 
     def test_hysteresis_reduces_universe_churn(self) -> None:
         """Hysteresis band > 0 should not increase churn vs no band."""
@@ -291,7 +289,7 @@ class TestComputeInvVolTrackHelper:
         # First 60 days: off all zero → inv_vol track also zero
         iv = compute_inv_vol_track(off_w, prices, tranches=[1])
         iv1 = iv.xs(("inv_vol", 1), axis=1, level=("vol_target", "tranches"))
-        assert (iv1.iloc[:60].abs().sum().sum() < 1e-9)
+        assert iv1.iloc[:60].abs().sum().sum() < 1e-9
         # After day 60 the two positions split inverse-vol proportionally
         active_rows = iv1.iloc[100:120]
         assert (active_rows.sum(axis=1) > 0).all()
