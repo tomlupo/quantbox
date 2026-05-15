@@ -36,6 +36,7 @@ from quantbox.contracts import PluginMeta
 from ._universe import select_universe
 from .crypto_trend import (
     DEFAULT_STABLECOINS,
+    compute_inv_vol_track,
     compute_volatility_scalers,
 )
 
@@ -155,12 +156,34 @@ def select_regime_universe(
     short_max: int,
     coins_to_trade: int = 30,
     exclude_tickers: list[str] | None = None,
+    volume_is_dollar: bool = True,
+    volume_rolling_window: int = 1,
+    min_listing_days: int = 0,
+    hysteresis_rank_band: int = 0,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Select separate long and short universes.
 
     Delegates to the shared :func:`_universe.select_universe` which already
     handles missing market-cap data (e.g. Hyperliquid).
+
+    Args:
+        volume_is_dollar: ``True`` when ``volume`` is already in USD/USDT notional
+            (the convention for the curated Binance and Hyperliquid datasets;
+            see :class:`CarverTrendFollowingStrategy` for the same default).
+            Setting this to ``False`` causes :func:`select_universe` to compute
+            ``prices × volume`` which double-counts price when the input is
+            already dollar-denominated and corrupts the volume rank.
+        volume_rolling_window: rolling-mean window for the volume rank (default
+            ``1`` = legacy daily-spot behaviour). Pass ``30`` for the
+            best-practice 30-day smoother.
+        min_listing_days: cool-off period after a coin's first valid price
+            observation (default ``0``). Pass ``60`` for the best-practice
+            new-listing buffer.
+        hysteresis_rank_band: sticky-membership band (default ``0``). Pass
+            ``5`` for the best-practice ±5 rank band that lets coins
+            drift to ``top_by_mcap + 5`` / ``top_by_volume + 5`` before
+            being kicked out.
 
     Returns:
         (long_universe, short_universe) DataFrames of 0/1 flags
@@ -173,6 +196,10 @@ def select_regime_universe(
         top_by_mcap=coins_to_trade,
         top_by_volume=long_max,
         exclude_tickers=exclude_tickers,
+        volume_is_dollar=volume_is_dollar,
+        volume_rolling_window=volume_rolling_window,
+        min_listing_days=min_listing_days,
+        hysteresis_rank_band=hysteresis_rank_band,
     )
     short_universe = select_universe(
         prices,
@@ -181,6 +208,10 @@ def select_regime_universe(
         top_by_mcap=coins_to_trade,
         top_by_volume=short_max,
         exclude_tickers=exclude_tickers,
+        volume_is_dollar=volume_is_dollar,
+        volume_rolling_window=volume_rolling_window,
+        min_listing_days=min_listing_days,
+        hysteresis_rank_band=hysteresis_rank_band,
     )
     return long_universe, short_universe
 
@@ -255,6 +286,21 @@ class CryptoRegimeTrendStrategy:
     short_max: int = 20
     coins_to_trade: int = 30
     exclude_tickers: list[str] = field(default_factory=lambda: DEFAULT_STABLECOINS.copy())
+    # Volume convention. Binance/Hyperliquid curated datasets are in USD
+    # notional already, so we should NOT multiply by price again (see
+    # :class:`CarverTrendFollowingStrategy` for the same default).
+    volume_is_dollar: bool = True
+    # Best-practice universe-construction knobs (all default to legacy
+    # notebook-faithful behaviour; set to recommended values for production).
+    #   * ``volume_rolling_window=30``: rank by 30-day mean volume, not 1-day
+    #     spot. Drops listing-day spike noise.
+    #   * ``min_listing_days=60``: exclude coins for 60 days after their first
+    #     valid price. Avoids trading the new-listing pump.
+    #   * ``hysteresis_rank_band=5``: a coin stays in the universe at
+    #     ranks up to ``top_N + 5`` once it has entered. Cuts boundary churn.
+    volume_rolling_window: int = 1
+    min_listing_days: int = 0
+    hysteresis_rank_band: int = 0
 
     # Weighting
     weighting: str = "equal"  # "equal" or "inverse_atr"
@@ -264,6 +310,21 @@ class CryptoRegimeTrendStrategy:
     vol_targets: list[Any] = field(default_factory=lambda: ["off"])
     tranches: list[int] = field(default_factory=lambda: [1])
     vol_lookback: int = 60
+    # Notebook-v2-faithful knobs (defaults preserve prior behaviour):
+    #  * ``position_weight``: when set, replace per-leg row-normalisation with a
+    #    fixed weight per active position (notebook cell 108:
+    #    ``weights = signals * (1/portfolio_coins_max) * coins_universe``).
+    #    Typical v2 value is ``1 / long_max``.
+    #  * ``inv_vol_track``: when ``True``, append a 4th vol_target track keyed
+    #    ``'inv_vol'`` computed from the ``off`` track via
+    #    :func:`compute_inv_vol_track` (notebook cells 110-115). Requires
+    #    ``"off"`` in ``vol_targets``.
+    #  * ``clip_vol_scaler``: pass-through to
+    #    :func:`compute_volatility_scalers`. Set to ``None`` for exact notebook
+    #    math (no clipping).
+    position_weight: float | None = None
+    inv_vol_track: bool = False
+    clip_vol_scaler: tuple[float, float] | None = (0.1, 10.0)
 
     # Output
     output_periods: int = 30
@@ -275,6 +336,7 @@ class CryptoRegimeTrendStrategy:
             "filtered_coins_market_cap": "coins_to_trade",
             "portfolio_coins_max_long": "long_max",
             "portfolio_coins_max_short": "short_max",
+            "portfolio_coins_max": "long_max",
             "last_x_days": "output_periods",
             "periods": "output_periods",
         },
@@ -294,6 +356,9 @@ class CryptoRegimeTrendStrategy:
                 "long_max": self.long_max,
                 "short_max": self.short_max,
                 "weighting": self.weighting,
+                "position_weight": self.position_weight,
+                "inv_vol_track": self.inv_vol_track,
+                "clip_vol_scaler": self.clip_vol_scaler,
             },
             "signals": "Price vs MA conditioned on BTC regime, multi-window ensemble",
         }
@@ -353,6 +418,10 @@ class CryptoRegimeTrendStrategy:
             self.short_max,
             self.coins_to_trade,
             self.exclude_tickers,
+            volume_is_dollar=self.volume_is_dollar,
+            volume_rolling_window=self.volume_rolling_window,
+            min_listing_days=self.min_listing_days,
+            hysteresis_rank_band=self.hysteresis_rank_band,
         )
 
         # 3. Apply universe mask
@@ -365,8 +434,13 @@ class CryptoRegimeTrendStrategy:
             long_weights = long_weights * atr_w
             short_weights = short_weights * atr_w
 
-        # 5. Normalize within each leg
-        if self.normalize_weights:
+        # 5. Position sizing: fixed per-position (notebook v2) OR row-normalise
+        #    per leg. The two paths are mutually exclusive; ``position_weight``
+        #    wins when set.
+        if self.position_weight is not None:
+            long_weights = long_weights * self.position_weight
+            short_weights = short_weights * self.position_weight
+        elif self.normalize_weights:
             long_sum = long_weights.sum(axis=1).replace(0, np.nan)
             short_sum = short_weights.sum(axis=1).replace(0, np.nan)
             long_weights = long_weights.div(long_sum, axis=0).fillna(0)
@@ -386,6 +460,7 @@ class CryptoRegimeTrendStrategy:
                     prices,
                     numeric_targets,
                     self.vol_lookback,
+                    clip_range=self.clip_vol_scaler,
                 )
             if has_off:
                 scalers["off"] = pd.DataFrame(1.0, index=prices.index, columns=prices.columns)
@@ -394,13 +469,41 @@ class CryptoRegimeTrendStrategy:
             # We pass the combined signal (long - short) through the scaler framework
             from .crypto_trend import construct_weights as _cw
 
+            # When position_weight is set, ``combined`` already has the
+            # universe baked in (long_sig × long_univ × position_weight), so
+            # ask construct_weights to skip its post-tranche universe mask.
+            # This makes tranching bleed coins out over the tranche window at
+            # universe transitions, matching notebook v2 cell 115 semantics.
             multi_weights = _cw(
                 combined,
                 long_univ.clip(upper=1) + short_univ.clip(upper=1),
                 scalers,
                 self.tranches,
                 normalize=False,
+                signals_have_universe=self.position_weight is not None,
             )
+
+            # 7b. Optional inv_vol track (notebook v2 cells 110-115).
+            # Built from the pre-tranche ``off`` slice of the combined weights so
+            # the inv_vol track row-sum matches the off row-sum (preserves the
+            # ``signal × universe × position_weight`` exposure pattern).
+            if self.inv_vol_track:
+                if not has_off:
+                    raise ValueError(
+                        "inv_vol_track=True requires 'off' in vol_targets — the "
+                        "inv_vol track is derived from the off-track weights."
+                    )
+                off_weights = combined  # off scaler is 1.0, so weights == combined
+                iv_track = compute_inv_vol_track(
+                    off_weights,
+                    prices,
+                    self.tranches,
+                    vol_lookback=self.vol_lookback,
+                )
+                multi_weights = pd.concat([multi_weights, iv_track], axis=1).sort_index(
+                    axis=1, level="ticker"
+                )
+
             output_weights = multi_weights.tail(self.output_periods)
         else:
             output_weights = combined.tail(self.output_periods)

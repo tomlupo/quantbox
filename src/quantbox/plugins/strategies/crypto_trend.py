@@ -208,6 +208,7 @@ def compute_volatility_scalers(
     vol_targets: list[float],
     vol_lookback: int = 60,
     annualization_factor: float = 365.0,
+    clip_range: tuple[float, float] | None = (0.1, 10.0),
 ) -> dict[str, pd.DataFrame]:
     """
     Compute volatility scalers for each target.
@@ -220,6 +221,9 @@ def compute_volatility_scalers(
         vol_targets: List of target volatilities (e.g., [0.25, 0.50])
         vol_lookback: Rolling window for volatility estimation
         annualization_factor: Days per year for annualization
+        clip_range: (lower, upper) bounds for the scaler. Default ``(0.1, 10.0)``
+            preserves prior behaviour. Pass ``None`` to skip clipping (notebook-
+            faithful for the Robuxio TrendCatcher v2 replication).
 
     Returns:
         Dict mapping vol_target_str to scaler DataFrame
@@ -231,11 +235,67 @@ def compute_volatility_scalers(
     scalers = {}
     for vt in vol_targets:
         scaler = vt / realized_vol.replace(0, np.nan)
-        # Clip extreme scalers
-        scaler = scaler.clip(lower=0.1, upper=10.0)
+        if clip_range is not None:
+            scaler = scaler.clip(lower=clip_range[0], upper=clip_range[1])
         scalers[f"{int(vt * 100)}"] = scaler
 
     return scalers
+
+
+def compute_inv_vol_track(
+    off_weights: pd.DataFrame,
+    prices: pd.DataFrame,
+    tranches: list[int],
+    vol_lookback: int = 60,
+    annualization_factor: float = 365.0,
+) -> pd.DataFrame:
+    """
+    Build the ``vol_target='inv_vol'`` track from the ``off`` track weights.
+
+    Replicates notebook v2 cells 110-115:
+
+    - ``inv_vol = 1 / realized_vol``
+    - ``iv_raw = inv_vol.where(off != 0) * off_weights``  (inherit signal pattern)
+    - Per-row normalisation so the inv_vol track sums to the same row total as
+      the ``off`` track (preserves total exposure)
+    - Tranching applied AFTER normalisation, per ``tranches`` entry
+
+    Args:
+        off_weights: per-(date, ticker) ``off`` track weights (signal x universe x position_weight).
+            Rows where this is all-zero (e.g., regime-off, no longs) produce an
+            all-zero inv_vol row.
+        prices: Price DataFrame used to compute realised volatility.
+        tranches: Tranching periods (rolling-mean windows).
+        vol_lookback: Rolling window for the volatility estimate.
+        annualization_factor: Days per year (365 for crypto, 252 for equities).
+
+    Returns:
+        DataFrame with MultiIndex columns ``(vol_target, tranches, ticker)`` where
+        ``vol_target`` is always the literal string ``"inv_vol"``.
+    """
+    returns = prices.pct_change()
+    realized_vol = returns.rolling(vol_lookback).std() * np.sqrt(annualization_factor)
+    inv_vol = 1.0 / realized_vol.replace(0, np.nan)
+
+    iv_raw = inv_vol.where(off_weights != 0).mul(off_weights)
+    iv_rowsum = iv_raw.sum(axis=1).replace(0, np.nan)
+    off_rowsum = off_weights.sum(axis=1)
+    iv_normalised = iv_raw.div(iv_rowsum, axis=0).mul(off_rowsum, axis=0).fillna(0)
+
+    out: dict[tuple[str, int, str], pd.Series] = {}
+    for t in tranches:
+        if t > 1:
+            iv_t = iv_normalised.rolling(t, min_periods=1).mean()
+        else:
+            iv_t = iv_normalised
+        for col in iv_t.columns:
+            out[("inv_vol", t, col)] = iv_t[col]
+
+    df = pd.DataFrame(out)
+    df.columns = pd.MultiIndex.from_tuples(
+        df.columns, names=["vol_target", "tranches", "ticker"]
+    )
+    return df
 
 
 # ============================================================================
@@ -249,6 +309,7 @@ def construct_weights(
     scalers: dict[str, pd.DataFrame],
     tranches: list[int],
     normalize: bool = True,
+    signals_have_universe: bool = False,
 ) -> pd.DataFrame:
     """
     Construct portfolio weights from signals.
@@ -256,8 +317,19 @@ def construct_weights(
     Steps:
     1. Scale signals by volatility scaler
     2. Apply tranching (rolling mean for smoother transitions)
-    3. Mask by tradable universe
+    3. Mask by tradable universe  (skipped when ``signals_have_universe=True``)
     4. Normalize to sum to 1 (optional)
+
+    Args:
+        signals_have_universe: When ``True``, the caller has already multiplied
+            ``signals`` by the universe mask, so we skip the post-tranche
+            ``× universe`` step. This matters at universe-transition days:
+            when a coin leaves the universe, post-tranche masking zeros its
+            weight immediately, whereas notebook-style pre-tranche masking
+            lets the rolling mean bleed it out over ``tranches`` days. Set
+            this when replicating notebook semantics where
+            ``weights = signals × universe × position_weight``  is computed
+            BEFORE tranching.
 
     Returns DataFrame with MultiIndex columns: (vol_target, tranche, ticker)
     """
@@ -274,8 +346,11 @@ def construct_weights(
             else:
                 sig_tranched = sig_scaled
 
-            # Apply universe mask
-            w = sig_tranched * universe
+            # Apply universe mask (skip if signals already have it baked in)
+            if signals_have_universe:
+                w = sig_tranched
+            else:
+                w = sig_tranched * universe
 
             # Normalize by number of positions
             if normalize:
