@@ -204,6 +204,56 @@ def _git_info(cwd: Path | None = None) -> dict[str, Any]:
     }
 
 
+_TRACKED_PACKAGES: tuple[str, ...] = (
+    "quantbox",
+    "quantbox-datasets",
+    "quantbox-lab",
+    "quantbox-live",
+)
+
+
+def _installed_packages(names: tuple[str, ...] = _TRACKED_PACKAGES) -> dict[str, dict[str, Any]]:
+    """Capture installed-package provenance for the named distributions.
+
+    For each package, returns version + (where available) the PEP 610
+    ``direct_url.json`` data, which gives the git commit SHA + URL for VCS
+    installs and the editable flag for ``pip install -e`` installs. This
+    closes the audit gap where ``run_manifest.json`` only recorded version
+    strings (e.g. ``0.2.0``) but not which git commit produced that build.
+    """
+    import importlib.metadata as md
+
+    out: dict[str, dict[str, Any]] = {}
+    for name in names:
+        try:
+            dist = md.distribution(name)
+        except md.PackageNotFoundError:
+            continue
+        info: dict[str, Any] = {"version": dist.version}
+        try:
+            durl_str = dist.read_text("direct_url.json")
+        except FileNotFoundError:
+            durl_str = None
+        if durl_str:
+            try:
+                durl = json.loads(durl_str)
+            except (ValueError, TypeError):
+                durl = {}
+            if "url" in durl:
+                info["url"] = durl["url"]
+            vcs = durl.get("vcs_info") or {}
+            if vcs:
+                info["vcs"] = vcs.get("vcs")
+                if "commit_id" in vcs:
+                    info["commit_id"] = vcs["commit_id"]
+                if "requested_revision" in vcs:
+                    info["requested_revision"] = vcs["requested_revision"]
+            if durl.get("dir_info", {}).get("editable"):
+                info["editable"] = True
+        out[name] = info
+    return out
+
+
 def _plugin_meta(plugin: Any, fallback_name: str | None = None) -> dict[str, Any] | None:
     if plugin is None and fallback_name is None:
         return None
@@ -510,6 +560,7 @@ def run_from_config(
             ),
         },
         "git": _git_info(Path.cwd()),
+        "installed_packages": _installed_packages(),
         "plugins": {
             "pipeline": getattr(getattr(pipeline, "meta", None), "name", pipe_name),
             "data": getattr(getattr(data, "meta", None), "name", data_name),
