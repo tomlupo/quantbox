@@ -97,6 +97,7 @@ def builtins() -> dict[str, dict[str, type]]:
             PortfolioOptimizerStrategy,
             StaticWeightsStrategy,
             TrendCatcherStrategy,
+            TrendCatcherSimpleStrategy,
             VolMatchedBuyHoldStrategy,
             WeightedAverageAggregator,
         ),
