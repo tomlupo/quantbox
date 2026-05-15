@@ -253,6 +253,7 @@ def plot_heatmaps(
     metrics: Sequence[str] | None = None,
     save_dir: str | Path | None = None,
     title_prefix: str = "",
+    filename_suffix: str = "",
     cmap: str = "RdYlGn",
     fmt: str = ".2f",
 ) -> dict[str, Any]:
@@ -293,7 +294,10 @@ def plot_heatmaps(
         ax.set_title(f"{title_prefix}{metric}".strip())
         plt.tight_layout()
         if save_path is not None:
-            out = save_path / f"{_slugify(metric)}.png"
+            stem = _slugify(metric)
+            if filename_suffix:
+                stem = f"{stem}{filename_suffix}"
+            out = save_path / f"{stem}.png"
             fig.savefig(out, dpi=120)
             results[metric] = out
             plt.close(fig)
@@ -314,3 +318,95 @@ def _sweep_axis_columns(grid: pd.DataFrame, *axes: Any) -> set[str]:
 
 def _slugify(s: str) -> str:
     return "".join(c if c.isalnum() else "_" for c in s).strip("_").lower()
+
+
+def load_parquet_market_data(
+    root: str | Path,
+    names: Sequence[str] = ("prices", "volume", "market_cap"),
+    align_to: str = "prices",
+) -> dict[str, pd.DataFrame]:
+    """Load named ``<name>.parquet`` files from a dataset directory and align
+    them all to the index + columns of the ``align_to`` frame.
+
+    Useful for strategy backtests where every input frame must share the same
+    date axis and ticker universe (otherwise the strategy hits NaN dropouts on
+    misaligned columns). Returns a dict keyed by the supplied ``names``.
+    """
+    root = Path(root)
+    anchor = pd.read_parquet(root / f"{align_to}.parquet")
+    out: dict[str, pd.DataFrame] = {align_to: anchor}
+    for name in names:
+        if name == align_to:
+            continue
+        df = pd.read_parquet(root / f"{name}.parquet")
+        out[name] = df.reindex(index=anchor.index, columns=anchor.columns)
+    # Restrict the anchor to columns present in every loaded frame.
+    common_cols = anchor.columns
+    for name, df in out.items():
+        common_cols = common_cols.intersection(df.columns)
+    return {name: df[common_cols] for name, df in out.items()}
+
+
+def run_grid(
+    strategy_cls: type,
+    base_params: Mapping[str, Any],
+    sweep_params: Mapping[str, Sequence[Any]],
+    market_data: Mapping[str, pd.DataFrame],
+    bands: Sequence[float] = (0.0, 0.05),
+    output_dir: str | Path | None = None,
+    heatmap_index: str | list[str] = None,
+    heatmap_columns: str | list[str] = None,
+    metrics: Sequence[str] = DEFAULT_METRICS,
+    fees: float = 0.005,
+    rebalancing_freq: int | str = "1D",
+    shift_signal: int = 1,
+    cmap: str = "RdYlGn",
+    fmt: str = ".3f",
+) -> pd.DataFrame:
+    """Orchestrate a parameter-grid sweep across rebalancing bands.
+
+    For each value in ``bands``, runs :func:`sweep` once and (if both
+    ``output_dir`` and ``heatmap_index`` are set) renders one heatmap PNG per
+    metric, suffixed with the band setting. Saves the combined tidy grid to
+    ``<output_dir>/grid.parquet``. Returns the combined grid.
+
+    This is the strategy-agnostic orchestrator used by per-research scripts —
+    they supply ``strategy_cls``, base/sweep params and a market_data dict,
+    and everything else (iteration, naming, saving) is centralised here.
+    """
+    output = Path(output_dir) if output_dir is not None else None
+    if output is not None:
+        output.mkdir(parents=True, exist_ok=True)
+
+    all_grids: list[pd.DataFrame] = []
+    for band in bands:
+        logger.info("run_grid: bands=%s", band)
+        grid = sweep(
+            strategy_cls=strategy_cls,
+            base_params=base_params,
+            sweep_params=sweep_params,
+            data=market_data,
+            backtest_kwargs={"fees": fees, "threshold": band, "rebalancing_freq": rebalancing_freq},
+            metrics=metrics,
+            shift_signal=shift_signal,
+        )
+        grid["bands"] = f"{int(band * 100)}%"
+        all_grids.append(grid)
+
+        if output is not None and heatmap_index is not None and heatmap_columns is not None:
+            plot_heatmaps(
+                grid,
+                index=heatmap_index,
+                columns=heatmap_columns,
+                metrics=list(metrics),
+                save_dir=output,
+                title_prefix=f"Bands={int(band * 100)}% — ",
+                filename_suffix=f"_bands{int(band * 100)}",
+                cmap=cmap,
+                fmt=fmt,
+            )
+
+    combined = pd.concat(all_grids, ignore_index=True)
+    if output is not None:
+        combined.to_parquet(output / "grid.parquet")
+    return combined
