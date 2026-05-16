@@ -1,0 +1,26 @@
+# Pre-commit hooks mirror the lint job in .github/workflows/ci.yml so
+# violations are caught locally before push instead of on the CI run.
+#
+# Install once per clone:
+#   uv tool install pre-commit
+#   pre-commit install
+#
+# Run on all files (e.g. after pulling a big change):
+#   pre-commit run --all-files
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.13.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1000]
