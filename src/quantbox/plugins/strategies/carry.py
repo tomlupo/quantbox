@@ -221,7 +221,7 @@ class CarryStrategy:
         Uses lagged weights (shift(1)) to keep the estimator causal.
         Fills the warm-up window with scale=1 (no scaling before enough data).
         """
-        returns = prices.pct_change()
+        returns = prices.pct_change(fill_method=None)
         port_rets = (weights.shift(1) * returns).sum(axis=1)
         realized_vol = port_rets.ewm(span=self.vol_lookback, min_periods=5).std() * np.sqrt(365)
         scale = (self.target_vol / realized_vol.replace(0.0, np.nan)).clip(0.1, 3.0).fillna(1.0)

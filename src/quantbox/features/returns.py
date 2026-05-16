@@ -26,6 +26,6 @@ def compute_returns(
 
             ret = np.log(prices / prices.shift(w))
         else:
-            ret = prices.pct_change(periods=w)
+            ret = prices.pct_change(periods=w, fill_method=None)
         result[f"ret_{w}d"] = ret
     return result

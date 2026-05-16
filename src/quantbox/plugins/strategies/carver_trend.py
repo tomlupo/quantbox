@@ -336,7 +336,7 @@ def calculate_instrument_risk(
     Returns:
         Volatility DataFrame (annualized)
     """
-    returns = prices.pct_change()
+    returns = prices.pct_change(fill_method=None)
     vol = returns.ewm(span=vol_lookback, min_periods=10).std() * np.sqrt(365)
     return vol
 

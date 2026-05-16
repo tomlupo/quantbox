@@ -61,7 +61,7 @@ class FundSelectionPipeline:
         prices_wide = market_data["prices"]
         store.put_parquet("prices", prices_wide.reset_index() if hasattr(prices_wide.index, "name") else prices_wide)
 
-        returns = prices_wide.pct_change()
+        returns = prices_wide.pct_change(fill_method=None)
         scores = pd.DataFrame(
             {
                 "symbol": returns.columns,

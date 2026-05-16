@@ -77,7 +77,7 @@ class TechnicalIndicators:
     @staticmethod
     def returns(data: pd.Series, periods: int = 1) -> pd.Series:
         """Percentage returns."""
-        return data.pct_change(periods=periods)
+        return data.pct_change(periods=periods, fill_method=None)
 
     @staticmethod
     def log_returns(data: pd.Series, periods: int = 1) -> pd.Series:

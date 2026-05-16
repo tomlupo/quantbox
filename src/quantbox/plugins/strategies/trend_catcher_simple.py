@@ -98,12 +98,6 @@ class TrendCatcherSimpleStrategy:
         # coin enters the in-trend regime AFTER being out of it. Eligibility
         # at that moment requires BTC regime + top-N volume on the same day.
         first_day_of_trend = in_trend & ~in_trend.shift(1, fill_value=False)
-        entry_eligible = (
-            first_day_of_trend
-            & in_universe
-            & regime_ok.to_frame().reindex(columns=prices.columns, method=None).ffill(axis=1).fillna(False)
-        )
-        # Simpler: broadcast regime_ok scalar-per-day to all columns
         entry_eligible = first_day_of_trend & in_universe
         entry_eligible = entry_eligible.where(regime_ok, False)
 

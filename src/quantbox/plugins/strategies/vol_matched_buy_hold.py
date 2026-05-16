@@ -58,7 +58,7 @@ class VolMatchedBuyHoldStrategy:
                 f"(have {len(prices.columns)} columns)"
             )
 
-        rets = prices[self.ticker].pct_change()
+        rets = prices[self.ticker].pct_change(fill_method=None)
         sqrt_td = float(np.sqrt(self.trading_days))
 
         if self.vol_lookback is None:
