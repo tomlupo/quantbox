@@ -67,3 +67,8 @@ known-first-party = ["quantbox"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+# Default `pytest -q` skips slow pipeline-smoke. CI runs them as a separate job.
+addopts = "-m 'not pipeline_smoke'"
+markers = [
+    "pipeline_smoke: end-to-end pipeline tests (slow). Run via `pytest -m pipeline_smoke`.",
+]

@@ -171,6 +171,10 @@ Quantbox uses custom exceptions (see `quantbox.exceptions`):
 - Prefer additive changes and new plugin versions over breaking changes
 - Don't rename existing entry-point IDs
 - Add tests for new plugins or core behavior
+- **Pipeline smoke is required for plugin PRs.** A plugin that passes
+  unit tests but isn't registered in `builtins.py` / `manifest.yaml` is a
+  silent production break. Run `uv run pytest -m pipeline_smoke` before
+  marking a PR ready for review (CI runs it as a separate job too).
 - See [`docs/architecture/principles.md`](docs/architecture/principles.md) for LLM-specific guidelines + anti-patterns
 
 **For any architectural change, the rules in [`docs/architecture/principles.md`](docs/architecture/principles.md) take precedence over this file.** Anti-patterns to refuse, decision rules for new features, and the layer-choice doctrine all live there.

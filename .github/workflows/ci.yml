@@ -28,3 +28,16 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: uv sync
       - run: uv run pytest -q
+
+  pipeline-smoke:
+    # L1 of the pipeline-correctness ladder. Catches the "pytest is green
+    # but the pipeline can't load plugins" class of failure that unit tests
+    # miss by design. Runs in <10s.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: '3.11'
+      - run: uv sync --extra full
+      - run: uv run pytest tests/pipeline/ -m pipeline_smoke -v
