@@ -73,11 +73,11 @@ def _compute_symbol_features(
 ) -> pd.DataFrame:
     """Build technical features for a single symbol's close-price series."""
     features = pd.DataFrame(index=close.index)
-    daily_ret = close.pct_change(fill_method=None)
+    daily_ret = close.ffill().pct_change(fill_method=None)
 
     # Returns and volatility at each lookback period
     for p in lookback_periods:
-        features[f"return_{p}d"] = close.pct_change(p, fill_method=None)
+        features[f"return_{p}d"] = close.ffill().pct_change(p, fill_method=None)
         features[f"volatility_{p}d"] = daily_ret.rolling(p).std()
 
     # Momentum ratios
@@ -88,7 +88,7 @@ def _compute_symbol_features(
     for p in lookback_periods:
         sma = close.rolling(p).mean()
         features[f"sma_ratio_{p}d"] = close / sma - 1
-        features[f"sma_slope_{p}d"] = sma.pct_change(5, fill_method=None)
+        features[f"sma_slope_{p}d"] = sma.ffill().pct_change(5, fill_method=None)
 
     # RSI (14 and 28 period)
     for period in (14, 28):
@@ -118,7 +118,7 @@ def _compute_symbol_features(
         for p in lookback_periods:
             vol_sma = volume.rolling(p).mean()
             features[f"volume_ratio_{p}d"] = volume / vol_sma
-            features[f"volume_trend_{p}d"] = vol_sma.pct_change(p, fill_method=None)
+            features[f"volume_trend_{p}d"] = vol_sma.ffill().pct_change(p, fill_method=None)
 
     # Day-of-week cyclical encoding
     if hasattr(close.index, "dayofweek"):

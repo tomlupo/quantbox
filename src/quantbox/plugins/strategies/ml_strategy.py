@@ -59,9 +59,9 @@ class _FeatureEngineer:
         features = pd.DataFrame(index=close.index)
 
         # Returns and volatility at different horizons
-        daily_ret = close.pct_change(fill_method=None)
+        daily_ret = close.ffill().pct_change(fill_method=None)
         for p in self.lookback_periods:
-            features[f"return_{p}d"] = close.pct_change(p, fill_method=None)
+            features[f"return_{p}d"] = close.ffill().pct_change(p, fill_method=None)
             features[f"volatility_{p}d"] = daily_ret.rolling(p).std()
 
         # Momentum
@@ -72,7 +72,7 @@ class _FeatureEngineer:
         for p in self.lookback_periods:
             sma = close.rolling(p).mean()
             features[f"sma_ratio_{p}d"] = close / sma - 1
-            features[f"sma_slope_{p}d"] = sma.pct_change(5, fill_method=None)
+            features[f"sma_slope_{p}d"] = sma.ffill().pct_change(5, fill_method=None)
 
         # RSI
         for period in (14, 28):
@@ -106,7 +106,7 @@ class _FeatureEngineer:
             for p in self.lookback_periods:
                 vol_sma = volume.rolling(p).mean()
                 features[f"volume_ratio_{p}d"] = volume / vol_sma
-                features[f"volume_trend_{p}d"] = vol_sma.pct_change(p, fill_method=None)
+                features[f"volume_trend_{p}d"] = vol_sma.ffill().pct_change(p, fill_method=None)
 
         # Day-of-week cyclical encoding
         if hasattr(close.index, "dayofweek"):
@@ -126,7 +126,7 @@ def _create_target(
     For regression: forward percent return.
     For classification: binary direction (1 if positive, 0 otherwise).
     """
-    forward_return = close.pct_change(horizon, fill_method=None).shift(-horizon)
+    forward_return = close.ffill().pct_change(horizon, fill_method=None).shift(-horizon)
     if task == "regression":
         return forward_return
     return (forward_return > 0).astype(int)

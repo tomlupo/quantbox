@@ -281,7 +281,7 @@ def _build_contrib_chart(weights_history: pd.DataFrame, bt_prices: pd.DataFrame)
     if wh_num.empty or bt_prices.empty:
         return None
 
-    price_ret = bt_prices.pct_change(fill_method=None)
+    price_ret = bt_prices.ffill().pct_change(fill_method=None)
     wh_aligned = wh_num.reindex(price_ret.index).reindex(columns=price_ret.columns)
     attribution = (wh_aligned.shift(1) * price_ret).sum()
     attribution = attribution[attribution != 0].sort_values()

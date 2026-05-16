@@ -139,7 +139,7 @@ strategy:
             return {"weights": weights, "trades": [], "error": "Insufficient data"}
 
         # Calculate 24h rolling returns
-        rolling_return = prices.pct_change(periods=lookback_hours, fill_method=None)
+        rolling_return = prices.ffill().pct_change(periods=lookback_hours, fill_method=None)
 
         # State tracking for position management
         weights_series = pd.Series(0.0, index=prices.index)

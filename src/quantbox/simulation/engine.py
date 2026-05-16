@@ -178,7 +178,7 @@ class MarketSimulator:
         lookback_days: int = 252,
     ) -> MarketSimulator:
         """Create a simulator calibrated to historical price data."""
-        returns = prices.pct_change(fill_method=None).dropna().tail(lookback_days)
+        returns = prices.ffill().pct_change(fill_method=None).dropna().tail(lookback_days)
         models: dict[str, BaseModel] = {}
         initial_prices: dict[str, float] = {}
 

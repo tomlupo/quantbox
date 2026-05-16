@@ -410,7 +410,7 @@ class BeGlobalStrategy:
             }
 
         # Pre-compute rolling portfolio returns for vol targeting
-        portfolio_ret = prices[list(col_to_asset.keys())].mean(axis=1).pct_change(fill_method=None)
+        portfolio_ret = prices[list(col_to_asset.keys())].mean(axis=1).ffill().pct_change(fill_method=None)
 
         satellite_weight = 1.0 - self.core_weight
         prev_weights: dict[str, float] = {}

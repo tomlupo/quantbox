@@ -973,7 +973,7 @@ class BacktestPipeline:
         equity_curve["TotalMargin"] = equity_curve["TotalMargin"].fillna(0)
         equity_curve["portfolio_value"] = equity_curve["Cash"] + equity_curve["TotalMargin"]
 
-        returns = equity_curve["portfolio_value"].pct_change(fill_method=None).dropna()
+        returns = equity_curve["portfolio_value"].ffill().pct_change(fill_method=None).dropna()
         returns.name = None
 
         metrics = compute_backtest_metrics(returns, trading_days=trading_days)

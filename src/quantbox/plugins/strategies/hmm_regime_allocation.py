@@ -214,10 +214,10 @@ strategy:
         feats = pd.DataFrame(index=prices.index)
 
         if "returns" in features_list:
-            feats["returns"] = prices.pct_change(fill_method=None)
+            feats["returns"] = prices.ffill().pct_change(fill_method=None)
 
         if "volatility_20d" in features_list:
-            feats["volatility_20d"] = prices.pct_change(fill_method=None).rolling(vol_window).std()
+            feats["volatility_20d"] = prices.ffill().pct_change(fill_method=None).rolling(vol_window).std()
 
         if "volume_ratio" in features_list and volumes_df is not None and symbol in volumes_df.columns:
             vol = volumes_df[symbol]
@@ -283,7 +283,7 @@ strategy:
 
     def _label_regimes(self, regimes: pd.Series, prices: pd.Series, n_regimes: int) -> pd.Series:
         """Label numeric regimes as bull/bear/crisis based on mean returns per state."""
-        returns = prices.pct_change(fill_method=None)
+        returns = prices.ffill().pct_change(fill_method=None)
         valid = regimes.dropna()
 
         if len(valid) == 0:
