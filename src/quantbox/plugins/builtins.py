@@ -45,6 +45,7 @@ from .strategies import (
     MomentumLongShortStrategy,
     PortfolioOptimizerStrategy,
     StaticWeightsStrategy,
+    TrendCatcherSimpleStrategy,
     TrendCatcherStrategy,
     VolMatchedBuyHoldStrategy,
 )
@@ -97,6 +98,7 @@ def builtins() -> dict[str, dict[str, type]]:
             PortfolioOptimizerStrategy,
             StaticWeightsStrategy,
             TrendCatcherStrategy,
+            TrendCatcherSimpleStrategy,
             VolMatchedBuyHoldStrategy,
             WeightedAverageAggregator,
         ),
