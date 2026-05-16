@@ -35,12 +35,15 @@ from .risk import (
     TradingRiskManager,
 )
 from .strategies import (
+    AltcoinCrashBounceStrategy,
     BeGlobalStrategy,
     CarryStrategy,
     CarverTrendStrategy,
     CrossAssetMomentumStrategy,
     CryptoRegimeTrendStrategy,
     CryptoTrendStrategy,
+    EthMeanReversion24h,
+    HmmRegimeAllocation,
     MLPredictionStrategy,
     MomentumLongShortStrategy,
     PortfolioOptimizerStrategy,

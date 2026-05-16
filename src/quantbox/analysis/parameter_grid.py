@@ -342,7 +342,7 @@ def load_parquet_market_data(
         out[name] = df.reindex(index=anchor.index, columns=anchor.columns)
     # Restrict the anchor to columns present in every loaded frame.
     common_cols = anchor.columns
-    for name, df in out.items():
+    for df in out.values():
         common_cols = common_cols.intersection(df.columns)
     return {name: df[common_cols] for name, df in out.items()}
 

@@ -358,7 +358,7 @@ def sweep(
           rebalancing_freq: 1D
         output_dir: heatmaps
     """
-    from .analysis import load_parquet_market_data, run_grid
+    from .analysis import DEFAULT_METRICS, load_parquet_market_data, run_grid
 
     config_path = Path(config).resolve()
     with config_path.open(encoding="utf-8") as f:
