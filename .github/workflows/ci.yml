@@ -41,3 +41,17 @@ jobs:
           python-version: '3.11'
       - run: uv sync --extra full
       - run: uv run pytest tests/pipeline/ -m pipeline_smoke -v
+
+  canonical-reproductions:
+    # L2 of the pipeline-correctness ladder. Runs end-to-end backtests on
+    # the bundled synthetic fixture and diffs headline metrics against
+    # committed goldens. Catches silent numerical drift from
+    # pandas/vbt/numba bumps. Runs in ~30s.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: '3.11'
+      - run: uv sync --extra full
+      - run: uv run pytest tests/canonical_reproductions/ -m canonical_reproduction -v
