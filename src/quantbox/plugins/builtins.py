@@ -35,12 +35,15 @@ from .risk import (
     TradingRiskManager,
 )
 from .strategies import (
+    AltcoinCrashBounceStrategy,
     BeGlobalStrategy,
     CarryStrategy,
     CarverTrendStrategy,
     CrossAssetMomentumStrategy,
     CryptoRegimeTrendStrategy,
     CryptoTrendStrategy,
+    EthMeanReversion24h,
+    HmmRegimeAllocation,
     MLPredictionStrategy,
     MomentumLongShortStrategy,
     PortfolioOptimizerStrategy,
@@ -87,6 +90,7 @@ def builtins() -> dict[str, dict[str, type]]:
             DrawdownControlRiskManager,
         ),
         "strategy": _map(
+            AltcoinCrashBounceStrategy,
             BeGlobalStrategy,
             CarryStrategy,
             CryptoTrendStrategy,
@@ -94,6 +98,8 @@ def builtins() -> dict[str, dict[str, type]]:
             MomentumLongShortStrategy,
             CrossAssetMomentumStrategy,
             CryptoRegimeTrendStrategy,
+            EthMeanReversion24h,
+            HmmRegimeAllocation,
             MLPredictionStrategy,
             PortfolioOptimizerStrategy,
             StaticWeightsStrategy,

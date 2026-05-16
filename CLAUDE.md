@@ -24,7 +24,7 @@ QuantBox is a **composing framework** — owned and opinionated, but composing e
 | 4 | [`docs/architecture/adapters.md`](docs/architecture/adapters.md) | Wrap-don't-rebuild rule. |
 | 5 | [`docs/architecture/skills.md`](docs/architecture/skills.md) | LLM-facing API, frontmatter contract, capability-gap branch. |
 | 6 | [`docs/architecture/lifecycle.md`](docs/architecture/lifecycle.md) | `meta.status` state machine, reproducibility, promotion. |
-| 7 | [`docs/architecture/templates.md`](docs/architecture/templates.md) | `quantbox new`, the four templates. |
+| 7 | [`templates/README.md`](templates/README.md) | Copy-paste scaffolds for methodology, dataset, runbook, and decision-record docs. Used by `quantbox new` and consumed by `/promote-lock`. |
 
 For step-by-step modifications, see [`docs/playbooks/`](docs/playbooks/). For historical decisions, see [`docs/decisions/`](docs/decisions/).
 
@@ -171,7 +171,7 @@ Quantbox uses custom exceptions (see `quantbox.exceptions`):
 - Prefer additive changes and new plugin versions over breaking changes
 - Don't rename existing entry-point IDs
 - Add tests for new plugins or core behavior
-- See `CONTRIBUTING_LLM.md` for LLM-specific guidelines
+- See [`docs/architecture/principles.md`](docs/architecture/principles.md) for LLM-specific guidelines + anti-patterns
 
 **For any architectural change, the rules in [`docs/architecture/principles.md`](docs/architecture/principles.md) take precedence over this file.** Anti-patterns to refuse, decision rules for new features, and the layer-choice doctrine all live there.
 
