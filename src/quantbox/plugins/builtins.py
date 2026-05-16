@@ -87,6 +87,7 @@ def builtins() -> dict[str, dict[str, type]]:
             DrawdownControlRiskManager,
         ),
         "strategy": _map(
+            AltcoinCrashBounceStrategy,
             BeGlobalStrategy,
             CarryStrategy,
             CryptoTrendStrategy,
@@ -94,6 +95,8 @@ def builtins() -> dict[str, dict[str, type]]:
             MomentumLongShortStrategy,
             CrossAssetMomentumStrategy,
             CryptoRegimeTrendStrategy,
+            EthMeanReversion24h,
+            HmmRegimeAllocation,
             MLPredictionStrategy,
             PortfolioOptimizerStrategy,
             StaticWeightsStrategy,
