@@ -23,6 +23,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+
 from quantbox.contracts import PluginMeta
 
 # Canonical non-tradeable-crypto exclusion list — sourced from quantbox-datasets'

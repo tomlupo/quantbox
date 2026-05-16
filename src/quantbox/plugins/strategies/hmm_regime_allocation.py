@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+
 from quantbox.contracts import PluginMeta
 
 
