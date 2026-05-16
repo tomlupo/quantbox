@@ -24,7 +24,7 @@ QuantBox is a **composing framework** — owned and opinionated, but composing e
 | 4 | [`docs/architecture/adapters.md`](docs/architecture/adapters.md) | Wrap-don't-rebuild rule. |
 | 5 | [`docs/architecture/skills.md`](docs/architecture/skills.md) | LLM-facing API, frontmatter contract, capability-gap branch. |
 | 6 | [`docs/architecture/lifecycle.md`](docs/architecture/lifecycle.md) | `meta.status` state machine, reproducibility, promotion. |
-| 7 | [`docs/architecture/plugin-authoring.md`](docs/architecture/plugin-authoring.md) | Plugin contract: `meta`, entry-points, builtins map. Also covers strategy promotion from research labs (`quantbox-lab/research/<name>/strategy.py` → `quantbox/plugins/strategies/`). |
+| 7 | [`templates/README.md`](templates/README.md) | Copy-paste scaffolds for methodology, dataset, runbook, and decision-record docs. Used by `quantbox new` and consumed by `/promote-lock`. |
 
 For step-by-step modifications, see [`docs/playbooks/`](docs/playbooks/). For historical decisions, see [`docs/decisions/`](docs/decisions/).
 
