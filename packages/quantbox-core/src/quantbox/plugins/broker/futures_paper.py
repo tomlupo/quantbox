@@ -160,8 +160,8 @@ class FuturesPaperBroker:
             qty = float(o["qty"])
             mid_price = self.prices.get(sym, float(o.get("price", 0.0) or 0.0))
 
-            if mid_price <= 0:
-                logger.warning("No price for %s, skipping order", sym)
+            if not (mid_price > 0):
+                logger.warning("Invalid price (%r) for %s, skipping order", mid_price, sym)
                 continue
 
             # Slippage model: spread + slippage + volume-dependent impact
