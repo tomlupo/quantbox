@@ -229,7 +229,7 @@ def compute_volatility_scalers(
         Dict mapping vol_target_str to scaler DataFrame
     """
     # Compute annualized volatility
-    returns = prices.pct_change()
+    returns = prices.ffill().pct_change(fill_method=None)
     realized_vol = returns.rolling(vol_lookback).std() * np.sqrt(annualization_factor)
 
     scalers = {}
@@ -273,7 +273,7 @@ def compute_inv_vol_track(
         DataFrame with MultiIndex columns ``(vol_target, tranches, ticker)`` where
         ``vol_target`` is always the literal string ``"inv_vol"``.
     """
-    returns = prices.pct_change()
+    returns = prices.ffill().pct_change(fill_method=None)
     realized_vol = returns.rolling(vol_lookback).std() * np.sqrt(annualization_factor)
     inv_vol = 1.0 / realized_vol.replace(0, np.nan)
 
@@ -611,7 +611,7 @@ class CryptoTrendStrategy:
         weights = weights.reindex(columns=prices.columns, fill_value=0)
 
         # Asset returns
-        returns = prices.pct_change()
+        returns = prices.ffill().pct_change(fill_method=None)
 
         # Strategy returns (weighted average)
         strategy_returns = (returns * weights.shift(1)).sum(axis=1)

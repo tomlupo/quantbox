@@ -81,7 +81,7 @@ def compute_momentum_signal(
     momentum_signals = []
     for window in windows:
         # Total return over window
-        ret = prices.pct_change(periods=window)
+        ret = prices.ffill().pct_change(periods=window, fill_method=None)
         momentum_signals.append(ret)
 
     # Weighted average of momentum signals
@@ -412,7 +412,7 @@ class MomentumLongShortStrategy:
         signals = zscore_cross_sectional(momentum)
 
         # 3. Compute volatility for weighting
-        returns = prices.pct_change()
+        returns = prices.ffill().pct_change(fill_method=None)
         volatility = returns.rolling(self.vol_lookback).std() * np.sqrt(365)
 
         # 4. Construct long-short weights

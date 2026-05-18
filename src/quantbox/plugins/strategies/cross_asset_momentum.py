@@ -69,7 +69,7 @@ def compute_multi_window_momentum(
     """
     zscored_list = []
     for w in windows:
-        ret = prices.pct_change(periods=w)
+        ret = prices.ffill().pct_change(periods=w, fill_method=None)
         # Cross-sectional z-score per window
         mean = ret.mean(axis=1)
         std = ret.std(axis=1).replace(0, np.nan)
@@ -134,7 +134,7 @@ def compute_ewma_volatility(
     Returns:
         Annualized EWMA volatility DataFrame
     """
-    returns = prices.pct_change()
+    returns = prices.ffill().pct_change(fill_method=None)
     sq_returns = returns**2
 
     # EWMA of squared returns

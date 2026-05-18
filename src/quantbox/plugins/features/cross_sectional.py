@@ -56,7 +56,7 @@ class CrossSectionalFeatures:
         features = pd.DataFrame(index=prices.index)
 
         for horizon in horizons:
-            returns = prices.pct_change(horizon)
+            returns = prices.ffill().pct_change(horizon, fill_method=None)
 
             if "zscore" in methods:
                 cross_mean = returns.mean(axis=1)

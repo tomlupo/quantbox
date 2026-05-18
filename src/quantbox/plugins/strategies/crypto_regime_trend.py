@@ -237,7 +237,7 @@ def compute_atr_weights(
     Returns:
         DataFrame of inverse-ATR weights, normalized per row to sum to 1
     """
-    abs_returns = prices.pct_change().abs()
+    abs_returns = prices.ffill().pct_change(fill_method=None).abs()
     atr = abs_returns.rolling(window=atr_window, min_periods=atr_window).mean()
     inv_atr = 1.0 / atr.replace(0, np.nan)
     # Normalize per row

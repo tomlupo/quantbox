@@ -207,7 +207,7 @@ class PortfolioOptimizerStrategy:
 
         # Statistics and risk from the latest window
         tail = prices.iloc[-self.lookback :]
-        returns = tail.pct_change().dropna()
+        returns = tail.ffill().pct_change(fill_method=None).dropna()
         analyzer = _PortfolioAnalyzer(returns, self.risk_free_rate, self.trading_days)
         w_arr = latest.values
         var_val = analyzer.var(w_arr)
@@ -241,7 +241,7 @@ class PortfolioOptimizerStrategy:
     def _single_weights(self, prices: pd.DataFrame) -> pd.DataFrame:
         """Compute weights once for the latest lookback window."""
         tail = prices.iloc[-self.lookback :]
-        returns = tail.pct_change().dropna()
+        returns = tail.ffill().pct_change(fill_method=None).dropna()
         analyzer = _PortfolioAnalyzer(returns, self.risk_free_rate, self.trading_days)
         w = self._optimize(analyzer)
         return pd.DataFrame([w], columns=prices.columns, index=[prices.index[-1]])
@@ -261,7 +261,7 @@ class PortfolioOptimizerStrategy:
             steps_since_rebalance += 1
             if steps_since_rebalance >= self.rebalance_every or last_weights is None:
                 window = prices.iloc[i - self.lookback : i]
-                returns = window.pct_change().dropna()
+                returns = window.ffill().pct_change(fill_method=None).dropna()
                 if len(returns) < 2:
                     last_weights = np.full(len(prices.columns), 1.0 / len(prices.columns))
                 else:
