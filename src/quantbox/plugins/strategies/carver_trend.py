@@ -325,6 +325,7 @@ def generate_carver_forecast(
 def calculate_instrument_risk(
     prices: pd.DataFrame,
     vol_lookback: int = 36,
+    annualize: float = 252.0,
 ) -> pd.DataFrame:
     """
     Calculate instrument risk (annualized volatility).
@@ -332,12 +333,15 @@ def calculate_instrument_risk(
     Args:
         prices: Price DataFrame
         vol_lookback: EMA span for volatility
+        annualize: Bars per year for vol annualization. Default 252 (equity
+            convention). Strategy callers should derive this from the
+            pipeline-injected ``_pipeline_annualize`` per issue #20 / #23.
 
     Returns:
         Volatility DataFrame (annualized)
     """
     returns = prices.ffill().pct_change(fill_method=None)
-    vol = returns.ewm(span=vol_lookback, min_periods=10).std() * np.sqrt(365)
+    vol = returns.ewm(span=vol_lookback, min_periods=10).std() * np.sqrt(annualize)
     return vol
 
 
@@ -501,6 +505,7 @@ class CarverTrendStrategy:
     target_vol: float = 0.25
     vol_lookback: int = 36
     idm: float | None = None  # Auto-calculate if None
+    annualize: float | None = None  # None = pipeline-injected via _pipeline_annualize; falls back to 252.0
 
     # Risk limits
     max_position: float = 1.0
@@ -560,6 +565,20 @@ class CarverTrendStrategy:
             for key, value in params.items():
                 if hasattr(self, key):
                     setattr(self, key, value)
+
+        # Resolve annualize: explicit (self/params) wins, else pipeline-injected, else 252.0.
+        pipeline_annualize = (params or {}).get("_pipeline_annualize")
+        if self.annualize is None:
+            effective_annualize = float(pipeline_annualize) if pipeline_annualize is not None else 252.0
+        else:
+            effective_annualize = float(self.annualize)
+            if pipeline_annualize is not None and abs(effective_annualize - pipeline_annualize) > 1:
+                logger.warning(
+                    "CarverTrendStrategy.annualize=%s overrides pipeline-derived %.1f. "
+                    "If intentional, ignore; otherwise drop the explicit value.",
+                    effective_annualize,
+                    pipeline_annualize,
+                )
 
         prices = data["prices"]
 
@@ -623,7 +642,7 @@ class CarverTrendStrategy:
         forecasts_df = pd.DataFrame(forecasts)
 
         # 2. Calculate instrument volatilities
-        volatilities = calculate_instrument_risk(prices, self.vol_lookback)
+        volatilities = calculate_instrument_risk(prices, self.vol_lookback, effective_annualize)
 
         # 3. Calculate position sizes
         positions = calculate_position_sizes(

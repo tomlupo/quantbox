@@ -123,6 +123,52 @@ class Frequency:
 # ---------------------------------------------------------------------------
 
 
+def parse_rebalance_offset(spec: str | pd.DateOffset) -> pd.DateOffset:
+    """Strict parser for rebalance-frequency strings (e.g. ``"1D"``, ``"1W"``, ``"1M"``).
+
+    Two reasons this exists separately from `Frequency.parse`:
+
+    1. The historical `get_rebalancing_dates` parser in vectorbt_engine treats
+       lowercase ``"1m"`` as MONTHS, while ccxt and pandas's own
+       ``to_offset("1m")`` both treat it as MINUTES. This silent disagreement is
+       the single most dangerous footgun in the codebase. This parser **rejects
+       ``"1m"`` (lowercase) explicitly** with a clear error pointing at the two
+       unambiguous spellings (``"1M"`` for months, ``"1min"`` for minutes).
+    2. Rebalance specs are conceptually different from data bar size — they're
+       always pandas DateOffsets, never Timedeltas in disguise (you can't have
+       a 30-day rebalance "month" if your goal is to rebalance on calendar
+       month-ends with day-of-month variation).
+
+    Accepts:
+      - ``pd.DateOffset`` → returned unchanged
+      - str → routed through ``pd.tseries.frequencies.to_offset()``
+
+    Raises:
+      - ``ValueError`` on ambiguous ``"1m"`` / ``"5m"`` etc with a clear suggestion
+      - ``ValueError`` on unparseable strings (propagated from pandas)
+
+    For int / list / None forms of `rebalancing_freq`, callers should handle
+    those directly — this parser is only for the string→offset path.
+    """
+    if isinstance(spec, pd.DateOffset):
+        return spec
+    if not isinstance(spec, str) or not spec:
+        raise TypeError(f"parse_rebalance_offset: expected str|DateOffset, got {type(spec).__name__}")
+
+    # The "1m" ambiguity: pandas means minutes, the historical quantbox
+    # vectorbt_engine parser means months. Reject both lowercase 'm' suffixes
+    # to force the caller to disambiguate.
+    if spec.endswith("m") and not spec.endswith(("min", "ms")):
+        raise ValueError(
+            f"parse_rebalance_offset: {spec!r} is ambiguous — "
+            f"lowercase 'm' historically meant MONTHS in this codebase but pandas "
+            f"interprets it as MINUTES. Use {spec[:-1] + 'M'!r} for months or "
+            f"{spec[:-1] + 'min'!r} for minutes to disambiguate."
+        )
+
+    return pd.tseries.frequencies.to_offset(spec)
+
+
 def _parse_bar_size(s: str | pd.Timedelta) -> pd.Timedelta:
     """Accept ccxt format (``'1d'``, ``'4h'``, ``'5m'``, ``'1M'``) and pandas-offset
     style. ``'1M'`` is treated as one calendar month (~30 days); for precise

@@ -49,6 +49,8 @@ from vectorbt.portfolio.nb import (
     sort_call_seq_nb,
 )
 
+from quantbox.frequency import parse_rebalance_offset  # noqa: E402
+
 logger = logging.getLogger(__name__)
 
 
@@ -84,7 +86,7 @@ def create_labels(index: pd.MultiIndex, drop_levels: int = -1) -> pd.Index:
 
 def get_rebalancing_dates(
     dates: pd.DatetimeIndex,
-    rebalancing_freq: int | str | list | None,
+    rebalancing_freq: int | str | list | pd.DateOffset | None,
 ) -> pd.DatetimeIndex:
     """Compute rebalancing dates from a frequency spec.
 
@@ -92,10 +94,16 @@ def get_rebalancing_dates(
     ----------
     dates : pd.DatetimeIndex
         Full date range of the backtest.
-    rebalancing_freq : None | int | str | list
+    rebalancing_freq : None | int | str | list | pd.DateOffset
         ``None`` → buy-and-hold (first date only).
         ``int`` → every *n*-th date.
-        ``str`` → pandas offset string (``"1D"``, ``"1W"``, ``"1M"``, ``"1Y"``).
+        ``str`` → pandas offset string (``"1D"``, ``"1W"``, ``"1M"``, ``"1Y"``,
+            ``"1min"``, ``"30min"``). Routed through
+            :func:`quantbox.frequency.parse_rebalance_offset` for strict
+            validation — lowercase ``"1m"`` is rejected as ambiguous
+            (was MONTHS in the legacy parser, MINUTES per pandas/ccxt).
+            Use ``"1M"`` for months or ``"1min"`` for minutes explicitly.
+        ``pd.DateOffset`` → used directly.
         ``list`` → explicit dates.
 
     Returns
@@ -110,19 +118,17 @@ def get_rebalancing_dates(
     if isinstance(rebalancing_freq, int):
         return dates[::rebalancing_freq]
 
-    if isinstance(rebalancing_freq, str):
-        if rebalancing_freq[-1].isalpha():
-            unit = rebalancing_freq[-1].lower()
-            value = int(rebalancing_freq[:-1]) if rebalancing_freq[:-1].isdigit() else 1
-            unit_mapping = {"d": "days", "w": "weeks", "m": "months", "y": "years"}
-            offset = pd.DateOffset(**{unit_mapping[unit]: value})
-            return pd.date_range(start=dates[0], end=dates[-1], freq=offset)
-        raise ValueError("Invalid rebalancing frequency format.")
+    if isinstance(rebalancing_freq, (str, pd.DateOffset)):
+        offset = parse_rebalance_offset(rebalancing_freq)
+        return pd.date_range(start=dates[0], end=dates[-1], freq=offset)
 
     if isinstance(rebalancing_freq, list):
         return pd.DatetimeIndex(rebalancing_freq)
 
-    raise ValueError("Invalid rebalancing frequency type.")
+    raise ValueError(
+        f"get_rebalancing_dates: unsupported rebalancing_freq type "
+        f"{type(rebalancing_freq).__name__!r}; expected int|str|list|DateOffset|None"
+    )
 
 
 def validate_prices(prices: pd.DataFrame, weights: pd.DataFrame) -> bool:

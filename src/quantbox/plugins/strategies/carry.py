@@ -163,6 +163,7 @@ class CarryStrategy:
     # Vol targeting
     target_vol: float = 0.20
     vol_lookback: int = 20
+    annualize: float | None = None  # None = pipeline-injected via _pipeline_annualize; falls back to 252.0
 
     # Output
     output_periods: int = 365
@@ -215,15 +216,21 @@ class CarryStrategy:
         self,
         weights: pd.DataFrame,
         prices: pd.DataFrame,
+        annualize: float = 252.0,
     ) -> pd.DataFrame:
         """Scale weights so realized portfolio vol ≈ target_vol.
 
         Uses lagged weights (shift(1)) to keep the estimator causal.
         Fills the warm-up window with scale=1 (no scaling before enough data).
+
+        Args:
+            annualize: Bars per year for vol annualization. Default 252 (equity).
+                Strategy callers should derive this from pipeline-injected
+                ``_pipeline_annualize`` per issue #20 / #23.
         """
         returns = prices.ffill().pct_change(fill_method=None)
         port_rets = (weights.shift(1) * returns).sum(axis=1)
-        realized_vol = port_rets.ewm(span=self.vol_lookback, min_periods=5).std() * np.sqrt(365)
+        realized_vol = port_rets.ewm(span=self.vol_lookback, min_periods=5).std() * np.sqrt(annualize)
         scale = (self.target_vol / realized_vol.replace(0.0, np.nan)).clip(0.1, 3.0).fillna(1.0)
         scaled = weights.mul(scale.reindex(weights.index).fillna(1.0), axis=0)
         # Re-apply concentration cap: vol-targeting can push individual weights above max_concentration
@@ -255,6 +262,20 @@ class CarryStrategy:
                 if hasattr(self, k):
                     setattr(self, k, v)
 
+        # Resolve annualize: explicit (self/params) wins, else pipeline-injected, else 252.0.
+        pipeline_annualize = (params or {}).get("_pipeline_annualize")
+        if self.annualize is None:
+            effective_annualize = float(pipeline_annualize) if pipeline_annualize is not None else 252.0
+        else:
+            effective_annualize = float(self.annualize)
+            if pipeline_annualize is not None and abs(effective_annualize - pipeline_annualize) > 1:
+                logger.warning(
+                    "CarryStrategy.annualize=%s overrides pipeline-derived %.1f. "
+                    "If intentional, ignore; otherwise drop the explicit value.",
+                    effective_annualize,
+                    pipeline_annualize,
+                )
+
         prices: pd.DataFrame = data["prices"]
         funding_raw: pd.DataFrame = data.get("funding_rates", pd.DataFrame())
 
@@ -270,7 +291,7 @@ class CarryStrategy:
 
         annualized = self._annualized_signal(funding)
         weights = self._build_equal_weights(annualized)
-        weights = self._apply_vol_target(weights, prices)
+        weights = self._apply_vol_target(weights, prices, effective_annualize)
 
         out = weights.tail(self.output_periods)
         latest = out.iloc[-1].dropna()

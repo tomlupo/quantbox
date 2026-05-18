@@ -25,6 +25,7 @@ or asset class names (us_stocks, us_treasury_long, etc.).
 
 from __future__ import annotations
 
+import logging
 from collections import namedtuple
 from dataclasses import dataclass, field
 from typing import Any
@@ -33,6 +34,8 @@ import numpy as np
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -252,16 +255,25 @@ def _volatility_scalar(
     returns: pd.Series,
     target_vol: float,
     lookback: int,
+    annualize: float = 252.0,
 ) -> float:
     """Compute volatility targeting scalar.
 
     Returns >1 in low-vol regimes, <1 in high-vol regimes, 1.0 otherwise.
     Caps upward scaling at 1.2x to avoid excessive leverage.
+
+    Args:
+        returns: Realized return series.
+        target_vol: Target annualized volatility.
+        lookback: Number of bars for vol estimation.
+        annualize: Bars per year for vol annualization. Default 252 (equity
+            convention). Strategy callers should derive this from the
+            pipeline-injected ``_pipeline_annualize`` per issue #20 / #23.
     """
     if len(returns) < lookback:
         return 1.0
 
-    realized_vol = returns.tail(lookback).std() * np.sqrt(252)
+    realized_vol = returns.tail(lookback).std() * np.sqrt(annualize)
     if realized_vol <= 0 or np.isnan(realized_vol):
         return 1.0
 
@@ -329,6 +341,7 @@ class BeGlobalStrategy:
     # Volatility targeting
     target_volatility: float = 0.10
     vol_lookback: int = 20
+    annualize: float | None = None  # None = pipeline-injected via _pipeline_annualize; falls back to 252.0
 
     # Corridor rebalancing
     rebalance_threshold: float = 0.025
@@ -354,6 +367,20 @@ class BeGlobalStrategy:
             for key, value in params.items():
                 if hasattr(self, key):
                     setattr(self, key, value)
+
+        # Resolve annualize: explicit (self/params) wins, else pipeline-injected, else 252.0.
+        pipeline_annualize = (params or {}).get("_pipeline_annualize")
+        if self.annualize is None:
+            effective_annualize = float(pipeline_annualize) if pipeline_annualize is not None else 252.0
+        else:
+            effective_annualize = float(self.annualize)
+            if pipeline_annualize is not None and abs(effective_annualize - pipeline_annualize) > 1:
+                logger.warning(
+                    "BeGlobalStrategy.annualize=%s overrides pipeline-derived %.1f. "
+                    "If intentional, ignore; otherwise drop the explicit value.",
+                    effective_annualize,
+                    pipeline_annualize,
+                )
 
         prices: pd.DataFrame = data["prices"]
 
@@ -461,6 +488,7 @@ class BeGlobalStrategy:
                     port_ret_to_date,
                     self.target_volatility,
                     self.vol_lookback,
+                    effective_annualize,
                 )
                 if scalar != 1.0:
                     for asset in combined:

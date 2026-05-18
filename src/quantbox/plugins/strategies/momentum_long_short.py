@@ -239,6 +239,7 @@ def apply_volatility_targeting(
     target_vol: float = 0.15,
     vol_lookback: int = 20,
     max_leverage: float = 2.0,
+    annualize: float = 252.0,
 ) -> pd.DataFrame:
     """
     Scale positions to target portfolio volatility.
@@ -249,13 +250,16 @@ def apply_volatility_targeting(
         target_vol: Target annualized volatility
         vol_lookback: Lookback for vol estimation
         max_leverage: Maximum leverage multiplier
+        annualize: Bars per year for vol annualization. Default 252 (equity
+            convention). Strategy callers should derive this from the
+            pipeline-injected ``_pipeline_annualize`` per issue #20 / #23.
 
     Returns:
         Vol-targeted weights
     """
     # Estimate portfolio volatility
     port_returns = (weights.shift(1) * returns).sum(axis=1)
-    realized_vol = port_returns.rolling(vol_lookback).std() * np.sqrt(365)
+    realized_vol = port_returns.rolling(vol_lookback).std() * np.sqrt(annualize)
 
     # Scale factor
     scale = target_vol / realized_vol.replace(0, np.nan)
@@ -345,6 +349,9 @@ class MomentumLongShortStrategy:
     # Rebalancing
     rebalance_frequency: str = "W"  # 'D', 'W', 'M'
 
+    # Annualization — None = pipeline-injected via _pipeline_annualize; falls back to 252.0
+    annualize: float | None = None
+
     # Output
     output_periods: int = 30
     exclude_tickers: list[str] = field(default_factory=lambda: DEFAULT_STABLECOINS.copy())
@@ -393,6 +400,20 @@ class MomentumLongShortStrategy:
                 if hasattr(self, key):
                     setattr(self, key, value)
 
+        # Resolve annualize: explicit (self/params) wins, else pipeline-injected, else 252.0.
+        pipeline_annualize = (params or {}).get("_pipeline_annualize")
+        if self.annualize is None:
+            effective_annualize = float(pipeline_annualize) if pipeline_annualize is not None else 252.0
+        else:
+            effective_annualize = float(self.annualize)
+            if pipeline_annualize is not None and abs(effective_annualize - pipeline_annualize) > 1:
+                logger.warning(
+                    "MomentumLongShortStrategy.annualize=%s overrides pipeline-derived %.1f. "
+                    "If intentional, ignore; otherwise drop the explicit value.",
+                    effective_annualize,
+                    pipeline_annualize,
+                )
+
         prices = data["prices"]
 
         # Filter out excluded tickers
@@ -413,7 +434,7 @@ class MomentumLongShortStrategy:
 
         # 3. Compute volatility for weighting
         returns = prices.ffill().pct_change(fill_method=None)
-        volatility = returns.rolling(self.vol_lookback).std() * np.sqrt(365)
+        volatility = returns.rolling(self.vol_lookback).std() * np.sqrt(effective_annualize)
 
         # 4. Construct long-short weights
         weights = construct_long_short_weights(
@@ -442,6 +463,7 @@ class MomentumLongShortStrategy:
                 target_vol=self.target_vol,
                 vol_lookback=self.vol_lookback,
                 max_leverage=self.max_leverage,
+                annualize=effective_annualize,
             )
 
         # 7. Apply rebalancing
