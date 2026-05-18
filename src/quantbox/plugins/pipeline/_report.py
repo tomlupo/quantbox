@@ -312,6 +312,25 @@ def _build_variant_framework_charts(
             ps = _build_position_stack_chart(weights_history)
             if ps is not None:
                 out["position_stack"] = ps
+
+    # Generic blocks — auto-render from variant inputs without strategy opt-in.
+    # See plugins/pipeline/blocks.py for the registry. Each block declares which
+    # ctx fields it requires; we skip silently if the field is missing.
+    ctx = {
+        "returns": returns,
+        "portfolio_daily": portfolio_daily,
+        "weights_history": weights_history,
+        "bt_prices": bt_prices,
+    }
+    for name, block in _GENERIC_BLOCKS.items():
+        if any(ctx.get(k) is None or (hasattr(ctx.get(k), "empty") and ctx.get(k).empty) for k in block.requires):
+            continue
+        try:
+            fig = block.builder(None, **ctx)
+        except Exception:
+            continue
+        if fig is not None:
+            out[name] = fig
     return out
 
 
@@ -1244,13 +1263,19 @@ def _build_vol_overview_chart(
 # Registry of diagnostic-chart builders. Strategies opt in by emitting
 # details["diagnostics"][type] = payload from their run() method. Add new types
 # here and any strategy can use them by emitting the matching payload shape.
-_DIAGNOSTIC_BUILDERS = {
-    "regime_overlay": _build_regime_overlay_chart,
-    "signal_count": _build_signal_count_chart,
-    "donchian_overlay": _build_donchian_overlay_chart,
-    "per_window_signal": _build_per_window_heatmap,
-    "vol_overview": _build_vol_overview_chart,
-}
+# Legacy alias. The single source of truth is now ``blocks.BLOCKS`` (see
+# blocks.py). Existing callers that import ``_DIAGNOSTIC_BUILDERS`` from this
+# module keep working — the dict is rebuilt from the registry at import time.
+# Strategy/lab code should register new diagnostic blocks via
+# ``blocks.register_block`` and consume them via ``blocks.BLOCKS``.
+from quantbox.plugins.pipeline.blocks import BLOCKS as _BLOCKS  # noqa: E402
+
+_DIAGNOSTIC_BUILDERS = {name: b.builder for name, b in _BLOCKS.items() if b.section == "diagnostics"}
+
+# Generic blocks (section="framework") auto-render from pipeline outputs even
+# without strategy opt-in. The dispatch in generate_report_data fires them
+# unconditionally when their required ctx fields are populated.
+_GENERIC_BLOCKS = {name: b for name, b in _BLOCKS.items() if b.section == "framework"}
 
 
 def resolve_narrative(narrative_cfg: dict[str, Any] | None) -> dict[str, str]:
@@ -1397,6 +1422,28 @@ def generate_report_data(
             ps = _build_position_stack_chart(weights_history)
             if ps is not None:
                 charts["position_stack"] = ps
+
+        # Generic blocks (registry-driven, auto-on with required inputs).
+        # Same dispatch as the multi-variant path in _build_variant_framework_charts.
+        single_ctx = {
+            "returns": returns,
+            "portfolio_daily": portfolio_daily,
+            "weights_history": weights_history,
+            "bt_prices": bt_prices,
+        }
+        for name, block in _GENERIC_BLOCKS.items():
+            missing = any(
+                single_ctx.get(k) is None or (hasattr(single_ctx.get(k), "empty") and single_ctx.get(k).empty)
+                for k in block.requires
+            )
+            if missing:
+                continue
+            try:
+                fig = block.builder(None, **single_ctx)
+            except Exception:
+                continue
+            if fig is not None:
+                charts[name] = fig
 
     # Framework-level: universe coverage (cross-variant, always rendered)
     with contextlib.suppress(Exception):

@@ -674,8 +674,20 @@
         <div class="block-title"><span class="ord">x.</span>Portfolio weight heatmap — top 20 tickers (weekly avg)</div>
         <div class="chart-wrap"><div id="chart-weights"></div></div>
       </div>
+      <div class="block empty" id="return_distribution-card">
+        <div class="block-title"><span class="ord">xi.</span>Daily return distribution</div>
+        <div class="chart-wrap"><div id="chart-return_distribution"></div></div>
+      </div>
+      <div class="block empty" id="rolling_metrics-card">
+        <div class="block-title"><span class="ord">xii.</span>Rolling Sharpe &amp; volatility</div>
+        <div class="chart-wrap"><div id="chart-rolling_metrics"></div></div>
+      </div>
+      <div class="block empty" id="turnover_timeline-card">
+        <div class="block-title"><span class="ord">xiii.</span>Turnover timeline</div>
+        <div class="chart-wrap"><div id="chart-turnover_timeline"></div></div>
+      </div>
       <div class="block empty" id="trades-card">
-        <div class="block-title"><span class="ord">xi.</span>Trade log</div>
+        <div class="block-title"><span class="ord">xiv.</span>Trade log</div>
         <div class="chart-wrap"><div id="chart-trades"></div></div>
       </div>
     </div>
@@ -1149,6 +1161,11 @@
       makeBlock(r2, 'iii.',   'Monthly returns (%)',                          vname + '__monthly');
       makeBlock(r2, 'iv.',    'Per-ticker contribution',                      vname + '__contrib');
       makeBlock(sect, 'v.',   'Portfolio weight heatmap — top 20 (weekly)',   vname + '__weights');
+      // Generic blocks (registry-driven, derived from variant data).
+      const r3 = makeTwoCol(sect);
+      makeBlock(r3, 'vi.',    'Daily return distribution',                    vname + '__return_distribution');
+      makeBlock(r3, 'vii.',   'Rolling Sharpe &amp; volatility',              vname + '__rolling_metrics');
+      makeBlock(sect, 'viii.', 'Turnover timeline',                           vname + '__turnover_timeline');
 
       host.appendChild(sect);
 
