@@ -329,6 +329,17 @@ class CryptoRegimeTrendStrategy:
     # Output
     output_periods: int = 30
     normalize_weights: bool = True
+    # When the strategy produces a vol_target × tranches × ticker panel, the
+    # pipeline (`_run_strategy_plugins`) collapses MultiIndex columns via
+    # `groupby('ticker').sum()`, which stacks every track and inflates the
+    # net exposure proportional to the number of tracks. To avoid that, the
+    # strategy returns ONLY the slice keyed by ``output_track`` in ``weights``,
+    # and stashes the full panel under ``details['weights_panel']`` for
+    # research consumers. Default ``(None, None)`` falls back to the first
+    # (vol_target, tranches) cell. Set explicitly (e.g. ``("50", 5)``) when
+    # using non-default vol_targets/tranches so the production slice is
+    # deterministic across runs.
+    output_track: tuple[Any, Any] | None = None
 
     # Param aliases for quantlab compat
     _PARAM_ALIASES: dict[str, str] = field(
@@ -506,14 +517,61 @@ class CryptoRegimeTrendStrategy:
         else:
             output_weights = combined.tail(self.output_periods)
 
-        # 8. Simple weights for latest day
+        # 8. Pick the slice returned to the pipeline.
+        #
+        # When the strategy produces a vol_target × tranches × ticker panel,
+        # the pipeline's `_run_strategy_plugins` collapses MultiIndex columns
+        # via `groupby('ticker').sum()`, which silently stacks every track
+        # and inflates net exposure proportional to the number of tracks.
+        # With a single track (the default live config), the sum equals the
+        # single value, so the bug doesn't fire — but as soon as the caller
+        # configures >1 vol_target or >1 tranche, exposure blows up.
+        #
+        # The opt-in fix: set `output_track=("50", 5)` (or any valid pair) and
+        # the strategy returns ONLY that slice in `weights`, with the full
+        # panel preserved under `details['weights_panel']`. Leaving
+        # `output_track=None` preserves legacy behaviour (MultiIndex weights).
+        panel = output_weights
+        simple_df = output_weights
+        track_resolved: tuple[str, int] | None = None
         if isinstance(output_weights.columns, pd.MultiIndex):
-            # Pick first vol target / first tranche
-            vt0 = output_weights.columns.get_level_values("vol_target")[0]
-            t0 = output_weights.columns.get_level_values("tranches")[0]
-            simple_df = output_weights.xs((vt0, t0), axis=1, level=("vol_target", "tranches"))
-        else:
-            simple_df = output_weights
+            if self.output_track is not None:
+                vt0, t0 = self.output_track
+                vt0 = str(vt0)
+                t0 = int(t0)
+                simple_df = output_weights.xs((vt0, t0), axis=1, level=("vol_target", "tranches"))
+                track_resolved = (vt0, t0)
+            else:
+                # Legacy: return the MultiIndex panel; only `simple_weights`
+                # picks a single track for the latest-day dict.
+                vt0 = output_weights.columns.get_level_values("vol_target")[0]
+                t0 = output_weights.columns.get_level_values("tranches")[0]
+                simple_df_for_latest = output_weights.xs((vt0, t0), axis=1, level=("vol_target", "tranches"))
+                simple_df = output_weights  # weights stays as panel for back-compat
+                # Use the xs slice only for the simple_weights / exposure dict below.
+                latest = simple_df_for_latest.iloc[-1].dropna()
+                simple = latest[abs(latest) > 0.001].to_dict()
+                long_exposure = float(latest[latest > 0].sum())
+                short_exposure = float(abs(latest[latest < 0].sum()))
+                return {
+                    "weights": simple_df,
+                    "simple_weights": simple,
+                    "details": {
+                        "long_signal": long_sig,
+                        "short_signal": short_sig,
+                        "long_universe": long_univ,
+                        "short_universe": short_univ,
+                        "combined": combined,
+                        "weights_panel": panel,
+                        "output_track": None,
+                    },
+                    "exposure": {
+                        "long": long_exposure,
+                        "short": short_exposure,
+                        "net": long_exposure - short_exposure,
+                        "gross": long_exposure + short_exposure,
+                    },
+                }
 
         latest = simple_df.iloc[-1].dropna()
         simple = latest[abs(latest) > 0.001].to_dict()
@@ -523,7 +581,7 @@ class CryptoRegimeTrendStrategy:
         short_exposure = float(abs(latest[latest < 0].sum()))
 
         return {
-            "weights": output_weights,
+            "weights": simple_df,
             "simple_weights": simple,
             "details": {
                 "long_signal": long_sig,
@@ -531,6 +589,8 @@ class CryptoRegimeTrendStrategy:
                 "long_universe": long_univ,
                 "short_universe": short_univ,
                 "combined": combined,
+                "weights_panel": panel,
+                "output_track": track_resolved,
             },
             "exposure": {
                 "long": long_exposure,

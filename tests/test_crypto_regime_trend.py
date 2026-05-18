@@ -293,3 +293,51 @@ class TestComputeInvVolTrackHelper:
         # After day 60 the two positions split inverse-vol proportionally
         active_rows = iv1.iloc[100:120]
         assert (active_rows.sum(axis=1) > 0).all()
+
+
+class TestOutputTrack:
+    """Tests for the ``output_track`` knob (opt-in fix for pipeline weight stacking)."""
+
+    def test_default_returns_multiindex_panel(self) -> None:
+        """Legacy behaviour: weights returned as MultiIndex when output_track is None."""
+        s = CryptoRegimeTrendStrategy(
+            use_ensemble=False,
+            long_max=2,
+            short_max=2,
+            coins_to_trade=8,
+            vol_targets=["off", 0.25],
+            tranches=[1, 5],
+            output_periods=10,
+            exclude_tickers=[],
+            volume_is_dollar=False,
+            output_track=None,
+        )
+        r = s.run(_make_market_data(n_days=200, n_assets=8))
+        # Weights still a MultiIndex panel — back-compat preserved.
+        assert isinstance(r["weights"].columns, pd.MultiIndex)
+        assert r["details"]["output_track"] is None
+        # Panel stashed under details for research consumers.
+        assert isinstance(r["details"]["weights_panel"].columns, pd.MultiIndex)
+
+    def test_output_track_returns_single_level_slice(self) -> None:
+        """When output_track is set, weights is the single slice; panel is in details."""
+        s = CryptoRegimeTrendStrategy(
+            use_ensemble=False,
+            long_max=2,
+            short_max=2,
+            coins_to_trade=8,
+            vol_targets=["off", 0.25],
+            tranches=[1, 5],
+            output_periods=10,
+            exclude_tickers=[],
+            volume_is_dollar=False,
+            output_track=("25", 5),
+        )
+        r = s.run(_make_market_data(n_days=200, n_assets=8))
+        # Weights now a single-level DataFrame (just ticker columns).
+        assert not isinstance(r["weights"].columns, pd.MultiIndex)
+        # The full multi-track panel is preserved.
+        panel = r["details"]["weights_panel"]
+        assert isinstance(panel.columns, pd.MultiIndex)
+        assert {"vol_target", "tranches", "ticker"}.issubset(set(panel.columns.names))
+        assert r["details"]["output_track"] == ("25", 5)
