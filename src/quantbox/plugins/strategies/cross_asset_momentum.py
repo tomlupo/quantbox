@@ -319,7 +319,7 @@ class CrossAssetMomentumStrategy:
     # Volatility parameters
     ewma_lambda: float = 0.94
     ewma_min_periods: int = 200
-    annualize: float = 252.0  # equity convention; pass 365 for crypto / 24-7
+    annualize: float | None = None  # None = pipeline-injected via _pipeline_annualize; falls back to 252.0
 
     # Trend filter
     trend_filter_window: int = 100
@@ -383,6 +383,22 @@ class CrossAssetMomentumStrategy:
                 if hasattr(self, attr):
                     setattr(self, attr, value)
 
+        # Resolve annualize: explicit (self/params) wins, else pipeline-injected,
+        # else 252.0 (equity default — see issue #20 for the Frequency-driven scheme).
+        pipeline_annualize = (params or {}).get("_pipeline_annualize")
+        if self.annualize is None:
+            effective_annualize = float(pipeline_annualize) if pipeline_annualize is not None else 252.0
+        else:
+            effective_annualize = float(self.annualize)
+            if pipeline_annualize is not None and abs(effective_annualize - pipeline_annualize) > 1:
+                logger.warning(
+                    "CrossAssetMomentumStrategy.annualize=%s overrides pipeline-derived %.1f. "
+                    "If intentional, ignore; otherwise drop the explicit value and let the pipeline "
+                    "derive it from frequency.",
+                    effective_annualize,
+                    pipeline_annualize,
+                )
+
         prices = data["prices"]
 
         # Filter excluded tickers
@@ -419,7 +435,7 @@ class CrossAssetMomentumStrategy:
             prices_filtered,
             self.ewma_lambda,
             self.ewma_min_periods,
-            self.annualize,
+            effective_annualize,
         )
 
         # 6. Volatility parity weights (active component)
