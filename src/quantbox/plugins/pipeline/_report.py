@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 _TEMPLATE_PATH = Path(__file__).parent / "templates" / "research_report.html"
@@ -178,11 +179,18 @@ def _build_portfolio_chart_manual(
         col=1,
     )
     fig.add_hline(y=0, line_dash="dash", line_color="rgba(0,0,0,0.25)", row=3, col=1)
+    # Log-y on the equity panel so both strategy and BTC B&H are visible
+    # regardless of relative scale (BTC can 20x while a vol-targeted strategy
+    # ~2x, making the strategy invisible on a linear scale).
+    fig.update_yaxes(type="log", title_text="Equity (log)", row=1, col=1)
+    fig.update_yaxes(title_text="Drawdown %", row=2, col=1)
+    fig.update_yaxes(title_text="Rolling Sharpe", row=3, col=1)
     fig.update_layout(
         height=750,
         template="plotly_white",
-        legend=dict(orientation="h", y=1.02, x=1, xanchor="right"),
+        legend=dict(orientation="h", y=1.05, x=1, xanchor="right"),
         margin=dict(t=80, b=40),
+        hovermode="x unified",
     )
     return _fig_to_dict(fig)
 
@@ -199,29 +207,63 @@ def _build_monthly_chart(returns: pd.Series) -> dict:
     month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
     pivot.columns = [month_names[c - 1] for c in pivot.columns]
 
-    z = [[float(v) if pd.notna(v) else None for v in row] for row in pivot.values]
-    text = [[f"{v:.1f}%" if pd.notna(v) else "" for v in row] for row in pivot.values]
+    # Add a yearly-total column (compound monthly returns within each year).
+    yearly = ((1 + monthly_pct.fillna(0) / 100).groupby(monthly_pct.index.year).prod() - 1) * 100
+    yearly = yearly.reindex(pivot.index)
+    pivot_w_yr = pivot.copy()
+    pivot_w_yr["YTD"] = yearly.values
+
+    z = [[float(v) if pd.notna(v) else None for v in row] for row in pivot_w_yr.values]
+    text = [[f"{v:.1f}%" if pd.notna(v) else "" for v in row] for row in pivot_w_yr.values]
+    # Coolwarm-like diverging palette around zero.
+    cmap = [
+        [0.00, "#3b4cc0"],
+        [0.25, "#8fa9e8"],
+        [0.50, "#dddddd"],
+        [0.75, "#f3a08a"],
+        [1.00, "#b40426"],
+    ]
+    # Symmetric z range so zero sits on the white midpoint
+    zmax = float(_np_abs_max(pivot_w_yr.values))
     fig = go.Figure(
         data=go.Heatmap(
             z=z,
-            x=pivot.columns.tolist(),
-            y=[str(y) for y in pivot.index.tolist()],
-            colorscale="RdYlGn",
+            x=pivot_w_yr.columns.tolist(),
+            y=[str(y) for y in pivot_w_yr.index.tolist()],
+            colorscale=cmap,
             zmid=0,
+            zmin=-zmax,
+            zmax=zmax,
             text=text,
             texttemplate="%{text}",
+            textfont=dict(size=11, color="#1a1a2e"),
             showscale=True,
-            colorbar=dict(title="%"),
+            xgap=1,
+            ygap=1,
+            colorbar=dict(title="%", thickness=12, len=0.8),
+            hovertemplate="<b>%{y} %{x}</b><br>return: %{text}<extra></extra>",
         )
     )
+    # Visual separator for the YTD column.
+    fig.add_vline(x=11.5, line=dict(color="white", width=2.5))
     fig.update_layout(
         xaxis_title="Month",
         yaxis_title="Year",
-        height=max(220, 32 * len(pivot) + 120),
-        margin=dict(t=20, b=40),
+        height=max(260, 36 * len(pivot_w_yr) + 120),
+        margin=dict(t=40, b=40),
         template="plotly_white",
+        title=dict(text="<b>Monthly returns (%)</b> + annual total (rightmost column)", font=dict(size=13)),
     )
     return _fig_to_dict(fig)
+
+
+def _np_abs_max(values) -> float:
+    """Robust |max| across a 2D nan-containing matrix used for symmetric colorbar."""
+    import numpy as _np
+
+    arr = _np.array(values, dtype=float)
+    finite = arr[_np.isfinite(arr)]
+    return float(_np.abs(finite).max()) if finite.size else 1.0
 
 
 def _build_variant_framework_charts(
@@ -241,14 +283,17 @@ def _build_variant_framework_charts(
     bt_prices = variant.get("bt_prices")
     vbt_pf = variant.get("vbt_portfolio")
 
-    if vbt_pf is not None:
+    # Prefer the manual 3-panel chart (equity + drawdown + rolling sharpe) —
+    # vbt's default ``Portfolio.plot()`` doesn't normalise the benchmark, so
+    # in multi-variant flows the BTC reference dominates and the strategy
+    # curve collapses to a flat line. Fall back to vbt only if manual fails.
+    if portfolio_daily is not None and returns is not None and bt_prices is not None:
         try:
-            out["portfolio"] = _fig_to_dict(vbt_pf.plot())
+            out["portfolio"] = _build_portfolio_chart_manual(portfolio_daily, returns, bt_prices)
         except Exception:
-            if portfolio_daily is not None and returns is not None and bt_prices is not None:
-                out["portfolio"] = _build_portfolio_chart_manual(portfolio_daily, returns, bt_prices)
-    elif portfolio_daily is not None and returns is not None and bt_prices is not None:
-        out["portfolio"] = _build_portfolio_chart_manual(portfolio_daily, returns, bt_prices)
+            if vbt_pf is not None:
+                with contextlib.suppress(Exception):
+                    out["portfolio"] = _fig_to_dict(vbt_pf.plot())
 
     if returns is not None:
         with contextlib.suppress(Exception):
@@ -357,16 +402,19 @@ def _build_universe_size_chart(bt_prices: pd.DataFrame) -> dict | None:
             x=coverage.index,
             y=coverage.values,
             mode="lines",
-            line=dict(color="#1f77b4", width=1.5),
+            line=dict(color="#1f77b4", width=2),
             fill="tozeroy",
-            fillcolor="rgba(31,119,180,0.15)",
+            fillcolor="rgba(31,119,180,0.18)",
+            hovertemplate="%{x|%Y-%m-%d}: %{y} tickers<extra></extra>",
         )
     )
     fig.update_layout(
-        yaxis_title="Tickers with data",
-        height=260,
-        margin=dict(t=20, b=40),
+        title=dict(text="<b>Universe coverage</b> — number of tickers with non-NaN price per day", font=dict(size=13)),
+        yaxis=dict(title="tickers with data", rangemode="tozero"),
+        height=300,
+        margin=dict(t=50, b=40),
         template="plotly_white",
+        hovermode="x unified",
     )
     return _fig_to_dict(fig)
 
@@ -448,11 +496,15 @@ def _build_signal_count_chart(
     label = str(payload.get("label", "Signals"))
     cap = payload.get("cap")
     fig = go.Figure(
-        data=go.Bar(
+        data=go.Scatter(
             x=s.index,
             y=s.values.astype(int),
-            marker_color="#1f77b4",
+            mode="lines",
+            line=dict(color="#1f77b4", width=0, shape="hv"),
+            fill="tozeroy",
+            fillcolor="rgba(31,119,180,0.35)",
             name=label,
+            hovertemplate="%{x|%Y-%m-%d}: %{y} signals<extra></extra>",
         )
     )
     if cap is not None:
@@ -460,14 +512,18 @@ def _build_signal_count_chart(
             y=float(cap),
             line_dash="dash",
             line_color="#d62728",
+            line_width=1.5,
             annotation_text=f"cap = {cap}",
             annotation_position="top right",
+            annotation_font=dict(color="#d62728"),
         )
     fig.update_layout(
-        yaxis_title="Signals (count)",
-        height=260,
-        margin=dict(t=20, b=40),
+        title=dict(text=f"<b>{label}</b>", font=dict(size=13)),
+        yaxis=dict(title="signals (count)", rangemode="tozero"),
+        height=300,
+        margin=dict(t=50, b=40),
         template="plotly_white",
+        hovermode="x unified",
     )
     return _fig_to_dict(fig)
 
@@ -550,12 +606,14 @@ def _build_equity_overlay_chart(variant_results: dict[str, dict[str, Any]]) -> d
         )
 
     fig.update_layout(
-        yaxis_title="Equity (base 100)",
-        yaxis_type="log",
-        height=440,
-        margin=dict(t=20, b=40),
+        title=dict(text="<b>Equity curves by variant</b> (base = 100, log y)", font=dict(size=13)),
+        yaxis=dict(title="Equity (base 100)", type="log", gridcolor="rgba(0,0,0,0.08)"),
+        xaxis=dict(gridcolor="rgba(0,0,0,0.08)"),
+        height=480,
+        margin=dict(t=60, b=40, l=60, r=20),
         template="plotly_white",
-        legend=dict(orientation="h", y=1.02, x=1, xanchor="right"),
+        legend=dict(orientation="h", y=1.06, x=1, xanchor="right"),
+        hovermode="x unified",
     )
     return _fig_to_dict(fig)
 
@@ -583,27 +641,202 @@ def _build_per_variant_table_chart(variant_results: dict[str, dict[str, Any]]) -
     rows = [[fn(n, r) for _, fn in cols] for n, r in variant_results.items()]
     columns = list(zip(*rows, strict=False)) if rows else [[] for _ in cols]
 
+    # Color the numeric cells using a pandas-styled-table-like coolwarm gradient.
+    # Each numeric column is independently min/max-normalised and given a per-cell
+    # background colour (notebook ``.style.background_gradient(cmap='coolwarm')``).
+    import numpy as _np
+
+    def _coolwarm(v: float) -> str:
+        # Approximate matplotlib's coolwarm at value in [0, 1].
+        # Blue (#3b4cc0) → white (#dddddd) → red (#b40426)
+        v = max(0.0, min(1.0, v))
+        if v <= 0.5:
+            t = v * 2.0
+            r = int(59 + (221 - 59) * t)
+            g = int(76 + (221 - 76) * t)
+            b = int(192 + (221 - 192) * t)
+        else:
+            t = (v - 0.5) * 2.0
+            r = int(221 + (180 - 221) * t)
+            g = int(221 + (4 - 221) * t)
+            b = int(221 + (38 - 221) * t)
+        return f"rgb({r},{g},{b})"
+
+    numeric_col_meta = [
+        ("Total Return", "higher"),
+        ("CAGR", "higher"),
+        ("Sharpe", "higher"),
+        ("Sortino", "higher"),
+        ("Max DD", "lower"),
+        ("Ann Vol", "lower"),
+        ("Calmar", "higher"),
+        ("Win Rate", "higher"),
+    ]
+    metric_key_map = {
+        "Total Return": "total_return",
+        "CAGR": "cagr",
+        "Sharpe": "sharpe",
+        "Sortino": "sortino",
+        "Max DD": "max_drawdown",
+        "Ann Vol": "annual_volatility",
+        "Calmar": "calmar",
+        "Win Rate": "win_rate",
+    }
+    # Build fill_color per cell (one list per column).
+    fill_colors_per_col: list[list[str]] = [["#fafbfc"] * len(rows) for _ in headers]
+    fill_colors_per_col[0] = ["#f3f4f6"] * len(rows)  # variant — light grey
+    fill_colors_per_col[1] = ["#fafbfc"] * len(rows)  # strategy — neutral
+    for col_idx, header in enumerate(headers):
+        if header not in metric_key_map:
+            continue
+        key = metric_key_map[header]
+        direction = dict(numeric_col_meta)[header]
+        vals = _np.array(
+            [float((r.get("metrics") or {}).get(key, _np.nan)) for _, r in variant_results.items()],
+            dtype=float,
+        )
+        finite = vals[_np.isfinite(vals)]
+        if finite.size == 0:
+            continue
+        lo, hi = finite.min(), finite.max()
+        if hi - lo < 1e-12:
+            colors = ["#dddddd"] * len(vals)
+        else:
+            normed = (vals - lo) / (hi - lo)
+            if direction == "lower":
+                normed = 1.0 - normed
+            colors = [_coolwarm(float(n)) if _np.isfinite(n) else "#dddddd" for n in normed]
+        fill_colors_per_col[col_idx] = colors
+
     fig = go.Figure(
         data=[
             go.Table(
+                columnwidth=[1.6, 1.8] + [1] * (len(headers) - 2),
                 header=dict(
-                    values=headers,
+                    values=[f"<b>{h}</b>" for h in headers],
                     fill_color="#1a1a2e",
-                    font=dict(color="white", size=12),
+                    font=dict(color="white", size=12, family="-apple-system, 'Segoe UI', sans-serif"),
                     align="left",
-                    height=30,
+                    height=34,
                 ),
                 cells=dict(
                     values=columns,
-                    fill_color="#fafbfc",
+                    fill_color=fill_colors_per_col,
                     align="left",
-                    height=28,
-                    font=dict(size=12),
+                    height=26,
+                    font=dict(size=12, color="#1a1a2e", family="-apple-system, 'Segoe UI', sans-serif"),
+                    line=dict(color="rgba(255,255,255,0.6)", width=1),
                 ),
             )
         ]
     )
-    fig.update_layout(height=max(180, 28 * len(rows) + 70), margin=dict(t=10, b=10, l=0, r=0))
+    fig.update_layout(height=max(180, 28 * len(rows) + 80), margin=dict(t=8, b=8, l=0, r=0))
+    return _fig_to_dict(fig)
+
+
+def _build_per_variant_stats_heatmap(
+    variant_results: dict[str, dict[str, Any]],
+) -> dict | None:
+    """Cross-variant stats heatmap (notebook charts 14, 15, 16, 26, 29).
+
+    Renders the canonical SSRN 5-metric matrix (sharpe, max_drawdown,
+    annualized_volatility, calmar_ratio, annualized_return) over the
+    configured variants. One row per metric, one column per variant.
+    Colorscale is metric-aware (higher-is-better vs lower-is-better).
+    """
+    import plotly.graph_objects as go
+
+    if not variant_results:
+        return None
+
+    metric_specs = [
+        ("sharpe", "Sharpe", "higher"),
+        ("calmar", "Calmar", "higher"),
+        ("annual_volatility", "Ann. Vol", "lower"),
+        ("max_drawdown", "Max DD", "lower"),
+        ("cagr", "CAGR", "higher"),
+    ]
+    variants = list(variant_results.keys())
+    z: list[list[float]] = []
+    text: list[list[str]] = []
+    rows: list[str] = []
+    for key, label, _direction in metric_specs:
+        row = []
+        text_row = []
+        any_value = False
+        for v in variants:
+            m = variant_results[v].get("metrics") or {}
+            val = m.get(key)
+            if val is None:
+                row.append(np.nan)
+                text_row.append("—")
+            else:
+                row.append(float(val))
+                if key in ("annual_volatility", "max_drawdown", "cagr"):
+                    text_row.append(f"{val * 100:.1f}%")
+                else:
+                    text_row.append(f"{val:.2f}")
+                any_value = True
+        if any_value:
+            z.append(row)
+            text.append(text_row)
+            rows.append(label)
+    if not z:
+        return None
+
+    # Row-normalise z so the colorscale is meaningful per-metric (different
+    # metrics have very different scales — Sharpe ~0.5, Max DD ~-50%, CAGR ~20%).
+    # For lower-is-better metrics (vol, max_drawdown), invert the normalised value
+    # so green still means "good".
+    import numpy as _np
+
+    z_arr = _np.array(z, dtype=float)
+    z_norm = _np.zeros_like(z_arr)
+    for i, (_key, _, direction) in enumerate(metric_specs[: z_arr.shape[0]]):
+        row_vals = z_arr[i]
+        finite = row_vals[_np.isfinite(row_vals)]
+        if finite.size == 0:
+            continue
+        lo, hi = finite.min(), finite.max()
+        if hi - lo < 1e-12:
+            z_norm[i] = 0.5
+        else:
+            norm = (row_vals - lo) / (hi - lo)
+            if direction == "lower":
+                norm = 1.0 - norm
+            z_norm[i] = norm
+
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=z_norm.tolist(),
+            x=variants,
+            y=rows,
+            text=text,
+            texttemplate="<b>%{text}</b>",
+            textfont=dict(size=13, color="#1a1a2e"),
+            # Matplotlib-coolwarm-equivalent. Blue → off-white → red, but here
+            # green-direction (1.0 = "better") so we map blue→red as bad→good.
+            colorscale=[
+                [0.0, "#3b4cc0"],
+                [0.25, "#809cf3"],
+                [0.5, "#dddddd"],
+                [0.75, "#f49a7b"],
+                [1.0, "#b40426"],
+            ],
+            showscale=False,
+            xgap=2,
+            ygap=2,
+            hovertemplate="<b>%{y}</b> — variant <i>%{x}</i><br>value: %{text}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        title=dict(text="<b>Per-variant metrics heatmap</b> (row-normalised; green = better)", font=dict(size=13)),
+        height=110 + 56 * len(rows),
+        margin=dict(t=60, b=50, l=110, r=30),
+        template="plotly_white",
+        xaxis=dict(side="bottom", tickangle=-25),
+        yaxis=dict(autorange="reversed"),
+    )
     return _fig_to_dict(fig)
 
 
@@ -685,12 +918,338 @@ def _build_per_variant_symbol_weight_chart(
     return _fig_to_dict(fig)
 
 
+def _build_donchian_overlay_chart(
+    payload: dict[str, Any],
+    **_ctx,
+) -> dict | None:
+    """Strategy diagnostic — Donchian channel band + trailing stop + entry/exit + signal panel.
+
+    Two-row figure (top: price + bands + trailing stop, bottom: 0/1 signal).
+    Replicates notebook charts 3 + 4 + 6 + 22 in a single visual.
+    """
+    import plotly.graph_objects as go
+    import plotly.subplots as sp
+
+    ref_ticker = str(payload.get("ref_ticker", ""))
+    price = payload.get("price")
+    if not isinstance(price, pd.Series) or price.dropna().empty:
+        return None
+    high = payload.get("high")
+    low = payload.get("low")
+    mid = payload.get("mid")
+    stop = payload.get("trailing_stop")
+    signal = payload.get("signal")
+    window = int(payload.get("window", 0))
+
+    fig = sp.make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        row_heights=[0.78, 0.22],
+        vertical_spacing=0.04,
+        subplot_titles=(f"{ref_ticker} price + Donchian({window}) + trailing stop", "signal"),
+    )
+
+    # --- Top panel: bands as filled area, price, mid, trailing stop -------------
+    if isinstance(high, pd.Series) and isinstance(low, pd.Series):
+        # Filled DC band
+        fig.add_trace(
+            go.Scatter(
+                x=high.index,
+                y=high.values,
+                name=f"DC high ({window})",
+                line=dict(color="rgba(46,160,67,0.6)", width=1),
+                hoverinfo="skip",
+                showlegend=False,
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=low.index,
+                y=low.values,
+                name=f"DC low ({window})",
+                line=dict(color="rgba(218,54,51,0.6)", width=1),
+                fill="tonexty",
+                fillcolor="rgba(46,160,67,0.10)",
+                hoverinfo="skip",
+                showlegend=False,
+            ),
+            row=1,
+            col=1,
+        )
+    if isinstance(mid, pd.Series):
+        fig.add_trace(
+            go.Scatter(
+                x=mid.index,
+                y=mid.values,
+                name="DC mid",
+                line=dict(color="#9467bd", width=1, dash="dot"),
+            ),
+            row=1,
+            col=1,
+        )
+    fig.add_trace(
+        go.Scatter(
+            x=price.index,
+            y=price.values,
+            name=f"{ref_ticker}",
+            line=dict(color="#1a1a2e", width=1.6),
+        ),
+        row=1,
+        col=1,
+    )
+    if isinstance(stop, pd.Series):
+        fig.add_trace(
+            go.Scatter(
+                x=stop.index,
+                y=stop.values,
+                name="trailing stop",
+                line=dict(color="#ff7f0e", width=1.8),
+            ),
+            row=1,
+            col=1,
+        )
+    if isinstance(signal, pd.Series):
+        sig = signal.fillna(0).astype(float)
+        diff = sig.diff().fillna(0)
+        entries = price[diff == 1.0]
+        exits = price[diff == -1.0]
+        if not entries.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=entries.index,
+                    y=entries.values,
+                    mode="markers",
+                    marker=dict(color="#2ca02c", symbol="triangle-up", size=11, line=dict(color="white", width=1)),
+                    name="entry",
+                ),
+                row=1,
+                col=1,
+            )
+        if not exits.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=exits.index,
+                    y=exits.values,
+                    mode="markers",
+                    marker=dict(color="#d62728", symbol="triangle-down", size=11, line=dict(color="white", width=1)),
+                    name="exit",
+                ),
+                row=1,
+                col=1,
+            )
+        # --- Bottom panel: signal as filled step ---
+        fig.add_trace(
+            go.Scatter(
+                x=sig.index,
+                y=sig.values,
+                mode="lines",
+                line=dict(color="#1f77b4", width=0, shape="hv"),
+                fill="tozeroy",
+                fillcolor="rgba(31,119,180,0.35)",
+                name="signal",
+                showlegend=False,
+            ),
+            row=2,
+            col=1,
+        )
+    fig.update_yaxes(type="log", title_text="Price (log)", row=1, col=1)
+    fig.update_yaxes(range=[-0.05, 1.05], tickvals=[0, 1], title_text="signal", row=2, col=1)
+    fig.update_layout(
+        height=560,
+        margin=dict(t=50, b=40, l=10, r=10),
+        template="plotly_white",
+        legend=dict(orientation="h", y=1.06, x=1, xanchor="right"),
+        hovermode="x unified",
+    )
+    return _fig_to_dict(fig)
+
+
+def _build_per_window_heatmap(
+    payload: dict[str, Any],
+    **_ctx,
+) -> dict | None:
+    """Per-window signal-activity heatmap for the regime ticker (notebook chart 9 stand-in).
+
+    Payload: {ref_ticker, signals: {window: pd.Series of 0/1}}.
+
+    Without re-running a backtest per window we can't compute the full
+    sharpe/maxdd/calmar matrix from the notebook (cells 348–366). This builder
+    surfaces the upstream signal *density* per window so the report still has
+    a per-window view; the multi-variant orchestration (P3) layers the actual
+    metric heatmaps via `_build_per_variant_table_chart`.
+    """
+    import plotly.graph_objects as go
+
+    sigs = payload.get("signals")
+    if not isinstance(sigs, dict) or not sigs:
+        return None
+    ref_ticker = str(payload.get("ref_ticker", ""))
+    windows = sorted(sigs.keys())
+    # Resample monthly mean for readability — bool→0..1
+    rows = []
+    months = None
+    for w in windows:
+        s = sigs[w]
+        if not isinstance(s, pd.Series) or s.dropna().empty:
+            continue
+        m = s.fillna(0).astype(float).resample("MS").mean()
+        if months is None:
+            months = m.index
+        rows.append(m.values)
+    if not rows or months is None:
+        return None
+    z = np.array(rows)
+    valid_windows = [w for w in windows if isinstance(sigs.get(w), pd.Series)]
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=z,
+            x=[d.strftime("%Y-%m") for d in months],
+            y=[f"w={w}" for w in valid_windows],
+            colorscale=[
+                [0.0, "#440154"],
+                [0.25, "#3b528b"],
+                [0.5, "#21918c"],
+                [0.75, "#5ec962"],
+                [1.0, "#fde725"],
+            ],
+            zmin=0,
+            zmax=1,
+            colorbar=dict(title="signal-on", thickness=12, len=0.8),
+            hovertemplate="month=%{x}<br>window=%{y}<br>signal-on rate=%{z:.2f}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        title=dict(
+            text=f"<b>Per-window Donchian signal density</b> — {ref_ticker}",
+            font=dict(size=13),
+        ),
+        height=380,
+        margin=dict(t=60, b=60, l=60, r=20),
+        template="plotly_white",
+        xaxis=dict(title="month", tickangle=-45, nticks=24),
+        yaxis=dict(title="lookback window", autorange="reversed"),
+    )
+    return _fig_to_dict(fig)
+
+
+def _build_vol_overview_chart(
+    payload: dict[str, Any],
+    **_ctx,
+) -> dict | None:
+    """Realized vol + scalers (notebook charts 12, 13, 18, 19).
+
+    Payload: {realized_vol: DataFrame, scalers: {label: DataFrame}, vol_lookback: int}.
+    """
+    import plotly.graph_objects as go
+    import plotly.subplots as sp
+
+    rv = payload.get("realized_vol")
+    scalers = payload.get("scalers") or {}
+    if not isinstance(rv, pd.DataFrame) or rv.dropna(how="all").empty:
+        return None
+    look = int(payload.get("vol_lookback", 60))
+
+    # Pick the 10 most-observed tickers (least-NaN) for per-line view.
+    coverage = rv.notna().sum().sort_values(ascending=False)
+    top_tickers = coverage.head(10).index.tolist()
+    palette = [
+        "#1f77b4",
+        "#ff7f0e",
+        "#2ca02c",
+        "#d62728",
+        "#9467bd",
+        "#8c564b",
+        "#e377c2",
+        "#7f7f7f",
+        "#bcbd22",
+        "#17becf",
+    ]
+
+    # Robust y-clip: bad-data artifacts (delistings, stale prices) can blow
+    # vol up to 1000%+ for a few days, dominating the y-scale and hiding the
+    # actual ~25-150% range. Cap per-line view at the 99th percentile of
+    # finite realized-vol values, bounded by [60%, 300%].
+    import numpy as _np
+
+    finite_vals = rv.values[_np.isfinite(rv.values)]
+    if finite_vals.size > 0:
+        clip_cap = float(_np.quantile(finite_vals, 0.99))
+        clip_cap = max(0.6, min(3.0, clip_cap * 1.2))
+    else:
+        clip_cap = 3.0
+
+    fig = sp.make_subplots(
+        rows=2,
+        cols=1,
+        subplot_titles=(
+            f"Realized {look}d annualized vol — top-10 most-covered tickers + universe mean (clipped @ {clip_cap:.0%})",
+            "Vol scalers (mean across universe)",
+        ),
+        vertical_spacing=0.14,
+    )
+    for i, t in enumerate(top_tickers):
+        s = rv[t].dropna().clip(upper=clip_cap)
+        if s.empty:
+            continue
+        fig.add_trace(
+            go.Scatter(
+                x=s.index,
+                y=s.values,
+                name=t,
+                line=dict(color=palette[i % len(palette)], width=1),
+                opacity=0.55,
+                hovertemplate="%{x|%Y-%m-%d}<br>" + t + ": %{y:.1%}<extra></extra>",
+            ),
+            row=1,
+            col=1,
+        )
+    mean_rv = rv.mean(axis=1).clip(upper=clip_cap)
+    fig.add_trace(
+        go.Scatter(
+            x=mean_rv.index,
+            y=mean_rv.values,
+            name="UNIVERSE MEAN",
+            line=dict(color="#000000", width=2.2),
+            hovertemplate="%{x|%Y-%m-%d}<br>mean: %{y:.1%}<extra></extra>",
+        ),
+        row=1,
+        col=1,
+    )
+    for label, sc in scalers.items():
+        if not isinstance(sc, pd.DataFrame):
+            continue
+        if (sc == 1.0).all().all():
+            continue
+        fig.add_trace(
+            go.Scatter(x=sc.index, y=sc.mean(axis=1), name=f"scaler={label}", line=dict(width=1.6)),
+            row=2,
+            col=1,
+        )
+    fig.update_yaxes(title_text="ann vol", tickformat=".0%", row=1, col=1)
+    fig.update_yaxes(title_text="scaler", row=2, col=1)
+    fig.update_layout(
+        height=560,
+        template="plotly_white",
+        margin=dict(t=50, b=40),
+        showlegend=True,
+        legend=dict(orientation="h", y=1.08, x=1, xanchor="right"),
+        hovermode="x unified",
+    )
+    return _fig_to_dict(fig)
+
+
 # Registry of diagnostic-chart builders. Strategies opt in by emitting
 # details["diagnostics"][type] = payload from their run() method. Add new types
 # here and any strategy can use them by emitting the matching payload shape.
 _DIAGNOSTIC_BUILDERS = {
     "regime_overlay": _build_regime_overlay_chart,
     "signal_count": _build_signal_count_chart,
+    "donchian_overlay": _build_donchian_overlay_chart,
+    "per_window_signal": _build_per_window_heatmap,
+    "vol_overview": _build_vol_overview_chart,
 }
 
 
@@ -877,6 +1436,7 @@ def generate_report_data(
         for fn, key in (
             (_build_equity_overlay_chart, "equity_overlay"),
             (_build_per_variant_table_chart, "per_variant_table"),
+            (_build_per_variant_stats_heatmap, "per_variant_stats_heatmap"),
             (_build_gross_exposure_overlay_chart, "gross_exposure_overlay"),
         ):
             try:

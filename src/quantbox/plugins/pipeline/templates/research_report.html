@@ -3,99 +3,480 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Backtest Report</title>
+  <title>Quantbox Research</title>
   <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,700;0,9..144,900;1,9..144,400;1,9..144,500;1,9..144,700&family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;0,6..72,600;0,6..72,700;1,6..72,300;1,6..72,400;1,6..72,500&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #f5f6fa; --card: #fff; --accent: #1f77b4;
-      --text: #1a1a2e; --muted: #6b7280; --border: #e5e7eb;
-      --green: #2ca02c; --red: #d62728;
+      /* Editorial palette — cream paper, navy ink, burnt-sienna accent */
+      --paper:        #fbf9f4;
+      --paper-soft:   #f4efe5;
+      --card:         #fefdfb;
+      --ink:          #15192c;
+      --ink-soft:     #3a4055;
+      --ink-faded:    #6a6f80;
+      --rule:         #d4c8b3;
+      --rule-soft:    #ece2cf;
+      --accent:       #b85427;
+      --accent-soft:  #f0d9c4;
+      --green:        #1f5d3a;
+      --red:          #8b2a1f;
+
+      /* Typography */
+      --font-display: 'Fraunces', 'Times New Roman', serif;
+      --font-body:    'Newsreader', 'Georgia', serif;
+      --font-mono:    'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+      /* Rhythm — 8px baseline */
+      --gutter:       56px;
+      --col:          1080px;
+      --space-1:      8px;
+      --space-2:      16px;
+      --space-3:      24px;
+      --space-4:      32px;
+      --space-5:      48px;
+      --space-6:      64px;
+      --space-7:      96px;
     }
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-           background: var(--bg); color: var(--text); padding: 24px; min-width: 800px; }
-    header { margin-bottom: 20px; }
-    h1 { font-size: 1.45em; font-weight: 700; }
-    .run-meta { color: var(--muted); font-size: 0.82em; margin-top: 4px; }
-    .card { background: var(--card); border-radius: 10px;
-            box-shadow: 0 1px 4px rgba(0,0,0,0.07); margin-bottom: 20px; overflow: hidden; }
-    .card-title { padding: 12px 18px 0; font-size: 0.75em; font-weight: 700;
-                  color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
-    .chart-wrap { padding: 8px 4px 4px; }
-
-    /* Metrics strip */
-    .metrics-strip { display: flex; flex-wrap: wrap; gap: 1px; background: var(--border);
-                     border-top: 1px solid var(--border); }
-    .metric { background: var(--card); padding: 14px 20px; flex: 1; min-width: 130px; }
-    .metric-label { font-size: 0.72em; color: var(--muted); text-transform: uppercase;
-                    letter-spacing: 0.05em; }
-    .metric-value { font-size: 1.35em; font-weight: 700; margin-top: 3px; }
-    .pos { color: var(--green); }
-    .neg { color: var(--red); }
-    .neu { color: var(--text); }
-
-    /* Two-column grid */
-    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-    @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
-
-    /* Narrative blocks (methodology, findings) */
-    .narrative { padding: 18px 24px 20px; line-height: 1.55; font-size: 0.95em; }
-    .narrative h1, .narrative h2, .narrative h3 {
-      font-weight: 700; margin: 16px 0 8px; color: var(--text);
+    html { font-size: 16px; -webkit-font-smoothing: antialiased; }
+    body {
+      font-family: var(--font-body);
+      font-weight: 400;
+      font-size: 16px;
+      line-height: 1.6;
+      color: var(--ink);
+      background: var(--paper);
+      font-feature-settings: "kern", "liga", "onum", "tnum" 0;
+      padding: 0;
+      overflow-x: hidden;
     }
-    .narrative h1 { font-size: 1.25em; }
-    .narrative h2 { font-size: 1.10em; }
-    .narrative h3 { font-size: 1.00em; color: var(--muted); }
-    .narrative p { margin: 6px 0 10px; }
-    .narrative ul, .narrative ol { margin: 4px 0 10px 22px; }
-    .narrative li { margin: 2px 0; }
+
+    /* Numbers use tabular figures throughout — critical for tables/heatmaps */
+    .tnum, .mono, .metric-value, .repro-grid .v, code, pre, table { font-feature-settings: "tnum"; }
+
+    /* ──────────────────────────────────────────────────────────────────────
+       Layout — single wide centred column, sections with left-gutter marker
+       ────────────────────────────────────────────────────────────────────── */
+    .page {
+      max-width: var(--col);
+      margin: 0 auto;
+      padding: var(--space-6) var(--gutter) var(--space-7);
+    }
+    @media (max-width: 900px) {
+      .page { padding: var(--space-5) var(--space-4) var(--space-6); }
+    }
+
+    /* ──────────────────────────────────────────────────────────────────────
+       Masthead — magazine-style issue header
+       ────────────────────────────────────────────────────────────────────── */
+    .masthead {
+      padding-bottom: var(--space-5);
+      margin-bottom: var(--space-6);
+      border-bottom: 1px solid var(--ink);
+      position: relative;
+    }
+    .masthead .imprint {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--ink-soft);
+      padding-bottom: var(--space-3);
+      border-bottom: 1px solid var(--rule);
+      margin-bottom: var(--space-4);
+    }
+    .masthead .imprint .left::before { content: '◆ '; color: var(--accent); }
+    .masthead .imprint .issue { font-feature-settings: "tnum"; }
+    .masthead h1.title {
+      font-family: var(--font-display);
+      font-variation-settings: "opsz" 144, "SOFT" 0;
+      font-weight: 500;
+      font-size: clamp(32px, 4.4vw, 48px);
+      line-height: 1.05;
+      letter-spacing: -0.022em;
+      color: var(--ink);
+      margin: 0;
+      max-width: 22em;
+    }
+    .masthead .deck {
+      margin-top: var(--space-3);
+      font-family: var(--font-body);
+      font-style: italic;
+      font-size: 19px;
+      line-height: 1.45;
+      color: var(--ink-soft);
+      max-width: 38em;
+      font-weight: 400;
+    }
+    .masthead .meta-row {
+      margin-top: var(--space-4);
+      display: flex;
+      gap: var(--space-4);
+      flex-wrap: wrap;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--ink-faded);
+      max-width: 100%;
+    }
+    .masthead .meta-row > span {
+      display: flex;
+      gap: 6px;
+      min-width: 0;
+      overflow-wrap: anywhere;
+      word-break: break-all;
+    }
+    .masthead .meta-row .key { color: var(--ink-faded); white-space: nowrap; }
+    .masthead .meta-row .val { color: var(--ink); font-feature-settings: "tnum"; min-width: 0; }
+
+    /* ──────────────────────────────────────────────────────────────────────
+       Section — numbered, with a sticky-ish gutter marker on the left
+       ────────────────────────────────────────────────────────────────────── */
+    .section {
+      margin: var(--space-7) 0 var(--space-6);
+      position: relative;
+    }
+    .section + .section { margin-top: var(--space-6); }
+    .section-head {
+      display: grid;
+      grid-template-columns: 72px 1fr;
+      gap: var(--space-3);
+      align-items: baseline;
+      padding-bottom: var(--space-3);
+      margin-bottom: var(--space-4);
+      border-bottom: 1px solid var(--ink);
+    }
+    .section-head .num {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 500;
+      padding-top: 8px;
+    }
+    .section-head h2 {
+      font-family: var(--font-body);
+      font-weight: 600;
+      font-size: clamp(22px, 2.4vw, 28px);
+      line-height: 1.15;
+      letter-spacing: -0.015em;
+      color: var(--ink);
+    }
+    .section-head .kicker {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--ink-faded);
+      display: block;
+      margin-bottom: 6px;
+    }
+    .section-body { display: block; }
+
+    /* Block — generic wrapper for a chart or text unit. No card shadow. */
+    .block {
+      margin: var(--space-5) 0;
+      padding: 0;
+      background: transparent;
+    }
+    .block + .block { margin-top: var(--space-5); }
+    .block-title {
+      font-family: var(--font-body);
+      font-style: italic;
+      font-weight: 500;
+      font-size: 15px;
+      color: var(--ink-soft);
+      margin-bottom: var(--space-2);
+      letter-spacing: 0.005em;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--rule-soft);
+    }
+    .block-title .ord {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-style: normal;
+      margin-right: 12px;
+    }
+    .chart-wrap {
+      padding: var(--space-2) 0 0;
+      background: transparent;
+      max-width: 100%;
+      width: 100%;
+      min-width: 0; /* allow flex/grid parent to shrink this */
+      overflow: hidden;
+    }
+    /* Plotly creates a child div with inline width style — neutralise it
+       so it always fills the parent and respects the grid track width. */
+    .chart-wrap > .js-plotly-plot,
+    .chart-wrap > div {
+      width: 100% !important;
+      max-width: 100%;
+    }
+
+    /* Two-column grid for paired blocks */
+    .two-col {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: var(--space-4);
+      align-items: start;
+      min-width: 0;
+    }
+    .two-col > .block { margin: 0; min-width: 0; }
+    @media (max-width: 900px) { .two-col { grid-template-columns: minmax(0, 1fr); gap: var(--space-3); } }
+
+    /* ──────────────────────────────────────────────────────────────────────
+       Metrics strip — editorial spec line, no boxes, just hairlines
+       ────────────────────────────────────────────────────────────────────── */
+    .metrics-strip {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      border-top: 1px solid var(--ink);
+      border-bottom: 1px solid var(--ink);
+      margin: var(--space-4) 0;
+    }
+    @media (max-width: 1000px) { .metrics-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+    @media (max-width: 640px)  { .metrics-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    .metric {
+      padding: 16px 20px;
+      border-right: 1px solid var(--rule);
+      border-bottom: 1px solid var(--rule-soft);
+      min-width: 0;
+    }
+    .metric:nth-child(5n) { border-right: none; }
+    .metric:nth-last-child(-n+5) { border-bottom: none; }
+    @media (max-width: 1000px) {
+      .metric { border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule-soft); }
+      .metric:nth-child(5n) { border-right: 1px solid var(--rule); }
+      .metric:nth-child(3n) { border-right: none; }
+      .metric:nth-last-child(-n+5) { border-bottom: 1px solid var(--rule-soft); }
+    }
+    @media (max-width: 640px) {
+      .metric:nth-child(3n) { border-right: 1px solid var(--rule); }
+      .metric:nth-child(2n) { border-right: none; }
+    }
+    .metric-label {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--ink-faded);
+      font-weight: 400;
+      margin-bottom: 8px;
+    }
+    .metric-value {
+      font-family: var(--font-mono);
+      font-size: 22px;
+      font-weight: 500;
+      letter-spacing: -0.01em;
+      color: var(--ink);
+      font-feature-settings: "tnum";
+    }
+    .metric-value.pos { color: var(--green); }
+    .metric-value.neg { color: var(--red); }
+    .metric-value.neu { color: var(--ink); }
+
+    /* ──────────────────────────────────────────────────────────────────────
+       Narrative — body copy with dropcap on first paragraph
+       ────────────────────────────────────────────────────────────────────── */
+    .narrative {
+      max-width: 38em;
+      font-family: var(--font-body);
+      font-size: 17px;
+      line-height: 1.65;
+      color: var(--ink);
+      column-gap: var(--space-5);
+    }
+    .narrative > *:first-child:first-letter {
+      font-family: var(--font-display);
+      font-variation-settings: "opsz" 144;
+      font-weight: 600;
+      font-size: 5.2em;
+      float: left;
+      line-height: 0.82;
+      margin: 0.08em 0.12em 0 -0.04em;
+      color: var(--accent);
+    }
+    .narrative h1, .narrative h2, .narrative h3 {
+      font-family: var(--font-display);
+      font-weight: 500;
+      color: var(--ink);
+      margin: 1.6em 0 0.4em;
+      letter-spacing: -0.012em;
+    }
+    .narrative h1 { font-size: 1.4em; }
+    .narrative h2 { font-size: 1.2em; font-style: italic; }
+    .narrative h3 { font-size: 1.05em; color: var(--ink-soft); }
+    .narrative p { margin: 0 0 0.85em; }
+    .narrative ul, .narrative ol { margin: 0.4em 0 1em 1.4em; }
+    .narrative li { margin: 0.15em 0; }
     .narrative code {
-      background: #f3f4f6; padding: 1px 5px; border-radius: 3px;
-      font-family: 'Menlo', 'Monaco', monospace; font-size: 0.9em;
+      font-family: var(--font-mono);
+      font-size: 0.86em;
+      background: var(--paper-soft);
+      padding: 1px 6px;
+      border-radius: 2px;
+      color: var(--ink);
     }
     .narrative pre {
-      background: #f3f4f6; padding: 10px 12px; border-radius: 6px;
-      overflow-x: auto; font-size: 0.85em; margin: 8px 0;
+      font-family: var(--font-mono);
+      background: var(--paper-soft);
+      border-left: 2px solid var(--accent);
+      padding: 14px 16px;
+      font-size: 13px;
+      overflow-x: auto;
+      margin: 1em 0;
     }
-    .narrative table {
-      border-collapse: collapse; margin: 8px 0; font-size: 0.9em;
-    }
-    .narrative th, .narrative td {
-      border: 1px solid var(--border); padding: 5px 10px; text-align: left;
-    }
-    .narrative th { background: #fafbfc; font-weight: 600; }
     .narrative blockquote {
-      border-left: 3px solid var(--accent); padding: 4px 12px;
-      color: var(--muted); margin: 8px 0;
+      border-left: 2px solid var(--accent);
+      padding: 4px 16px;
+      font-style: italic;
+      color: var(--ink-soft);
+      margin: 1em 0;
     }
+    .narrative table { border-collapse: collapse; margin: 1em 0; font-size: 0.92em; font-feature-settings: "tnum"; }
+    .narrative th, .narrative td { border-bottom: 1px solid var(--rule); padding: 6px 12px; text-align: left; }
+    .narrative th { font-weight: 500; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.78em; }
+
+    /* ──────────────────────────────────────────────────────────────────────
+       Variant — each variant is a sub-section with its own pull-quote header
+       ────────────────────────────────────────────────────────────────────── */
+    .variant {
+      margin-top: var(--space-6);
+      padding-top: var(--space-5);
+      border-top: 1px solid var(--rule);
+    }
+    .variant:first-of-type { border-top: none; padding-top: 0; }
+    .variant-header {
+      display: flex;
+      align-items: baseline;
+      gap: var(--space-3);
+      margin-bottom: var(--space-3);
+      flex-wrap: wrap;
+    }
+    .variant-header .vord {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 500;
+      padding-top: 3px;
+    }
+    .variant-header h3 {
+      font-family: var(--font-body);
+      font-weight: 600;
+      font-size: 20px;
+      line-height: 1.15;
+      letter-spacing: -0.012em;
+      color: var(--ink);
+    }
+    .variant-header .vstrat {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--ink-faded);
+      letter-spacing: 0.05em;
+      padding-left: 12px;
+      border-left: 1px solid var(--rule);
+    }
+
+    /* TOC */
+    .toc {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--ink-soft);
+      padding: var(--space-3) 0;
+      border-top: 1px solid var(--rule);
+      border-bottom: 1px solid var(--rule);
+      margin-bottom: var(--space-5);
+    }
+    .toc-label { color: var(--ink-faded); margin-right: var(--space-3); }
+    .toc a {
+      color: var(--ink);
+      text-decoration: none;
+      margin-right: var(--space-3);
+      border-bottom: 1px solid transparent;
+      padding-bottom: 2px;
+      transition: border-color 0.15s;
+    }
+    .toc a:hover { border-bottom-color: var(--accent); color: var(--accent); }
 
     /* Reproducibility appendix */
-    .repro-grid { display: grid; grid-template-columns: 200px 1fr; gap: 6px 16px;
-                  padding: 14px 24px 18px; font-size: 0.85em; }
-    .repro-grid .k { color: var(--muted); text-transform: uppercase;
-                     letter-spacing: 0.04em; font-size: 0.78em; }
-    .repro-grid .v { font-family: 'Menlo', 'Monaco', monospace; word-break: break-all; }
+    .repro-grid {
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      gap: var(--space-1) var(--space-4);
+      padding: var(--space-3) 0;
+      font-size: 13px;
+      border-top: 1px solid var(--rule);
+    }
+    .repro-grid .k {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--ink-faded);
+      padding-top: 4px;
+    }
+    .repro-grid .v {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--ink);
+      word-break: break-all;
+      font-feature-settings: "tnum";
+    }
     .repro-grid pre {
-      grid-column: 1 / -1; background: #f3f4f6; padding: 10px 12px;
-      border-radius: 6px; font-size: 0.82em; overflow-x: auto; margin-top: 4px;
+      grid-column: 1 / -1;
+      background: var(--paper-soft);
+      border-left: 2px solid var(--rule);
+      padding: 12px 14px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--ink-soft);
+      overflow-x: auto;
+      margin: 6px 0 10px;
     }
 
-    /* Section divider for per-variant blocks */
-    .variant-section { margin: 32px 0 20px; }
-    .variant-section .section-header {
-      display: flex; align-items: baseline; gap: 14px; padding: 0 4px 8px;
-      border-bottom: 2px solid var(--border); margin-bottom: 16px;
+    /* Colophon (footer) */
+    .colophon {
+      margin-top: var(--space-7);
+      padding-top: var(--space-3);
+      border-top: 1px solid var(--ink);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--ink-faded);
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
     }
-    .variant-section h2 {
-      font-size: 1.15em; font-weight: 700; color: var(--text); letter-spacing: 0.01em;
+    .colophon .mark { color: var(--accent); }
+
+    /* Empty state */
+    .empty { display: none; }
+
+    /* Plotly cleanup — kill the default white card background that bleeds */
+    .js-plotly-plot .plotly .main-svg { background: transparent !important; }
+    .chart-wrap > div {
+      background: transparent;
+      width: 100%;
+      min-height: 280px;
     }
-    .variant-section .sub {
-      font-size: 0.82em; color: var(--muted); font-family: 'Menlo', monospace;
-    }
-    .toc { padding: 10px 18px 14px; font-size: 0.85em; color: var(--muted); }
-    .toc a { color: var(--accent); text-decoration: none; margin-right: 12px; }
-    .toc a:hover { text-decoration: underline; }
   </style>
 
   <script>
@@ -105,159 +486,541 @@
 </head>
 <body>
 
-<header>
-  <h1 id="page-title"></h1>
-  <p class="run-meta" id="run-meta"></p>
-</header>
+<div class="page">
 
-<!-- Table of contents (jump links, only shown in multi-variant mode) -->
-<div class="card" id="toc-card" style="display:none">
-  <div class="card-title">Sections</div>
-  <div class="toc" id="toc"></div>
-</div>
-
-<!-- Executive summary: methodology -->
-<div class="card" id="narrative-methodology-card" style="display:none">
-  <div class="card-title">Methodology</div>
-  <div class="narrative" id="narrative-methodology"></div>
-</div>
-
-<!-- Executive summary: key findings -->
-<div class="card" id="narrative-findings-card" style="display:none">
-  <div class="card-title">Key Findings</div>
-  <div class="narrative" id="narrative-findings"></div>
-</div>
-
-<!-- Top-level metrics (single-strategy flow only) -->
-<div class="card" id="metrics-card">
-  <div class="card-title">Performance Metrics</div>
-  <div class="metrics-strip" id="metrics-strip"></div>
-</div>
-
-<!-- Cross-variant overview (only rendered in multi-variant mode) -->
-<div id="cross-variant-section">
-  <div class="card" id="equity_overlay-card" style="display:none">
-    <div class="card-title">Variants — Equity Curves (base 100)</div>
-    <div class="chart-wrap"><div id="chart-equity_overlay"></div></div>
-  </div>
-
-  <div class="card" id="per_variant_table-card" style="display:none">
-    <div class="card-title">Per-Variant Performance</div>
-    <div class="chart-wrap"><div id="chart-per_variant_table"></div></div>
-  </div>
-
-  <div class="two-col">
-    <div class="card" id="gross_exposure_overlay-card" style="display:none">
-      <div class="card-title">Gross Exposure by Variant</div>
-      <div class="chart-wrap"><div id="chart-gross_exposure_overlay"></div></div>
+  <!-- ───── MASTHEAD ───── -->
+  <header class="masthead">
+    <div class="imprint">
+      <span class="left">QUANTBOX · RESEARCH</span>
+      <span class="issue" id="masthead-issue"></span>
     </div>
-    <div class="card" id="btc_weight_overlay-card" style="display:none">
-      <div class="card-title">BTC Weight by Variant</div>
-      <div class="chart-wrap"><div id="chart-btc_weight_overlay"></div></div>
+    <h1 class="title" id="page-title"></h1>
+    <p class="deck" id="page-deck"></p>
+    <div class="meta-row" id="page-meta"></div>
+  </header>
+
+  <!-- ───── TOC (only if multi-variant) ───── -->
+  <nav class="toc empty" id="toc-card">
+    <span class="toc-label">Contents</span><span id="toc"></span>
+  </nav>
+
+  <!-- ───── §1 ABSTRACT (methodology + headline metrics) ───── -->
+  <section class="section empty" id="sec-abstract">
+    <div class="section-head">
+      <div class="num">§ 01</div>
+      <div>
+        <span class="kicker">Abstract</span>
+        <h2>Methodology &amp; setup</h2>
+      </div>
     </div>
-  </div>
-
-  <div class="card" id="universe_size-card" style="display:none">
-    <div class="card-title">Universe Coverage Over Time</div>
-    <div class="chart-wrap"><div id="chart-universe_size"></div></div>
-  </div>
-</div>
-
-<!-- Per-variant sections injected here by JS (multi-variant mode only) -->
-<div id="per-variant-sections"></div>
-
-<!-- Single-strategy fallback charts (only rendered when no variants) -->
-<div id="single-strategy-section">
-  <!-- Strategy diagnostic: regime overlay -->
-  <div class="card" id="regime_overlay-card" style="display:none">
-    <div class="card-title">Regime &amp; Trend Overlay</div>
-    <div class="chart-wrap"><div id="chart-regime_overlay"></div></div>
-  </div>
-
-  <div class="two-col">
-    <div class="card" id="signal_count-card" style="display:none">
-      <div class="card-title">Signal Count (with cap)</div>
-      <div class="chart-wrap"><div id="chart-signal_count"></div></div>
+    <div class="section-body">
+      <div class="block empty" id="narrative-methodology-card">
+        <div class="narrative" id="narrative-methodology"></div>
+      </div>
+      <div class="block empty" id="metrics-card">
+        <div class="block-title"><span class="ord">i.</span>Performance metrics</div>
+        <div class="metrics-strip" id="metrics-strip"></div>
+      </div>
     </div>
-    <div class="card" id="position_stack-card" style="display:none">
-      <div class="card-title">Active Positions — Stacked Membership</div>
-      <div class="chart-wrap"><div id="chart-position_stack"></div></div>
+  </section>
+
+  <!-- ───── §2 CROSS-VARIANT COMPARISON ───── -->
+  <section class="section empty" id="sec-comparison">
+    <div class="section-head">
+      <div class="num">§ 02</div>
+      <div>
+        <span class="kicker">Comparison</span>
+        <h2>Variants &amp; equity profile</h2>
+      </div>
     </div>
-  </div>
-
-  <div class="card" id="portfolio-card" style="display:none">
-    <div class="card-title">Portfolio — Equity &amp; Drawdown</div>
-    <div class="chart-wrap"><div id="chart-portfolio"></div></div>
-  </div>
-
-  <div class="two-col">
-    <div class="card" id="monthly-card" style="display:none">
-      <div class="card-title">Monthly Returns (%)</div>
-      <div class="chart-wrap"><div id="chart-monthly"></div></div>
+    <div class="section-body">
+      <div class="block empty" id="per_variant_table-card">
+        <div class="block-title"><span class="ord">i.</span>Per-variant performance</div>
+        <div class="chart-wrap"><div id="chart-per_variant_table"></div></div>
+      </div>
+      <div class="block empty" id="per_variant_stats_heatmap-card">
+        <div class="block-title"><span class="ord">ii.</span>Per-variant metrics heatmap</div>
+        <div class="chart-wrap"><div id="chart-per_variant_stats_heatmap"></div></div>
+      </div>
+      <div class="block empty" id="equity_overlay-card">
+        <div class="block-title"><span class="ord">iii.</span>Equity curves (base 100, log y)</div>
+        <div class="chart-wrap"><div id="chart-equity_overlay"></div></div>
+      </div>
+      <div class="two-col">
+        <div class="block empty" id="gross_exposure_overlay-card">
+          <div class="block-title"><span class="ord">iv.</span>Gross exposure by variant</div>
+          <div class="chart-wrap"><div id="chart-gross_exposure_overlay"></div></div>
+        </div>
+        <div class="block empty" id="btc_weight_overlay-card">
+          <div class="block-title"><span class="ord">v.</span>BTC weight by variant</div>
+          <div class="chart-wrap"><div id="chart-btc_weight_overlay"></div></div>
+        </div>
+      </div>
+      <div class="block empty" id="universe_size-card">
+        <div class="block-title"><span class="ord">vi.</span>Universe coverage over time</div>
+        <div class="chart-wrap"><div id="chart-universe_size"></div></div>
+      </div>
     </div>
-    <div class="card" id="contrib-card" style="display:none">
-      <div class="card-title">Per-Ticker Contribution</div>
-      <div class="chart-wrap"><div id="chart-contrib"></div></div>
+  </section>
+
+  <!-- ───── §3 STRATEGY DIAGNOSTICS (shared, deduped) ───── -->
+  <section class="section empty" id="sec-diagnostics">
+    <div class="section-head">
+      <div class="num">§ 03</div>
+      <div>
+        <span class="kicker">Strategy diagnostics</span>
+        <h2>Signal &amp; volatility profile</h2>
+      </div>
     </div>
-  </div>
+    <div class="section-body">
+      <p class="narrative" style="max-width: 38em; margin-bottom: 32px; font-style: italic; color: var(--ink-soft); font-size: 15px;">
+        These charts depend only on the strategy logic — not on fee/band/tranche
+        execution settings — so they are identical across variants and shown
+        once. Computed from the <span id="diag-source-variant" class="mono"
+        style="color: var(--accent);"></span> variant.
+      </p>
+      <div class="block empty" id="shared__regime_overlay-card">
+        <div class="block-title"><span class="ord">i.</span>Regime &amp; trend overlay</div>
+        <div class="chart-wrap"><div id="chart-shared__regime_overlay"></div></div>
+      </div>
+      <div class="block empty" id="shared__donchian_overlay-card">
+        <div class="block-title"><span class="ord">ii.</span>Donchian channel + trailing stop</div>
+        <div class="chart-wrap"><div id="chart-shared__donchian_overlay"></div></div>
+      </div>
+      <div class="two-col">
+        <div class="block empty" id="shared__signal_count-card">
+          <div class="block-title"><span class="ord">iii.</span>Active Donchian signals</div>
+          <div class="chart-wrap"><div id="chart-shared__signal_count"></div></div>
+        </div>
+        <div class="block empty" id="shared__position_stack-card">
+          <div class="block-title"><span class="ord">iv.</span>Active positions — stacked</div>
+          <div class="chart-wrap"><div id="chart-shared__position_stack"></div></div>
+        </div>
+      </div>
+      <div class="block empty" id="shared__per_window_signal-card">
+        <div class="block-title"><span class="ord">v.</span>Per-window Donchian signal density</div>
+        <div class="chart-wrap"><div id="chart-shared__per_window_signal"></div></div>
+      </div>
+      <div class="block empty" id="shared__vol_overview-card">
+        <div class="block-title"><span class="ord">vi.</span>Realized volatility &amp; vol scalers</div>
+        <div class="chart-wrap"><div id="chart-shared__vol_overview"></div></div>
+      </div>
+    </div>
+  </section>
 
-  <div class="card" id="weights-card" style="display:none">
-    <div class="card-title">Portfolio Weight Heatmap — Top 20 Tickers (weekly avg)</div>
-    <div class="chart-wrap"><div id="chart-weights"></div></div>
-  </div>
+  <!-- ───── §4 PER-VARIANT DEEP DIVE (only execution-dependent outputs) ───── -->
+  <section class="section empty" id="sec-variants">
+    <div class="section-head">
+      <div class="num">§ 04</div>
+      <div>
+        <span class="kicker">Per-variant</span>
+        <h2>Execution outputs</h2>
+      </div>
+    </div>
+    <div class="section-body" id="per-variant-sections"></div>
+  </section>
 
-  <div class="card" id="trades-card" style="display:none">
-    <div class="card-title">Trade Log</div>
-    <div class="chart-wrap"><div id="chart-trades"></div></div>
-  </div>
-</div>
+  <!-- ───── §3' SINGLE-STRATEGY FALLBACK ───── -->
+  <section class="section empty" id="single-strategy-section">
+    <div class="section-head">
+      <div class="num">§ 03</div>
+      <div>
+        <span class="kicker">Strategy detail</span>
+        <h2>Signal &amp; portfolio diagnostics</h2>
+      </div>
+    </div>
+    <div class="section-body">
+      <div class="block empty" id="regime_overlay-card">
+        <div class="block-title"><span class="ord">i.</span>Regime &amp; trend overlay</div>
+        <div class="chart-wrap"><div id="chart-regime_overlay"></div></div>
+      </div>
+      <div class="block empty" id="donchian_overlay-card">
+        <div class="block-title"><span class="ord">ii.</span>Donchian channel + trailing stop</div>
+        <div class="chart-wrap"><div id="chart-donchian_overlay"></div></div>
+      </div>
+      <div class="two-col">
+        <div class="block empty" id="signal_count-card">
+          <div class="block-title"><span class="ord">iii.</span>Signal count (with cap)</div>
+          <div class="chart-wrap"><div id="chart-signal_count"></div></div>
+        </div>
+        <div class="block empty" id="position_stack-card">
+          <div class="block-title"><span class="ord">iv.</span>Active positions — stacked</div>
+          <div class="chart-wrap"><div id="chart-position_stack"></div></div>
+        </div>
+      </div>
+      <div class="block empty" id="per_window_signal-card">
+        <div class="block-title"><span class="ord">v.</span>Per-window Donchian signal density</div>
+        <div class="chart-wrap"><div id="chart-per_window_signal"></div></div>
+      </div>
+      <div class="block empty" id="vol_overview-card">
+        <div class="block-title"><span class="ord">vi.</span>Realized volatility &amp; vol scalers</div>
+        <div class="chart-wrap"><div id="chart-vol_overview"></div></div>
+      </div>
+      <div class="block empty" id="portfolio-card">
+        <div class="block-title"><span class="ord">vii.</span>Portfolio — equity &amp; drawdown</div>
+        <div class="chart-wrap"><div id="chart-portfolio"></div></div>
+      </div>
+      <div class="two-col">
+        <div class="block empty" id="monthly-card">
+          <div class="block-title"><span class="ord">viii.</span>Monthly returns (%)</div>
+          <div class="chart-wrap"><div id="chart-monthly"></div></div>
+        </div>
+        <div class="block empty" id="contrib-card">
+          <div class="block-title"><span class="ord">ix.</span>Per-ticker contribution</div>
+          <div class="chart-wrap"><div id="chart-contrib"></div></div>
+        </div>
+      </div>
+      <div class="block empty" id="weights-card">
+        <div class="block-title"><span class="ord">x.</span>Portfolio weight heatmap — top 20 tickers (weekly avg)</div>
+        <div class="chart-wrap"><div id="chart-weights"></div></div>
+      </div>
+      <div class="block empty" id="trades-card">
+        <div class="block-title"><span class="ord">xi.</span>Trade log</div>
+        <div class="chart-wrap"><div id="chart-trades"></div></div>
+      </div>
+    </div>
+  </section>
 
-<!-- Reproducibility appendix -->
-<div class="card" id="repro-card" style="display:none">
-  <div class="card-title">Reproducibility Appendix</div>
-  <div class="repro-grid" id="repro-grid"></div>
+  <!-- ───── §5 FINDINGS ───── -->
+  <section class="section empty" id="sec-findings">
+    <div class="section-head">
+      <div class="num">§ 05</div>
+      <div>
+        <span class="kicker">Discussion</span>
+        <h2>Findings</h2>
+      </div>
+    </div>
+    <div class="section-body">
+      <div class="block empty" id="narrative-findings-card">
+        <div class="narrative" id="narrative-findings"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───── §6 APPENDIX ───── -->
+  <section class="section empty" id="sec-appendix">
+    <div class="section-head">
+      <div class="num">§ 06</div>
+      <div>
+        <span class="kicker">Appendix</span>
+        <h2>Reproducibility</h2>
+      </div>
+    </div>
+    <div class="section-body">
+      <div class="block empty" id="repro-card">
+        <div class="repro-grid" id="repro-grid"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Auto-mount point for any chart key not explicitly defined above -->
+  <section class="section empty" id="auto-charts-section">
+    <div class="section-head">
+      <div class="num">§ 99</div>
+      <div>
+        <span class="kicker">Auxiliary</span>
+        <h2>Additional diagnostics</h2>
+      </div>
+    </div>
+    <div class="section-body" id="auto-charts"></div>
+  </section>
+
+  <footer class="colophon">
+    <span><span class="mark">◆</span> Quantbox Research</span>
+    <span id="colophon-id"></span>
+  </footer>
 </div>
 
 <script>
+  /* eslint-disable */
   const D = DATA;
-  const cfg = { responsive: true, displayModeBar: 'hover' };
+  const cfg = { responsive: true, displayModeBar: false };
   const variantMetrics = D.variant_metrics || {};
   const variantNames = Object.keys(variantMetrics);
   const isMulti = variantNames.length >= 2;
 
-  // Header — use narrative title if provided, else fall back to strategies list
+  // ───────────────────────────────────────────────────────────
+  // Editorial Plotly base layout — every figure inherits this.
+  // ───────────────────────────────────────────────────────────
+  const INK         = '#15192c';
+  const INK_SOFT    = '#3a4055';
+  const INK_FADED   = '#6a6f80';
+  const RULE        = '#d4c8b3';
+  const RULE_SOFT   = '#ece2cf';
+  const PAPER       = '#fbf9f4';
+  const ACCENT      = '#b85427';
+  const GREEN       = '#1f5d3a';
+  const RED         = '#8b2a1f';
+  const PALETTE     = [
+    '#15192c', '#b85427', '#1f5d3a', '#5a6c7d',
+    '#8b2a1f', '#a07a3f', '#3a4055', '#b89868',
+    '#7a6356', '#4a5d7a',
+  ];
+
+  const FONT_BODY = "'Newsreader', Georgia, serif";
+  const FONT_MONO = "'JetBrains Mono', ui-monospace, monospace";
+
+  const COMMON_LAYOUT = {
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    plot_bgcolor:  'rgba(0,0,0,0)',
+    font: { family: FONT_MONO, size: 11, color: INK },
+    title: { font: { family: FONT_BODY, size: 14, color: INK }, x: 0.0, xanchor: 'left' },
+    xaxis: {
+      color: INK_SOFT,
+      gridcolor: RULE_SOFT,
+      linecolor: RULE,
+      zerolinecolor: RULE,
+      tickfont: { family: FONT_MONO, size: 10, color: INK_SOFT },
+      title: { font: { family: FONT_MONO, size: 10, color: INK_FADED } },
+      automargin: true,
+    },
+    yaxis: {
+      color: INK_SOFT,
+      gridcolor: RULE_SOFT,
+      linecolor: RULE,
+      zerolinecolor: RULE,
+      tickfont: { family: FONT_MONO, size: 10, color: INK_SOFT },
+      title: { font: { family: FONT_MONO, size: 10, color: INK_FADED } },
+      automargin: true,
+    },
+    legend: {
+      bgcolor: 'rgba(0,0,0,0)',
+      bordercolor: 'rgba(0,0,0,0)',
+      font: { family: FONT_MONO, size: 10, color: INK_SOFT },
+      orientation: 'h', y: -0.18, x: 0, xanchor: 'left', yanchor: 'top',
+    },
+    margin: { t: 40, r: 24, l: 70, b: 80 },
+    colorway: PALETTE,
+    hoverlabel: {
+      bgcolor: PAPER, bordercolor: INK, font: { family: FONT_MONO, size: 11, color: INK },
+    },
+  };
+
+  function deepMerge(into, from) {
+    for (const k of Object.keys(from || {})) {
+      const v = from[k];
+      if (v && typeof v === 'object' && !Array.isArray(v) && typeof into[k] === 'object' && into[k] !== null) {
+        deepMerge(into[k], v);
+      } else if (into[k] === undefined || into[k] === null) {
+        into[k] = v;
+      }
+    }
+    return into;
+  }
+  function styleLayout(layout, data) {
+    // Start from the chart's own layout (preserves shapes, subplot titles,
+    // axis types like log, colorbar config, etc.) and fill in editorial
+    // defaults only where the chart didn't already set them.
+    const out = JSON.parse(JSON.stringify(layout || {}));
+    const isTable    = Array.isArray(data) && data.length === 1 && data[0].type === 'table';
+    const onlyHeatmap = Array.isArray(data) && data.every(d => d.type === 'heatmap');
+
+    // Force responsive sizing — Plotly otherwise picks its default 700px width
+    // when the container is narrower (e.g. inside a two-col grid), which
+    // overflows the page and creates a horizontal scroll.
+    out.autosize = true;
+    delete out.width;
+
+    if (isTable) {
+      // Tables get only paper bg + font; everything else (axes, legend, margins)
+      // is irrelevant or counter-productive.
+      out.paper_bgcolor = 'rgba(0,0,0,0)';
+      out.plot_bgcolor  = 'rgba(0,0,0,0)';
+      out.font          = Object.assign({ family: FONT_MONO, size: 12, color: INK }, out.font || {});
+      out.margin = { t: 8, r: 0, l: 0, b: 8 };
+      return out;
+    }
+    if (onlyHeatmap) {
+      // Heatmaps render their own categorical axes correctly — don't merge in
+      // COMMON_LAYOUT which can break category-axis tick rendering. Apply only
+      // the visual identity essentials.
+      out.paper_bgcolor = 'rgba(0,0,0,0)';
+      out.plot_bgcolor  = 'rgba(0,0,0,0)';
+      out.font          = Object.assign({ family: FONT_MONO, size: 11, color: INK }, out.font || {});
+      out.hoverlabel    = Object.assign({}, COMMON_LAYOUT.hoverlabel, out.hoverlabel || {});
+      // Apply axis tick fonts only (no gridcolor override on heatmaps).
+      Object.keys(out).forEach(k => {
+        if (/^(xaxis|yaxis)\d*$/.test(k) && typeof out[k] === 'object' && out[k] !== null) {
+          out[k].tickfont = Object.assign({ family: FONT_MONO, size: 10, color: INK_SOFT }, out[k].tickfont || {});
+        }
+      });
+      if (out.title && typeof out.title === 'object') {
+        out.title = Object.assign({}, out.title, {
+          x: 0, xanchor: 'left',
+          font: Object.assign({ family: FONT_BODY, size: 13, color: INK }, out.title.font || {}),
+        });
+      }
+      return out;
+    }
+    deepMerge(out, COMMON_LAYOUT);
+
+    // Force-override visual identity attributes — these MUST be uniform
+    // across the report regardless of whatever the chart builder set.
+    out.paper_bgcolor = 'rgba(0,0,0,0)';
+    out.plot_bgcolor  = 'rgba(0,0,0,0)';
+    out.colorway      = PALETTE;
+    out.font          = Object.assign({}, COMMON_LAYOUT.font, out.font || {});
+    out.hoverlabel    = Object.assign({}, COMMON_LAYOUT.hoverlabel, out.hoverlabel || {});
+
+    // Legend: force editorial position (bottom, left) — chart builders set
+    // their own positions which collide with subplot titles.
+    out.legend = Object.assign({}, COMMON_LAYOUT.legend, {
+      // Preserve only chart-specific items the editorial style doesn't dictate.
+      title: (out.legend && out.legend.title) ? out.legend.title : undefined,
+      tracegroupgap: (out.legend && out.legend.tracegroupgap) ? out.legend.tracegroupgap : 8,
+    });
+
+    // Margins: keep generous bottom space for the legend.
+    const m = out.margin || {};
+    out.margin = {
+      t: Math.max(m.t || 0, 40),
+      r: Math.max(m.r || 0, 24),
+      l: Math.max(m.l || 0, 70),
+      b: Math.max(m.b || 0, 90),
+    };
+
+    // Axis styling — apply to every numbered xaxis/yaxis subplot so multi-row
+    // charts (portfolio, vol_overview, donchian_overlay) all match. Preserve
+    // the chart's own `type` (e.g. 'log', 'category') — never set our own.
+    Object.keys(out).forEach(k => {
+      if (/^(xaxis|yaxis)\d*$/.test(k) && typeof out[k] === 'object' && out[k] !== null) {
+        const axis = out[k];
+        if (!axis.gridcolor)     axis.gridcolor     = RULE_SOFT;
+        if (!axis.linecolor)     axis.linecolor     = RULE;
+        if (!axis.zerolinecolor) axis.zerolinecolor = RULE;
+        axis.tickfont = Object.assign({ family: FONT_MONO, size: 10, color: INK_SOFT }, axis.tickfont || {});
+        if (axis.title && typeof axis.title === 'object') {
+          axis.title.font = Object.assign({ family: FONT_MONO, size: 10, color: INK_FADED }, axis.title.font || {});
+        }
+        // Don't set automargin — interacts badly with categorical heatmaps.
+      }
+    });
+
+    // Annotations (subplot titles) get a tighter editorial font.
+    if (Array.isArray(out.annotations)) {
+      out.annotations = out.annotations.map(a => Object.assign({}, a, {
+        font: Object.assign({ family: FONT_BODY, size: 12, color: INK_SOFT, style: 'italic' }, a.font || {}),
+      }));
+    }
+
+    // Title (chart-level): smaller, left-aligned, body font.
+    if (out.title && typeof out.title === 'object') {
+      out.title = Object.assign({}, out.title, {
+        x: 0, xanchor: 'left',
+        font: Object.assign({ family: FONT_BODY, size: 13, color: INK }, out.title.font || {}),
+      });
+    }
+
+    return out;
+  }
+
+  // ───────────────────────────────────────────────────────────
+  // Header — masthead population
+  // ───────────────────────────────────────────────────────────
   const titleText = (D.narrative && D.narrative.title)
     ? D.narrative.title
-    : 'Backtest Report — ' + (D.strategies || []).join(' | ');
+    : 'Backtest Report — ' + (D.strategies || []).join(' · ');
   document.getElementById('page-title').textContent = titleText;
-  document.getElementById('run-meta').innerHTML =
-    '<strong>Run:</strong> ' + D.run_id +
-    ' &nbsp;·&nbsp; <strong>As of:</strong> ' + D.asof +
-    ' &nbsp;·&nbsp; <strong>Period:</strong> ' + D.period_start + ' → ' + D.period_end;
+  const deckEl = document.getElementById('page-deck');
+  if (D.narrative && D.narrative.deck) {
+    deckEl.textContent = D.narrative.deck;
+  } else if ((D.strategies || []).length) {
+    deckEl.textContent = 'A multi-variant backtest of ' + (D.strategies || []).join(' and ') +
+      (D.period_start ? ' across ' + D.period_start + ' — ' + D.period_end : '') + '.';
+  }
+  // Issue number = period-end + short run hash
+  const issueShort = (D.run_id || '').split('__').slice(-2, -1)[0] || '';
+  document.getElementById('masthead-issue').textContent =
+    'No. ' + (D.asof || '????-??-??') + (issueShort ? ' / ' + issueShort.slice(0, 8) : '');
+  document.getElementById('colophon-id').textContent = (D.run_id || '').slice(0, 80);
 
-  // Narrative sections: render markdown if present
+  const metaEl = document.getElementById('page-meta');
+  function metaItem(key, val) {
+    if (val === undefined || val === null || val === '') return;
+    const el = document.createElement('span');
+    el.innerHTML = '<span class="key">' + key + '</span><span class="val">' + val + '</span>';
+    metaEl.appendChild(el);
+  }
+  metaItem('Run', D.run_id);
+  metaItem('As of', D.asof);
+  if (D.period_start) metaItem('Period', D.period_start + ' → ' + D.period_end);
+
+  // ───────────────────────────────────────────────────────────
+  // Narrative
+  // ───────────────────────────────────────────────────────────
   function renderNarrative(slotKey) {
     const md = (D.narrative && D.narrative[slotKey]) ? D.narrative[slotKey] : '';
-    if (!md || !md.trim()) return;
+    if (!md || !md.trim()) return false;
     const target = document.getElementById('narrative-' + slotKey);
-    const card = document.getElementById('narrative-' + slotKey + '-card');
-    if (!target || !card) return;
+    const wrap   = document.getElementById('narrative-' + slotKey + '-card');
+    if (!target || !wrap) return false;
     target.innerHTML = (typeof marked !== 'undefined') ? marked.parse(md) : md;
-    card.style.display = '';
+    wrap.classList.remove('empty');
+    return true;
   }
-  renderNarrative('methodology');
-  renderNarrative('findings');
+  const hasMethodology = renderNarrative('methodology');
+  const hasFindings    = renderNarrative('findings');
 
-  // Multi-variant mode: hide top-level metrics strip (each variant has its own)
-  // and the single-strategy fallback section.
+  // ───────────────────────────────────────────────────────────
+  // Metrics strip
+  // ───────────────────────────────────────────────────────────
+  const METRICS = [
+    ['Total Return', 'total_return', 'pct'],
+    ['CAGR',         'cagr',         'pct'],
+    ['Sharpe',       'sharpe',       'f2'],
+    ['Sortino',      'sortino',      'f2'],
+    ['Max Drawdown', 'max_drawdown', 'pct'],
+    ['DD Duration',  'max_drawdown_duration_days', 'days'],
+    ['Annual Vol',   'annual_volatility', 'pct'],
+    ['Calmar',       'calmar',       'f2'],
+    ['Win Rate',     'win_rate',     'pct'],
+    ['Profit Factor','profit_factor','f2'],
+  ];
+  function renderMetricsStrip(stripEl, metricsObj) {
+    stripEl.innerHTML = '';
+    for (const [label, key, fmt] of METRICS) {
+      const v = metricsObj[key] ?? 0;
+      let fv, cls;
+      if (fmt === 'pct')      { fv = (v * 100).toFixed(1) + '%'; cls = v < 0 ? 'neg' : 'pos'; }
+      else if (fmt === 'days') { fv = Math.round(v) + 'd'; cls = 'neu'; }
+      else                    { fv = v.toFixed(2); cls = v < 0 ? 'neg' : 'neu'; }
+      stripEl.insertAdjacentHTML('beforeend',
+        `<div class="metric">
+           <div class="metric-label">${label}</div>
+           <div class="metric-value ${cls}">${fv}</div>
+         </div>`);
+    }
+  }
+
+  // ───────────────────────────────────────────────────────────
+  // Mode-specific section visibility
+  // ───────────────────────────────────────────────────────────
   if (isMulti) {
-    const mc = document.getElementById('metrics-card');
-    if (mc) mc.style.display = 'none';
-    const sg = document.getElementById('single-strategy-section');
-    if (sg) sg.style.display = 'none';
+    // Multi-variant: hide top-level metrics + single-strategy fallback
+    document.getElementById('metrics-card').classList.add('empty');
+    document.getElementById('single-strategy-section').classList.add('empty');
+    document.getElementById('sec-variants').classList.remove('empty');
+    document.getElementById('sec-comparison').classList.remove('empty');
+  } else {
+    // Single-strategy: hide cross-variant comparison + per-variant deep dive
+    document.getElementById('sec-variants').classList.add('empty');
+    document.getElementById('sec-comparison').classList.add('empty');
+    document.getElementById('single-strategy-section').classList.remove('empty');
+    if (D.metrics && Object.keys(D.metrics).length) {
+      const strip = document.getElementById('metrics-strip');
+      renderMetricsStrip(strip, D.metrics);
+      document.getElementById('metrics-card').classList.remove('empty');
+    }
   }
+  // Abstract section visible if methodology or metrics shown
+  if (hasMethodology || !document.getElementById('metrics-card').classList.contains('empty')) {
+    document.getElementById('sec-abstract').classList.remove('empty');
+  }
+  if (hasFindings) document.getElementById('sec-findings').classList.remove('empty');
 
-  // Reproducibility appendix
+  // ───────────────────────────────────────────────────────────
+  // Reproducibility
+  // ───────────────────────────────────────────────────────────
   (function renderRepro() {
     const r = D.reproducibility || {};
     if (!r || Object.keys(r).length === 0) return;
@@ -286,67 +1049,28 @@
     addRow('Pipeline', r.pipeline);
     addRow('Engine commit', r.engine_commit);
     addJsonBlock('Engine config', r.engine_config);
-    addJsonBlock('Data', r.data);
-    addJsonBlock('Universe', r.universe);
-    addJsonBlock('Prices', r.prices);
-    addJsonBlock('Variants', r.variants);
-    if (grid.children.length > 0) card.style.display = '';
+    addJsonBlock('Data',          r.data);
+    addJsonBlock('Universe',      r.universe);
+    addJsonBlock('Prices',        r.prices);
+    addJsonBlock('Variants',      r.variants);
+    if (grid.children.length > 0) {
+      card.classList.remove('empty');
+      document.getElementById('sec-appendix').classList.remove('empty');
+    }
   })();
 
-  // Metrics definition shared by top-level and per-variant strips
-  const METRICS = [
-    ['Total Return', 'total_return', 'pct'],
-    ['CAGR',         'cagr',         'pct'],
-    ['Sharpe',       'sharpe',       'f2'],
-    ['Sortino',      'sortino',      'f2'],
-    ['Max Drawdown', 'max_drawdown', 'pct'],
-    ['DD Duration',  'max_drawdown_duration_days', 'days'],
-    ['Annual Vol',   'annual_volatility', 'pct'],
-    ['Calmar',       'calmar',       'f2'],
-    ['Win Rate',     'win_rate',     'pct'],
-    ['Profit Factor','profit_factor','f2'],
-  ];
-  function renderMetricsStrip(stripEl, metricsObj) {
-    for (const [label, key, fmt] of METRICS) {
-      const v = metricsObj[key] ?? 0;
-      let fv, cls;
-      if (fmt === 'pct') { fv = (v * 100).toFixed(1) + '%'; cls = v < 0 ? 'neg' : 'pos'; }
-      else if (fmt === 'days') { fv = Math.round(v) + 'd'; cls = 'neu'; }
-      else { fv = v.toFixed(2); cls = v < 0 ? 'neg' : 'neu'; }
-      stripEl.insertAdjacentHTML('beforeend',
-        `<div class="metric">
-           <div class="metric-label">${label}</div>
-           <div class="metric-value ${cls}">${fv}</div>
-         </div>`);
-    }
-  }
-
-  // Top-level metrics strip (single-strategy mode only — hidden when isMulti)
-  if (!isMulti) {
-    const strip = document.getElementById('metrics-strip');
-    if (strip) renderMetricsStrip(strip, D.metrics || {});
-  }
-
-  // Per-variant sections — each variant gets its own card block with metrics
-  // strip + framework charts (portfolio, regime/signal diagnostics, monthly +
-  // contrib, position_stack + weights) in a consistent layout.
-  function makeChartCard(parent, title, chartKey, opts = {}) {
-    const card = document.createElement('div');
-    card.className = 'card';
-    card.id = chartKey + '-card';
-    const t = document.createElement('div');
-    t.className = 'card-title';
-    t.textContent = title;
-    const wrap = document.createElement('div');
-    wrap.className = 'chart-wrap';
-    const inner = document.createElement('div');
-    inner.id = 'chart-' + chartKey;
-    wrap.appendChild(inner);
-    card.appendChild(t);
-    card.appendChild(wrap);
-    if (opts.hidden) card.style.display = 'none';
-    parent.appendChild(card);
-    return card;
+  // ───────────────────────────────────────────────────────────
+  // Per-variant deep-dive sections
+  // ───────────────────────────────────────────────────────────
+  function makeBlock(parent, ord, title, chartKey) {
+    const div = document.createElement('div');
+    div.className = 'block empty';
+    div.id = chartKey + '-card';
+    div.innerHTML =
+      `<div class="block-title"><span class="ord">${ord}</span>${title}</div>
+       <div class="chart-wrap"><div id="chart-${chartKey}"></div></div>`;
+    parent.appendChild(div);
+    return div;
   }
   function makeTwoCol(parent) {
     const row = document.createElement('div');
@@ -355,96 +1079,176 @@
     return row;
   }
 
+  // ───────────────────────────────────────────────────────────
+  // Pick "primary" variant for shared diagnostics. Convention:
+  //  1. Last non-benchmark crypto_trend variant (most likely the paper choice)
+  //  2. Otherwise, the first variant.
+  // ───────────────────────────────────────────────────────────
+  let primaryVariant = variantNames[0];
+  if (isMulti) {
+    const trendVariants = variantNames.filter(v => {
+      const sn = (variantMetrics[v] || {})._strategy_name || '';
+      return sn.includes('crypto_trend') || sn.includes('trend_catcher') || sn.includes('regime');
+    });
+    if (trendVariants.length) primaryVariant = trendVariants[trendVariants.length - 1];
+    document.getElementById('diag-source-variant').textContent = primaryVariant;
+    document.getElementById('sec-diagnostics').classList.remove('empty');
+
+    // Mirror primary variant's diagnostic charts into shared__* keys so the
+    // §3 section gets populated by the normal chart-render loop.
+    const DIAG_KEYS = ['regime_overlay', 'donchian_overlay', 'signal_count',
+                       'position_stack', 'per_window_signal', 'vol_overview'];
+    D.charts = D.charts || {};
+    for (const k of DIAG_KEYS) {
+      const src = D.charts[primaryVariant + '__' + k];
+      if (src) D.charts['shared__' + k] = src;
+    }
+  }
+
   if (isMulti) {
     const host = document.getElementById('per-variant-sections');
-    const toc = document.getElementById('toc');
+    const toc  = document.getElementById('toc');
     const tocCard = document.getElementById('toc-card');
+    let vi = 0;
     for (const vname of variantNames) {
+      vi += 1;
       const m = variantMetrics[vname] || {};
-      const sect = document.createElement('section');
-      sect.className = 'variant-section';
+      const sect = document.createElement('div');
+      sect.className = 'variant';
       sect.id = 'section-' + vname;
+
       const hdr = document.createElement('div');
-      hdr.className = 'section-header';
+      hdr.className = 'variant-header';
+      const ordStr = '§ 04 · ' + String(vi).padStart(2, '0');
+      const primaryFlag = (vname === primaryVariant)
+        ? '<span class="vstrat" style="color: var(--accent);">primary</span>'
+        : '';
       hdr.innerHTML =
-        `<h2>${vname}</h2>` +
-        (m._strategy_name ? `<span class="sub">${m._strategy_name}</span>` : '');
+        `<span class="vord">${ordStr}</span>` +
+        `<h3>${vname}</h3>` +
+        (m._strategy_name ? `<span class="vstrat">${m._strategy_name}</span>` : '') +
+        primaryFlag;
       sect.appendChild(hdr);
 
-      // Metrics strip card
-      const metricsCard = document.createElement('div');
-      metricsCard.className = 'card';
-      const mTitle = document.createElement('div');
-      mTitle.className = 'card-title';
-      mTitle.textContent = 'Performance Metrics';
+      // Metrics strip
+      const mStripBlock = document.createElement('div');
+      mStripBlock.className = 'block';
+      const mStripTitle = document.createElement('div');
+      mStripTitle.className = 'block-title';
+      mStripTitle.innerHTML = '<span class="ord">i.</span>Performance metrics';
       const mStrip = document.createElement('div');
       mStrip.className = 'metrics-strip';
-      metricsCard.appendChild(mTitle);
-      metricsCard.appendChild(mStrip);
-      sect.appendChild(metricsCard);
+      mStripBlock.appendChild(mStripTitle);
+      mStripBlock.appendChild(mStrip);
+      sect.appendChild(mStripBlock);
       renderMetricsStrip(mStrip, m);
 
-      // Portfolio equity & drawdown
-      makeChartCard(sect, 'Portfolio — Equity & Drawdown', vname + '__portfolio', { hidden: true });
-
-      // Strategy diagnostics (if emitted): regime overlay full-width, signal count + position stack side-by-side
-      makeChartCard(sect, 'Regime & Trend Overlay', vname + '__regime_overlay', { hidden: true });
-      const diagRow = makeTwoCol(sect);
-      makeChartCard(diagRow, 'Signal Count (with cap)', vname + '__signal_count', { hidden: true });
-      makeChartCard(diagRow, 'Active Positions — Stacked Membership', vname + '__position_stack', { hidden: true });
-
-      // Monthly + contribution side-by-side
+      // Execution-dependent outputs only (diagnostics shared at §3).
+      makeBlock(sect, 'ii.',  'Portfolio — equity, drawdown, rolling Sharpe', vname + '__portfolio');
       const r2 = makeTwoCol(sect);
-      makeChartCard(r2, 'Monthly Returns (%)', vname + '__monthly', { hidden: true });
-      makeChartCard(r2, 'Per-Ticker Contribution', vname + '__contrib', { hidden: true });
-
-      // Weight heatmap
-      makeChartCard(sect, 'Portfolio Weight Heatmap — Top 20 Tickers (weekly avg)', vname + '__weights', { hidden: true });
+      makeBlock(r2, 'iii.',   'Monthly returns (%)',                          vname + '__monthly');
+      makeBlock(r2, 'iv.',    'Per-ticker contribution',                      vname + '__contrib');
+      makeBlock(sect, 'v.',   'Portfolio weight heatmap — top 20 (weekly)',   vname + '__weights');
 
       host.appendChild(sect);
 
       if (toc) {
         const a = document.createElement('a');
         a.href = '#section-' + vname;
-        a.textContent = vname;
+        a.textContent = String(vi).padStart(2, '0') + ' · ' + vname;
         toc.appendChild(a);
       }
     }
-    if (variantNames.length && tocCard) tocCard.style.display = '';
+    if (variantNames.length && tocCard) tocCard.classList.remove('empty');
+
+    // Suppress the per-variant duplicate diagnostic charts from rendering at
+    // the bottom auto-host. They've been mirrored under shared__* keys.
+    const DIAG_KEYS = ['regime_overlay', 'donchian_overlay', 'signal_count',
+                       'position_stack', 'per_window_signal', 'vol_overview'];
+    for (const v of variantNames) {
+      for (const k of DIAG_KEYS) delete D.charts[v + '__' + k];
+    }
   }
 
-  // Auto-card slot for any unknown chart key (defensive fallback)
-  const autoHost = document.createElement('div');
-  autoHost.id = 'auto-charts';
-  document.body.appendChild(autoHost);
+  // ───────────────────────────────────────────────────────────
+  // Auto-fallback for unknown chart keys
+  // ───────────────────────────────────────────────────────────
+  const autoSection = document.getElementById('auto-charts-section');
+  const autoHost    = document.getElementById('auto-charts');
+  let autoOrd = 0;
   function ensureChartSlot(key) {
     let el = document.getElementById('chart-' + key);
     if (el) return el;
-    const card = document.createElement('div');
-    card.className = 'card';
-    card.id = key + '-card';
-    const title = document.createElement('div');
-    title.className = 'card-title';
-    title.textContent = key.replace(/__/g, ' · ').replace(/_/g, ' ');
-    const wrap = document.createElement('div');
-    wrap.className = 'chart-wrap';
-    el = document.createElement('div');
-    el.id = 'chart-' + key;
-    wrap.appendChild(el);
-    card.appendChild(title);
-    card.appendChild(wrap);
-    autoHost.appendChild(card);
-    return el;
+    autoOrd += 1;
+    const div = document.createElement('div');
+    div.className = 'block';
+    div.id = key + '-card';
+    const human = key.replace(/__/g, ' · ').replace(/_/g, ' ');
+    div.innerHTML =
+      `<div class="block-title"><span class="ord">${autoOrd}.</span>${human}</div>
+       <div class="chart-wrap"><div id="chart-${key}"></div></div>`;
+    autoHost.appendChild(div);
+    autoSection.classList.remove('empty');
+    return document.getElementById('chart-' + key);
   }
 
-  // Render each chart
+  // ───────────────────────────────────────────────────────────
+  // Render charts — every figure gets the editorial layout
+  // ───────────────────────────────────────────────────────────
+  const renderedEls = [];
   for (const [key, fig] of Object.entries(D.charts || {})) {
     const el = ensureChartSlot(key);
     if (!el || !fig || !fig.data) continue;
-    Plotly.newPlot(el, fig.data, fig.layout ?? {}, cfg);
+    const layout = styleLayout(fig.layout, fig.data);
+    Plotly.newPlot(el, fig.data, layout, cfg);
+    renderedEls.push(el);
     const card = document.getElementById(key + '-card');
-    if (card) card.style.display = '';
+    if (card) card.classList.remove('empty');
   }
+
+  // Force-resize all charts once layout has settled — Plotly's responsive
+  // mode otherwise computes the wrong width on first paint when the parent
+  // grid is still being measured.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      renderedEls.forEach(el => {
+        try { Plotly.Plots.resize(el); } catch (e) {}
+      });
+    });
+  });
+  // Also re-resize on actual window resize (just in case).
+  window.addEventListener('resize', () => {
+    renderedEls.forEach(el => { try { Plotly.Plots.resize(el); } catch (e) {} });
+  });
+
+  // ───────────────────────────────────────────────────────────
+  // Hide empty sections (no chart filled in)
+  // ───────────────────────────────────────────────────────────
+  function pruneEmptySections() {
+    document.querySelectorAll('.section').forEach(sec => {
+      // A section is empty if every .block inside it still has .empty
+      const blocks = sec.querySelectorAll('.block, .metrics-strip');
+      let anyVisible = false;
+      blocks.forEach(b => { if (!b.classList.contains('empty')) anyVisible = true; });
+      // Override: keep section visible if any chart-id placeholder has been filled
+      if (!anyVisible) {
+        const allBlocks = sec.querySelectorAll('[id$="-card"]');
+        allBlocks.forEach(b => { if (!b.classList.contains('empty')) anyVisible = true; });
+      }
+      // The deep-dive section is governed by isMulti — leave alone
+      if (sec.id === 'sec-variants' && isMulti) anyVisible = true;
+      if (sec.id === 'sec-abstract' && (hasMethodology || !document.getElementById('metrics-card').classList.contains('empty'))) anyVisible = true;
+      if (sec.id === 'sec-findings' && hasFindings) anyVisible = true;
+      if (!anyVisible) sec.classList.add('empty');
+    });
+    // Make .empty actually hide
+  }
+  pruneEmptySections();
+
+  // CSS rule for .empty
+  const style = document.createElement('style');
+  style.textContent = '.empty { display: none !important; }';
+  document.head.appendChild(style);
 </script>
 </body>
 </html>

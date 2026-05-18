@@ -1,8 +1,14 @@
-# Backtest crypto trend strategy — same params as trading config.
-# Swap pipeline.name to "trade.full_pipeline.v1" to go live.
+# SSRN "Catching Crypto Trends" backtest — paper-faithful defaults.
+#
+# Aligned with the source notebook (vol_target=50%, tranches=5, threshold=0.05,
+# fees=0.005). For the multi-variant exec report use
+# quantbox-lab/configs/run_backtest_crypto_trend_ssrn.yaml.
+#
+# Swap pipeline.name to "trade.full_pipeline.v1" to go live (see
+# run_spot_paper_crypto_trend.yaml / run_futures_paper_crypto_trend.yaml).
 run:
   mode: backtest
-  asof: "2026-02-06"
+  asof: "2026-05-18"
   pipeline: "backtest.pipeline.v1"
 
 artifacts:
@@ -12,20 +18,20 @@ plugins:
   pipeline:
     name: "backtest.pipeline.v1"
     params:
-      engine: vectorbt          # "vectorbt" or "rsims"
-      fees: 0.001
-      rebalancing_freq: 1       # daily (int=every Nth day, or "1W", "1M", etc.)
-      # threshold: 0.05         # uncomment for rebalancing-bands mode
+      engine: vectorbt
+      fees: 0.005               # paper assumption (50 bps per order)
+      rebalancing_freq: 1       # daily
+      threshold: 0.05           # 5% absolute weight-deviation bands
       trading_days: 365
 
       universe:
         top_n: 100
 
       prices:
-        lookback_days: 365
+        lookback_days: 730
 
       risk:
-        tranches: 1
+        tranches: 5             # paper choice (5-day rolling mean smoother)
         max_leverage: 1
         allow_short: false
 
@@ -33,7 +39,15 @@ plugins:
     - name: "strategy.crypto_trend.v1"
       weight: 1.0
       params:
-        lookback_days: 365
+        lookback_windows: [5, 10, 20, 30, 60, 90, 150, 250, 360]
+        vol_targets: ["off", 0.50]
+        tranches: [1, 5]
+        top_by_mcap: 30
+        top_by_volume: 10
+        vol_lookback: 60
+        clip_vol_scaler: null   # paper math — no clamping
+        inv_vol_track: true
+        regime_ticker: BTC
 
   data:
     name: "binance.live_data.v1"

@@ -27,11 +27,23 @@ except ImportError:
 # exclusion list either install ``quantbox-datasets`` or pass their own
 # ``exclude_tickers`` explicitly.
 def _load_default_stablecoins() -> list[str]:
+    """Resolve the default non-tradeable-crypto exclusion list.
+
+    The authoritative source is ``catalog/asset_categories.yaml`` in
+    ``quantbox-datasets`` (also packaged under ``quantbox_datasets/data/`` so
+    it ships in the installed wheel). If the package is not installed or the
+    YAML is missing the function returns ``[]`` — quantbox itself stays
+    domain-agnostic. Callers in that situation must pass ``exclude_tickers``
+    explicitly.
+    """
     try:
         from quantbox_datasets.asset_categories import non_tradeable_crypto_symbols
     except ImportError:
         return []
-    return list(non_tradeable_crypto_symbols())
+    try:
+        return list(non_tradeable_crypto_symbols())
+    except Exception:  # noqa: BLE001 — never crash quantbox's import path
+        return []
 
 
 # Resolved at import time so existing consumers
@@ -262,6 +274,9 @@ def select_universe_duckdb(
         exclude_tickers = DEFAULT_STABLECOINS
 
     def _to_long(df: pd.DataFrame, value_name: str) -> pd.DataFrame:
+        # Normalise the index name so reset_index() produces a column called "date"
+        # regardless of how the caller's DataFrame is shaped.
+        df = df.rename_axis("date", axis=0)
         return df.reset_index().melt(id_vars="date", var_name="ticker", value_name=value_name)
 
     prices_long = _to_long(prices, "price")
