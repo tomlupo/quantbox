@@ -88,6 +88,7 @@ from quantbox.plugins.strategies._universe import (
     select_universe_duckdb,
 )
 
+
 # ============================================================================
 # Constants
 # ============================================================================
@@ -441,6 +442,33 @@ class CryptoTrendStrategy:
     use_duckdb: bool = True
     use_trailing_stop: bool = True
 
+    # Notebook-parity knobs (SSRN "Catching Crypto Trends" replication)
+    #  * ``inv_vol_track``: when True, derive an additional ``vol_target='inv_vol'``
+    #    track from the ``off`` track via :func:`compute_inv_vol_track` (notebook
+    #    cells 678–686). Requires ``"off"`` in ``vol_targets``.
+    #  * ``clip_vol_scaler``: pass-through to :func:`compute_volatility_scalers`.
+    #    Default ``(0.1, 10.0)`` preserves the prior behaviour; pass ``None`` to
+    #    skip clipping (notebook-faithful — no clamp applied).
+    #  * ``regime_ticker``: ticker used for the ``donchian_overlay`` diagnostic
+    #    (notebook charts 3, 6, 22). Default ``"BTC"``.
+    #  * ``output_track``: (vol_target, tranches) slice returned in ``weights``
+    #    for the pipeline. The full multi-index panel is preserved under
+    #    ``details["weights_panel"]`` for research. Default ``("50", 5)`` —
+    #    the notebook-chosen paper trade variant.
+    inv_vol_track: bool = False
+    clip_vol_scaler: tuple[float, float] | None = (0.1, 10.0)
+    regime_ticker: str = "BTC"
+    output_track: tuple[str, int] = ("50", 5)
+    # Volume convention for universe selection. Curated Binance/Hyperliquid
+    # datasets store quote-volume (USD notional) directly, so DO NOT multiply
+    # by price again. Default ``False`` preserves prior behaviour (volume in
+    # base units → strategy computes ``price × volume``); set to ``True`` for
+    # curated datasets where ``volume.parquet`` is already in dollars.
+    volume_is_dollar: bool = False
+    volume_rolling_window: int = 1
+    min_listing_days: int = 0
+    hysteresis_rank_band: int = 0
+
     def describe(self) -> dict[str, Any]:
         """
         Describe strategy for LLM introspection.
@@ -504,20 +532,44 @@ class CryptoTrendStrategy:
                 if hasattr(self, attr):
                     setattr(self, attr, value)
 
+        # YAML / JSON only carry lists, not tuples. Normalise tuple-typed knobs.
+        if isinstance(self.output_track, (list, tuple)) and len(self.output_track) == 2:
+            self.output_track = (str(self.output_track[0]), int(self.output_track[1]))
+        if isinstance(self.clip_vol_scaler, list) and len(self.clip_vol_scaler) == 2:
+            self.clip_vol_scaler = (float(self.clip_vol_scaler[0]), float(self.clip_vol_scaler[1]))
+
         prices = data["prices"]
         volume = data["volume"]
         market_cap = data["market_cap"]
 
         logger.info(f"Running CryptoTrendStrategy on {len(prices.columns)} tickers, {len(prices)} days")
 
-        # 1. Universe selection
-        if self.use_duckdb and DUCKDB_AVAILABLE:
+        # 1. Universe selection. The DuckDB path does not yet support the
+        # best-practice knobs (volume_is_dollar, rolling-window, listing
+        # cool-off, hysteresis), so fall back to the vectorized impl whenever
+        # any of them is set away from its default.
+        needs_vectorized = (
+            self.volume_is_dollar
+            or self.volume_rolling_window > 1
+            or self.min_listing_days > 0
+            or self.hysteresis_rank_band > 0
+        )
+        if self.use_duckdb and DUCKDB_AVAILABLE and not needs_vectorized:
             universe = select_universe_duckdb(
                 prices, volume, market_cap, self.top_by_mcap, self.top_by_volume, self.exclude_tickers
             )
         else:
             universe = select_universe_vectorized(
-                prices, volume, market_cap, self.top_by_mcap, self.top_by_volume, self.exclude_tickers
+                prices,
+                volume,
+                market_cap,
+                top_by_mcap=self.top_by_mcap,
+                top_by_volume=self.top_by_volume,
+                exclude_tickers=self.exclude_tickers,
+                volume_is_dollar=self.volume_is_dollar,
+                volume_rolling_window=self.volume_rolling_window,
+                min_listing_days=self.min_listing_days,
+                hysteresis_rank_band=self.hysteresis_rank_band,
             )
 
         # 2. Signal generation
@@ -531,12 +583,13 @@ class CryptoTrendStrategy:
         numeric_targets = [vt for vt in self.vol_targets if isinstance(vt, (int, float))]
         has_off = any(vt == "off" for vt in self.vol_targets if isinstance(vt, str))
 
-        scalers = {}
+        scalers: dict[str, pd.DataFrame] = {}
         if numeric_targets:
             scalers = compute_volatility_scalers(
                 prices,
                 numeric_targets,
                 self.vol_lookback,
+                clip_range=self.clip_vol_scaler,
             )
         if has_off:
             scalers["off"] = pd.DataFrame(1.0, index=prices.index, columns=prices.columns)
@@ -550,20 +603,188 @@ class CryptoTrendStrategy:
             self.normalize_weights,
         )
 
-        # 5. Extract simple weights for latest day
-        simple = get_simple_weights(weights, "50", 5)
-        latest = simple.iloc[-1].dropna()
+        # 4b. Optional inverse-vol track (notebook cells 678–686).
+        if self.inv_vol_track:
+            if not has_off:
+                raise ValueError(
+                    "inv_vol_track=True requires 'off' in vol_targets — the "
+                    "inv_vol track is derived from the off-track weights."
+                )
+            # Build the inv_vol track from the pre-tranche off-weights so the
+            # inverse-vol normalisation matches the notebook (cells 678–686):
+            # inv_vol is applied to the un-tranched off-weights, then tranched.
+            off_untranched = (signals * scalers["off"]) * universe
+            if self.normalize_weights:
+                n_positions = universe.sum(axis=1).replace(0, np.nan)
+                off_untranched = off_untranched.div(n_positions, axis=0).fillna(0.0)
+            iv_track = compute_inv_vol_track(
+                off_untranched,
+                prices,
+                self.tranches,
+                vol_lookback=self.vol_lookback,
+            )
+            weights = pd.concat([weights, iv_track], axis=1).sort_index(axis=1, level="ticker")
+
+        # 5. Pick the output track for the pipeline. The strategy's full
+        # multi-index panel (every vol_target × tranches × ticker) is preserved
+        # under details["weights_panel"]; the pipeline only consumes one slice
+        # so we don't accidentally stack tracks via sum-across-levels.
+        vt_key, t_key = self.output_track
+        try:
+            slice_df = get_simple_weights(weights, str(vt_key), int(t_key))
+        except KeyError as exc:
+            raise ValueError(
+                f"output_track={self.output_track!r} not present in weights panel — "
+                f"available vol_targets={sorted(set(weights.columns.get_level_values('vol_target')))}, "
+                f"tranches={sorted(set(weights.columns.get_level_values('tranches')))}"
+            ) from exc
+
+        latest = slice_df.iloc[-1].dropna()
         latest = latest[latest > 0.001].to_dict()
 
+        # 6. Diagnostics emit — used by reporter to render notebook charts.
+        diagnostics = self._build_diagnostics(
+            prices=prices,
+            signals=signals,
+            universe=universe,
+            scalers=scalers,
+        )
+
+        # Pipeline-facing weights = single-level DataFrame at the chosen track.
+        # Full multi-index panel is preserved for research consumers via details.
+        output = slice_df.tail(self.output_periods)
         return {
-            "weights": weights.tail(self.output_periods),
+            "weights": output,
             "simple_weights": latest,
             "details": {
                 "signals": signals,
                 "universe": universe,
                 "scalers": scalers,
+                "diagnostics": diagnostics,
+                "weights_panel": weights,
+                "output_track": tuple(self.output_track),
             },
         }
+
+    def _build_diagnostics(
+        self,
+        *,
+        prices: pd.DataFrame,
+        signals: pd.DataFrame,
+        universe: pd.DataFrame,
+        scalers: dict[str, pd.DataFrame],
+    ) -> dict[str, Any]:
+        """Build reporter-facing diagnostics payload.
+
+        Emits the contract documented in ``docs/plans/crypto-trend-ssrn-finalize.md``:
+
+        - ``donchian_overlay``: price + bands + trailing stop for ``regime_ticker``
+          across the headline windows.
+        - ``signal_count``: per-day active-signal count across the top-N universe.
+        - ``per_window_signal``: per-window binary signal for the regime ticker
+          (feeds the per-window stats heatmap in the reporter).
+        - ``vol_overview``: realized vol time series + scalers (used for charts 12,
+          13, 18, 19).
+        - ``regime_overlay``: stub-compatible with the existing reporter builder so
+          the report renders a price chart even when no diagnostics-specific
+          overlay is desired.
+        """
+        diagnostics: dict[str, Any] = {}
+
+        # Resolve regime ticker (may be quoted as BTCUSDT etc.)
+        regime_col = next(
+            (c for c in prices.columns if c in (self.regime_ticker, self.regime_ticker + "USDT")),
+            None,
+        )
+
+        # Active-signal count across the top-N universe.
+        active = (signals * universe > 0).astype(int)
+        diagnostics["signal_count"] = {
+            "series": active.sum(axis=1).astype(int),
+            "cap": int(self.top_by_volume),
+            "label": "Active Donchian signals (top-N universe)",
+        }
+
+        # Vol overview.
+        returns = prices.ffill().pct_change(fill_method=None)
+        realized_vol = returns.rolling(self.vol_lookback).std() * np.sqrt(365.0)
+        diagnostics["vol_overview"] = {
+            "realized_vol": realized_vol,
+            "scalers": scalers,
+            "vol_lookback": int(self.vol_lookback),
+        }
+
+        if regime_col is None:
+            return diagnostics
+
+        # Donchian overlay (headline window) for the regime ticker.
+        headline_w = self._select_headline_window()
+        ref_prices = prices[regime_col]
+        high = ref_prices.rolling(headline_w, min_periods=headline_w).max()
+        low = ref_prices.rolling(headline_w, min_periods=headline_w).min()
+        mid = 0.5 * (high + low)
+
+        # Recompute trailing stop for the headline window for visualization.
+        signal_arr = np.zeros(len(ref_prices))
+        trailing_stop = np.full(len(ref_prices), np.nan)
+        prices_arr = ref_prices.values
+        high_arr = high.values
+        mid_arr = mid.values
+        for i in range(headline_w - 1, len(ref_prices)):
+            if i == headline_w - 1:
+                signal_arr[i] = 1.0 if prices_arr[i] >= high_arr[i] else 0.0
+                trailing_stop[i] = mid_arr[i]
+            else:
+                if signal_arr[i - 1] == 1:
+                    trailing_stop[i] = max(trailing_stop[i - 1], mid_arr[i])
+                    signal_arr[i] = 1.0 if prices_arr[i] >= trailing_stop[i] else 0.0
+                else:
+                    signal_arr[i] = 1.0 if prices_arr[i] >= high_arr[i] else 0.0
+                    trailing_stop[i] = mid_arr[i]
+        ts_series = pd.Series(trailing_stop, index=ref_prices.index, name="trailing_stop")
+        sig_series = pd.Series(signal_arr, index=ref_prices.index, name="signal")
+
+        diagnostics["donchian_overlay"] = {
+            "ref_ticker": str(self.regime_ticker),
+            "window": int(headline_w),
+            "price": ref_prices,
+            "high": high,
+            "low": low,
+            "mid": mid,
+            "trailing_stop": ts_series,
+            "signal": sig_series,
+        }
+
+        # Per-window signal map for the regime ticker (drives per-window heatmaps).
+        per_window: dict[int, pd.Series] = {}
+        for w in self.lookback_windows:
+            per_window[int(w)] = compute_donchian_breakout_vectorized(ref_prices, int(w))
+        diagnostics["per_window_signal"] = {
+            "ref_ticker": str(self.regime_ticker),
+            "signals": per_window,
+        }
+
+        # Stub regime_overlay (reuses existing reporter builder shape).
+        diagnostics["regime_overlay"] = {
+            "ref_ticker": str(self.regime_ticker),
+            "fast_window": int(headline_w),
+            "slow_window": int(headline_w),
+            "price": ref_prices,
+        }
+
+        return diagnostics
+
+    def _select_headline_window(self) -> int:
+        """Pick the headline Donchian window for the donchian_overlay diagnostic.
+
+        Convention: prefer ``60`` (notebook default for single-asset analysis),
+        fall back to the median configured window.
+        """
+        if not self.lookback_windows:
+            return 60
+        if 60 in self.lookback_windows:
+            return 60
+        return int(sorted(self.lookback_windows)[len(self.lookback_windows) // 2])
 
     def get_latest_weights(
         self,

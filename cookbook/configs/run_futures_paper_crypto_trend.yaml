@@ -1,3 +1,6 @@
+# Live futures paper-trading config for strategy.crypto_trend.v1 (SSRN port).
+# See cookbook/configs/run_spot_paper_crypto_trend.yaml for the rationale on
+# why this live config diverges from the paper-faithful backtest defaults.
 run:
   mode: paper
   asof: "2026-02-06"
