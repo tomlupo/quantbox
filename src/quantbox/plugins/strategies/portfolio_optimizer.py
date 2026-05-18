@@ -173,7 +173,7 @@ class PortfolioOptimizerStrategy:
     method: str = "max_sharpe"
     lookback: int = 252
     risk_free_rate: float = 0.02
-    trading_days: int = 252
+    trading_days: int | None = None  # None = pipeline-injected via _pipeline_annualize; falls back to 252
     min_weight: float = 0.0
     max_weight: float = 1.0
     rolling: bool = False
@@ -194,12 +194,19 @@ class PortfolioOptimizerStrategy:
         if self.method not in _METHODS:
             raise ValueError(f"Unknown method '{self.method}'. Choose from: {_METHODS}")
 
+        # Resolve trading_days: explicit (self/params) wins, else pipeline-injected, else 252.
+        pipeline_annualize = (params or {}).get("_pipeline_annualize")
+        if self.trading_days is None:
+            effective_td = int(round(pipeline_annualize)) if pipeline_annualize is not None else 252
+        else:
+            effective_td = int(self.trading_days)
+
         prices: pd.DataFrame = data["prices"]
 
         if self.rolling:
-            weights_df = self._rolling_weights(prices)
+            weights_df = self._rolling_weights(prices, effective_td)
         else:
-            weights_df = self._single_weights(prices)
+            weights_df = self._single_weights(prices, effective_td)
 
         # Build simple_weights from the last row
         latest = weights_df.iloc[-1]
@@ -208,7 +215,7 @@ class PortfolioOptimizerStrategy:
         # Statistics and risk from the latest window
         tail = prices.iloc[-self.lookback :]
         returns = tail.ffill().pct_change(fill_method=None).dropna()
-        analyzer = _PortfolioAnalyzer(returns, self.risk_free_rate, self.trading_days)
+        analyzer = _PortfolioAnalyzer(returns, self.risk_free_rate, effective_td)
         w_arr = latest.values
         var_val = analyzer.var(w_arr)
         cvar_val = analyzer.cvar(w_arr)
@@ -238,15 +245,15 @@ class PortfolioOptimizerStrategy:
         # inverse_vol
         return analyzer.inverse_vol()
 
-    def _single_weights(self, prices: pd.DataFrame) -> pd.DataFrame:
+    def _single_weights(self, prices: pd.DataFrame, trading_days: int) -> pd.DataFrame:
         """Compute weights once for the latest lookback window."""
         tail = prices.iloc[-self.lookback :]
         returns = tail.ffill().pct_change(fill_method=None).dropna()
-        analyzer = _PortfolioAnalyzer(returns, self.risk_free_rate, self.trading_days)
+        analyzer = _PortfolioAnalyzer(returns, self.risk_free_rate, trading_days)
         w = self._optimize(analyzer)
         return pd.DataFrame([w], columns=prices.columns, index=[prices.index[-1]])
 
-    def _rolling_weights(self, prices: pd.DataFrame) -> pd.DataFrame:
+    def _rolling_weights(self, prices: pd.DataFrame, trading_days: int) -> pd.DataFrame:
         """Compute a full weight history, rebalancing every N days."""
         dates = prices.index
         start = self.lookback
@@ -265,7 +272,7 @@ class PortfolioOptimizerStrategy:
                 if len(returns) < 2:
                     last_weights = np.full(len(prices.columns), 1.0 / len(prices.columns))
                 else:
-                    analyzer = _PortfolioAnalyzer(returns, self.risk_free_rate, self.trading_days)
+                    analyzer = _PortfolioAnalyzer(returns, self.risk_free_rate, trading_days)
                     last_weights = self._optimize(analyzer)
                 steps_since_rebalance = 0
             rows.append(last_weights)
