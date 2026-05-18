@@ -87,21 +87,25 @@ class TurnoverValidation:
         findings: list[dict[str, Any]] = []
 
         if annual_turnover > 50:
-            findings.append({
-                "level": "warn",
-                "rule": "high_annual_turnover",
-                "detail": f"Annual turnover is {annual_turnover:.1f}x, which may erode returns.",
-            })
+            findings.append(
+                {
+                    "level": "warn",
+                    "rule": "high_annual_turnover",
+                    "detail": f"Annual turnover is {annual_turnover:.1f}x, which may erode returns.",
+                }
+            )
 
         if ca_sharpe < 0 < raw_sharpe:
-            findings.append({
-                "level": "warn",
-                "rule": "costs_eliminate_edge",
-                "detail": (
-                    f"Cost-adjusted Sharpe ({ca_sharpe:.4f}) is negative while "
-                    f"raw Sharpe ({raw_sharpe:.4f}) is positive at {cost_bps} bps."
-                ),
-            })
+            findings.append(
+                {
+                    "level": "warn",
+                    "rule": "costs_eliminate_edge",
+                    "detail": (
+                        f"Cost-adjusted Sharpe ({ca_sharpe:.4f}) is negative while "
+                        f"raw Sharpe ({raw_sharpe:.4f}) is positive at {cost_bps} bps."
+                    ),
+                }
+            )
 
         passed = len(findings) == 0
 

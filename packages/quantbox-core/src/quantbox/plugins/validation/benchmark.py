@@ -78,21 +78,24 @@ class BenchmarkValidation:
         findings: list[dict[str, Any]] = []
 
         if abs(beta) > 1.5:
-            findings.append({
-                "level": "warn",
-                "rule": "high_beta",
-                "detail": f"Strategy beta ({beta:.4f}) is unusually high.",
-            })
+            findings.append(
+                {
+                    "level": "warn",
+                    "rule": "high_beta",
+                    "detail": f"Strategy beta ({beta:.4f}) is unusually high.",
+                }
+            )
 
         if r_squared < 0.1:
-            findings.append({
-                "level": "warn",
-                "rule": "low_r_squared",
-                "detail": (
-                    f"R-squared ({r_squared:.4f}) is very low, suggesting the "
-                    f"benchmark may not be appropriate."
-                ),
-            })
+            findings.append(
+                {
+                    "level": "warn",
+                    "rule": "low_r_squared",
+                    "detail": (
+                        f"R-squared ({r_squared:.4f}) is very low, suggesting the benchmark may not be appropriate."
+                    ),
+                }
+            )
 
         passed = len(findings) == 0
 

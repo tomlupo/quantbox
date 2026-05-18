@@ -51,8 +51,16 @@ import pandas as pd
 
 Mode = Literal["backtest", "paper", "live"]
 PluginKind = Literal[
-    "pipeline", "broker", "data", "publisher", "risk", "strategy", "rebalancing",
-    "feature", "validation", "monitor",
+    "pipeline",
+    "broker",
+    "data",
+    "publisher",
+    "risk",
+    "strategy",
+    "rebalancing",
+    "feature",
+    "validation",
+    "monitor",
 ]
 PipelineKind = Literal["research", "trading"]
 
@@ -88,6 +96,11 @@ class PluginMeta:
     inputs: tuple[str, ...] = ()
     outputs: tuple[str, ...] = ()
     examples: tuple[str, ...] = ()
+    # Maturity tag. Free-form but typical values: "experimental", "research",
+    # "stable", "deprecated". Optional — defaults to "" so existing plugins
+    # don't need to opt in. Tests use this to gate which strategies CI
+    # exercises against production datasets.
+    status: str = ""
 
 
 @dataclass

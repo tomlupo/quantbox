@@ -98,35 +98,41 @@ class DrawdownControlRiskManager:
         halted = False
         if current_drawdown < max_drawdown:
             if action == "halt":
-                findings.append({
-                    "level": "error",
-                    "rule": "drawdown_halt",
-                    "detail": (
-                        f"Current drawdown {current_drawdown:.4f} breaches "
-                        f"max_drawdown {max_drawdown:.4f}. Action: halt."
-                    ),
-                })
+                findings.append(
+                    {
+                        "level": "error",
+                        "rule": "drawdown_halt",
+                        "detail": (
+                            f"Current drawdown {current_drawdown:.4f} breaches "
+                            f"max_drawdown {max_drawdown:.4f}. Action: halt."
+                        ),
+                    }
+                )
                 halted = True
             else:
-                findings.append({
-                    "level": "warn",
-                    "rule": "drawdown_halt",
-                    "detail": (
-                        f"Current drawdown {current_drawdown:.4f} breaches "
-                        f"max_drawdown {max_drawdown:.4f}. Action: warn."
-                    ),
-                })
+                findings.append(
+                    {
+                        "level": "warn",
+                        "rule": "drawdown_halt",
+                        "detail": (
+                            f"Current drawdown {current_drawdown:.4f} breaches "
+                            f"max_drawdown {max_drawdown:.4f}. Action: warn."
+                        ),
+                    }
+                )
 
         if current_drawdown < scale_threshold and not halted:
-            findings.append({
-                "level": "info",
-                "rule": "drawdown_scale",
-                "detail": (
-                    f"Current drawdown {current_drawdown:.4f} breaches "
-                    f"scale_threshold {scale_threshold:.4f}. "
-                    f"Recommend scaling positions by {scale_factor}."
-                ),
-            })
+            findings.append(
+                {
+                    "level": "info",
+                    "rule": "drawdown_scale",
+                    "detail": (
+                        f"Current drawdown {current_drawdown:.4f} breaches "
+                        f"scale_threshold {scale_threshold:.4f}. "
+                        f"Recommend scaling positions by {scale_factor}."
+                    ),
+                }
+            )
 
         return findings
 

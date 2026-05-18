@@ -90,9 +90,7 @@ class TestTechnicalFeatures:
 
     # ---- expected feature columns ----
 
-    def test_expected_core_columns_exist(
-        self, plugin: TechnicalFeatures, sample_data: dict[str, pd.DataFrame]
-    ) -> None:
+    def test_expected_core_columns_exist(self, plugin: TechnicalFeatures, sample_data: dict[str, pd.DataFrame]) -> None:
         result = plugin.compute(sample_data, {})
         expected = ["rsi_14", "macd", "bb_position_20d", "return_5d", "volatility_20d"]
         for col in expected:
@@ -108,24 +106,18 @@ class TestTechnicalFeatures:
             assert f"momentum_{p}d" in result.columns
             assert f"sma_ratio_{p}d" in result.columns
 
-    def test_rsi_columns(
-        self, plugin: TechnicalFeatures, sample_data: dict[str, pd.DataFrame]
-    ) -> None:
+    def test_rsi_columns(self, plugin: TechnicalFeatures, sample_data: dict[str, pd.DataFrame]) -> None:
         result = plugin.compute(sample_data, {})
         assert "rsi_14" in result.columns
         assert "rsi_28" in result.columns
 
-    def test_macd_columns(
-        self, plugin: TechnicalFeatures, sample_data: dict[str, pd.DataFrame]
-    ) -> None:
+    def test_macd_columns(self, plugin: TechnicalFeatures, sample_data: dict[str, pd.DataFrame]) -> None:
         result = plugin.compute(sample_data, {})
         assert "macd" in result.columns
         assert "macd_signal" in result.columns
         assert "macd_histogram" in result.columns
 
-    def test_day_cyclical_columns(
-        self, plugin: TechnicalFeatures, sample_data: dict[str, pd.DataFrame]
-    ) -> None:
+    def test_day_cyclical_columns(self, plugin: TechnicalFeatures, sample_data: dict[str, pd.DataFrame]) -> None:
         result = plugin.compute(sample_data, {})
         assert "day_sin" in result.columns
         assert "day_cos" in result.columns
@@ -158,16 +150,12 @@ class TestTechnicalFeatures:
 
     # ---- values sanity ----
 
-    def test_rsi_values_bounded(
-        self, plugin: TechnicalFeatures, sample_data: dict[str, pd.DataFrame]
-    ) -> None:
+    def test_rsi_values_bounded(self, plugin: TechnicalFeatures, sample_data: dict[str, pd.DataFrame]) -> None:
         result = plugin.compute(sample_data, {})
         rsi = result["rsi_14"].dropna()
         assert (rsi >= 0).all()
         assert (rsi <= 100).all()
 
-    def test_no_infinite_values(
-        self, plugin: TechnicalFeatures, sample_data: dict[str, pd.DataFrame]
-    ) -> None:
+    def test_no_infinite_values(self, plugin: TechnicalFeatures, sample_data: dict[str, pd.DataFrame]) -> None:
         result = plugin.compute(sample_data, {})
         assert not np.isinf(result.select_dtypes(include=[np.number]).values).any()

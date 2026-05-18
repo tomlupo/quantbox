@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any
+
+import pandas as pd
 
 from .contracts import (
     BrokerPlugin,
@@ -21,9 +24,6 @@ from .llm_utils import event_line, load_schema, validate_table
 from .plugin_manifest import load_manifest, repo_root, resolve_profile
 from .store import FileArtifactStore
 from .validate import validate_config
-
-import logging
-import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +148,6 @@ def run_from_config(cfg: dict[str, Any], registry) -> RunResult:
         aggregator=aggregator,
     )
 
-
     # --- Validation plugins (post-backtest) ---
     validation_cfg = cfg["plugins"].get("validation", []) or []
     if validation_cfg and mode == "backtest":
@@ -236,8 +235,6 @@ def run_from_config(cfg: dict[str, Any], registry) -> RunResult:
         schema_path = schema_dir / f"{logical}.schema.json"
         if schema_path.exists() and path.endswith(".parquet"):
             try:
-                import pandas as pd
-
                 df = pd.read_parquet(path)
                 schema = load_schema(schema_path)
                 manifest["warnings"].extend([f"{logical}:{w}" for w in validate_table(df, schema)])
