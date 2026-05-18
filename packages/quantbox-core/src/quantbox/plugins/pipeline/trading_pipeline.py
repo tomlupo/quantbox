@@ -1184,7 +1184,12 @@ class TradingPipeline:
             "orders_details": [],
         }
 
-        if orders_df is None or orders_df.empty or not trading_enabled:
+        if orders_df is None or orders_df.empty:
+            logger.info("No orders generated")
+            return report
+
+        if not trading_enabled:
+            logger.info("trading_enabled=False, skipping execution")
             return report
 
         executable = (
@@ -1193,6 +1198,11 @@ class TradingPipeline:
             else orders_df
         )
         if executable.empty:
+            if "Order Status" in orders_df.columns:
+                reasons = orders_df["Order Status"].value_counts().to_dict()
+                logger.warning("All %d orders filtered out: %s", len(orders_df), reasons)
+            else:
+                logger.warning("All %d orders filtered out (no Executable=True rows)", len(orders_df))
             return report
 
         # Sell before buy: sort by Action descending (Sell > Buy)
@@ -1258,6 +1268,23 @@ class TradingPipeline:
 
                 report["orders_details"].append(detail)
                 report["summary"]["total_executed"] += 1
+        else:
+            # Submitted orders but received zero fills — broker-level failure.
+            order_list = ", ".join(
+                f"{r['side'].upper()} {r['qty']:.4f} {r['symbol']}" for _, r in broker_orders.iterrows()
+            )
+            logger.error(
+                "Broker returned 0 fills for %d submitted orders: %s",
+                len(broker_orders),
+                order_list,
+            )
+            notify = getattr(broker, "notify", None)
+            if notify:
+                notify(
+                    f"⚠️ <b>0 FILLS for {len(broker_orders)} orders</b>\n"
+                    f"Submitted: {order_list}\n"
+                    "Check broker connectivity — portfolio NOT rebalanced."
+                )
 
         report["summary"]["total_value"] = sum(
             d.get("executed_quantity", 0) * d.get("executed_price", 0)

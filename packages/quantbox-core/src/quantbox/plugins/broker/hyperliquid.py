@@ -262,6 +262,10 @@ class HyperliquidBroker:
     # Account Methods
     # ========================================================================
 
+    def notify(self, message: str) -> bool:
+        """Send a Telegram alert. Returns True if sent successfully."""
+        return send_telegram(self.telegram_token, self.telegram_chat_id, message)
+
     def get_balance(self) -> dict[str, float]:
         """
         Get account balance.
@@ -300,7 +304,12 @@ class HyperliquidBroker:
 
             return {"total": total, "free": free, "used": used}
         except Exception as e:
-            logger.error(f"Error fetching balance: {e}")
+            logger.error("Balance fetch failed: %s", e)
+            send_telegram(
+                self.telegram_token,
+                self.telegram_chat_id,
+                f"⚠️ <b>BALANCE FETCH FAILED</b>\nCannot read account balance: {e}\nNo orders will execute this run.",
+            )
             return {"total": 0, "free": 0, "used": 0}
 
     def _get_positions_dict(self) -> dict[str, dict[str, Any]]:
@@ -400,6 +409,7 @@ class HyperliquidBroker:
     def place_orders(self, orders: pd.DataFrame) -> pd.DataFrame:
         """BrokerPlugin-compliant order execution."""
         fills: list[dict[str, Any]] = []
+        failed: list[dict[str, Any]] = []
         for _, o in orders.iterrows():
             sym = str(o["symbol"])
             side = str(o["side"]).lower()
@@ -417,6 +427,23 @@ class HyperliquidBroker:
                         "order_id": result.get("id"),
                     }
                 )
+            else:
+                failed.append({"symbol": sym, "side": side, "qty": qty})
+
+        if failed:
+            logger.error(
+                "Orders failed (%d/%d): %s",
+                len(failed),
+                len(orders),
+                [(f["side"], f["symbol"]) for f in failed],
+            )
+            lines = "\n".join(f"  ❌ {f['side'].upper()} {f['qty']:.4f} {f['symbol']}" for f in failed)
+            send_telegram(
+                self.telegram_token,
+                self.telegram_chat_id,
+                f"⚠️ <b>ORDER FAILURES ({len(failed)}/{len(orders)})</b>\n{lines}",
+            )
+
         return pd.DataFrame(fills) if fills else pd.DataFrame(columns=["symbol", "side", "qty", "price", "order_id"])
 
     def fetch_fills(self, since: str) -> pd.DataFrame:

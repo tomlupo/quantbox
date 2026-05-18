@@ -150,6 +150,7 @@ class FuturesRebalancer:
     ) -> dict[str, Any]:
         """Generate rebalancing DataFrame and executable orders."""
         min_trade_size = float(params.get("min_trade_size", 0.01))
+        min_notional = float(params.get("min_notional", 10.0))
         exclusions = list(params.get("exclusions", [])) + [stable_coin]
         exclusions = list(set(exclusions))
 
@@ -191,12 +192,10 @@ class FuturesRebalancer:
             return price_map.get(asset)
 
         if total_value <= 0:
-            logger.error("Portfolio value (margin) is zero or negative")
-            return {
-                "orders": pd.DataFrame(),
-                "rebalancing": pd.DataFrame(),
-                "total_value": 0.0,
-            }
+            raise RuntimeError(
+                f"Portfolio value is zero or negative (broker.get_cash() returned {cash_available!r}). "
+                "Check broker connectivity and account balance."
+            )
 
         adjusted_weights = {a: w * capital_at_risk for a, w in weights.items()}
 
@@ -219,6 +218,7 @@ class FuturesRebalancer:
         orders_df = self._create_executable_orders(
             rebalancing_df=rebalancing_df,
             min_trade_size=min_trade_size,
+            min_notional=min_notional,
         )
 
         return {
@@ -286,6 +286,7 @@ class FuturesRebalancer:
         self,
         rebalancing_df: pd.DataFrame,
         min_trade_size: float,
+        min_notional: float = 10.0,
     ) -> pd.DataFrame:
         """Convert rebalancing to executable orders.
 
@@ -338,6 +339,11 @@ class FuturesRebalancer:
                 status = "Zero price"
                 reason = "No price available"
                 adjusted_qty = 0.0
+            elif notional_value < min_notional:
+                status = "Below min notional"
+                reason = f"Notional {notional_value:.2f} < {min_notional:.2f}"
+                adjusted_qty = 0.0
+                logger.debug("Skipping %s %s: notional $%.2f < $%.2f", action, asset, notional_value, min_notional)
             else:
                 status = "To be placed"
                 reason = ""
