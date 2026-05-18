@@ -461,10 +461,13 @@ class CryptoTrendStrategy:
     output_track: tuple[str, int] = ("50", 5)
     # Volume convention for universe selection. Curated Binance/Hyperliquid
     # datasets store quote-volume (USD notional) directly, so DO NOT multiply
-    # by price again. Default ``False`` preserves prior behaviour (volume in
-    # base units → strategy computes ``price × volume``); set to ``True`` for
-    # curated datasets where ``volume.parquet`` is already in dollars.
-    volume_is_dollar: bool = False
+    # by price again. Default ``True`` matches the convention of every
+    # currently-shipped crypto data source (binance.live_data.v1,
+    # binance.futures_data.v1, dataset.curated.v1) and aligns with the
+    # defaults of strategy.crypto_regime_trend.v1 and strategy.carver_trend.v1.
+    # Pass ``False`` only when supplying a custom data source that stores
+    # volume in base-coin units.
+    volume_is_dollar: bool = True
     volume_rolling_window: int = 1
     min_listing_days: int = 0
     hysteresis_rank_band: int = 0
