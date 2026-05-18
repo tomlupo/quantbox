@@ -7,6 +7,7 @@ from .cross_asset_momentum import CrossAssetMomentumStrategy, cross_asset_moment
 from .crypto_regime_trend import CryptoRegimeTrendStrategy
 from .crypto_trend import CryptoTrendStrategy
 from .eth_mean_reversion_24h import EthMeanReversion24h
+from .frozen_weights import FrozenWeightsStrategy
 from .hmm_regime_allocation import HmmRegimeAllocation
 from .ml_strategy import MLPredictionStrategy
 from .momentum_long_short import MomentumLongShortStrategy
@@ -22,6 +23,7 @@ __all__ = [
     "BeGlobalStrategy",
     "CarryStrategy",
     "EthMeanReversion24h",
+    "FrozenWeightsStrategy",
     "HmmRegimeAllocation",
     "CryptoTrendStrategy",
     "MomentumLongShortStrategy",

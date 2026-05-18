@@ -101,7 +101,20 @@ class BacktestPipeline:
                     "default": 0.0,
                 },
                 "rebalancing_freq": {
-                    "description": "Rebalancing frequency: int, string (1D/1W/1M), or null for buy-and-hold.",
+                    "description": (
+                        "How often portfolio is rebalanced to target weights. Accepts: "
+                        "int (every N bars; e.g. 5 = weekly on daily data, every 5 hours on hourly), "
+                        "string pandas-offset (1D/1W/1M/1Y), explicit list of dates, "
+                        "or null for buy-and-hold (rebalance only on the first bar). "
+                        "BETWEEN rebalances the engine holds positions and lets them DRIFT "
+                        "with returns (buy-and-hold semantics, matching `bt.vectorized.backtest`); "
+                        "it does NOT re-equalise to target every bar. Daily-target reset "
+                        "behaviour is not currently supported — use rebalancing_freq=1 (daily) "
+                        "if you need it explicitly. WARNING: a daily-forward-fill-of-target "
+                        "approximation OVERSTATES returns by ~3-4 pp/decade vs buy-and-hold "
+                        "for sticky-weight strategies. The engine here is correct; this note "
+                        "is for anyone writing custom validation simulators outside the pipeline."
+                    ),
                     "default": 1,
                 },
                 "threshold": {

@@ -120,7 +120,7 @@ def compute_ewma_volatility(
     prices: pd.DataFrame,
     ewma_lambda: float = 0.94,
     min_periods: int = 200,
-    annualize: float = 365.0,
+    annualize: float = 252.0,
 ) -> pd.DataFrame:
     """
     Compute EWMA volatility (RiskMetrics-style).
@@ -129,7 +129,10 @@ def compute_ewma_volatility(
         prices: Price DataFrame
         ewma_lambda: Decay factor (0.94 = standard RiskMetrics)
         min_periods: Minimum observations before producing values
-        annualize: Days per year for annualization
+        annualize: Days per year for annualization.
+            Default 252 (equity convention: trading days only).
+            Pass 365 explicitly for crypto / 24-7 markets, or pass
+            the actual bars-per-year for non-daily data.
 
     Returns:
         Annualized EWMA volatility DataFrame
@@ -305,7 +308,7 @@ class CrossAssetMomentumStrategy:
         version="0.1.0",
         core_compat=">=0.1,<0.2",
         description="Cross-asset momentum (XSMOM) with core-satellite portfolio construction",
-        tags=("crypto", "momentum", "xsmom", "core-satellite"),
+        tags=("multi-asset", "momentum", "xsmom", "core-satellite"),
     )
 
     # Momentum parameters
@@ -316,6 +319,7 @@ class CrossAssetMomentumStrategy:
     # Volatility parameters
     ewma_lambda: float = 0.94
     ewma_min_periods: int = 200
+    annualize: float = 252.0  # equity convention; pass 365 for crypto / 24-7
 
     # Trend filter
     trend_filter_window: int = 100
@@ -415,6 +419,7 @@ class CrossAssetMomentumStrategy:
             prices_filtered,
             self.ewma_lambda,
             self.ewma_min_periods,
+            self.annualize,
         )
 
         # 6. Volatility parity weights (active component)
