@@ -39,7 +39,7 @@ class VolMatchedBuyHoldStrategy:
     ticker: str = "BTC"
     target_annual_vol: float = 0.25
     vol_lookback: int | None = None
-    trading_days: int = 365
+    trading_days: int | None = None  # None = pipeline-injected via _pipeline_annualize; falls back to 252
 
     @property
     def min_lookback_periods(self) -> int:
@@ -51,6 +51,13 @@ class VolMatchedBuyHoldStrategy:
                 if hasattr(self, k):
                     setattr(self, k, v)
 
+        # Resolve trading_days: explicit (self/params) wins, else pipeline-injected, else 252.0.
+        pipeline_annualize = (params or {}).get("_pipeline_annualize")
+        if self.trading_days is None:
+            effective_td = float(pipeline_annualize) if pipeline_annualize is not None else 252.0
+        else:
+            effective_td = float(self.trading_days)
+
         prices: pd.DataFrame = data["prices"]
         if self.ticker not in prices.columns:
             raise ValueError(
@@ -59,7 +66,7 @@ class VolMatchedBuyHoldStrategy:
             )
 
         rets = prices[self.ticker].ffill().pct_change(fill_method=None)
-        sqrt_td = float(np.sqrt(self.trading_days))
+        sqrt_td = float(np.sqrt(effective_td))
 
         if self.vol_lookback is None:
             sigma_d = float(rets.std())
@@ -85,7 +92,7 @@ class VolMatchedBuyHoldStrategy:
                 "ticker": self.ticker,
                 "target_annual_vol": self.target_annual_vol,
                 "vol_lookback": self.vol_lookback,
-                "trading_days": self.trading_days,
+                "trading_days": effective_td,
                 "scale_first": float(scale_series.iloc[0]) if len(scale_series) else float("nan"),
                 "scale_last": float(scale_series.iloc[-1]) if len(scale_series) else float("nan"),
             },
