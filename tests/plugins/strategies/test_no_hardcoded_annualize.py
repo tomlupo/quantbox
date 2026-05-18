@@ -20,7 +20,9 @@ If this test fails, the failing strategy needs to:
 
 from __future__ import annotations
 
+import re
 from dataclasses import fields, is_dataclass
+from pathlib import Path
 
 import pytest
 
@@ -80,4 +82,48 @@ def test_at_least_one_strategy_has_an_annualization_field():
         "No registered strategy has an annualization field — either every strategy "
         "uses hardcoded sqrt(252)/sqrt(365) calls (worse problem) or the field-name "
         "list is stale."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stronger guard: no strategy *implementation* may contain literal
+# np.sqrt(365) or np.sqrt(252). Catches the failure mode the dataclass-field
+# guard above misses — annualization buried inside helper functions or
+# inline expressions (issue #23).
+# ---------------------------------------------------------------------------
+
+
+_STRATEGIES_DIR = Path(_strategies_pkg.__file__).parent
+_HARDCODED_SQRT_RE = re.compile(r"np\.sqrt\(\s*(252|365)\s*\)")
+# Files exempt from the rule. Add explanations when adding entries.
+_EXEMPT_FILES: set[str] = set()  # currently none — all three known offenders fixed in issue #23
+
+
+@pytest.mark.parametrize(
+    "strategy_file",
+    sorted(p for p in _STRATEGIES_DIR.glob("*.py") if p.name != "__init__.py"),
+    ids=lambda p: p.name,
+)
+def test_no_hardcoded_sqrt_252_or_365_in_strategies(strategy_file: Path):
+    """Catch hardcoded ``np.sqrt(252)`` / ``np.sqrt(365)`` calls anywhere
+    inside a strategy module — including helper functions outside the class.
+
+    The pipeline-injection scheme requires ALL annualization (not just the
+    dataclass-field-declared kind) to flow from `_pipeline_annualize`.
+    Hardcoded sqrt calls bypass the injection silently.
+
+    If this test fails, the offending helper should accept an `annualize`
+    parameter (defaulting to 252.0) that the strategy's `run()` method
+    threads through from `effective_annualize`.
+    """
+    if strategy_file.name in _EXEMPT_FILES:
+        pytest.skip(f"{strategy_file.name} explicitly exempt")
+    content = strategy_file.read_text()
+    matches = _HARDCODED_SQRT_RE.findall(content)
+    assert not matches, (
+        f"{strategy_file.name} contains hardcoded np.sqrt({matches[0]}) — "
+        f"strategies must accept the annualization factor via the "
+        f"pipeline-injected `_pipeline_annualize` (see beglobal_strategy.py / "
+        f"carver_trend.py / momentum_long_short.py for the helper-param pattern "
+        f"introduced by issue #23)."
     )
