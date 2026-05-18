@@ -69,11 +69,7 @@ class SignalDecayMonitor:
         window = int(params.get("window", 5))
 
         recent = history[-window:]
-        sharpe_values = [
-            r.metrics["sharpe"]
-            for r in recent
-            if "sharpe" in r.metrics
-        ]
+        sharpe_values = [r.metrics["sharpe"] for r in recent if "sharpe" in r.metrics]
 
         if len(sharpe_values) < window:
             return []
@@ -81,14 +77,15 @@ class SignalDecayMonitor:
         mean_sharpe = sum(sharpe_values) / len(sharpe_values)
 
         if mean_sharpe < min_sharpe:
-            return [{
-                "level": "warn",
-                "rule": "signal_decay",
-                "detail": (
-                    f"Mean Sharpe {mean_sharpe:.4f} over last {window} runs "
-                    f"is below threshold {min_sharpe:.4f}."
-                ),
-                "action": "warn",
-            }]
+            return [
+                {
+                    "level": "warn",
+                    "rule": "signal_decay",
+                    "detail": (
+                        f"Mean Sharpe {mean_sharpe:.4f} over last {window} runs is below threshold {min_sharpe:.4f}."
+                    ),
+                    "action": "warn",
+                }
+            ]
 
         return []

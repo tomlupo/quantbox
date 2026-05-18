@@ -31,8 +31,7 @@ class FactorExposureRiskManager:
         version="0.1.0",
         core_compat=">=0.1,<0.2",
         description=(
-            "Factor exposure risk plugin. Checks single-position weight limits "
-            "and sector concentration constraints."
+            "Factor exposure risk plugin. Checks single-position weight limits and sector concentration constraints."
         ),
         tags=("risk", "factor", "concentration"),
         capabilities=("backtest", "paper", "live"),
@@ -78,22 +77,17 @@ class FactorExposureRiskManager:
         if weights.empty:
             return findings
 
-        symbols = (
-            targets["symbol"].tolist()
-            if "symbol" in targets.columns
-            else [str(i) for i in range(len(targets))]
-        )
+        symbols = targets["symbol"].tolist() if "symbol" in targets.columns else [str(i) for i in range(len(targets))]
 
         for symbol, weight in zip(symbols, weights, strict=False):
             if abs(weight) > max_single:
-                findings.append({
-                    "level": "warn",
-                    "rule": "single_weight_exceeded",
-                    "detail": (
-                        f"{symbol} weight {weight:.4f} exceeds "
-                        f"max_single_weight {max_single}."
-                    ),
-                })
+                findings.append(
+                    {
+                        "level": "warn",
+                        "rule": "single_weight_exceeded",
+                        "detail": (f"{symbol} weight {weight:.4f} exceeds max_single_weight {max_single}."),
+                    }
+                )
 
         sectors = params.get("sectors")
         if sectors:
@@ -107,14 +101,15 @@ class FactorExposureRiskManager:
 
             for sector, total in sector_totals.items():
                 if total > max_sector:
-                    findings.append({
-                        "level": "warn",
-                        "rule": "sector_concentration_exceeded",
-                        "detail": (
-                            f"Sector '{sector}' total weight {total:.4f} exceeds "
-                            f"max_sector_weight {max_sector}."
-                        ),
-                    })
+                    findings.append(
+                        {
+                            "level": "warn",
+                            "rule": "sector_concentration_exceeded",
+                            "detail": (
+                                f"Sector '{sector}' total weight {total:.4f} exceeds max_sector_weight {max_sector}."
+                            ),
+                        }
+                    )
 
         return findings
 

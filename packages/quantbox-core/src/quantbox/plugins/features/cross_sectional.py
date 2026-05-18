@@ -26,8 +26,7 @@ class CrossSectionalFeatures:
         version="0.1.0",
         core_compat=">=0.1,<0.2",
         description=(
-            "Cross-sectional z-scores and percentile ranks of returns "
-            "across the asset universe at each date."
+            "Cross-sectional z-scores and percentile ranks of returns across the asset universe at each date."
         ),
         tags=("cross-sectional", "feature"),
         params_schema={
