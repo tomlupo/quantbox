@@ -67,8 +67,10 @@ known-first-party = ["quantbox"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
-# Default `pytest -q` skips slow pipeline-smoke. CI runs them as a separate job.
-addopts = "-m 'not pipeline_smoke'"
+# Default `pytest -q` skips slow pipeline-smoke + canonical reproductions.
+# CI runs each as a separate job.
+addopts = "-m 'not pipeline_smoke and not canonical_reproduction'"
 markers = [
     "pipeline_smoke: end-to-end pipeline tests (slow). Run via `pytest -m pipeline_smoke`.",
+    "canonical_reproduction: end-to-end backtests against committed goldens. Run via `pytest -m canonical_reproduction`.",
 ]
