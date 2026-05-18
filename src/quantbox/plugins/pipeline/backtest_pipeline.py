@@ -55,6 +55,7 @@ from quantbox.contracts import (
     RunResult,
     StrategyPlugin,
 )
+from quantbox.frequency import Frequency
 from quantbox.plugins.datasources._utils import interval_step, normalize_data_frequency
 
 logger = logging.getLogger(__name__)
@@ -203,11 +204,34 @@ class BacktestPipeline:
         slippage_val = float(params.get("slippage", 0.0))
         rebalancing_freq = params.get("rebalancing_freq", 1)
         threshold = params.get("threshold")
-        trading_days = int(params.get("trading_days", 365))
 
         # --- Stage 1: Universe & Market Data ---
         universe_params = params.get("universe", {})
         prices_params = dict(params.get("prices", {"lookback_days": 365}))
+
+        # ------------------------------------------------------------------
+        # Frequency resolution (PR B / issue #20)
+        #
+        # Build a single Frequency value object from either the new top-level
+        # `frequency:` block, or the legacy `prices.frequency` + optional
+        # `market_calendar:` shorthand. `bars_per_year` derived here is used
+        # as the DEFAULT for both `trading_days` (metrics annualization) and
+        # `_pipeline_annualize` (strategy-level vol annualization), so the
+        # two cannot silently drift apart. Explicit `trading_days` /
+        # strategy `annualize` values still win, with a drift warning.
+        # ------------------------------------------------------------------
+        freq = self._resolve_frequency(params, prices_params)
+        bars_per_year = freq.bars_per_year()
+        trading_days = int(params.get("trading_days", round(bars_per_year)))
+        if "trading_days" in params and abs(int(params["trading_days"]) - bars_per_year) > 1:
+            logger.warning(
+                "trading_days=%s overrides derived frequency=%s (bars_per_year=%.1f). "
+                "If this is intentional, ignore; otherwise consider removing trading_days "
+                "and letting the pipeline derive it from frequency.",
+                params["trading_days"],
+                freq,
+                bars_per_year,
+            )
 
         # Auto-derive minimum lookback from strategy warmup requirements.
         # Strategies may declare min_lookback_periods (in bars); convert to
@@ -274,13 +298,20 @@ class BacktestPipeline:
                 rebalancing_freq=rebalancing_freq,
                 threshold=threshold,
                 trading_days=trading_days,
+                bars_per_year=bars_per_year,
             )
 
         # --- Stage 2: Strategy Execution ---
         strategies_cfg = params.get("_strategies_cfg", params.get("strategies", []))
         if strategies:
-            strategy_results = self._run_strategy_plugins(strategies, strategies_cfg, market_data)
+            strategy_results = self._run_strategy_plugins(
+                strategies,
+                strategies_cfg,
+                market_data,
+                injected_annualize=bars_per_year,
+            )
         else:
+            params = {**params, "_pipeline_annualize": bars_per_year}
             strategy_results = self._run_strategies(market_data, strategies_cfg, params)
 
         # Save per-strategy weights snapshot (last row, same as TradingPipeline)
@@ -509,10 +540,13 @@ class BacktestPipeline:
         pipeline_params: dict[str, Any],
     ) -> dict[str, dict[str, Any]]:
         results: dict[str, dict[str, Any]] = {}
+        injected_annualize = pipeline_params.get("_pipeline_annualize")
         for strat_cfg in strategies_cfg:
             name = strat_cfg["name"]
             weight = float(strat_cfg.get("weight", 1.0))
-            strat_params = strat_cfg.get("params", {})
+            strat_params = dict(strat_cfg.get("params", {}))
+            if injected_annualize is not None and "_pipeline_annualize" not in strat_params:
+                strat_params["_pipeline_annualize"] = injected_annualize
 
             try:
                 module = importlib.import_module(f"quantbox.plugins.strategies.{name}")
@@ -538,12 +572,15 @@ class BacktestPipeline:
         strategy_plugins: list[StrategyPlugin],
         strategies_cfg: list[dict[str, Any]],
         market_data: dict[str, Any],
+        injected_annualize: float | None = None,
     ) -> dict[str, dict[str, Any]]:
         results: dict[str, dict[str, Any]] = {}
         for i, strat in enumerate(strategy_plugins):
             strat_cfg = strategies_cfg[i] if i < len(strategies_cfg) else {}
             weight = float(strat_cfg.get("weight", 1.0))
-            strat_params = strat_cfg.get("params", {})
+            strat_params = dict(strat_cfg.get("params", {}))
+            if injected_annualize is not None and "_pipeline_annualize" not in strat_params:
+                strat_params["_pipeline_annualize"] = injected_annualize
 
             result = strat.run(data=market_data, params=strat_params)
 
@@ -639,6 +676,7 @@ class BacktestPipeline:
         rebalancing_freq: Any,
         threshold: Any,
         trading_days: int,
+        bars_per_year: float,
     ) -> RunResult:
         """Run N independent variants and emit a combined report.
 
@@ -676,7 +714,12 @@ class BacktestPipeline:
             v_strategies_cfg = [{"name": sname, "weight": 1.0, "params": strat_params}]
 
             # Stage 2: strategy
-            s_results = self._run_strategy_plugins([splugin], v_strategies_cfg, market_data)
+            s_results = self._run_strategy_plugins(
+                [splugin],
+                v_strategies_cfg,
+                market_data,
+                injected_annualize=bars_per_year,
+            )
 
             # Stage 3: aggregate (trivial for single strategy)
             wh = self._aggregate_weights_history(s_results, {"_strategies_cfg": v_strategies_cfg})
@@ -1000,3 +1043,32 @@ class BacktestPipeline:
             "portfolio_daily": portfolio_daily,
             "rsims_results": results_df,
         }
+
+    # ==================================================================
+    # Frequency resolution (issue #20)
+    # ==================================================================
+    @staticmethod
+    def _resolve_frequency(
+        params: dict[str, Any],
+        prices_params: dict[str, Any],
+    ) -> Frequency:
+        """Resolve a `Frequency` from pipeline params.
+
+        Accepts (in priority order):
+          1. ``params['frequency']`` — full spec, str or dict
+             - dict: ``{'bar_size': '1h', 'calendar': 'NYSE'}``
+             - str: ``'1h'`` (calendar falls through to ``market_calendar`` or '24/7')
+          2. ``prices.frequency`` + optional ``params['market_calendar']`` shorthand
+          3. Default: ``Frequency('1d', '24/7')`` — preserves pre-PR-B crypto-friendly behaviour
+
+        The derived `bars_per_year` is used as the DEFAULT for `trading_days`
+        and is injected into each strategy's params as `_pipeline_annualize`,
+        so the two cannot silently drift apart.
+        """
+        explicit = params.get("frequency")
+        if explicit is not None:
+            return Frequency.parse(explicit)
+
+        bar_size = prices_params.get("frequency", "1d")
+        calendar = params.get("market_calendar", "24/7")
+        return Frequency.parse({"bar_size": bar_size, "calendar": calendar})
