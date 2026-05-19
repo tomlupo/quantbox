@@ -21,7 +21,7 @@ Decide what type:
 
 When unsure, **prefer `FeaturePlugin`** — broadest input/output, easiest to refactor later.
 
-If none fit, do **not** invent a new plugin type. New protocols require an ADR. See [adr/README.md](../adr/README.md).
+If none fit, do **not** invent a new plugin type. New protocols require an ADR. See [decisions/](../decisions/).
 
 ---
 
@@ -33,7 +33,7 @@ If none fit, do **not** invent a new plugin type. New protocols require an ADR. 
 |---|---|
 | `research/{study}/strat.py` (scratch-plugin) | Single-study experiment, may be thrown away |
 | `src/{project}/plugins/{kind}/{slug}.py` (project entry-pointed) | Project-specific, reusable within the project |
-| `packages/quantbox-core/src/quantbox/plugins/{kind}/{slug}.py` | Cross-project utility, has earned upstream status |
+| `src/quantbox/plugins/{kind}/{slug}.py` | Cross-project utility, has earned upstream status |
 
 Default: start in `research/` or in the project. Promote upstream only after the second project would benefit.
 
@@ -155,7 +155,7 @@ If this works, the plugin is sound. Wiring into L4 (YAML config) is a separate s
 
 ### 6. Add a YAML config example
 
-`configs/{slug}_example.yaml`:
+`cookbook/configs/{slug}_example.yaml`:
 
 ```yaml
 run:
@@ -176,14 +176,14 @@ plugins:
 Test:
 
 ```bash
-quantbox validate -c configs/{slug}_example.yaml
-quantbox run -c configs/{slug}_example.yaml
+quantbox validate -c cookbook/configs/{slug}_example.yaml
+quantbox run -c cookbook/configs/{slug}_example.yaml
 ```
 
 ### 7. Document
 
-- Add a row to the relevant table in `docs/reference/plugins.md` (or create one).
-- If methodology, add a spec in `docs/methodology/{slug}.md` (DRAFT status).
+- Update the plugin table in the project `README.md`.
+- If this plugin has a methodology, copy `quantbox/templates/methodology.md` into your project's `docs/methodology/{slug}.md` (DRAFT status).
 - EXPERIMENTS.md entry referencing the plugin name and any backtest results.
 
 ---

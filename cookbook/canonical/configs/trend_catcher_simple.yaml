@@ -1,0 +1,48 @@
+# Canonical reproduction — trend_catcher_simple on the synthetic fixture.
+#
+# Self-contained: needs only the parquet files under cookbook/canonical/.
+# No external deps, no network. Run from repo root with:
+#
+#   uv run quantbox run -c cookbook/canonical/configs/trend_catcher_simple.yaml
+#
+# Tolerance: headlines should match cookbook/canonical/expected/trend_catcher_simple.json
+# within atol=1e-4, rtol=1e-3.
+
+run:
+  mode: backtest
+  asof: "2024-09-08"
+  pipeline: backtest.pipeline.v1
+
+artifacts:
+  root: ./artifacts
+
+plugins:
+  pipeline:
+    name: backtest.pipeline.v1
+    params:
+      engine: vectorbt
+      fees: 0.0
+      rebalancing_freq: 1
+      trading_days: 365
+
+      universe:
+        symbols: [BTC, ALT1, ALT2, ALT3, ALT4]
+
+  strategies:
+    - name: strategy.trend_catcher_simple.v1
+      weight: 1.0
+      params:
+        side: long
+        regime_ticker: BTC
+        regime_filter_ma: 30
+        signal_ma: 10
+        universe_top_n_volume: 5
+        max_positions: 4
+        position_size: 0.25
+        close_on_regime_flip: false
+
+  data:
+    name: local_file_data
+    params_init:
+      prices_path: ./cookbook/canonical/fixture.parquet
+      volume_path: ./cookbook/canonical/fixture_volume.parquet

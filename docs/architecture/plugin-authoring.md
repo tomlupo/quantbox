@@ -37,7 +37,7 @@ If you can do the work at L1, do it at L1. Reach for plugins only when the contr
 
 When in doubt about which type, prefer `FeaturePlugin` — it's the catch-all for derived signals/computations and accepts the broadest input.
 
-Don't invent new plugin types unilaterally. New types require an ADR; see [lifecycle.md](lifecycle.md) and [adr/README.md](../adr/README.md).
+Don't invent new plugin types unilaterally. New types require an ADR; see [lifecycle.md](lifecycle.md).
 
 ---
 
@@ -94,7 +94,7 @@ Key requirements:
 - Class is a `@dataclass`.
 - `meta` is a **class attribute**, not an instance attribute. The runner reads it before instantiation.
 - `params_schema` is a JSON Schema — used by `quantbox validate` and the LLM-facing skill layer.
-- Return shape matches `meta.outputs` and the schema in `schemas/{output}.schema.json`.
+- Return shape matches `meta.outputs` and the schema in `src/quantbox/artifact_schemas/{output}.schema.json`.
 
 ---
 
@@ -168,7 +168,7 @@ Minimum tests:
 
 1. **Smoke test** — instantiate, call key method with synthetic data, assert no crash.
 2. **Schema test** — feed bogus params, assert `quantbox.validate_params` raises.
-3. **Output schema test** — assert returned DataFrame matches `schemas/{output}.schema.json`.
+3. **Output schema test** — assert returned DataFrame matches `src/quantbox/artifact_schemas/{output}.schema.json`.
 
 Beyond that, test domain logic the same way you'd test any function. Use plain pytest. Don't stand up the runner unless you're explicitly testing the runner.
 

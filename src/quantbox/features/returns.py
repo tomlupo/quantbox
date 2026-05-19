@@ -1,0 +1,31 @@
+from __future__ import annotations
+
+import pandas as pd
+
+
+def compute_returns(
+    prices: pd.DataFrame,
+    windows: list[int],
+    *,
+    method: str = "pct_change",
+) -> dict[str, pd.DataFrame]:
+    """Compute period returns for multiple windows.
+
+    Args:
+        prices: Wide-format DataFrame (DatetimeIndex x symbol columns).
+        windows: List of lookback periods (e.g. [1, 5, 21]).
+        method: "pct_change" (default) or "log".
+
+    Returns:
+        Dict keyed ``"ret_{w}d"`` -> DataFrame of returns.
+    """
+    result: dict[str, pd.DataFrame] = {}
+    for w in windows:
+        if method == "log":
+            import numpy as np
+
+            ret = np.log(prices / prices.shift(w))
+        else:
+            ret = prices.ffill().pct_change(periods=w, fill_method=None)
+        result[f"ret_{w}d"] = ret
+    return result

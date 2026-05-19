@@ -1,0 +1,21 @@
+{
+  "title": "portfolio_daily",
+  "type": "object",
+  "properties": {
+    "columns": {
+      "const": [
+        {
+          "name": "date",
+          "type": "string"
+        },
+        {
+          "name": "portfolio_value",
+          "type": "number"
+        }
+      ]
+    }
+  },
+  "required": [
+    "columns"
+  ]
+}

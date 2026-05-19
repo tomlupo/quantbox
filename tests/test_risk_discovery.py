@@ -46,8 +46,14 @@ class TestRiskDiscovery:
     def test_risk_init_exports(self) -> None:
         from quantbox.plugins.risk import (
             DrawdownControlRiskManager as DDC,
+        )
+        from quantbox.plugins.risk import (
             FactorExposureRiskManager as FE,
+        )
+        from quantbox.plugins.risk import (
             StressTestRiskManager as ST,
+        )
+        from quantbox.plugins.risk import (
             TradingRiskManager as TR,
         )
 

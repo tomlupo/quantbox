@@ -42,7 +42,7 @@ The loop is **autonomous within budget** and **human-gated for promotion**. It w
 | Research memory | `EXPERIMENTS.jsonl` (machine) + `EXPERIMENTS.md` (human) + `findings.md` (LLM summary) | jsonl is new |
 | Loop driver | `AutoResearchDriver` (L4 driver, not in runner) | new |
 
-The driver is **L4** — it sits *alongside* `run_from_config`, not above it. Each iteration is a normal pipeline run; the driver decides what runs next. See [ADR-0003](../adr/0003-autoresearch-as-driver-not-runtime.md) for why.
+The driver is **L4** — it sits *alongside* `run_from_config`, not above it. Each iteration is a normal pipeline run; the driver decides what runs next. See [ADR-0003](../decisions/DEC-0003-autoresearch-as-driver-not-runtime.md) for why.
 
 ---
 
@@ -88,16 +88,16 @@ Lives at `quantbox.autoresearch.driver`. Top-level API:
 ```python
 from quantbox.autoresearch import AutoResearchDriver, AutoResearchConfig
 
-driver = AutoResearchDriver.from_config("configs/clients/X/autoresearch.yaml")
+driver = AutoResearchDriver.from_config("cookbook/configs/clients/X/autoresearch.yaml")
 report = driver.run()
 ```
 
 Exposes the same shape at L5:
 
 ```bash
-quantbox autoresearch run -c configs/clients/X/autoresearch.yaml
-quantbox autoresearch tick -c configs/clients/X/autoresearch.yaml   # one iteration
-quantbox autoresearch status -c configs/clients/X/autoresearch.yaml # current state
+quantbox autoresearch run -c cookbook/configs/clients/X/autoresearch.yaml
+quantbox autoresearch tick -c cookbook/configs/clients/X/autoresearch.yaml   # one iteration
+quantbox autoresearch status -c cookbook/configs/clients/X/autoresearch.yaml # current state
 ```
 
 `tick` is the cron-friendly mode — does N trials within tight budget, persists state, exits.
@@ -132,7 +132,7 @@ Each iteration is fully reproducible — uses the standard ArtifactStore, run_id
 
 ```yaml
 autoresearch:
-  baseline: configs/clients/X/strategy.yaml      # starting point
+  baseline: cookbook/configs/clients/X/strategy.yaml      # starting point
   search_space:                                  # what's tunable
     params.lookback_days: { range: [30, 252], step: 5 }
     params.vol_target:    { range: [0.08, 0.25], step: 0.01 }
@@ -267,7 +267,7 @@ The driver refuses to start if `evaluation:` is missing any of these. No "skip f
 For background continuous improvement, the driver exposes `tick`:
 
 ```bash
-quantbox autoresearch tick -c configs/clients/X/autoresearch.yaml --max-trials 5
+quantbox autoresearch tick -c cookbook/configs/clients/X/autoresearch.yaml --max-trials 5
 ```
 
 Wired into Iris's schedule via `agent-cron`:
@@ -353,7 +353,7 @@ This integrates without violating any principle:
 
 ## See also
 
-- [ADR-0003](../adr/0003-autoresearch-as-driver-not-runtime.md) — design decision for L4 driver placement.
+- [ADR-0003](../decisions/DEC-0003-autoresearch-as-driver-not-runtime.md) — design decision for L4 driver placement.
 - [api-layers.md](api-layers.md) — driver lives at L4, not embedded in runner.
 - [plugin-authoring.md](plugin-authoring.md) — `VariantProposerPlugin` is a new plugin type.
 - [lifecycle.md](lifecycle.md) — autoresearch produces candidates; promotion path is normal.

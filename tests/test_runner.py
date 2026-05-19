@@ -147,16 +147,14 @@ def _make_risk_cls(name: str = "risk.a.v1"):
 # ---------------------------------------------------------------------------
 
 
-@patch("quantbox.runner.repo_root", return_value=MagicMock(spec=["__truediv__"]))
 @patch("quantbox.runner.FileArtifactStore")
 class TestRunFromConfig:
     """Tests for run_from_config()."""
 
     # 1. Happy path -------------------------------------------------------
 
-    def test_happy_path_pipeline_run_called(self, MockStore, mock_repo_root):
+    def test_happy_path_pipeline_run_called(self, MockStore):
         """Pipeline.run() is called with correct args on a minimal valid config."""
-        mock_repo_root.return_value.__truediv__ = lambda self, x: MagicMock(exists=MagicMock(return_value=False))
         pipe_cls, pipe_inst = _make_pipeline_cls()
         data_cls, data_inst = _make_data_cls()
 
@@ -187,7 +185,7 @@ class TestRunFromConfig:
 
     # 2. Unknown pipeline name → PluginNotFoundError ----------------------
 
-    def test_unknown_pipeline_raises(self, MockStore, mock_repo_root):
+    def test_unknown_pipeline_raises(self, MockStore):
         """An unregistered pipeline name must raise PluginNotFoundError."""
         data_cls, _ = _make_data_cls()
         registry = _make_registry(
@@ -204,7 +202,7 @@ class TestRunFromConfig:
 
     # 3. Unknown data plugin → PluginNotFoundError ------------------------
 
-    def test_unknown_data_raises(self, MockStore, mock_repo_root):
+    def test_unknown_data_raises(self, MockStore):
         """An unregistered data plugin name must raise PluginNotFoundError."""
         pipe_cls, _ = _make_pipeline_cls()
         registry = _make_registry(
@@ -221,7 +219,7 @@ class TestRunFromConfig:
 
     # 4. Missing required config keys → ConfigValidationError -------------
 
-    def test_missing_run_key_raises(self, MockStore, mock_repo_root):
+    def test_missing_run_key_raises(self, MockStore):
         """Config without 'run' top-level key raises KeyError (accessed before validation)."""
         registry = _make_registry()
         cfg = {
@@ -236,7 +234,7 @@ class TestRunFromConfig:
         with pytest.raises(KeyError):
             run_from_config(cfg, registry)
 
-    def test_missing_plugins_key_raises(self, MockStore, mock_repo_root):
+    def test_missing_plugins_key_raises(self, MockStore):
         """Config without 'plugins' top-level key must raise ConfigValidationError."""
         registry = _make_registry()
         cfg = {
@@ -248,7 +246,7 @@ class TestRunFromConfig:
         with pytest.raises(ConfigValidationError):
             run_from_config(cfg, registry)
 
-    def test_missing_artifacts_key_raises(self, MockStore, mock_repo_root):
+    def test_missing_artifacts_key_raises(self, MockStore):
         """Config without 'artifacts' top-level key must raise ConfigValidationError."""
         registry = _make_registry()
         cfg = {
@@ -263,7 +261,7 @@ class TestRunFromConfig:
         with pytest.raises(ConfigValidationError):
             run_from_config(cfg, registry)
 
-    def test_invalid_mode_raises(self, MockStore, mock_repo_root):
+    def test_invalid_mode_raises(self, MockStore):
         """An invalid run.mode must raise ConfigValidationError."""
         registry = _make_registry()
         cfg = _minimal_config(mode="invalid_mode")
@@ -273,9 +271,8 @@ class TestRunFromConfig:
 
     # 5. Result structure: verify returned dict has expected keys ----------
 
-    def test_result_structure(self, MockStore, mock_repo_root):
+    def test_result_structure(self, MockStore):
         """RunResult returned by run_from_config has all expected attributes."""
-        mock_repo_root.return_value.__truediv__ = lambda self, x: MagicMock(exists=MagicMock(return_value=False))
         expected = _make_run_result(
             run_id="abc",
             pipeline_name="test.pipeline.v1",
@@ -314,9 +311,8 @@ class TestRunFromConfig:
     # Instead, let's verify the pipeline_params dict is correctly built
     # for a dry-run scenario where the caller might inspect params.
 
-    def test_pipeline_params_propagated(self, MockStore, mock_repo_root):
+    def test_pipeline_params_propagated(self, MockStore):
         """Pipeline params from config are forwarded to pipeline.run()."""
-        mock_repo_root.return_value.__truediv__ = lambda self, x: MagicMock(exists=MagicMock(return_value=False))
         pipe_cls, pipe_inst = _make_pipeline_cls()
         data_cls, _ = _make_data_cls()
         registry = _make_registry(
@@ -333,9 +329,8 @@ class TestRunFromConfig:
 
     # 7. Strategy list handling: multiple strategies resolve correctly -----
 
-    def test_multiple_strategies_resolved(self, MockStore, mock_repo_root):
+    def test_multiple_strategies_resolved(self, MockStore):
         """Multiple strategies in config are all instantiated and passed."""
-        mock_repo_root.return_value.__truediv__ = lambda self, x: MagicMock(exists=MagicMock(return_value=False))
         pipe_cls, pipe_inst = _make_pipeline_cls()
         data_cls, _ = _make_data_cls()
         strat_a_cls, strat_a_inst = _make_strategy_cls("strategy.alpha.v1")
@@ -372,9 +367,8 @@ class TestRunFromConfig:
 
     # 8. Risk plugin list: multiple risk plugins instantiated -------------
 
-    def test_multiple_risk_plugins_instantiated(self, MockStore, mock_repo_root):
+    def test_multiple_risk_plugins_instantiated(self, MockStore):
         """Multiple risk plugins in config are all instantiated and passed."""
-        mock_repo_root.return_value.__truediv__ = lambda self, x: MagicMock(exists=MagicMock(return_value=False))
         pipe_cls, pipe_inst = _make_pipeline_cls()
         data_cls, _ = _make_data_cls()
         risk_a_cls, risk_a_inst = _make_risk_cls("risk.basic.v1")
@@ -410,9 +404,8 @@ class TestRunFromConfig:
 
     # 9. Optional broker: when broker config is missing, broker=None ------
 
-    def test_no_broker_config_passes_none(self, MockStore, mock_repo_root):
+    def test_no_broker_config_passes_none(self, MockStore):
         """When config has no broker block, pipeline.run() receives broker=None."""
-        mock_repo_root.return_value.__truediv__ = lambda self, x: MagicMock(exists=MagicMock(return_value=False))
         pipe_cls, pipe_inst = _make_pipeline_cls()
         data_cls, _ = _make_data_cls()
         registry = _make_registry(
@@ -426,9 +419,8 @@ class TestRunFromConfig:
         call_kwargs = pipe_inst.run.call_args.kwargs
         assert call_kwargs["broker"] is None
 
-    def test_broker_only_used_for_trading_pipeline(self, MockStore, mock_repo_root):
+    def test_broker_only_used_for_trading_pipeline(self, MockStore):
         """Even with broker config, broker=None if pipeline.kind != 'trading' or mode != paper/live."""
-        mock_repo_root.return_value.__truediv__ = lambda self, x: MagicMock(exists=MagicMock(return_value=False))
         # Pipeline kind is "research" (default), mode is "backtest"
         pipe_cls, pipe_inst = _make_pipeline_cls(kind="research")
         data_cls, _ = _make_data_cls()
@@ -452,9 +444,8 @@ class TestRunFromConfig:
 
     # 10. asof date propagation -------------------------------------------
 
-    def test_asof_date_propagation(self, MockStore, mock_repo_root):
+    def test_asof_date_propagation(self, MockStore):
         """The asof date from config is forwarded to pipeline.run()."""
-        mock_repo_root.return_value.__truediv__ = lambda self, x: MagicMock(exists=MagicMock(return_value=False))
         pipe_cls, pipe_inst = _make_pipeline_cls()
         data_cls, _ = _make_data_cls()
         registry = _make_registry(
@@ -469,9 +460,8 @@ class TestRunFromConfig:
         call_kwargs = pipe_inst.run.call_args.kwargs
         assert call_kwargs["asof"] == target_date
 
-    def test_asof_different_dates(self, MockStore, mock_repo_root):
+    def test_asof_different_dates(self, MockStore):
         """Different asof dates are correctly forwarded."""
-        mock_repo_root.return_value.__truediv__ = lambda self, x: MagicMock(exists=MagicMock(return_value=False))
         for date in ("2024-06-15", "2026-02-13", "2023-01-01"):
             pipe_cls, pipe_inst = _make_pipeline_cls()
             data_cls, _ = _make_data_cls()

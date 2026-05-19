@@ -14,7 +14,7 @@ If you find yourself writing logic that exists in the underlying library, stop. 
 
 ## Structure
 
-Each adapter lives at `packages/quantbox-core/src/quantbox/adapters/{lib}.py` (or `/{lib}/` for larger ones).
+Each adapter lives at `src/quantbox/adapters/{lib}.py` (or `/{lib}/` for larger ones).
 
 Minimum:
 
@@ -82,25 +82,26 @@ Don't add an adapter:
 
 ---
 
-## Existing/planned adapters
+## Adapter inventory
 
-| Adapter | Underlying library | Layer it serves | Status |
-|---|---|---|---|
-| `adapters.vectorbt` | vectorbt | L0/L1 (`quantbox.bt`) | planned |
-| `adapters.mlflow` | mlflow | L0/L1 (experiment tracking, model registry) | planned |
-| `adapters.dvc` | dvc | L0/L1 (data versioning) | planned |
-| `adapters.riskfolio` | Riskfolio-Lib | L0/L1 (`quantbox.opt`) | planned |
-| `adapters.pyportfolioopt` | PyPortfolioOpt | L0/L1 (`quantbox.opt` alternative) | optional |
-| `adapters.lightgbm` | lightgbm | L0/L1 (ML strategies) | planned |
-| `adapters.qlib` | Microsoft Qlib | L0/L1 (factor research) | optional, when needed |
+| Adapter | Underlying library | Layer it serves | Status | Notes |
+|---|---|---|---|---|
+| `adapters.vectorbt` | vectorbt | L0/L1 (`quantbox.bt`) | ✅ shipped | Used by `bt.py`, backtest engine, strategy tests — ≥2 consumers |
+| `adapters.riskfolio` | Riskfolio-Lib | L0/L1 (`quantbox.opt`) | deferred | Add when a second consumer beyond `portfolio_optimizer` needs it |
+| `adapters.lightgbm` | lightgbm | L0/L1 (ML strategies) | deferred | `ml_strategy.py` imports it directly — add adapter when a second plugin needs it |
+| `adapters.mlflow` | mlflow | experiment tracking, model registry | **not in core** | Single consumer (quantbox-lab); lab imports mlflow directly. Migrate here if ≥2 repos need the same `RunResult → mlflow` bridge |
+| `adapters.dvc` | dvc | data versioning | **not in core** | Single consumer (quantbox-lab); lab imports dvc.api directly. Migrate here if ≥2 repos need the same data-versioning idiom |
+| `adapters.qlib` | Microsoft Qlib | factor research | not in core | Optional; add if a Qlib-based plugin is ever built |
 
-`optional` means: don't add unless a real consumer needs it. The adapter exists in the docs to claim the namespace; the file shouldn't exist until use case demands it.
+**Rule for "not in core":** the library is used in one downstream repo (quantbox-lab). That repo imports it directly. If a second repo (quantbox-live, quantbox-qute) needs the same bridge, extract to a core adapter then. Premature extraction adds ceremony without DRY benefit.
+
+**Rule for "deferred":** the library touches quantbox-core but only one plugin currently uses it. Add the adapter file when a second plugin or downstream project needs the same idiom — not before.
 
 ---
 
 ## Walkthrough — adding the riskfolio adapter
 
-1. **Create the file**: `packages/quantbox-core/src/quantbox/adapters/riskfolio.py`.
+1. **Create the file**: `src/quantbox/adapters/riskfolio.py`.
 2. **Re-export**:
    ```python
    import riskfolio as rp
@@ -125,7 +126,7 @@ Don't add an adapter:
    opt-riskfolio = ["riskfolio-lib>=4.0"]
    ```
 6. **Test** the convenience helper with a tiny synthetic returns DataFrame. Don't test riskfolio itself — that's their job.
-7. **Document** in `docs/reference/adapters.md` (one-line entry) and in this file's table.
+7. **Document** in this file's adapters table.
 
 That's the whole flow. No plugin needed at this stage. A plugin (`risk.opt.riskfolio.max_sharpe.v1`) can come later if a pipeline needs it at L4.
 

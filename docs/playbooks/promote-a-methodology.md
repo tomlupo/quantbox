@@ -2,6 +2,8 @@
 
 Walks a methodology from `research` → `locked` → `production`. Read [architecture/lifecycle.md](../architecture/lifecycle.md) first.
 
+> **Note:** Methodology specs live in your project's own `docs/methodology/`, not in quantbox. Use `quantbox/templates/methodology.md` as the starting point.
+
 ---
 
 ## Pre-flight — is this ready to lock?
@@ -71,8 +73,8 @@ In your project's `research/{study}/STATUS.md`, move the entry from "In Flight" 
 ### 4. Run validation
 
 ```bash
-quantbox validate -c configs/{slug}.yaml
-quantbox run -c configs/{slug}.yaml
+quantbox validate -c cookbook/configs/{slug}.yaml
+quantbox run -c cookbook/configs/{slug}.yaml
 ```
 
 Verify metrics meet `baseline_metrics`. If they don't, *don't* lock yet. Fix the methodology or revisit thresholds.

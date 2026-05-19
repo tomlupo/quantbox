@@ -2,15 +2,12 @@
 
 Quant research and trading framework with a plugin architecture. Config-driven pipelines for backtesting, paper trading, and live execution.
 
-## Repositories
+**Not building:** HFT or real-time tick infrastructure, custom exchange gateways, or black-box LLM trading. Math and signals stay deterministic; LLM is for analysis and tool use only.
 
-| Repo | Purpose | Quantbox pin |
-|---|---|---|
-| **quantbox** (this) | Library: strategies, plugins, protocols, core runtime | (source) |
-| [quantbox-live](https://github.com/tomlupo/quantbox-live) | Production: daily automated trading | `@v0.1.0` (stable tag) |
-| [quantbox-lab](https://github.com/tomlupo/quantbox-lab) | Research: backtesting, notebooks, experiments | `@dev` (latest) |
-
-See [multi-repo workflow](docs/guides/multi-repo-workflow.md) for versioning and promotion.
+**Who uses it:**
+- **Researcher** — runs research pipelines, adjusts plugins, inspects artifacts
+- **Automation** — scheduled jobs producing allocations → orders → fills
+- **AI assistant** — calls `validate`, `--dry-run`, `plugins list --json`; no direct trading authority
 
 ## Install
 
@@ -30,26 +27,22 @@ uv sync --extra full      # all of the above
 ### Research (fund selection)
 
 ```bash
-quantbox run -c configs/run_fund_selection.yaml
+quantbox run -c cookbook/configs/run_fund_selection.yaml
 ```
 
 ### Backtest
 
 ```bash
-quantbox run -c configs/run_backtest_crypto_trend.yaml
+quantbox run -c cookbook/configs/run_backtest_crypto_trend.yaml
 ```
 
-See [backtesting guide](docs/guides/backtesting.md) for engine options and parameters.
+See [backtesting guide](docs/playbooks/backtesting.md) for engine options and parameters.
 
 ### Paper trading
 
 ```bash
-quantbox run -c configs/run_futures_paper_crypto_trend.yaml
+quantbox run -c cookbook/configs/run_futures_paper_crypto_trend.yaml
 ```
-
-### Live trading
-
-Configured via [quantbox-live](https://github.com/tomlupo/quantbox-live).
 
 ## Plugins
 
@@ -86,6 +79,7 @@ quantbox plugins list
 | `local_file_data` | Local Parquet files via DuckDB |
 | `binance.live_data.v1` | Binance spot OHLCV + market data |
 | `binance.futures_data.v1` | Binance USDM futures + funding rates |
+| `hyperliquid.data.v1` | Hyperliquid market data |
 
 ### Brokers
 
@@ -121,14 +115,15 @@ quantbox plugins list
 
 ## Plugin manifest and profiles
 
-The manifest at `plugins/manifest.yaml` defines available profiles:
+The bundled manifest defines available profiles:
 
 ```yaml
 plugins:
-  profile: research       # or: trading, trading_full, futures_paper
+  profile: research       # or: trading, trading_full, futures_paper, stress_test
 ```
 
 Profiles bundle a set of plugins so you don't repeat them in every config.
+Override the manifest via `QUANTBOX_MANIFEST=path/to/manifest.yaml`.
 
 ## CLI reference
 
@@ -136,9 +131,13 @@ Profiles bundle a set of plugins so you don't repeat them in every config.
 quantbox plugins list              # list all registered plugins
 quantbox plugins list --json       # JSON output
 quantbox plugins info --name <id>  # plugin details
+quantbox plugins doctor            # health check: schemas, entry points, config refs
 quantbox validate -c <config>      # validate config without running
 quantbox run -c <config>           # run a pipeline
 quantbox run --dry-run -c <config> # dry run (no side effects)
+quantbox approve --run-dir <path>  # write approval file for a run's orders
+quantbox warehouse tables          # list warehouse tables
+quantbox warehouse query -q <sql>  # run SQL against the artifact warehouse
 ```
 
 ## Artifacts
@@ -148,7 +147,7 @@ Each run writes to `artifacts/<run_id>/`:
 - `events.jsonl` — structured event log
 - Strategy-specific outputs (weights, orders, fills, metrics)
 
-Artifact schemas are in `/schemas/*.schema.json`.
+Artifact schemas are bundled at `src/quantbox/artifact_schemas/` and validated at runtime via `importlib.resources`.
 
 ## Development
 
@@ -158,16 +157,17 @@ make dev-full  # install all extras + dev deps
 pytest -q      # run tests
 ```
 
-See [CONTRIBUTING_LLM.md](CONTRIBUTING_LLM.md) for LLM development guidelines.
+**Broker safety:** start with `readonly: true`, use `--dry-run` to inspect the plan, check `orders.parquet` before enabling live order placement.
+
+See [CLAUDE.md](CLAUDE.md) for agent and LLM development guidelines.
+
+Copy-paste scaffolds for methodology specs, dataset docs, and runbooks are in [`templates/`](templates/).
 
 ## Documentation
 
 See [docs/](docs/) for full documentation:
-- [Product requirements (PRD)](docs/PRD.md)
-- [Backtesting guide](docs/guides/backtesting.md)
-- [Multi-repo workflow](docs/guides/multi-repo-workflow.md)
-- [Trading bridge](docs/guides/trading-bridge.md)
-- [Approval gate](docs/guides/approval-gate.md)
-- [Integration guide](docs/guides/quantbox-integration-guide.md)
-- [LLM operations reference](docs/reference/llm-operations.md)
-- [Broker secrets](docs/reference/broker-secrets.md)
+- [Backtesting guide](docs/playbooks/backtesting.md)
+- [Multi-repo workflow](docs/playbooks/multi-repo-workflow.md)
+- [Trading bridge](docs/playbooks/trading-bridge.md)
+- [Approval gate](docs/playbooks/approval-gate.md)
+- [Integration guide](docs/playbooks/quantbox-integration-guide.md)

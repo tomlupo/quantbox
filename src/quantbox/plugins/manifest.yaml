@@ -1,0 +1,115 @@
+plugins:
+  builtins:
+    pipelines:
+      - fund_selection.simple.v1
+      - trade.allocations_to_orders.v1
+      - trade.full_pipeline.v1
+      - backtest.pipeline.v1
+    data:
+      - local_file_data
+      - binance.live_data.v1
+      - binance.futures_data.v1
+      - hyperliquid.data.v1
+      - data.synthetic.v1
+    brokers:
+      - sim.paper.v1
+      - sim.futures_paper.v1
+      - ibkr.paper.stub.v1
+      - binance.paper.stub.v1
+      - ibkr.live.v1
+      - binance.live.v1
+      - binance.futures.v1
+      - hyperliquid.perps.v1
+    publishers:
+      - telegram.publisher.v1
+    risk:
+      - risk.trading_basic.v1
+      - risk.stress_test.v1
+      - risk.factor_exposure.v1
+      - risk.drawdown_control.v1
+    features:
+      - features.technical.v1
+      - features.cross_sectional.v1
+    monitors:
+      - monitor.drawdown.v1
+      - monitor.signal_decay.v1
+    validation:
+      - validation.walk_forward.v1
+      - validation.statistical.v1
+      - validation.turnover.v1
+      - validation.regime.v1
+      - validation.benchmark.v1
+    strategies:
+      - strategy.altcoin_crash_bounce.v62
+      - strategy.beglobal.v1
+      - strategy.crypto_trend.v1
+      - strategy.carver_trend.v1
+      - strategy.momentum_long_short.v1
+      - strategy.cross_asset_momentum.v1
+      - strategy.crypto_regime_trend.v1
+      - strategy.eth_mean_reversion_24h.v1
+      - strategy.hmm_regime_allocation.v1
+      - strategy.portfolio_optimizer.v1
+      - strategy.ml_prediction.v1
+      - strategy.weighted_avg.v1
+      - strategy.static_weights.v1
+      - strategy.trend_catcher.v1
+      - strategy.trend_catcher_simple.v1
+      - strategy.vol_matched_buy_hold.v1
+    rebalancing:
+      - rebalancing.standard.v1
+      - rebalancing.futures.v1
+  external:
+    pipelines: []
+    data: []
+    brokers: []
+    publishers: []
+    risk: []
+    strategies: []
+    rebalancing: []
+
+profiles:
+  research:
+    pipeline:
+      name: fund_selection.simple.v1
+    data:
+      name: local_file_data
+  trading:
+    pipeline:
+      name: trade.allocations_to_orders.v1
+    data:
+      name: local_file_data
+    broker:
+      name: sim.paper.v1
+  trading_full:
+    pipeline:
+      name: trade.full_pipeline.v1
+    data:
+      name: binance.live_data.v1
+    broker:
+      name: binance.live.v1
+    publishers:
+      - name: telegram.publisher.v1
+    risk:
+      - name: risk.trading_basic.v1
+  stress_test:
+    pipeline:
+      name: backtest.pipeline.v1
+    data:
+      name: data.synthetic.v1
+    broker:
+      name: sim.paper.v1
+    risk:
+      - name: risk.trading_basic.v1
+      - name: risk.stress_test.v1
+  futures_paper:
+    pipeline:
+      name: trade.full_pipeline.v1
+    data:
+      name: binance.live_data.v1
+    broker:
+      name: sim.futures_paper.v1
+    rebalancing:
+      name: rebalancing.futures.v1
+    risk:
+      - name: risk.trading_basic.v1

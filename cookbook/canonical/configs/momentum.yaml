@@ -1,0 +1,44 @@
+# Canonical reproduction — momentum on the synthetic fixture panel.
+#
+# Self-contained: needs only the parquet files under cookbook/canonical/.
+# No external deps, no network. Run from repo root with:
+#
+#   uv run quantbox run -c cookbook/canonical/configs/momentum.yaml
+#
+# Tolerance: headlines should match cookbook/canonical/expected/momentum.json
+# within atol=1e-4, rtol=1e-3. If you intentionally change strategy
+# semantics, regenerate goldens via tools/regen_canonical_goldens.py.
+
+run:
+  mode: backtest
+  asof: "2024-09-08"
+  pipeline: backtest.pipeline.v1
+
+artifacts:
+  root: ./artifacts
+
+plugins:
+  pipeline:
+    name: backtest.pipeline.v1
+    params:
+      engine: vectorbt
+      fees: 0.0
+      rebalancing_freq: 5
+      trading_days: 365
+
+      universe:
+        symbols: [BTC, ALT1, ALT2, ALT3, ALT4]
+
+  strategies:
+    - name: strategy.cross_asset_momentum.v1
+      weight: 1.0
+      params:
+        windows: [10, 20]
+        long_only: true
+        position_size: 0.2
+
+  data:
+    name: local_file_data
+    params_init:
+      prices_path: ./cookbook/canonical/fixture.parquet
+      volume_path: ./cookbook/canonical/fixture_volume.parquet

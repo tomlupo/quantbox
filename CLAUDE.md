@@ -7,12 +7,12 @@
 A **template-driven SDK with adapters** for quant research and production. Three things, in order:
 
 1. **Conventions** — data layouts, run-artifact shape, lifecycle states, skill API. The owned moat.
-2. **Adapters** — thin wrappers around best-of-breed external libraries (vectorbt, MLflow, DVC, riskfolio, lightgbm, ...). The wheel does the wheel's work.
+2. **Adapters** — thin wrappers around best-of-breed external libraries (vectorbt, riskfolio, ...). The wheel does the wheel's work. A core adapter is added only when ≥2 consumers need the same bridge; single-consumer libraries (mlflow, dvc) are imported directly in the downstream repo.
 3. **Skills + templates** — LLM-facing interface and project bootstrap, coupled to the SDK in this repo.
 
 The plugin runtime (`run_from_config`, CLI) is *one* of multiple entry points — see the [layered API](docs/architecture/api-layers.md) (L0–L5). Casual use defaults to L0/L1 (re-exports + convenience helpers). YAML pipelines are L4. Production is L5 with `--strict`.
 
-QuantBox is a **composing framework** — owned and opinionated, but composing external libraries (vectorbt, MLflow, riskfolio, optionally Qlib) rather than competing with them on their turf. See [ADR-0001](docs/adr/0001-library-not-framework.md).
+QuantBox is a **composing framework** — owned and opinionated, but composing external libraries (vectorbt, MLflow, riskfolio, optionally Qlib) rather than competing with them on their turf. See [ADR-0001](docs/decisions/DEC-0001-library-not-framework.md).
 
 ## Authoritative docs (read in order)
 
@@ -24,33 +24,35 @@ QuantBox is a **composing framework** — owned and opinionated, but composing e
 | 4 | [`docs/architecture/adapters.md`](docs/architecture/adapters.md) | Wrap-don't-rebuild rule. |
 | 5 | [`docs/architecture/skills.md`](docs/architecture/skills.md) | LLM-facing API, frontmatter contract, capability-gap branch. |
 | 6 | [`docs/architecture/lifecycle.md`](docs/architecture/lifecycle.md) | `meta.status` state machine, reproducibility, promotion. |
-| 7 | [`docs/architecture/templates.md`](docs/architecture/templates.md) | `quantbox new`, the four templates. |
+| 7 | [`templates/README.md`](templates/README.md) | Copy-paste scaffolds for methodology, dataset, runbook, and decision-record docs. Used by `quantbox new` and consumed by `/promote-lock`. |
 
-For step-by-step modifications, see [`docs/playbooks/`](docs/playbooks/). For historical decisions, see [`docs/adr/`](docs/adr/).
+For step-by-step modifications, see [`docs/playbooks/`](docs/playbooks/). For historical decisions, see [`docs/decisions/`](docs/decisions/).
 
 ## Project layout
 
 ```
-packages/quantbox-core/src/quantbox/   ← core library
-  contracts.py       Protocol definitions (start here)
-  runner.py          Config → plugin instantiation → pipeline.run()
-  registry.py        Plugin discovery (builtins + entry points)
-  cli.py             CLI entry point (quantbox command)
-  store.py           Artifact storage (Parquet + JSON)
-  schemas.py         Runtime schema validation
+src/quantbox/              ← installable library (uv add quantbox)
+  contracts.py             Protocol definitions (start here)
+  runner.py                Config → plugin instantiation → pipeline.run()
+  registry.py              Plugin discovery (builtins + entry points)
+  cli.py                   CLI entry point (quantbox command)
+  store.py                 Artifact storage (Parquet + JSON)
+  schemas.py               Runtime schema validation
+  artifact_schemas/        JSON schemas for artifacts (bundled as package data)
   plugins/
-    builtins.py      Plugin registration map
-    strategies/      Strategy plugins (compute target weights)
-    pipeline/        Pipeline plugins (orchestrate full runs)
-    datasources/     Data plugins (OHLCV, market cap, funding rates)
-    broker/          Broker plugins (paper + live execution)
-    rebalancing/     Rebalancing plugins (weights → orders)
-    risk/            Risk plugins (pre-trade validation)
-    publisher/       Publisher plugins (notifications)
-    backtesting/     Backtest engines (vectorbt, rsims)
-configs/             Example YAML configs for all pipeline types
-schemas/             JSON schemas for artifact validation
-plugins/manifest.yaml  Plugin profiles (research, trading, futures_paper)
+    manifest.yaml          Default plugin profiles (bundled as package data)
+    builtins.py            Plugin registration map
+    strategies/            Strategy plugins (compute target weights)
+    pipeline/              Pipeline plugins (orchestrate full runs)
+    datasources/           Data plugins (OHLCV, market cap, funding rates)
+    broker/                Broker plugins (paper + live execution)
+    rebalancing/           Rebalancing plugins (weights → orders)
+    risk/                  Risk plugins (pre-trade validation)
+    publisher/             Publisher plugins (notifications)
+    backtesting/           Backtest engines (vectorbt, rsims)
+cookbook/
+  configs/                 Example YAML pipeline configs (research, trading, paper, live)
+  scripts/                 Runnable example scripts (quickstart, custom plugin, artifact inspection)
 ```
 
 ## Key commands
@@ -90,7 +92,19 @@ uv run pytest -q                            # run tests
 DataPlugin returns `Dict[str, pd.DataFrame]` of **wide-format** DataFrames:
 - Index: date
 - Columns: symbol names
-- Keys: `"prices"` (required), `"volume"`, `"market_cap"`, `"funding_rates"` (optional)
+- Keys:
+  - `"prices"` (required) — close prices
+  - `"volume"` — quote-currency dollar volume
+  - `"high"` / `"low"` — daily high/low (needed for ATR-based strategies)
+  - `"market_cap"` — monthly mcap snapshots (typically forward-filled to daily)
+  - `"funding_rates"` — perp funding (futures datasets)
+  - `"eligibility_mask"` — boolean wide DataFrame; top-N-by-mcap gate that
+    strategies can consume via `data.get("eligibility_mask")` for PIT-correct
+    daily universe rotation
+
+  Optional keys are `setdefault`-ed to empty DataFrames by the engine, so
+  strategies can always `data.get(key)` safely. Data plugins may emit
+  additional non-canonical keys, but only the list above is guaranteed.
 
 ## Config structure
 
@@ -157,7 +171,11 @@ Quantbox uses custom exceptions (see `quantbox.exceptions`):
 - Prefer additive changes and new plugin versions over breaking changes
 - Don't rename existing entry-point IDs
 - Add tests for new plugins or core behavior
-- See `CONTRIBUTING_LLM.md` for LLM-specific guidelines
+- **Pipeline smoke is required for plugin PRs.** A plugin that passes
+  unit tests but isn't registered in `builtins.py` / `manifest.yaml` is a
+  silent production break. Run `uv run pytest -m pipeline_smoke` before
+  marking a PR ready for review (CI runs it as a separate job too).
+- See [`docs/architecture/principles.md`](docs/architecture/principles.md) for LLM-specific guidelines + anti-patterns
 
 **For any architectural change, the rules in [`docs/architecture/principles.md`](docs/architecture/principles.md) take precedence over this file.** Anti-patterns to refuse, decision rules for new features, and the layer-choice doctrine all live there.
 

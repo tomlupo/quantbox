@@ -228,7 +228,19 @@ class TestUniverseSelection:
         volume = pd.DataFrame(rng.uniform(1e5, 1e7, (50, 5)), index=dates, columns=symbols)
         market_cap = pd.DataFrame(rng.uniform(1e9, 1e11, (50, 5)), index=dates, columns=symbols)
 
-        universe = select_universe(prices, volume, market_cap, top_by_mcap=5, top_by_volume=5)
+        # Quantbox is domain-agnostic: it doesn't carry a default stablecoin list
+        # of its own (that lives in quantbox-datasets'
+        # catalog/asset_categories.yaml). Pass the exclusion explicitly so the
+        # test is self-contained — DEFAULT_STABLECOINS resolves to [] when
+        # quantbox-datasets isn't installed (e.g. CI).
+        universe = select_universe(
+            prices,
+            volume,
+            market_cap,
+            top_by_mcap=5,
+            top_by_volume=5,
+            exclude_tickers=["USDT", "USDC"],
+        )
 
         assert (universe["USDT"] == 0.0).all()
         assert (universe["USDC"] == 0.0).all()
@@ -277,7 +289,8 @@ class TestUniverseSelection:
         volume = pd.DataFrame(1.0, index=dates, columns=symbols)
         market_cap = pd.DataFrame(1e9, index=dates, columns=symbols)
 
-        universe = select_universe(prices, volume, market_cap)
+        # Pass exclusions explicitly (see test_excludes_stablecoins for why).
+        universe = select_universe(prices, volume, market_cap, exclude_tickers=["USDT", "USDC", "BUSD"])
 
         assert (universe == 0.0).all().all()
 
@@ -383,17 +396,22 @@ class TestCryptoTrendStrategy:
         # Weights should have output_periods rows
         assert len(result["weights"]) == 10
 
-        # Weights should be a DataFrame with MultiIndex columns
-        assert isinstance(result["weights"].columns, pd.MultiIndex)
-        assert result["weights"].columns.names == ["vol_target", "tranches", "ticker"]
+        # Pipeline-facing weights are a single-level DataFrame at the selected
+        # output_track (default ("50", 5)). The full panel is in details.
+        assert not isinstance(result["weights"].columns, pd.MultiIndex)
+        panel = result["details"]["weights_panel"]
+        assert isinstance(panel.columns, pd.MultiIndex)
+        assert panel.columns.names == ["vol_target", "tranches", "ticker"]
 
         # simple_weights should be a dict with ticker -> float
         assert isinstance(result["simple_weights"], dict)
 
-        # Details should contain signals, universe, scalers
+        # Details should contain signals, universe, scalers, panel, track
         assert "signals" in result["details"]
         assert "universe" in result["details"]
         assert "scalers" in result["details"]
+        assert "weights_panel" in result["details"]
+        assert result["details"]["output_track"] == ("50", 5)
 
     def test_run_with_vol_off(self) -> None:
         """vol_targets=['off', 0.50] should produce unscaled weights for 'off' scaler."""
@@ -606,3 +624,143 @@ class TestEdgeCases:
         # All weights should be 0 or NaN (universe is zero everywhere)
         non_nan = weights.fillna(0.0)
         assert (non_nan == 0.0).all().all()
+
+
+# ---------------------------------------------------------------------------
+# SSRN parity knobs + diagnostics emit
+# ---------------------------------------------------------------------------
+
+
+class TestSSRNParityKnobs:
+    """Tests for the notebook-parity knobs added for the SSRN replication."""
+
+    def _make_data(self) -> dict[str, pd.DataFrame]:
+        rng = np.random.RandomState(0)
+        n = 500
+        symbols = ["BTC", "ETH", "SOL", "BNB", "XRP"]
+        dates = pd.date_range("2023-01-01", periods=n, freq="D")
+        prices = pd.DataFrame(
+            100 * np.exp(np.cumsum(rng.normal(0.0005, 0.02, (n, 5)), axis=0)),
+            index=dates,
+            columns=symbols,
+        )
+        volume = pd.DataFrame(rng.uniform(1e6, 1e8, (n, 5)), index=dates, columns=symbols)
+        market_cap = pd.DataFrame(rng.uniform(1e9, 1e11, (n, 5)), index=dates, columns=symbols)
+        return {"prices": prices, "volume": volume, "market_cap": market_cap}
+
+    def test_clip_vol_scaler_none_disables_clipping(self) -> None:
+        """Passing clip_vol_scaler=None should produce unclipped scalers (max > 10)."""
+        data = self._make_data()
+        s_clip = CryptoTrendStrategy(
+            lookback_windows=[5, 10],
+            vol_targets=[0.50],
+            tranches=[1, 5],
+            top_by_mcap=5,
+            top_by_volume=3,
+            use_duckdb=False,
+            use_trailing_stop=False,
+            exclude_tickers=[],
+            clip_vol_scaler=(0.1, 10.0),
+        )
+        s_no_clip = CryptoTrendStrategy(
+            lookback_windows=[5, 10],
+            vol_targets=[0.50],
+            tranches=[1, 5],
+            top_by_mcap=5,
+            top_by_volume=3,
+            use_duckdb=False,
+            use_trailing_stop=False,
+            exclude_tickers=[],
+            clip_vol_scaler=None,
+        )
+        r_clip = s_clip.run(data)
+        r_no_clip = s_no_clip.run(data)
+        clip_max = float(r_clip["details"]["scalers"]["50"].max().max())
+        no_clip_max = float(r_no_clip["details"]["scalers"]["50"].max().max())
+        # Without clip, the 25%-ile of squashed scalers > 10 should appear at least once
+        assert clip_max <= 10.0 + 1e-9
+        # And the unclipped version should be at least as large
+        assert no_clip_max >= clip_max - 1e-9
+
+    def test_inv_vol_track_emits_extra_track(self) -> None:
+        """inv_vol_track=True should append a 'inv_vol' vol_target level to the panel."""
+        data = self._make_data()
+        s = CryptoTrendStrategy(
+            lookback_windows=[5, 10],
+            vol_targets=["off", 0.50],
+            tranches=[1, 5],
+            top_by_mcap=5,
+            top_by_volume=3,
+            use_duckdb=False,
+            use_trailing_stop=False,
+            exclude_tickers=[],
+            inv_vol_track=True,
+        )
+        r = s.run(data)
+        panel = r["details"]["weights_panel"]
+        levels = set(panel.columns.get_level_values("vol_target"))
+        assert {"off", "50", "inv_vol"}.issubset(levels)
+
+    def test_inv_vol_track_requires_off(self) -> None:
+        """inv_vol_track=True without 'off' in vol_targets should raise."""
+        import pytest
+
+        data = self._make_data()
+        s = CryptoTrendStrategy(
+            lookback_windows=[5, 10],
+            vol_targets=[0.50],  # no 'off'
+            tranches=[1, 5],
+            top_by_mcap=5,
+            top_by_volume=3,
+            use_duckdb=False,
+            use_trailing_stop=False,
+            exclude_tickers=[],
+            inv_vol_track=True,
+        )
+        with pytest.raises(ValueError, match="inv_vol_track"):
+            s.run(data)
+
+    def test_diagnostics_emit_shape(self) -> None:
+        """Strategy should emit details['diagnostics'] with the expected keys."""
+        data = self._make_data()
+        s = CryptoTrendStrategy(
+            lookback_windows=[5, 10, 20, 60],
+            vol_targets=["off", 0.50],
+            tranches=[1, 5],
+            top_by_mcap=5,
+            top_by_volume=3,
+            use_duckdb=False,
+            use_trailing_stop=False,
+            exclude_tickers=[],
+            regime_ticker="BTC",
+        )
+        r = s.run(data)
+        diag = r["details"]["diagnostics"]
+        assert "signal_count" in diag
+        assert isinstance(diag["signal_count"]["series"], pd.Series)
+        assert "vol_overview" in diag
+        assert "realized_vol" in diag["vol_overview"]
+        # Regime ticker is present, so donchian_overlay + per_window_signal fire
+        assert "donchian_overlay" in diag
+        assert isinstance(diag["donchian_overlay"]["trailing_stop"], pd.Series)
+        assert "per_window_signal" in diag
+        assert set(diag["per_window_signal"]["signals"].keys()) == {5, 10, 20, 60}
+
+    def test_diagnostics_skip_donchian_when_regime_missing(self) -> None:
+        """When regime_ticker isn't in the universe, donchian_overlay is omitted."""
+        data = self._make_data()
+        s = CryptoTrendStrategy(
+            lookback_windows=[5, 10],
+            vol_targets=[0.50],
+            tranches=[1, 5],
+            top_by_mcap=5,
+            top_by_volume=3,
+            use_duckdb=False,
+            use_trailing_stop=False,
+            exclude_tickers=[],
+            regime_ticker="DOES_NOT_EXIST",
+        )
+        r = s.run(data)
+        diag = r["details"]["diagnostics"]
+        assert "donchian_overlay" not in diag
+        assert "signal_count" in diag  # the cross-sectional diag still fires

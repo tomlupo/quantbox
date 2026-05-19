@@ -345,6 +345,46 @@ class TestBeGlobalRun:
         with pytest.raises(ValueError, match="No matching asset columns"):
             strategy.run({"prices": prices})
 
+    def test_duplicate_index_raises_clearly(
+        self,
+        strategy: BeGlobalStrategy,
+        prices_etf: pd.DataFrame,
+    ) -> None:
+        """Regression: a non-unique prices index used to surface as a cryptic
+        ``TypeError: unsupported operand type(s) for +: 'slice' and 'int'`` from
+        ``series.iloc[: loc + 1]`` because ``DatetimeIndex.get_loc`` returns a
+        ``slice`` for duplicate labels. The strategy now refuses such input
+        upfront with an actionable error message.
+        """
+        # Collapse the entire index onto a single timestamp -> all-duplicates.
+        bad = prices_etf.copy()
+        bad.index = pd.DatetimeIndex([prices_etf.index[0]] * len(prices_etf), tz=None)
+        assert not bad.index.is_unique
+
+        with pytest.raises(ValueError, match="unique index"):
+            strategy.run({"prices": bad})
+
+    def test_late_listing_asset_uses_date_aligned_history(
+        self,
+        strategy: BeGlobalStrategy,
+        prices_etf: pd.DataFrame,
+    ) -> None:
+        """Regression: per-asset history slicing must use date labels, not
+        positions in the full prices frame. Otherwise an asset with leading
+        NaNs (dropped via ``.dropna()``) is sliced past the loop's current
+        date, leaking lookahead data into momentum/trend signals.
+        """
+        # Knock out the first 100 rows of one asset so its dropna'd series is
+        # 100 rows shorter than ``prices``. The strategy must still produce a
+        # valid result and not blow up on positional misalignment.
+        prices = prices_etf.copy()
+        first_asset = prices.columns[0]
+        prices.iloc[:100, prices.columns.get_loc(first_asset)] = np.nan
+
+        result = strategy.run({"prices": prices})
+        assert "weights" in result
+        assert result["weights"].shape[0] > 0
+
 
 # ---------------------------------------------------------------------------
 # Plugin metadata

@@ -1,33 +1,53 @@
-# Workspace root. The installable package for downstreams is packages/quantbox-core (name: quantbox).
 [project]
-name = "quantbox-workspace"
-version = "0.0.0"
+name = "quantbox"
+version = "0.2.0"
+description = "Quant research & trading core with plugin marketplace (entry points)."
 requires-python = ">=3.10"
-dependencies = ["quantbox"]
+dependencies = [
+  "pandas>=2.3.3",
+  "pyyaml>=6.0.3",
+  "pyarrow>=24.0.0",
+  "duckdb>=1.5.2",
+  "jsonschema>=4.26.0",
+  "tenacity>=9.1.4",
+  "httpx>=0.28.1",
+  "pycoingecko>=3.2.0",
+  "typer>=0.25.1",
+  "vectorbt>=1.0.0",
+  "numba>=0.65.1",
+  "pandas-market-calendars>=4.4",
+]
 
-[tool.uv.sources]
-quantbox = { workspace = true }
+[project.optional-dependencies]
+ibkr = ["ib_insync"]
+binance = ["python-binance"]
+ccxt = ["ccxt>=4.5.54"]
+ml = ["scikit-learn>=1.7.2"]
+simulation = ["arch>=8.0"]
+viz = ["matplotlib>=3.10.9", "seaborn>=0.13.2"]
+full = ["python-binance", "ccxt>=4.5.54", "ib_insync", "scikit-learn>=1.7.2", "arch>=8.0"]
 
-[tool.uv.workspace]
-members = ["packages/quantbox-core"]
+[project.scripts]
+quantbox = "quantbox.cli:main"
 
 [build-system]
-requires = ["uv_build>=0.9.18,<0.10.0"]
+requires = ["uv_build>=0.11.14,<0.12.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0.2",
-    "ruff>=0.8",
+    "pytest>=9.0.3",
+    "ruff>=0.15.13",
 ]
+
+[tool.uv_build]
+package-data = { quantbox = ["artifact_schemas/*.schema.json"], "quantbox.plugins" = ["manifest.yaml", "manifest.schema.json"] }
 
 [tool.ruff]
 target-version = "py310"
 line-length = 120
 exclude = [
-    "packages/quantbox-core/src/quantbox/plugins/trading/quantlab/",
-    "scripts/",
-    "config/",
+    "cookbook/configs/",
 ]
 
 [tool.ruff.lint]
@@ -40,11 +60,18 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"packages/quantbox-core/src/quantbox/plugins/strategies/crypto_trend.py" = ["E402", "I001"]
+"src/quantbox/plugins/strategies/crypto_trend.py" = ["E402", "I001"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["quantbox"]
 
 [tool.pytest.ini_options]
-testpaths = ["packages/quantbox-core/tests", "tests"]
+testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+# Default `pytest -q` skips slow pipeline-smoke + canonical reproductions.
+# CI runs each as a separate job.
+addopts = "-m 'not pipeline_smoke and not canonical_reproduction'"
+markers = [
+    "pipeline_smoke: end-to-end pipeline tests (slow). Run via `pytest -m pipeline_smoke`.",
+    "canonical_reproduction: end-to-end backtests against committed goldens. Run via `pytest -m canonical_reproduction`.",
+]

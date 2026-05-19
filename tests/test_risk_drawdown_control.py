@@ -22,10 +22,12 @@ class TestDrawdownControlRiskManager:
 
     @staticmethod
     def _make_targets() -> pd.DataFrame:
-        return pd.DataFrame([
-            {"symbol": "BTC", "weight": 0.5},
-            {"symbol": "ETH", "weight": 0.5},
-        ])
+        return pd.DataFrame(
+            [
+                {"symbol": "BTC", "weight": 0.5},
+                {"symbol": "ETH", "weight": 0.5},
+            ]
+        )
 
     # ----------------------------------------------------------------
     # 1. Halt on severe drawdown
