@@ -15,7 +15,7 @@ dependencies = [
   "typer>=0.25.1",
   "vectorbt>=1.0.0",
   "numba>=0.65.1",
-  "pandas-market-calendars>=4.4",
+  "pandas-market-calendars>=5.3.2",
 ]
 
 [project.optional-dependencies]
@@ -31,7 +31,7 @@ full = ["python-binance", "ccxt>=4.5.54", "ib_insync", "scikit-learn>=1.7.2", "a
 quantbox = "quantbox.cli:main"
 
 [build-system]
-requires = ["uv_build>=0.11.14,<0.12.0"]
+requires = ["uv_build>=0.11.15,<0.12.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
