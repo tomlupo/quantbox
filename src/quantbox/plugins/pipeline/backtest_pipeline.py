@@ -776,6 +776,11 @@ class BacktestPipeline:
                     "rebalancing_freq": v_freq,
                     "threshold": v_thresh,
                     "risk": v_risk_cfg,
+                    # Optional explicit flag — when set, this variant becomes
+                    # the source of the shared § 03 diagnostics in the report.
+                    # Without it, the template picks the highest-Sharpe
+                    # non-benchmark variant.
+                    "primary": bool(v.get("primary", False)),
                 },
             }
             logger.info(
