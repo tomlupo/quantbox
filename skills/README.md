@@ -86,6 +86,6 @@ This directory is a **mount point** at the moment. Skills will be authored as th
 | `quantbox-autoresearch` | `AutoResearchDriver`, `VariantProposerPlugin` Protocol, adapters for optuna + anthropic, EXPERIMENTS.jsonl format |
 | `quantbox-promote` | lifecycle state transitions in registry |
 | `quantbox-revalidate` | revalidation cron + spec frontmatter parser |
-| Generic quant skills | migration from qute-code-kit (see project notes) |
+| Generic quant skills | (none — historical migration note removed) |
 
 See [`docs/architecture/skills.md`](../docs/architecture/skills.md) for the full skill design and [`docs/playbooks/add-a-skill.md`](../docs/playbooks/add-a-skill.md) for the authoring flow.
