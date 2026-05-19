@@ -1092,17 +1092,44 @@
   }
 
   // ───────────────────────────────────────────────────────────
-  // Pick "primary" variant for shared diagnostics. Convention:
-  //  1. Last non-benchmark crypto_trend variant (most likely the paper choice)
-  //  2. Otherwise, the first variant.
+  // Pick "primary" variant for the shared diagnostics section.
+  // Precedence (first match wins):
+  //   1. Variant whose metrics dict contains _primary === true (config flag)
+  //   2. Variant whose strategy name suggests benchmark/passive (skipped)
+  //   3. Variant with the highest Sharpe among the rest
+  //   4. Fallback: first variant
   // ───────────────────────────────────────────────────────────
-  let primaryVariant = variantNames[0];
+  function _isBenchmark(strategyName) {
+    const sn = (strategyName || '').toLowerCase();
+    return sn.includes('vol_matched_buy_hold')
+      || sn.includes('static_weights')
+      || sn.includes('buy_hold')
+      || sn.includes('frozen_weights');
+  }
+  function pickPrimaryVariant() {
+    if (!variantNames.length) return null;
+    // 1. Explicit flag in metrics
+    for (const v of variantNames) {
+      if ((variantMetrics[v] || {})._primary === true) return v;
+    }
+    // 2-3. Highest Sharpe among non-benchmarks
+    let best = null;
+    let bestSharpe = -Infinity;
+    for (const v of variantNames) {
+      const m = variantMetrics[v] || {};
+      if (_isBenchmark(m._strategy_name)) continue;
+      const s = (typeof m.sharpe === 'number') ? m.sharpe : -Infinity;
+      if (s > bestSharpe) { bestSharpe = s; best = v; }
+    }
+    if (best) return best;
+    // 4. Fallback: first non-benchmark, else first variant overall
+    for (const v of variantNames) {
+      if (!_isBenchmark((variantMetrics[v] || {})._strategy_name)) return v;
+    }
+    return variantNames[0];
+  }
+  let primaryVariant = pickPrimaryVariant() || variantNames[0];
   if (isMulti) {
-    const trendVariants = variantNames.filter(v => {
-      const sn = (variantMetrics[v] || {})._strategy_name || '';
-      return sn.includes('crypto_trend') || sn.includes('trend_catcher') || sn.includes('regime');
-    });
-    if (trendVariants.length) primaryVariant = trendVariants[trendVariants.length - 1];
     document.getElementById('diag-source-variant').textContent = primaryVariant;
     document.getElementById('sec-diagnostics').classList.remove('empty');
 

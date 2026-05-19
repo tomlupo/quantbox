@@ -517,7 +517,36 @@ class CryptoRegimeTrendStrategy:
         else:
             output_weights = combined.tail(self.output_periods)
 
-        # 8. Pick the slice returned to the pipeline.
+        # 8a. Diagnostics emit — drives the editorial report's § 03 section.
+        # Both return paths below propagate this through ``details["diagnostics"]``.
+        #
+        # ``regime_overlay`` uses the ensemble's middle window pair as a proxy
+        # for the (fast, slow) MA the user is reading on the chart. When the
+        # ensemble is off we use the explicit (trend_window, regime_window).
+        # ``signal_count`` is the total count of active long + short signals
+        # across the universe after the regime mask is applied, capped at
+        # long_max + short_max so the dashed cap line is meaningful.
+        if self.use_ensemble and self.window_pairs:
+            mid = self.window_pairs[len(self.window_pairs) // 2]
+            fast_w, slow_w = int(mid[1]), int(mid[0])  # (regime_w, trend_w) order
+        else:
+            fast_w, slow_w = int(self.trend_window), int(self.regime_window)
+        active_signal_count = (long_sig.fillna(0) > 0).sum(axis=1) + (short_sig.fillna(0) > 0).sum(axis=1)
+        diagnostics_emit = {
+            "regime_overlay": {
+                "ref_ticker": str(self.btc_ticker),
+                "fast_window": fast_w,
+                "slow_window": slow_w,
+                "log_y": True,
+            },
+            "signal_count": {
+                "series": active_signal_count.astype(int),
+                "cap": int(self.long_max) + int(self.short_max),
+                "label": "Active long + short signals",
+            },
+        }
+
+        # 8b. Pick the slice returned to the pipeline.
         #
         # When the strategy produces a vol_target × tranches × ticker panel,
         # the pipeline's `_run_strategy_plugins` collapses MultiIndex columns
@@ -564,6 +593,7 @@ class CryptoRegimeTrendStrategy:
                         "combined": combined,
                         "weights_panel": panel,
                         "output_track": None,
+                        "diagnostics": diagnostics_emit,
                     },
                     "exposure": {
                         "long": long_exposure,
@@ -591,6 +621,7 @@ class CryptoRegimeTrendStrategy:
                 "combined": combined,
                 "weights_panel": panel,
                 "output_track": track_resolved,
+                "diagnostics": diagnostics_emit,
             },
             "exposure": {
                 "long": long_exposure,

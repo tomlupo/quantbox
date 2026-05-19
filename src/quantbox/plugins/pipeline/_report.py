@@ -1508,6 +1508,11 @@ def generate_report_data(
             cfg = v.get("config") or {}
             m["_strategy_name"] = v.get("strategy_name", "")
             m["_fees"] = cfg.get("fees")
+            # ``primary: true`` in the variant config marks it as the source
+            # of the shared diagnostics section. When no variant is flagged,
+            # the template falls back to picking the highest-Sharpe non-benchmark.
+            if cfg.get("primary") is True:
+                m["_primary"] = True
             variant_metrics[vname] = m
 
     return {

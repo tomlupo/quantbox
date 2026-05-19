@@ -341,3 +341,72 @@ class TestOutputTrack:
         assert isinstance(panel.columns, pd.MultiIndex)
         assert {"vol_target", "tranches", "ticker"}.issubset(set(panel.columns.names))
         assert r["details"]["output_track"] == ("25", 5)
+
+
+class TestDiagnosticsEmit:
+    """Tests for the report-block diagnostics emit (regime_overlay + signal_count)."""
+
+    def test_emits_regime_overlay_and_signal_count(self) -> None:
+        s = CryptoRegimeTrendStrategy(
+            use_ensemble=False,
+            regime_window=50,
+            trend_window=20,
+            long_max=2,
+            short_max=2,
+            coins_to_trade=8,
+            vol_targets=["off"],
+            tranches=[1],
+            output_periods=10,
+            exclude_tickers=[],
+            volume_is_dollar=False,
+        )
+        r = s.run(_make_market_data(n_days=200, n_assets=8))
+        diag = r["details"].get("diagnostics") or {}
+        # regime_overlay payload contract
+        assert "regime_overlay" in diag
+        ro = diag["regime_overlay"]
+        assert ro["ref_ticker"] == "BTC"
+        assert ro["fast_window"] == 20  # trend_window in non-ensemble mode
+        assert ro["slow_window"] == 50  # regime_window in non-ensemble mode
+        # signal_count payload contract
+        assert "signal_count" in diag
+        sc = diag["signal_count"]
+        assert isinstance(sc["series"], pd.Series)
+        assert sc["cap"] == 4  # long_max + short_max
+        assert "long + short" in sc["label"].lower()
+
+    def test_ensemble_mode_uses_middle_window_pair(self) -> None:
+        s = CryptoRegimeTrendStrategy(
+            use_ensemble=True,
+            window_pairs=[(10, 25), (20, 50), (40, 100)],
+            long_max=2,
+            short_max=2,
+            coins_to_trade=8,
+            vol_targets=["off"],
+            tranches=[1],
+            output_periods=10,
+            exclude_tickers=[],
+            volume_is_dollar=False,
+        )
+        r = s.run(_make_market_data(n_days=200, n_assets=8))
+        ro = r["details"]["diagnostics"]["regime_overlay"]
+        # Middle pair is (20, 50) → fast=50 (trend_w), slow=20 (regime_w)
+        assert ro["fast_window"] == 50
+        assert ro["slow_window"] == 20
+
+    def test_signal_count_is_nonnegative_integer_series(self) -> None:
+        s = CryptoRegimeTrendStrategy(
+            use_ensemble=False,
+            long_max=2,
+            short_max=2,
+            coins_to_trade=8,
+            vol_targets=["off"],
+            tranches=[1],
+            output_periods=10,
+            exclude_tickers=[],
+            volume_is_dollar=False,
+        )
+        r = s.run(_make_market_data(n_days=200, n_assets=8))
+        series = r["details"]["diagnostics"]["signal_count"]["series"]
+        assert (series >= 0).all()
+        assert series.dtype.kind in ("i", "u")
