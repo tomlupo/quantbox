@@ -1047,13 +1047,26 @@ class TradingPipeline:
                             reason = "No price available"
                             adjusted_qty = 0.0
                         elif notional_value < min_notional:
-                            status = "Below min notional"
-                            reason = f"Notional {notional_value:.4f} < min_notional {min_notional:.4f}"
-                            adjusted_qty = 0.0
+                            if zero_target_sell and min_qty > 0 and (min_qty * price) >= min_notional:
+                                # Full close-out: round up to min lot so position actually closes
+                                adjusted_qty = min_qty
+                                notional_value = min_qty * price
+                                status = "To be placed"
+                                reason = f"Rounded up to min_qty={min_qty} (full close-out)"
+                            else:
+                                status = "Below min notional"
+                                reason = f"Notional {notional_value:.4f} < min_notional {min_notional:.4f}"
+                                adjusted_qty = 0.0
                         elif min_qty > 0 and adjusted_qty < min_qty:
-                            status = "Below min qty"
-                            reason = f"Qty {adjusted_qty:.8f} < min_qty {min_qty:.8f}"
-                            adjusted_qty = 0.0
+                            if zero_target_sell:
+                                adjusted_qty = min_qty
+                                notional_value = min_qty * price
+                                status = "To be placed"
+                                reason = f"Rounded up to min_qty={min_qty} (full close-out)"
+                            else:
+                                status = "Below min qty"
+                                reason = f"Qty {adjusted_qty:.8f} < min_qty {min_qty:.8f}"
+                                adjusted_qty = 0.0
                         else:
                             status = "To be placed"
                             reason = ""
