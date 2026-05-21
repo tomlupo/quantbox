@@ -1242,9 +1242,23 @@ class TradingPipeline:
                 report["summary"]["total_failed"] += 1
             return report
 
-        # Process fills
+        # Process fills and failures
         if fills is not None and not fills.empty:
             for _, fill_row in fills.iterrows():
+                status = str(fill_row.get("status", "FILLED"))
+                if status == "FAILED":
+                    report["orders_details"].append(
+                        {
+                            "symbol": str(fill_row.get("symbol", "")),
+                            "action": str(fill_row.get("side", "")),
+                            "quantity": float(fill_row.get("qty", 0)),
+                            "status": "FAILED",
+                            "error": str(fill_row.get("error", "placement failed")),
+                        }
+                    )
+                    report["summary"]["total_failed"] += 1
+                    continue
+
                 detail = {
                     "symbol": str(fill_row.get("symbol", "")),
                     "action": str(fill_row.get("side", "")),
