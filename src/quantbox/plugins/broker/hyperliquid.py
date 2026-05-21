@@ -408,8 +408,8 @@ class HyperliquidBroker:
 
     def place_orders(self, orders: pd.DataFrame) -> pd.DataFrame:
         """BrokerPlugin-compliant order execution."""
-        fills: list[dict[str, Any]] = []
-        failed: list[dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
+        n_failed = 0
         for _, o in orders.iterrows():
             sym = str(o["symbol"])
             side = str(o["side"]).lower()
@@ -418,33 +418,42 @@ class HyperliquidBroker:
             if result:
                 fill_price = float(result.get("average", result.get("price", 0)) or 0)
                 filled_qty = float(result.get("filled", qty) or qty)
-                fills.append(
+                rows.append(
                     {
                         "symbol": sym,
                         "side": side,
                         "qty": filled_qty,
                         "price": fill_price,
                         "order_id": result.get("id"),
+                        "status": "FILLED",
+                        "error": "",
                     }
                 )
             else:
-                failed.append({"symbol": sym, "side": side, "qty": qty})
+                rows.append(
+                    {
+                        "symbol": sym,
+                        "side": side,
+                        "qty": qty,
+                        "price": 0.0,
+                        "order_id": None,
+                        "status": "FAILED",
+                        "error": "placement failed",
+                    }
+                )
+                n_failed += 1
 
-        if failed:
+        if n_failed:
+            failed_rows = [r for r in rows if r["status"] == "FAILED"]
             logger.error(
                 "Orders failed (%d/%d): %s",
-                len(failed),
+                n_failed,
                 len(orders),
-                [(f["side"], f["symbol"]) for f in failed],
-            )
-            lines = "\n".join(f"  ❌ {f['side'].upper()} {f['qty']:.4f} {f['symbol']}" for f in failed)
-            send_telegram(
-                self.telegram_token,
-                self.telegram_chat_id,
-                f"⚠️ <b>ORDER FAILURES ({len(failed)}/{len(orders)})</b>\n{lines}",
+                [(f["side"], f["symbol"]) for f in failed_rows],
             )
 
-        return pd.DataFrame(fills) if fills else pd.DataFrame(columns=["symbol", "side", "qty", "price", "order_id"])
+        cols = ["symbol", "side", "qty", "price", "order_id", "status", "error"]
+        return pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
 
     def fetch_fills(self, since: str) -> pd.DataFrame:
         """BrokerPlugin-compliant fill history."""
@@ -583,7 +592,13 @@ class HyperliquidBroker:
         quantity = round(quantity, int(precision))
 
         if quantity <= 0:
-            logger.warning(f"Quantity too small for {symbol}")
+            logger.warning(f"Quantity rounds to zero for {symbol} (precision={precision})")
+            return None
+
+        # Check exchange minimum quantity
+        min_qty = market.get("limits", {}).get("amount", {}).get("min") or 0
+        if min_qty and quantity < min_qty:
+            logger.warning(f"Quantity {quantity} below exchange minimum {min_qty} for {symbol}")
             return None
 
         # Place order with retries
