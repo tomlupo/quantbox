@@ -11,3 +11,11 @@ def test_discovery():
 
     assert "ibkr.live.v1" in reg.brokers
     assert "binance.live.v1" in reg.brokers
+
+
+def test_hyperliquid_cached_plugin_registered():
+    from quantbox.registry import PluginRegistry
+
+    reg = PluginRegistry.discover()
+    assert "hyperliquid.data.cached.v1" in reg.data
+    assert reg.data["hyperliquid.data.cached.v1"].meta.name == "hyperliquid.data.cached.v1"

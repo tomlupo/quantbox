@@ -19,6 +19,7 @@ from .broker import (
 from .datasources import (
     BinanceDataPlugin,
     BinanceFuturesDataPlugin,
+    HyperliquidCachedDataPlugin,
     HyperliquidDataPlugin,
     LocalFileDataPlugin,
     SyntheticDataPlugin,
@@ -70,7 +71,12 @@ def builtins() -> dict[str, dict[str, type]]:
     return {
         "pipeline": _map(FundSelectionPipeline, AllocationsToOrdersPipeline, TradingPipeline, BacktestPipeline),
         "data": _map(
-            LocalFileDataPlugin, BinanceDataPlugin, BinanceFuturesDataPlugin, HyperliquidDataPlugin, SyntheticDataPlugin
+            LocalFileDataPlugin,
+            BinanceDataPlugin,
+            BinanceFuturesDataPlugin,
+            HyperliquidDataPlugin,
+            HyperliquidCachedDataPlugin,
+            SyntheticDataPlugin,
         ),
         "broker": _map(
             SimPaperBroker,
