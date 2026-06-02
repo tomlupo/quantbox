@@ -6,6 +6,11 @@ versioned per [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-06-02
+
+### Added
+- **`hyperliquid.data.cached.v1`** — incremental on-disk cache wrapping `hyperliquid.data.v1`. Stores prices/volume/funding as flat long-format parquet under `cache_dir` and fetches only the missing tail per coin (≤2 inner calls/run), cutting a warm Hyperliquid daily run from ~480 REST calls (~3 min, 429-prone) to ~100 (<1 min). Validated against the live API: ~6× fewer calls, exact value parity, no 429s. The stateless `hyperliquid.data.v1` is unchanged. Config: `data.name: hyperliquid.data.cached.v1` + `params_init: {cache_dir, overlap_days}`.
+
 ## [0.2.5] — 2026-06-02
 
 ### Fixed
