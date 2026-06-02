@@ -232,6 +232,7 @@ class HyperliquidBroker:
 
         # Load markets
         self._markets = self._exchange.load_markets()
+        self._build_symbol_index()
         logger.info(
             f"Connected to Hyperliquid {'testnet' if self.testnet else 'mainnet'}, {len(self._markets)} markets loaded"
         )
@@ -239,6 +240,31 @@ class HyperliquidBroker:
         # Record starting balance for daily PnL tracking
         balance = self.get_balance()
         self._starting_balance = balance.get("total", 0)
+
+    def _build_symbol_index(self) -> None:
+        """Index perp markets by their canonical Hyperliquid coin name.
+
+        ccxt uppercases the perp base, so Hyperliquid's ``kPEPE`` becomes the
+        ccxt symbol ``KPEPE/USDC:USDC``. Our data layer, however, uses the raw
+        name from the Hyperliquid info endpoint (``kPEPE``). Without mapping
+        through ``info.name``, k-prefixed perps (kPEPE/kBONK/kSHIB/kFLOKI/...)
+        fail both price lookup and position reconciliation. Builds:
+
+          ``_coin_to_market``: ``'kPEPE'`` -> ``'KPEPE/USDC:USDC'`` (forward)
+          ``_base_to_coin``:   ``'KPEPE'`` -> ``'kPEPE'``           (reverse)
+        """
+        self._coin_to_market: dict[str, str] = {}
+        self._base_to_coin: dict[str, str] = {}
+        for market_symbol, market in self._markets.items():
+            if not market.get("swap"):
+                continue
+            name = (market.get("info") or {}).get("name")
+            if not name:
+                continue
+            self._coin_to_market.setdefault(name, market_symbol)
+            base = market.get("base")
+            if base:
+                self._base_to_coin.setdefault(base, name)
 
     def describe(self) -> dict[str, Any]:
         """Describe broker for LLM introspection."""
@@ -323,8 +349,12 @@ class HyperliquidBroker:
                 if abs(contracts) < 1e-8:
                     continue
 
-                # Extract base symbol (e.g., "BTC" from "BTC/USDC:USDC")
-                symbol = pos["symbol"].split("/")[0]
+                # Extract base symbol (e.g., "BTC" from "BTC/USDC:USDC"), then
+                # map ccxt's uppercased base back to the canonical Hyperliquid
+                # coin name (e.g. "KPEPE" -> "kPEPE") so it matches strategy
+                # targets during reconciliation.
+                base = pos["symbol"].split("/")[0]
+                symbol = self._base_to_coin.get(base, base)
                 side = pos.get("side", "long")
                 notional = abs(float(pos.get("notional", 0) or 0))
                 entry_price = float(pos.get("entryPrice", 0) or 0)
@@ -487,19 +517,14 @@ class HyperliquidBroker:
 
     def get_price(self, symbol: str) -> float | None:
         """Get current price for symbol."""
+        market_symbol = self._get_market_symbol(symbol)
+        if market_symbol is None:
+            logger.warning(f"Market not found for {symbol}")
+            return None
         for attempt in range(MAX_RETRIES):
             try:
-                for market_symbol in [
-                    f"{symbol}/USDC:USDC",
-                    f"{symbol}/USD:USDC",
-                    f"{symbol}USDC",
-                ]:
-                    if market_symbol in self._markets:
-                        ticker = self._exchange.fetch_ticker(market_symbol)
-                        return float(ticker["last"])
-
-                logger.warning(f"Market not found for {symbol}")
-                return None
+                ticker = self._exchange.fetch_ticker(market_symbol)
+                return float(ticker["last"])
             except Exception as e:
                 if attempt < MAX_RETRIES - 1:
                     backoff = RETRY_DELAY_SECONDS * (2**attempt)
@@ -530,6 +555,10 @@ class HyperliquidBroker:
 
     def _get_market_symbol(self, symbol: str) -> str | None:
         """Get full market symbol for trading."""
+        # Canonical Hyperliquid name first — handles k-prefixed perps whose ccxt
+        # base is uppercased (e.g. 'kPEPE' -> 'KPEPE/USDC:USDC').
+        if symbol in self._coin_to_market:
+            return self._coin_to_market[symbol]
         for market_symbol in [
             f"{symbol}/USDC:USDC",
             f"{symbol}/USD:USDC",
