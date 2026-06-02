@@ -1,6 +1,6 @@
 [project]
 name = "quantbox"
-version = "0.2.0"
+version = "0.2.4"
 description = "Quant research & trading core with plugin marketplace (entry points)."
 requires-python = ">=3.10"
 dependencies = [
@@ -36,6 +36,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "commitizen>=4.16.3",
     "pytest>=9.0.3",
     "ruff>=0.15.13",
 ]
@@ -75,3 +76,14 @@ markers = [
     "pipeline_smoke: end-to-end pipeline tests (slow). Run via `pytest -m pipeline_smoke`.",
     "canonical_reproduction: end-to-end backtests against committed goldens. Run via `pytest -m canonical_reproduction`.",
 ]
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "0.2.4"
+version_files = [
+    "pyproject.toml:version",
+    "src/quantbox/__init__.py:__version__",
+]
+update_changelog_on_bump = true
+tag_format = "v$version"
+major_version_zero = true

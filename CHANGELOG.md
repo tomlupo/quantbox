@@ -6,6 +6,8 @@ versioned per [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.4] — 2026-06-02
+
 ### Added
 - **`backtest.pipeline.v1` per-variant report layout** (version bumped to `0.2.0`). In variants flow, every variant now gets its own report section with metrics strip + framework charts (portfolio, monthly, contrib, weights, position_stack) instead of just the first ("primary") variant. New `variant_metrics: dict[str, dict]` key in `report_data.json`. Chart keys are namespaced as `<variant>__<chart_name>`. Single-strategy flow is unchanged.
 - **`DataPlugin` contract**: `"high"` and `"low"` (daily OHLC) and `"eligibility_mask"` (point-in-time universe gate) are now documented as recognised optional keys. The engine `setdefault`s them to empty DataFrames so strategies can `data.get(key)` safely. No change for plugins that don't emit them.
@@ -13,6 +15,10 @@ versioned per [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 - `_build_contrib_chart` and `_build_position_stack_chart` now return `None` for single-asset strategies (avoids 1-bar / 1-line charts that carry no information).
 - `_build_monthly_chart` row-height heuristic reduced from `80*rows + 120` to `32*rows + 120` (10-year heatmap is ~440px tall instead of 920px).
+
+### Packaging
+- Aligned version metadata: `pyproject.toml`, `src/quantbox/__init__.py` `__version__`, and the git tag now move together. Previously the tag advanced (v0.2.1–v0.2.3) while the in-code version stayed frozen at `0.2.0` / `0.1.0`, so installed package metadata always reported a stale version. The v0.2.1–v0.2.3 tags were release-only (no changelog) and are consolidated into this entry.
+- Adopted [commitizen](https://commitizen-tools.github.io/commitizen/) for releases (via `/ship`): future bumps rewrite every version string, update this changelog, and create the tag from Conventional Commits. **Do not `git tag` by hand anymore** — that is what caused the drift.
 
 ## [0.2.0] — 2026-05-08
 
