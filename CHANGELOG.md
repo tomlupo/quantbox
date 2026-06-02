@@ -6,6 +6,11 @@ versioned per [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.5] — 2026-06-02
+
+### Fixed
+- **Hyperliquid broker — k-prefixed perps** (kPEPE, kBONK, kSHIB, kFLOKI, kLUNC, kNEIRO, kDOGS). ccxt uppercases the perp base, so Hyperliquid's `kPEPE` is keyed `KPEPE/USDC:USDC`, while the data layer uses the raw `info.name` (`kPEPE`). These markets previously failed price lookup (`Market not found`) and position reconciliation (`KPEPE` ≠ target `kPEPE`). The broker now indexes perps by canonical `info.name` at connect (`_coin_to_market` forward, `_base_to_coin` reverse) and resolves both directions. Normal symbols are unaffected.
+
 ## [0.2.4] — 2026-06-02
 
 ### Added
