@@ -42,6 +42,14 @@ class HyperliquidCachedDataPlugin:
             params_init:
               cache_dir: ./cache/hyperliquid
               overlap_days: 3
+
+    Note:
+        A given ``cache_dir`` must be used only by callers sharing the same
+        ``lookback_days``. The cache is pruned to ``asof - (lookback_days +
+        overlap_days)`` on every run, so a shorter-lookback caller sharing the
+        directory would trim history a longer-lookback caller still needs,
+        forcing a full re-fetch. The live config uses a single caller at
+        ``lookback_days: 365``.
     """
 
     cache_dir: str = "./cache/hyperliquid"
@@ -143,4 +151,64 @@ class HyperliquidCachedDataPlugin:
         asof: str,
         params: dict[str, Any],
     ) -> dict[str, pd.DataFrame]:
-        raise NotImplementedError  # Task 2
+        if universe.empty or "symbol" not in universe.columns:
+            empty = {s: pd.DataFrame() for s in _SERIES}
+            empty["market_cap"] = pd.DataFrame()
+            return empty
+
+        requested = universe["symbol"].tolist()
+        lookback = int(params.get("lookback_days", 365))
+        asof_dt = pd.Timestamp(asof, tz="UTC").normalize()
+        start = asof_dt - pd.Timedelta(days=lookback)
+
+        # 1-2. read cache; last cached date per coin (prices = reference series)
+        cache = {s: self._read_cache(s) for s in _SERIES}
+        prices_cache = cache["prices"]
+        last_date = {} if prices_cache.empty else prices_cache.groupby("symbol")["date"].max().to_dict()
+
+        # 3. bucket coins
+        new_coins = [c for c in requested if c not in last_date]
+        cached_coins = [c for c in requested if c in last_date]
+        fetched: dict[str, list[pd.DataFrame]] = {s: [] for s in _SERIES}
+
+        # 4a. new coins -> full lookback
+        if new_coins:
+            res = self._inner.load_market_data(
+                pd.DataFrame({"symbol": new_coins}), asof, {**params, "lookback_days": lookback}
+            )
+            for s in _SERIES:
+                fetched[s].append(self._wide_to_long(res.get(s, pd.DataFrame())))
+
+        # 4b. cached coins -> max gap + overlap (one batched call)
+        if cached_coins:
+            max_gap = max((asof_dt - last_date[c]).days for c in cached_coins) + self.overlap_days
+            max_gap = max(max_gap, 1)
+            res = self._inner.load_market_data(
+                pd.DataFrame({"symbol": cached_coins}), asof, {**params, "lookback_days": max_gap}
+            )
+            for s in _SERIES:
+                fetched[s].append(self._wide_to_long(res.get(s, pd.DataFrame())))
+
+        # 5-7. merge -> dedup (fetched wins) -> prune -> atomic rewrite
+        prune_floor = asof_dt - pd.Timedelta(days=lookback + self.overlap_days)
+        merged: dict[str, pd.DataFrame] = {}
+        for s in _SERIES:
+            parts = [f for f in ([cache[s]] + fetched[s]) if not f.empty]
+            combined = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=_EMPTY_LONG_COLS)
+            if not combined.empty:
+                combined = combined.drop_duplicates(["date", "symbol"], keep="last")
+                combined = combined[combined["date"] >= prune_floor]
+                combined = combined.sort_values(["symbol", "date"]).reset_index(drop=True)
+            self._write_cache(s, combined)
+            merged[s] = combined
+
+        # 8. build return frames in memory (no second read)
+        result = {s: self._long_to_wide(merged[s], requested, start, asof_dt) for s in _SERIES}
+        result["market_cap"] = pd.DataFrame()
+        logger.info(
+            "Hyperliquid cached: %d new + %d cached coins, %d price date-rows returned",
+            len(new_coins),
+            len(cached_coins),
+            len(result["prices"]),
+        )
+        return result
