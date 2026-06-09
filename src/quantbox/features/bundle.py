@@ -7,6 +7,7 @@ from typing import Any
 import pandas as pd
 
 from quantbox.features.channels import compute_donchian
+from quantbox.features.momentum import compute_total_returns, compute_tsmom
 from quantbox.features.moving_averages import compute_ema, compute_sma
 from quantbox.features.returns import compute_returns
 from quantbox.features.volatility import compute_ewm_vol, compute_rolling_vol
@@ -15,17 +16,19 @@ _DISPATCHERS = {
     "returns": lambda prices, cfg: compute_returns(
         prices, cfg.get("windows", [1]), method=cfg.get("method", "pct_change")
     ),
+    "total_returns": lambda prices, cfg: compute_total_returns(prices, cfg.get("windows", [21, 63, 126, 189, 252])),
+    "tsmom": lambda prices, cfg: compute_tsmom(prices, **cfg),
     "rolling_vol": lambda prices, cfg: compute_rolling_vol(
         prices,
         cfg.get("windows", [21]),
         annualize=cfg.get("annualize", True),
-        factor=cfg.get("factor", 365.0),
+        factor=cfg.get("factor", 252.0),
     ),
     "ewm_vol": lambda prices, cfg: compute_ewm_vol(
         prices,
         cfg.get("spans", [21]),
         annualize=cfg.get("annualize", True),
-        factor=cfg.get("factor", 365.0),
+        factor=cfg.get("factor", 252.0),
     ),
     "sma": lambda prices, cfg: compute_sma(prices, cfg.get("windows", [20])),
     "ema": lambda prices, cfg: compute_ema(prices, cfg.get("spans", [20])),
