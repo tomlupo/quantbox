@@ -110,10 +110,24 @@ def history():
     return out
 
 
+class FakeMcap:
+    """Offline, deterministic market-cap/screen-volume provider for tests."""
+
+    def estimate_market_cap(self, prices, volume):
+        return prices * 1e6  # mcap = price × fixed supply
+
+    def estimate_aggregate_volume(self, prices):
+        agg = pd.DataFrame(index=prices.index)
+        for c in prices.columns:
+            agg[c] = 1e9
+        return agg
+
+
 def _build(tmp_path, history):
     plugin = HyperliquidCachedDataPlugin(cache_dir=str(tmp_path), overlap_days=3)
     fake = FakeInner(history)
     plugin._inner = fake
+    plugin.mcap_provider = FakeMcap()  # keep tests offline + deterministic
     return plugin, fake
 
 
@@ -128,7 +142,10 @@ class TestLoadMarketData:
             assert (tmp_path / f"{s}.parquet").exists()
         assert list(out["prices"].columns) == ["A", "B", "C"]
         assert out["prices"].index.max() == pd.Timestamp("2026-05-28", tz="UTC")
-        assert out["market_cap"].empty
+        # market_cap + screen_volume now sourced from the (injected) provider
+        assert not out["market_cap"].empty
+        assert list(out["market_cap"].columns) == ["A", "B", "C"]
+        assert not out["screen_volume"].empty
 
     def test_warm_run_fetches_only_the_gap(self, tmp_path, history):
         plugin, fake = _build(tmp_path, history)

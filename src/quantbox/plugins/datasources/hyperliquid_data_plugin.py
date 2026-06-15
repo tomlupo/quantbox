@@ -52,6 +52,8 @@ import requests
 
 from quantbox.contracts import PluginMeta
 
+from ._utils import MarketCapProvider
+
 logger = logging.getLogger(__name__)
 
 HL_INFO_URL = "https://api.hyperliquid.xyz/info"
@@ -84,6 +86,9 @@ class HyperliquidDataPlugin:
             params_init: {}
     """
 
+    # Injectable for testing; defaults to a live CoinGecko provider at use.
+    mcap_provider: MarketCapProvider | None = None
+
     meta = PluginMeta(
         name="hyperliquid.data.v1",
         kind="data",
@@ -97,7 +102,7 @@ class HyperliquidDataPlugin:
             "type": "object",
             "properties": {},
         },
-        outputs=("universe", "prices", "volume", "funding_rates", "market_cap"),
+        outputs=("universe", "prices", "volume", "funding_rates", "market_cap", "screen_volume"),
         examples=("plugins:\n  data:\n    name: hyperliquid.data.v1\n    params_init: {}",),
     )
 
@@ -167,7 +172,10 @@ class HyperliquidDataPlugin:
         """Fetch OHLCV candles and funding-rate history.
 
         Returns dict with keys: ``prices``, ``volume``, ``funding_rates``,
-        ``market_cap`` (empty -- not available on Hyperliquid).
+        ``market_cap`` and ``screen_volume``. Hyperliquid exposes neither market
+        cap nor cross-venue volume, so both are sourced from CoinGecko (free, no
+        key) via :class:`MarketCapProvider` — the same market-wide screen the
+        Binance book uses. ``volume`` stays per-venue (Hyperliquid) for sizing.
         """
         if universe.empty or "symbol" not in universe.columns:
             return {
@@ -175,6 +183,7 @@ class HyperliquidDataPlugin:
                 "volume": pd.DataFrame(),
                 "funding_rates": pd.DataFrame(),
                 "market_cap": pd.DataFrame(),
+                "screen_volume": pd.DataFrame(),
             }
 
         tickers = universe["symbol"].tolist()
@@ -266,11 +275,24 @@ class HyperliquidDataPlugin:
             len(prices.columns),
         )
 
+        # Market-wide screen inputs from CoinGecko (Hyperliquid has neither
+        # market cap nor cross-venue volume). This gives the HL book the same
+        # two-stage market-wide screen as the Binance book; per-venue `volume`
+        # above stays for sizing.
+        if prices.empty:
+            market_cap = pd.DataFrame()
+            screen_volume = pd.DataFrame()
+        else:
+            provider = self.mcap_provider or MarketCapProvider()
+            market_cap = provider.estimate_market_cap(prices, volume)
+            screen_volume = provider.estimate_aggregate_volume(prices)
+
         return {
             "prices": prices,
             "volume": volume,
             "funding_rates": funding_rates,
-            "market_cap": pd.DataFrame(),  # Not available on Hyperliquid
+            "market_cap": market_cap,
+            "screen_volume": screen_volume,
         }
 
     def load_fx(self, asof: str, params: dict[str, Any]) -> pd.DataFrame | None:

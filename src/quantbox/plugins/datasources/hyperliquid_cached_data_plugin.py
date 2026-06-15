@@ -22,6 +22,7 @@ import pandas as pd
 
 from quantbox.contracts import PluginMeta
 
+from ._utils import MarketCapProvider
 from .hyperliquid_data_plugin import HyperliquidDataPlugin
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,8 @@ class HyperliquidCachedDataPlugin:
 
     cache_dir: str = "./cache/hyperliquid"
     overlap_days: int = 3
+    # Injectable for testing; defaults to a live CoinGecko provider at use.
+    mcap_provider: MarketCapProvider | None = None
 
     meta = PluginMeta(
         name="hyperliquid.data.cached.v1",
@@ -63,7 +66,7 @@ class HyperliquidCachedDataPlugin:
         description="Incremental on-disk cache over hyperliquid.data.v1 (flat long-format parquet).",
         tags=("hyperliquid", "crypto", "futures", "live", "cache"),
         capabilities=("paper", "live", "crypto", "futures"),
-        outputs=("universe", "prices", "volume", "funding_rates", "market_cap"),
+        outputs=("universe", "prices", "volume", "funding_rates", "market_cap", "screen_volume"),
         params_schema={
             "type": "object",
             "properties": {
@@ -154,6 +157,7 @@ class HyperliquidCachedDataPlugin:
         if universe.empty or "symbol" not in universe.columns:
             empty = {s: pd.DataFrame() for s in _SERIES}
             empty["market_cap"] = pd.DataFrame()
+            empty["screen_volume"] = pd.DataFrame()
             return empty
 
         requested = universe["symbol"].tolist()
@@ -204,7 +208,16 @@ class HyperliquidCachedDataPlugin:
 
         # 8. build return frames in memory (no second read)
         result = {s: self._long_to_wide(merged[s], requested, start, asof_dt) for s in _SERIES}
-        result["market_cap"] = pd.DataFrame()
+        # Market-wide screen inputs from CoinGecko, recomputed each run (current
+        # snapshot — not cached incrementally like the per-venue series).
+        prices_wide = result["prices"]
+        if prices_wide.empty:
+            result["market_cap"] = pd.DataFrame()
+            result["screen_volume"] = pd.DataFrame()
+        else:
+            provider = self.mcap_provider or MarketCapProvider()
+            result["market_cap"] = provider.estimate_market_cap(prices_wide, result["volume"])
+            result["screen_volume"] = provider.estimate_aggregate_volume(prices_wide)
         logger.info(
             "Hyperliquid cached: %d new + %d cached coins, %d price date-rows returned",
             len(new_coins),
