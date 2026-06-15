@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,9 +13,35 @@ import yaml
 from quantbox.contracts import ArtifactStore, BrokerPlugin, DataPlugin, Mode, PluginMeta, RiskPlugin, RunResult
 from quantbox.run_history import resolve_latest_artifact
 
+logger = logging.getLogger(__name__)
+
 # --------------------------
 # Helpers
 # --------------------------
+
+
+def _adv_usd(
+    volume: pd.DataFrame | None,
+    latest_px: pd.DataFrame,
+    lookback: int,
+    volume_is_dollar: bool,
+) -> pd.Series:
+    """Average daily volume in USD per symbol from a wide volume frame.
+
+    ``volume`` is wide (date index, symbol columns). When *volume_is_dollar* the
+    values are already USD notional (e.g. Binance ``quoteVolume``); otherwise
+    they are base-asset quantity and are multiplied by the latest price. Used as
+    a robust, always-available proxy for the execution venue's book depth.
+    """
+    if volume is None or volume.empty:
+        return pd.Series(dtype=float)
+    adv = volume.tail(max(1, lookback)).mean(axis=0)
+    if not volume_is_dollar:
+        if latest_px.empty:
+            return pd.Series(dtype=float)
+        px = latest_px.set_index("symbol")["price"]
+        adv = adv.mul(px.reindex(adv.index))
+    return adv.dropna().astype(float)
 
 
 def _latest_prices(prices: pd.DataFrame) -> pd.DataFrame:
@@ -121,7 +148,7 @@ class AllocationsToOrdersPipeline:
     meta = PluginMeta(
         name="trade.allocations_to_orders.v1",
         kind="pipeline",
-        version="0.2.0",
+        version="0.3.0",
         core_compat=">=0.1,<0.2",
         description="Bridge allocations -> targets/orders (+ execute). Supports multipliers, lot/step rules, FX (USD base).",
         tags=("trading", "bridge"),
@@ -150,6 +177,25 @@ class AllocationsToOrdersPipeline:
                 "min_abs_qty": {"type": "number", "minimum": 0, "default": 0.0},
                 "allow_short": {"type": "boolean", "default": False},
                 "cash_fallback_usd": {"type": "number", "default": 100000.0},
+                "max_adv_participation": {
+                    "type": ["number", "null"],
+                    "minimum": 0,
+                    "default": None,
+                    "description": "Venue-depth sizing cap: max position value as a multiple of the "
+                    "execution venue's average daily volume (USD). null/0 disables.",
+                },
+                "adv_lookback_days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 20,
+                    "description": "Window for the ADV used by max_adv_participation.",
+                },
+                "adv_volume_is_dollar": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "True if the data plugin's volume is USD notional "
+                    "(e.g. Binance quoteVolume); False multiplies by price (e.g. Hyperliquid).",
+                },
             },
             "required": ["allocations_path"],
         },
@@ -266,6 +312,37 @@ class AllocationsToOrdersPipeline:
         alloc["fx_to_usd"] = alloc["currency"].apply(lambda c: _fx_rate_to_usd(fx, c))
         denom = alloc["price"].astype(float) * alloc["multiplier"].astype(float) * alloc["fx_to_usd"].astype(float)
         alloc["target_value_usd"] = alloc["weight"] * portfolio_value_usd_pre
+
+        # Venue-depth participation cap (layer-b sizing): never target a position
+        # larger than `max_adv_participation` x the execution venue's average
+        # daily volume. ADV is a robust, always-available proxy for book depth
+        # (full L2 depth could refine this later). Opt-in: disabled when unset.
+        max_part = params.get("max_adv_participation")
+        if max_part is not None and float(max_part) > 0:
+            adv_usd = _adv_usd(
+                market_data.get("volume", pd.DataFrame()),
+                latest,
+                int(params.get("adv_lookback_days", 20)),
+                bool(params.get("adv_volume_is_dollar", True)),
+            )
+            alloc["adv_usd"] = alloc["symbol"].map(adv_usd)
+            alloc["cap_value_usd"] = float(max_part) * alloc["adv_usd"]
+            capped = alloc["cap_value_usd"].notna() & (alloc["target_value_usd"].abs() > alloc["cap_value_usd"])
+            if capped.any():
+                alloc.loc[capped, "target_value_usd"] = (
+                    np.sign(alloc.loc[capped, "target_value_usd"]) * alloc.loc[capped, "cap_value_usd"]
+                )
+                logger.info(
+                    "Venue-depth cap: clamped %d/%d positions to %.3gx ADV (%s)",
+                    int(capped.sum()),
+                    len(alloc),
+                    float(max_part),
+                    ", ".join(alloc.loc[capped, "symbol"].astype(str).head(5)),
+                )
+        else:
+            alloc["adv_usd"] = np.nan
+            alloc["cap_value_usd"] = np.nan
+
         alloc["raw_target_qty"] = (alloc["target_value_usd"] / denom.replace(0.0, np.nan)).fillna(0.0)
 
         if not bool(params.get("allow_short", False)):
@@ -319,6 +396,8 @@ class AllocationsToOrdersPipeline:
                     "raw_target_qty",
                     "target_qty",
                     "min_notional",
+                    "adv_usd",
+                    "cap_value_usd",
                 ]
             ].copy(),
         )
