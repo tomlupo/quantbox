@@ -393,7 +393,7 @@ class MarketCapProvider:
         cache_dir: str | Path | None = None,
         fresh_ttl_hours: float = 4.0,
         fallback_ttl_hours: float = 28.0,
-        limit: int = 100,
+        limit: int = 250,
         # Legacy params (ignored, kept for backwards compat)
         api_key: str | None = None,
     ) -> None:
@@ -504,17 +504,41 @@ class MarketCapProvider:
         prices: pd.DataFrame,
         volume: pd.DataFrame,
     ) -> pd.DataFrame:
-        """Compute market cap DataFrame using CoinGecko data with hardcoded fallback.
+        """Best-practice multi-layer, multi-venue market-cap estimate.
 
-        Tries CoinGecko rankings first.  For any ticker not covered,
-        falls back to hardcoded circulating supply estimates.
+        For each ticker a single CURRENT market-cap *anchor* is resolved from
+        the highest-quality source available, then projected across history by
+        the coin's own price path::
+
+            market_cap[t] = anchor * price[t] / price[latest]
+
+        This pins the cross-sectional RANK (what the universe screen consumes)
+        to the most accurate **multi-venue** value while still yielding a time
+        series for backtests. Market cap moves slowly relative to price, so a
+        price-path projection is a faithful proxy between vendor snapshots.
+
+        Source layers, best → worst (per-layer coverage is logged):
+
+        ====  =================================================  ============
+        L1    CoinGecko reported ``market_cap``                  multi-venue
+              (global VWAP price × circulating supply)           aggregate
+        L2    CoinGecko ``circulating_supply`` × price           supply only
+        L3    hardcoded circulating supply × price               off-vendor
+        L4    default supply (1e9) × price                       last resort
+        ====  =================================================  ============
+
+        L1 is preferred over the legacy single-venue ``price × supply`` because
+        the reported market cap already aggregates price across venues, so the
+        rank is not skewed by one exchange's quote. Adding a second vendor is a
+        clean extension — merge its rankings into ``mc_map`` / ``cs_map`` ahead
+        of the off-vendor fallbacks.
 
         Parameters
         ----------
         prices : DataFrame
             Wide DataFrame (date index, ticker columns) of close prices.
         volume : DataFrame
-            Wide DataFrame of volumes (unused but kept for API compat).
+            Unused; kept for API compatibility.
 
         Returns
         -------
@@ -522,42 +546,50 @@ class MarketCapProvider:
             Same shape as *prices* with estimated market cap values.
         """
         rankings = self.fetch_rankings()
-        supply_map: dict[str, float] = {}
-
+        mc_map: dict[str, float] = {}
+        cs_map: dict[str, float] = {}
         if rankings is not None and not rankings.empty:
             for _, row in rankings.iterrows():
                 sym = str(row["symbol"]).upper()
+                mc = float(row.get("market_cap", 0) or 0)
                 cs = float(row.get("circulating_supply", 0) or 0)
+                if mc > 0:
+                    mc_map[sym] = mc
                 if cs > 0:
-                    supply_map[sym] = cs
-            logger.info(
-                "Using CoinGecko supply data for %d coins, fallback for remainder",
-                len(supply_map),
-            )
+                    cs_map[sym] = cs
 
         market_cap = pd.DataFrame(index=prices.index)
+        layers = {"L1_reported": 0, "L2_supply": 0, "L3_hardcoded": 0, "L4_default": 0}
         for ticker in prices.columns:
             t_upper = ticker.upper()
-            if t_upper in supply_map and supply_map[t_upper] > 0:
-                market_cap[ticker] = prices[ticker] * supply_map[t_upper]
-            elif rankings is not None and not rankings.empty:
-                # Use market_cap directly if supply is 0 but mc exists
-                row = rankings[rankings["symbol"] == t_upper]
-                if not row.empty:
-                    mc_val = float(row["market_cap"].iloc[0])
-                    if mc_val > 0:
-                        latest_price = prices[ticker].dropna().iloc[-1] if not prices[ticker].dropna().empty else 1.0
-                        market_cap[ticker] = (prices[ticker] / latest_price) * mc_val
-                        continue
+            col = prices[ticker]
+            valid = col.dropna()
+            latest_price = float(valid.iloc[-1]) if not valid.empty else 0.0
 
-                # Final fallback: hardcoded supply
-                supply = self._FALLBACK_SUPPLY.get(t_upper, 1e9)
-                market_cap[ticker] = prices[ticker] * supply
-                logger.debug("Using fallback supply for %s: %.0f", ticker, supply)
+            if t_upper in mc_map and latest_price > 0:
+                # L1: anchor to the multi-venue reported mcap, project by price
+                market_cap[ticker] = (col / latest_price) * mc_map[t_upper]
+                layers["L1_reported"] += 1
+            elif t_upper in cs_map:
+                # L2: CoinGecko circulating supply × price
+                market_cap[ticker] = col * cs_map[t_upper]
+                layers["L2_supply"] += 1
+            elif t_upper in self._FALLBACK_SUPPLY:
+                # L3: hardcoded circulating supply × price
+                market_cap[ticker] = col * self._FALLBACK_SUPPLY[t_upper]
+                layers["L3_hardcoded"] += 1
             else:
-                supply = self._FALLBACK_SUPPLY.get(t_upper, 1e9)
-                market_cap[ticker] = prices[ticker] * supply
+                # L4: default supply × price (last resort)
+                market_cap[ticker] = col * 1e9
+                layers["L4_default"] += 1
 
+        logger.info(
+            "Market-cap layers — L1 reported(multi-venue): %d, L2 supply: %d, L3 hardcoded: %d, L4 default: %d",
+            layers["L1_reported"],
+            layers["L2_supply"],
+            layers["L3_hardcoded"],
+            layers["L4_default"],
+        )
         return market_cap
 
     def estimate_aggregate_volume(self, prices: pd.DataFrame) -> pd.DataFrame:
