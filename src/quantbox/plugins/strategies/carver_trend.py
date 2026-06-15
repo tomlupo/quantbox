@@ -597,6 +597,7 @@ class CarverTrendStrategy:
 
             volume = data.get("volume", pd.DataFrame())
             market_cap = data.get("market_cap", pd.DataFrame())
+            screen_volume = data.get("screen_volume", pd.DataFrame())
             universe_mask_ts = select_universe(
                 prices,
                 volume.reindex(index=prices.index, columns=prices.columns).fillna(0.0),
@@ -605,6 +606,7 @@ class CarverTrendStrategy:
                 self.top_by_volume,
                 self.exclude_tickers,
                 volume_is_dollar=self.volume_is_dollar,
+                screen_volume=screen_volume if not screen_volume.empty else None,
             )
             n_avg = universe_mask_ts.sum(axis=1).mean()
             logger.info(

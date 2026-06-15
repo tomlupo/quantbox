@@ -62,6 +62,7 @@ def select_universe(
     volume_rolling_window: int = 1,
     min_listing_days: int = 0,
     hysteresis_rank_band: int = 0,
+    screen_volume: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Select tradable universe – vectorized pandas implementation.
 
@@ -117,6 +118,18 @@ def select_universe(
         previous day. Coins still enter via the strict ``top_by_*`` cuts.
         Reduces daily churn at the boundary at negligible alpha cost.
         Standard trick from index construction. Default ``0`` disables.
+    screen_volume : DataFrame | None
+        Market-wide liquidity used **only** for the volume RANK in screening,
+        e.g. CoinGecko aggregate cross-exchange ``total_volume``. When provided
+        it overrides *volume* for ranking, decoupling the question "is this coin
+        liquid in the market?" (the SCREEN) from "how deep is our execution
+        venue's book?" (per-venue *volume*, which stays available for sizing).
+        This prevents a legitimately liquid coin from being dropped because of a
+        thin single-quote-pair book (e.g. Binance USDC, 3.4–12.6× thinner than
+        USDT non-uniformly per coin). Always interpreted as USD notional. Coins
+        missing/zero in *screen_volume* fall back to per-venue dollar volume so a
+        tradable coin the screen source doesn't cover is never silently zeroed.
+        Default ``None`` keeps the legacy per-venue ranking unchanged.
 
     Returns
     -------
@@ -158,12 +171,24 @@ def select_universe(
     else:
         dollar_vol = prices[valid_tickers] * vol_aligned
 
-    # Optional rolling-mean smoother on dollar volume (best-practice). A
+    # Choose the volume series used for RANKING. By default this is the
+    # per-venue dollar volume above. When *screen_volume* (market-wide
+    # aggregate, USD notional) is supplied, rank on it instead — coalescing
+    # to per-venue dollar volume wherever the screen source is missing/zero so
+    # a tradable coin it doesn't cover is never silently zeroed. The per-venue
+    # `volume`/`dollar_vol` remains the right input for downstream sizing.
+    if screen_volume is not None and not screen_volume.empty:
+        sv = screen_volume.reindex(index=prices.index, columns=valid_tickers)
+        rank_vol = sv.where(sv.notna() & (sv > 0), other=dollar_vol).fillna(0.0)
+    else:
+        rank_vol = dollar_vol
+
+    # Optional rolling-mean smoother on the ranking volume (best-practice). A
     # 30-day window cuts most listing-spike / single-day-anomaly noise in
     # the top-N-by-volume cut without materially changing which large-caps
-    # dominate.
+    # dominate. (No-op when screen_volume is a flat snapshot.)
     if volume_rolling_window > 1:
-        dollar_vol = dollar_vol.rolling(volume_rolling_window, min_periods=max(1, volume_rolling_window // 2)).mean()
+        rank_vol = rank_vol.rolling(volume_rolling_window, min_periods=max(1, volume_rolling_window // 2)).mean()
 
     if has_mcap:
         # Stage 1: market-cap rank
@@ -208,22 +233,23 @@ def select_universe(
         mc_mask_strict = mc_rank <= top_by_mcap
         mc_mask_relaxed = mc_rank <= top_by_mcap + hysteresis_rank_band
 
-        # Stage 2: dollar-volume rank within strict mcap tier (for entry)
-        vol_masked_strict = dollar_vol.where(mc_mask_strict)
+        # Stage 2: volume rank within strict mcap tier (for entry)
+        vol_masked_strict = rank_vol.where(mc_mask_strict)
         vol_rank_strict = vol_masked_strict.rank(axis=1, ascending=False, method="min")
         strict_mask = (vol_rank_strict <= top_by_volume) & listing_mask
 
         if hysteresis_rank_band > 0:
             # For "stay-in" eligibility, allow up to top_by_mcap+band on
             # mcap and rank-by-volume within the RELAXED mcap pool.
-            vol_masked_relaxed = dollar_vol.where(mc_mask_relaxed)
+            vol_masked_relaxed = rank_vol.where(mc_mask_relaxed)
             vol_rank_relaxed = vol_masked_relaxed.rank(axis=1, ascending=False, method="min")
             relaxed_mask = (vol_rank_relaxed <= top_by_volume + hysteresis_rank_band) & listing_mask
         else:
             relaxed_mask = strict_mask
     else:
-        # No mcap – rank directly by dollar volume
-        vol_rank = dollar_vol.where(listing_mask).rank(axis=1, ascending=False, method="min")
+        # No mcap – rank directly by volume (market-wide screen_volume if
+        # supplied, else per-venue dollar volume)
+        vol_rank = rank_vol.where(listing_mask).rank(axis=1, ascending=False, method="min")
         strict_mask = (vol_rank <= top_by_volume) & listing_mask
         if hysteresis_rank_band > 0:
             relaxed_mask = (vol_rank <= top_by_volume + hysteresis_rank_band) & listing_mask

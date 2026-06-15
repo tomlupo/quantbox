@@ -624,8 +624,11 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
         Returns:
             Dict with:
             - 'prices': DataFrame (date index, ticker columns)
-            - 'volume': DataFrame (date index, ticker columns)
+            - 'volume': DataFrame (date index, ticker columns) — per-venue
+              (this exchange) volume, for execution/sizing
             - 'market_cap': DataFrame (date index, ticker columns)
+            - 'screen_volume': DataFrame (date index, ticker columns) —
+              market-wide aggregate volume (CoinGecko), for the universe screen
 
         Example:
             >>> data = fetcher.get_market_data(['BTC', 'ETH', 'SOL'], lookback_days=90)
@@ -667,15 +670,23 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
                 "prices": pd.DataFrame(),
                 "volume": pd.DataFrame(),
                 "market_cap": pd.DataFrame(),
+                "screen_volume": pd.DataFrame(),
             }
 
         # Combine into DataFrames
         prices = pd.DataFrame(prices_data)
         volume = pd.DataFrame(volume_data)
 
-        # Estimate market cap (price * volume as proxy)
-        # Real market cap would come from CoinGecko/CoinMarketCap
+        # Estimate market cap (price * circulating supply) from CoinGecko,
+        # with a hardcoded-supply fallback.
         market_cap = self._estimate_market_cap(prices, volume)
+
+        # Market-wide aggregate volume (CoinGecko total_volume) for the universe
+        # liquidity SCREEN — decoupled from the per-venue `volume` above, which
+        # stays for execution/sizing. Prevents dropping a legitimately liquid
+        # coin for a thin single-quote-pair (e.g. USDC) book. Sourced from the
+        # same CoinGecko rankings call as market cap, so no extra API request.
+        screen_volume = self._cmc_provider.estimate_aggregate_volume(prices)
 
         logger.info(f"Fetched data for {len(prices.columns)} tickers, {len(prices)} days")
 
@@ -683,6 +694,7 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
             "prices": prices,
             "volume": volume,
             "market_cap": market_cap,
+            "screen_volume": screen_volume,
         }
 
     def _estimate_market_cap(
@@ -690,11 +702,12 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
         prices: pd.DataFrame,
         volume: pd.DataFrame,
     ) -> pd.DataFrame:
-        """Estimate market cap using CoinMarketCap data with hardcoded fallback.
+        """Estimate market cap using CoinGecko data with hardcoded fallback.
 
-        If ``CMC_API_KEY`` is set (or passed via ``cmc_api_key``), fetches live
-        rankings from CoinMarketCap and caches them as Parquet.  Falls back to
-        hardcoded circulating-supply estimates for coins not covered by CMC.
+        Fetches live rankings from CoinGecko (free, no API key) via
+        :class:`MarketCapProvider`, caches them as Parquet, and computes
+        ``price * circulating_supply``.  Falls back to hardcoded
+        circulating-supply estimates for coins CoinGecko does not cover.
         """
         return self._cmc_provider.estimate_market_cap(prices, volume)
 

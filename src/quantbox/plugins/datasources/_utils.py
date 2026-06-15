@@ -444,8 +444,12 @@ class MarketCapProvider:
     def fetch_rankings(self) -> pd.DataFrame | None:
         """Fetch top coin rankings from CoinGecko API.
 
-        Returns DataFrame with columns: symbol, market_cap, circulating_supply,
-        rank, fetch_timestamp.
+        Returns DataFrame with columns: symbol, market_cap, total_volume,
+        circulating_supply, rank, fetch_timestamp.
+
+        ``total_volume`` is CoinGecko's market-wide 24h volume (USD, aggregated
+        across all tracked pairs and exchanges) — used to screen the universe on
+        true market liquidity rather than a single venue/quote-pair book.
 
         Returns None if the API call fails and no usable cache exists.
         """
@@ -479,6 +483,7 @@ class MarketCapProvider:
                     {
                         "symbol": str(coin.get("symbol", "")).upper(),
                         "market_cap": float(coin.get("market_cap", 0) or 0),
+                        "total_volume": float(coin.get("total_volume", 0) or 0),
                         "circulating_supply": float(coin.get("circulating_supply", 0) or 0),
                         "rank": int(coin.get("market_cap_rank", 0) or 0),
                         "fetch_timestamp": pd.Timestamp.now().isoformat(),
@@ -554,6 +559,48 @@ class MarketCapProvider:
                 market_cap[ticker] = prices[ticker] * supply
 
         return market_cap
+
+    def estimate_aggregate_volume(self, prices: pd.DataFrame) -> pd.DataFrame:
+        """Market-wide aggregate 24h volume per coin (USD), as a date×ticker frame.
+
+        Sources CoinGecko ``total_volume`` (summed across all tracked pairs and
+        exchanges) from the same rankings call as :meth:`estimate_market_cap`,
+        so it adds no extra API request. This is the market-wide liquidity used
+        to SCREEN the universe, as opposed to a single venue/quote-pair book.
+
+        Like :meth:`estimate_market_cap`, the value is a current snapshot
+        broadcast across the price index — CoinGecko's free endpoint is
+        point-in-time. For the daily live screen this is exactly today's market
+        state; for historical backtests prefer a dataset with a true aggregate-
+        volume time series. Coins not covered by the rankings are left ``NaN`` so
+        the caller (:func:`select_universe`) falls back to per-venue volume.
+
+        Parameters
+        ----------
+        prices : DataFrame
+            Wide DataFrame (date index, ticker columns) of close prices.
+
+        Returns
+        -------
+        DataFrame
+            Same shape as *prices*; each column is the coin's market-wide 24h
+            volume broadcast across the index, or ``NaN`` if not covered.
+        """
+        rankings = self.fetch_rankings()
+        vol_map: dict[str, float] = {}
+        if rankings is not None and not rankings.empty and "total_volume" in rankings.columns:
+            for _, row in rankings.iterrows():
+                sym = str(row["symbol"]).upper()
+                tv = float(row.get("total_volume", 0) or 0)
+                if tv > 0:
+                    vol_map[sym] = tv
+            logger.info("Using CoinGecko aggregate volume for %d coins", len(vol_map))
+
+        agg = pd.DataFrame(index=prices.index)
+        for ticker in prices.columns:
+            tv = vol_map.get(ticker.upper())
+            agg[ticker] = float(tv) if tv else float("nan")
+        return agg
 
 
 # Backwards compatibility alias
