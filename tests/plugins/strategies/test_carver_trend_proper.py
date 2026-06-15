@@ -177,6 +177,22 @@ def test_strategy_divides_forecast_by_ten_not_cap():
     assert np.nanmedian(diff) < 1e-6
 
 
+def test_cross_sectional_demeans_forecasts():
+    """With cross_sectional=True the per-date cross-sectional mean forecast is ~0
+    (common factor stripped); with it off the mean is generally non-zero."""
+    px = _prices(n=600, k=6, corr=0.6, seed=21)  # high common factor
+    base = CarverTrendProperStrategy().run({"prices": px}, {"output_periods": 600, "buffer_size": 0.0})
+    xs = CarverTrendProperStrategy().run(
+        {"prices": px}, {"output_periods": 600, "buffer_size": 0.0, "cross_sectional": True}
+    )
+    base_fc = base["details"]["full_forecasts"].dropna()
+    xs_fc = xs["details"]["full_forecasts"].dropna()
+    # cross-sectional row-mean should be ~0 everywhere when demeaned
+    assert xs_fc.mean(axis=1).abs().max() < 1e-9
+    # and meaningfully smaller than the un-demeaned book's row-mean magnitude
+    assert xs_fc.mean(axis=1).abs().mean() < base_fc.mean(axis=1).abs().mean()
+
+
 def test_realized_vol_in_target_ballpark():
     """On synthetic trending-ish data the optimal (un-buffered) book should realize
     vol within a factor ~2 of target — i.e. vol targeting is actually engaged,

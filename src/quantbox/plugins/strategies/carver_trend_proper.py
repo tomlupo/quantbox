@@ -303,6 +303,7 @@ class CarverTrendProperStrategy:
                 "idm": {"type": ["number", "string", "null"], "default": "auto"},
                 "fdm_cap": {"type": "number", "default": 2.5},
                 "idm_cap": {"type": "number", "default": 2.5},
+                "cross_sectional": {"type": "boolean", "default": False},
                 "buffer_size": {"type": "number", "minimum": 0.0, "default": 0.10},
                 "max_position": {"type": "number", "default": 1.0},
                 "max_gross": {"type": "number", "default": 4.0},
@@ -330,6 +331,7 @@ class CarverTrendProperStrategy:
     idm: float | str | None = "auto"
     fdm_cap: float = 2.5
     idm_cap: float = 2.5
+    cross_sectional: bool = False
     buffer_size: float = 0.10
     max_position: float = 1.0
     max_gross: float = 4.0
@@ -397,6 +399,16 @@ class CarverTrendProperStrategy:
 
         forecasts_df = pd.DataFrame(combined_pre)
         forecasts_df = (forecasts_df * fdm_val).clip(-self.forecast_cap, self.forecast_cap)
+
+        # 2b. Optional cross-sectional demeaning (relative / market-neutral trend).
+        #     Subtract the per-date cross-sectional mean forecast to strip the common
+        #     "everything trends with BTC together" factor — the dominant Sharpe drag
+        #     in a one-beta universe.  This turns the book into relative-strength trend
+        #     (roughly dollar-neutral).  Carver-adjacent (relative momentum); off by
+        #     default so the canonical directional system is the baseline.
+        if self.cross_sectional:
+            xs_mean = forecasts_df.mean(axis=1)
+            forecasts_df = forecasts_df.sub(xs_mean, axis=0).clip(-self.forecast_cap, self.forecast_cap)
 
         # 3. Volatility (Carver mixed estimator, 365d annualisation).
         vol = mixed_volatility(
