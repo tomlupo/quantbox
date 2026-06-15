@@ -528,6 +528,10 @@ class TradingPipeline:
             "total_failed": float(execution_report.get("summary", {}).get("total_failed", 0)),
             "funding_charge": float(funding_charge),
             "cumulative_fees": cumulative_fees,
+            # Dead-man health signal: 1.0 means the strategy wanted to rebalance
+            # but every order was suppressed (book frozen on stale positions).
+            # Monitors/dashboards should alarm on rebalance_frozen == 1.
+            "rebalance_frozen": 1.0 if execution_report.get("frozen") else 0.0,
         }
 
         return RunResult(
@@ -550,6 +554,8 @@ class TradingPipeline:
                 "kind": "trading",
                 "risk_findings": risk_findings,
                 "artifact_payload": artifact_payload,
+                "rebalance_frozen": bool(execution_report.get("frozen", False)),
+                "freeze_reasons": execution_report.get("freeze_reasons", {}),
                 **token_policy_notes,
             },
         )
@@ -1211,11 +1217,47 @@ class TradingPipeline:
             else orders_df
         )
         if executable.empty:
+            reasons: dict[str, Any] = {}
+            # Statuses that mean "the strategy WANTED to trade but the order was
+            # suppressed by a guard" (vs. a legitimately quiet day of zero-deltas).
+            suppressed_statuses = {"Below min notional", "Below threshold", "Zero price", "Invalid (NaN)"}
+            suppressed = pd.DataFrame()
             if "Order Status" in orders_df.columns:
                 reasons = orders_df["Order Status"].value_counts().to_dict()
-                logger.warning("All %d orders filtered out: %s", len(orders_df), reasons)
+                suppressed = orders_df[orders_df["Order Status"].isin(suppressed_statuses)]
+
+            if len(suppressed) > 0:
+                # DEAD-MAN: a real rebalance was intended but EVERY order was
+                # filtered. The book is NOT tracking its targets — it is frozen
+                # on stale positions. Do not exit quietly: flag the run and alert.
+                report["frozen"] = True
+                report["freeze_reasons"] = reasons
+                order_list = ", ".join(
+                    f"{str(r.get('Action', '')).upper()} {r.get('Asset', '')} "
+                    f"(${float(r.get('Notional Value', 0) or 0):.2f}, {r.get('Order Status', '')})"
+                    for _, r in suppressed.iterrows()
+                )
+                logger.error(
+                    "REBALANCER FROZEN: all %d intended orders suppressed %s. "
+                    "Portfolio NOT rebalanced — holding stale positions. Orders: %s",
+                    len(suppressed),
+                    reasons,
+                    order_list,
+                )
+                notify = getattr(broker, "notify", None)
+                if notify:
+                    try:
+                        notify(
+                            f"🧊 <b>REBALANCER FROZEN — 0 of {len(orders_df)} orders executable</b>\n"
+                            f"Reasons: {reasons}\n"
+                            f"Suppressed: {order_list}\n"
+                            "Portfolio NOT rebalanced; holding stale positions. "
+                            "Likely min_notional too high for account size (or stale/NaN data)."
+                        )
+                    except Exception as exc:  # never let alerting crash the run
+                        logger.warning("Freeze alert notify failed: %s", exc)
             else:
-                logger.warning("All %d orders filtered out (no Executable=True rows)", len(orders_df))
+                logger.warning("All %d orders filtered out: %s", len(orders_df), reasons)
             return report
 
         # Sell before buy: sort by Action descending (Sell > Buy)

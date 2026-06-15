@@ -26,6 +26,12 @@ DEFAULT_CAPITAL_AT_RISK = 1.0
 DEFAULT_STABLE_COIN = "USDT"
 
 
+def _is_nan(x: Any) -> bool:
+    """True only for a float NaN. ``None`` (no price yet) is NOT NaN — it has
+    its own ('Zero price') handling — so guard the type before ``isnan``."""
+    return isinstance(x, float) and np.isnan(x)
+
+
 @dataclass
 class FuturesRebalancer:
     """Futures rebalancer: margin-based with signed positions.
@@ -322,31 +328,54 @@ class FuturesRebalancer:
             adjusted_qty = abs(delta_qty)
             notional_value = adjusted_qty * price if price else 0.0
 
-            if action == "hold" or delta_qty == 0:
+            # A position-flattening order: the target is flat (weight 0) but we
+            # still hold the asset. Exits must ALWAYS pass — a no-trade band
+            # (min_trade_size or min_notional) must never trap an open position
+            # we want to close. This is what stranded the live ETH/SOL longs:
+            # closing them is a sub-$10 order, so the min_notional floor blocked
+            # the exit and the book froze on stale positions (2026-05-26).
+            is_closing = row.get("Target Weight", 0) == 0 and row.get("Current Quantity", 0) != 0
+
+            # Guard against NaN / missing-data targets. A NaN price or quantity
+            # (e.g. a Hyperliquid missing-candle glitch) otherwise slips through
+            # as a silent no-op: `NaN < min_notional` is False and `NaN > 0` is
+            # False, so the order vanishes with no signal. Surface it loudly.
+            nan_inputs = _is_nan(delta_qty) or _is_nan(price) or _is_nan(notional_value)
+
+            if nan_inputs:
+                status = "Invalid (NaN)"
+                reason = "NaN price/quantity from data feed (missing candle?)"
+                adjusted_qty = 0.0
+                logger.error(
+                    "Rebalancer produced NaN target for %s (delta=%r price=%r) — "
+                    "skipping and flagging; check data feed for missing candles.",
+                    asset,
+                    delta_qty,
+                    price,
+                )
+            elif action == "hold" or delta_qty == 0:
                 status = "Zero delta"
                 reason = "No trade needed"
                 adjusted_qty = 0.0
-            elif abs(row["Weight Delta"]) < min_trade_size:
-                zero_target = row.get("Target Weight", 0) == 0 and row.get("Current Quantity", 0) != 0
-                if not zero_target:
-                    status = "Below threshold"
-                    reason = f"abs(weight delta) < {min_trade_size}"
-                    adjusted_qty = 0.0
-                else:
-                    status = "To be placed"
-                    reason = ""
+            elif abs(row["Weight Delta"]) < min_trade_size and not is_closing:
+                status = "Below threshold"
+                reason = f"abs(weight delta) < {min_trade_size}"
+                adjusted_qty = 0.0
             elif price is None or price == 0:
                 status = "Zero price"
                 reason = "No price available"
                 adjusted_qty = 0.0
-            elif notional_value < min_notional:
+            elif notional_value < min_notional and not is_closing:
                 status = "Below min notional"
                 reason = f"Notional {notional_value:.2f} < {min_notional:.2f}"
                 adjusted_qty = 0.0
                 logger.debug("Skipping %s %s: notional $%.2f < $%.2f", action, asset, notional_value, min_notional)
             else:
                 status = "To be placed"
-                reason = ""
+                if is_closing and notional_value < min_notional:
+                    reason = "Closing position (min-notional exempt)"
+                else:
+                    reason = ""
 
             order_records.append(
                 {
