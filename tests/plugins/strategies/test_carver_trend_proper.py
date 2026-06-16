@@ -206,3 +206,53 @@ def test_realized_vol_in_target_ballpark():
     realized = port.std() * np.sqrt(365)
     # generous band: targeting is engaged if realized is between 0.08 and 0.6
     assert 0.08 < realized < 0.7
+
+
+# --- fine-lot guard plumbing -----------------------------------------------
+def test_resolve_sz_decimals_dict_and_file(tmp_path):
+    import json
+
+    s = CarverTrendProperStrategy()
+    s.sz_decimals = {"BTC": 5, "XRP": 0}
+    assert s._resolve_sz_decimals() == {"BTC": 5, "XRP": 0}
+
+    p = tmp_path / "sz.json"
+    p.write_text(json.dumps({"ETH": 4, "DOGE": 0}))
+    s.sz_decimals = str(p)
+    assert s._resolve_sz_decimals() == {"ETH": 4, "DOGE": 0}
+
+
+def test_resolve_sz_decimals_unset_fails_closed():
+    s = CarverTrendProperStrategy()
+    s.sz_decimals = None
+    assert s._resolve_sz_decimals() is None  # guard then excludes everything
+
+
+def test_fine_lot_guard_drops_coarse_coin_from_weights():
+    # Two cheap fine-lot coins + one expensive coarse-lot coin (szDec=0, $5000).
+    n = 400
+    idx = pd.date_range("2023-01-01", periods=n, freq="D")
+    rng = np.random.default_rng(3)
+    fine = 10 * np.exp(np.cumsum(rng.normal(0.0005, 0.03, size=(n, 2)), axis=0))
+    coarse = 5000 * np.exp(np.cumsum(rng.normal(0.0005, 0.03, size=(n, 1)), axis=0))
+    px = pd.DataFrame(
+        np.hstack([fine, coarse]), index=idx, columns=["FINE1", "FINE2", "COARSE"]
+    )
+    vol = pd.DataFrame(1e7, index=idx, columns=px.columns)
+
+    res = CarverTrendProperStrategy().run(
+        {"prices": px, "volume": vol},
+        {
+            "output_periods": n,
+            "use_universe_selection": True,
+            "top_by_mcap": 30,
+            "top_by_volume": 3,
+            "fine_lot_guard": True,
+            "fine_lot_min_notional": 10.0,
+            "fine_lot_max_lot_fraction": 0.2,
+            "sz_decimals": {"FINE1": 2, "FINE2": 2, "COARSE": 0},
+        },
+    )
+    held = res["details"]["full_weights"]
+    assert (held["COARSE"].abs() < 1e-12).all()  # coarse coin never held
+    assert held[["FINE1", "FINE2"]].abs().sum().sum() > 0  # fine coins traded

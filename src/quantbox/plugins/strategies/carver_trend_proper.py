@@ -38,7 +38,9 @@ The output contract matches v1 (a ``weights`` time-series DataFrame plus
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -314,6 +316,10 @@ class CarverTrendProperStrategy:
                 "top_by_volume": {"type": "integer", "default": 10},
                 "volume_is_dollar": {"type": "boolean", "default": True},
                 "output_periods": {"type": "integer", "default": 30},
+                "fine_lot_guard": {"type": "boolean", "default": False},
+                "fine_lot_min_notional": {"type": "number", "default": 10.0},
+                "fine_lot_max_lot_fraction": {"type": "number", "default": 0.2},
+                "sz_decimals": {"type": ["object", "string", "null"], "default": None},
             },
         },
     )
@@ -343,6 +349,32 @@ class CarverTrendProperStrategy:
     volume_is_dollar: bool = True
     output_periods: int = 30
     exclude_tickers: tuple[str, ...] = ()
+    # Small-book fine-lot guardrail (see _universe.select_universe). Off by
+    # default; the dynamic-universe config turns it on so the $1,500 book never
+    # selects a coin that is not fine-lot tradeable at that size.
+    fine_lot_guard: bool = False
+    fine_lot_min_notional: float = 10.0
+    fine_lot_max_lot_fraction: float = 0.2
+    sz_decimals: dict[str, int] | str | None = None
+
+    def _resolve_sz_decimals(self) -> dict[str, int] | None:
+        """Return the szDecimals (lot precision) map for the fine-lot guard.
+
+        ``sz_decimals`` may be an inline ``{coin: szDecimals}`` dict or a path to
+        a JSON file holding that mapping (e.g. a snapshot of the Hyperliquid
+        ``metaAndAssetCtxs`` universe). Returns ``None`` when unset, which makes
+        the guard fail closed (every coin excluded) — surfacing a mis-wired
+        guard loudly rather than silently trading coarse-lot coins.
+        """
+        src = self.sz_decimals
+        if src is None:
+            logger.warning("fine_lot_guard is on but sz_decimals is unset; the guard will exclude all coins")
+            return None
+        if isinstance(src, str):
+            data = json.loads(Path(src).read_text())
+        else:
+            data = dict(src)
+        return {str(k): int(v) for k, v in data.items()}
 
     def run(self, data: dict[str, pd.DataFrame], params: dict[str, Any] | None = None) -> dict[str, Any]:
         if params:
@@ -363,6 +395,7 @@ class CarverTrendProperStrategy:
 
             volume = data.get("volume", pd.DataFrame())
             market_cap = data.get("market_cap", pd.DataFrame())
+            sz_map = self._resolve_sz_decimals() if self.fine_lot_guard else None
             universe_mask_ts = select_universe(
                 prices,
                 volume.reindex(index=prices.index, columns=prices.columns).fillna(0.0),
@@ -371,6 +404,9 @@ class CarverTrendProperStrategy:
                 self.top_by_volume,
                 list(self.exclude_tickers),
                 volume_is_dollar=self.volume_is_dollar,
+                fine_lot_sz_decimals=sz_map,
+                fine_lot_min_notional=(self.fine_lot_min_notional if self.fine_lot_guard else 0.0),
+                fine_lot_max_lot_fraction=(self.fine_lot_max_lot_fraction if self.fine_lot_guard else 0.0),
             )
 
         # 1. Per-instrument scaled+capped rule forecasts (pre-FDM combine).
