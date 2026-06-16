@@ -96,7 +96,7 @@ class DualMomentumStrategy:
         # For each window, compute excess return vs safe asset
         a_signals = []
         b_signals = []
-        for key, tr_df in tr_dict.items():
+        for tr_df in tr_dict.values():
             safe_ret = tr_df[safe_asset]
             a_signals.append(tr_df[asset_a] - safe_ret > 0)
             b_signals.append(tr_df[asset_b] - safe_ret > 0)

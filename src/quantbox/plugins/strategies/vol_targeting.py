@@ -140,11 +140,15 @@ class VolTargetingStrategy:
                 vol_prev = vol_t.shift(vol_lag)
                 vol_ratio = (vol_prev / vol_t).dropna()
 
-                # Extreme flag: vol outside [q_low, q_high] band
+                # Extreme flag: vol outside [q_low, q_high] band.
+                # ``apply`` consumes the lambda synchronously within this
+                # iteration, so the default-arg binding of ``vol_q_low`` /
+                # ``vol_q_high`` is behaviour-neutral; it pins the per-lookback
+                # bounds explicitly to satisfy B023 and guard future refactors.
                 extreme = ~vol_t.apply(
-                    lambda x: x.between(
-                        vol_q_low[x.name],
-                        vol_q_high[x.name],
+                    lambda x, lo=vol_q_low, hi=vol_q_high: x.between(
+                        lo[x.name],
+                        hi[x.name],
                     )
                 ).reindex(vol_ratio.index)
 
