@@ -38,7 +38,6 @@ import numpy as np
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
-from quantbox.plugins.strategies._universe import DEFAULT_STABLECOINS
 
 logger = logging.getLogger(__name__)
 

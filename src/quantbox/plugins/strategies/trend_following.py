@@ -84,7 +84,6 @@ class TrendFollowingStrategy:
 
         risk_off = params.get("risk_off_ticker")
         signal_cols = params.get("signal_columns", self.signal_columns)
-        threshold = params.get("threshold", 0.5)
         tsmom_kwargs = params.get("tsmom_kwargs", {})
 
         tickers = [c for c in prices.columns if c != risk_off]

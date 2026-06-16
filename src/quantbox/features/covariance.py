@@ -318,9 +318,8 @@ def rolling_covariance_oas(
 
         # Compute empirical covariances for all dates at once
         covs, _sum_quad, n_samples, tickers = _compute_expanding_covs(prices, dates, freq=model.freq, roll=model.roll)
-        p = len(tickers)
 
-        # Vectorized OAS shrinkage
+        # Vectorized OAS shrinkage (derives the dimension ``p`` from ``covs.shape``)
         shrunk_covs, shrinkage_coeffs = _batch_oas_shrinkage(covs, n_samples)
 
         # Annualize
