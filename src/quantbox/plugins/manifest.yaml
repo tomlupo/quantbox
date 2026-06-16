@@ -44,7 +44,7 @@ plugins:
       - strategy.beglobal.v1
       - strategy.crypto_trend.v1
       - strategy.carver_trend.v1
-      - strategy.carver_trend_proper.v1
+      - strategy.carver_trend.v2
       - strategy.momentum_long_short.v1
       - strategy.cross_asset_momentum.v1
       - strategy.crypto_regime_trend.v1

@@ -1,4 +1,4 @@
-"""strategy.carver_trend_proper.v1 — pysystemtrade-faithful Carver trend for crypto perps.
+"""strategy.carver_trend.v2 — pysystemtrade-faithful Carver trend for crypto perps.
 
 This variant closes the fidelity gaps between ``strategy.carver_trend.v1`` and the
 canonical Rob Carver framework as implemented in pysystemtrade
@@ -274,11 +274,11 @@ def apply_carver_buffer(
     return pd.DataFrame(held, index=optimal.index, columns=optimal.columns)
 
 
-class CarverTrendProperStrategy:
+class CarverTrendV2Strategy:
     """pysystemtrade-faithful Carver trend, adapted for crypto perps."""
 
     meta = PluginMeta(
-        name="strategy.carver_trend_proper.v1",
+        name="strategy.carver_trend.v2",
         kind="strategy",
         version="0.1.0",
         core_compat=">=0.1,<0.2",
@@ -521,4 +521,4 @@ class CarverTrendProperStrategy:
 
 def run(data: dict, params: dict | None = None) -> dict:
     """Standard strategy interface."""
-    return CarverTrendProperStrategy().run(data, params)
+    return CarverTrendV2Strategy().run(data, params)

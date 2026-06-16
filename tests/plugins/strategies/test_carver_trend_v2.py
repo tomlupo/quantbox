@@ -1,4 +1,4 @@
-"""Tests for strategy.carver_trend_proper.v1 (pysystemtrade-faithful Carver)."""
+"""Tests for strategy.carver_trend.v2 (pysystemtrade-faithful Carver)."""
 
 from __future__ import annotations
 
@@ -6,10 +6,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from quantbox.plugins.strategies.carver_trend_proper import (
+from quantbox.plugins.strategies.carver_trend_v2 import (
     CANONICAL_EWMAC_SPANS,
     CRYPTO_EWMAC_SPANS,
-    CarverTrendProperStrategy,
+    CarverTrendV2Strategy,
     _diversification_multiplier,
     apply_carver_buffer,
     forecast_diversification_multiplier,
@@ -148,7 +148,7 @@ def test_buffer_keeps_position_within_band():
 # --- end to end ------------------------------------------------------------
 def test_strategy_run_outputs_contract():
     px = _prices(n=500, k=5)
-    strat = CarverTrendProperStrategy()
+    strat = CarverTrendV2Strategy()
     res = strat.run({"prices": px}, {"output_periods": 500, "buffer_size": 0.1})
     assert "weights" in res and isinstance(res["weights"], pd.DataFrame)
     assert res["details"]["fdm"] >= 1.0
@@ -160,7 +160,7 @@ def test_strategy_divides_forecast_by_ten_not_cap():
     """A position at |forecast|=10 should equal the average position (vol_scalar/N*IDM),
     NOT half of it (v1's forecast/cap bug)."""
     px = _prices(n=500, k=3, corr=0.2)
-    strat = CarverTrendProperStrategy()
+    strat = CarverTrendV2Strategy()
     res = strat.run(
         {"prices": px},
         {"output_periods": 500, "buffer_size": 0.0, "idm": 1.0, "fdm": 1.0, "max_gross": 100.0, "max_position": 100.0},
@@ -181,8 +181,8 @@ def test_cross_sectional_demeans_forecasts():
     """With cross_sectional=True the per-date cross-sectional mean forecast is ~0
     (common factor stripped); with it off the mean is generally non-zero."""
     px = _prices(n=600, k=6, corr=0.6, seed=21)  # high common factor
-    base = CarverTrendProperStrategy().run({"prices": px}, {"output_periods": 600, "buffer_size": 0.0})
-    xs = CarverTrendProperStrategy().run(
+    base = CarverTrendV2Strategy().run({"prices": px}, {"output_periods": 600, "buffer_size": 0.0})
+    xs = CarverTrendV2Strategy().run(
         {"prices": px}, {"output_periods": 600, "buffer_size": 0.0, "cross_sectional": True}
     )
     base_fc = base["details"]["full_forecasts"].dropna()
@@ -198,7 +198,7 @@ def test_realized_vol_in_target_ballpark():
     vol within a factor ~2 of target — i.e. vol targeting is actually engaged,
     unlike v1 which lands ~5-10x under."""
     px = _prices(n=700, k=6, corr=0.3, seed=11)
-    strat = CarverTrendProperStrategy()
+    strat = CarverTrendV2Strategy()
     res = strat.run({"prices": px}, {"output_periods": 700, "buffer_size": 0.0, "target_vol": 0.25})
     w = res["details"]["full_optimal"].shift(1)  # avoid look-ahead in pnl
     rets = px.pct_change(fill_method=None)
@@ -212,7 +212,7 @@ def test_realized_vol_in_target_ballpark():
 def test_resolve_sz_decimals_dict_and_file(tmp_path):
     import json
 
-    s = CarverTrendProperStrategy()
+    s = CarverTrendV2Strategy()
     s.sz_decimals = {"BTC": 5, "XRP": 0}
     assert s._resolve_sz_decimals() == {"BTC": 5, "XRP": 0}
 
@@ -223,7 +223,7 @@ def test_resolve_sz_decimals_dict_and_file(tmp_path):
 
 
 def test_resolve_sz_decimals_unset_fails_closed():
-    s = CarverTrendProperStrategy()
+    s = CarverTrendV2Strategy()
     s.sz_decimals = None
     assert s._resolve_sz_decimals() is None  # guard then excludes everything
 
@@ -238,7 +238,7 @@ def test_fine_lot_guard_drops_coarse_coin_from_weights():
     px = pd.DataFrame(np.hstack([fine, coarse]), index=idx, columns=["FINE1", "FINE2", "COARSE"])
     vol = pd.DataFrame(1e7, index=idx, columns=px.columns)
 
-    res = CarverTrendProperStrategy().run(
+    res = CarverTrendV2Strategy().run(
         {"prices": px, "volume": vol},
         {
             "output_periods": n,

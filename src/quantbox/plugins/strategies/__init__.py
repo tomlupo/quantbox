@@ -3,7 +3,7 @@ from .altcoin_crash_bounce import AltcoinCrashBounceStrategy
 from .beglobal_strategy import BeGlobalStrategy
 from .carry import CarryStrategy
 from .carver_trend import CarverTrendStrategy
-from .carver_trend_proper import CarverTrendProperStrategy
+from .carver_trend_v2 import CarverTrendV2Strategy
 from .cross_asset_momentum import CrossAssetMomentumStrategy, cross_asset_momentum
 from .crypto_regime_trend import CryptoRegimeTrendStrategy
 from .crypto_trend import CryptoTrendStrategy
@@ -34,7 +34,7 @@ __all__ = [
     "AltcoinCrashBounceStrategy",
     "BeGlobalStrategy",
     "CarryStrategy",
-    "CarverTrendProperStrategy",
+    "CarverTrendV2Strategy",
     "CarverTrendStrategy",
     "CryptoRegimeTrendStrategy",
     "CryptoTrendStrategy",
