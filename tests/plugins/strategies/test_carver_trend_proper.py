@@ -235,9 +235,7 @@ def test_fine_lot_guard_drops_coarse_coin_from_weights():
     rng = np.random.default_rng(3)
     fine = 10 * np.exp(np.cumsum(rng.normal(0.0005, 0.03, size=(n, 2)), axis=0))
     coarse = 5000 * np.exp(np.cumsum(rng.normal(0.0005, 0.03, size=(n, 1)), axis=0))
-    px = pd.DataFrame(
-        np.hstack([fine, coarse]), index=idx, columns=["FINE1", "FINE2", "COARSE"]
-    )
+    px = pd.DataFrame(np.hstack([fine, coarse]), index=idx, columns=["FINE1", "FINE2", "COARSE"])
     vol = pd.DataFrame(1e7, index=idx, columns=px.columns)
 
     res = CarverTrendProperStrategy().run(
