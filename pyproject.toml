@@ -5,41 +5,41 @@ description = "Quant research & trading core with plugin marketplace (entry poin
 requires-python = ">=3.10"
 dependencies = [
   "pandas>=2.3.3",
-  "scipy>=1.10",
+  "scipy>=1.15.3",
   "pyyaml>=6.0.3",
   "pyarrow>=24.0.0",
-  "duckdb>=1.5.2",
+  "duckdb>=1.5.3",
   "jsonschema>=4.26.0",
   "tenacity>=9.1.4",
   "httpx>=0.28.1",
   "pycoingecko>=3.2.0",
-  "typer>=0.25.1",
+  "typer>=0.26.7",
   "vectorbt>=1.0.0",
   "numba>=0.65.1",
-  "pandas-market-calendars>=5.3.2",
+  "pandas-market-calendars>=5.4.0",
 ]
 
 [project.optional-dependencies]
 ibkr = ["ib_insync"]
 binance = ["python-binance"]
-ccxt = ["ccxt>=4.5.54"]
+ccxt = ["ccxt>=4.5.58"]
 ml = ["scikit-learn>=1.7.2"]
 simulation = ["arch>=8.0"]
 viz = ["matplotlib>=3.10.9", "seaborn>=0.13.2"]
-full = ["python-binance", "ccxt>=4.5.54", "ib_insync", "scikit-learn>=1.7.2", "arch>=8.0"]
+full = ["python-binance", "ccxt>=4.5.58", "ib_insync", "scikit-learn>=1.7.2", "arch>=8.0"]
 
 [project.scripts]
 quantbox = "quantbox.cli:main"
 
 [build-system]
-requires = ["uv_build>=0.11.15,<0.12.0"]
+requires = ["uv_build>=0.11.21,<0.12.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
     "commitizen>=4.16.3",
-    "pytest>=9.0.3",
-    "ruff>=0.15.13",
+    "pytest>=9.1.0",
+    "ruff>=0.15.17",
 ]
 
 [tool.uv_build]
