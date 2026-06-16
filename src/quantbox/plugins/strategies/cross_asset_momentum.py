@@ -38,7 +38,6 @@ import numpy as np
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
-from quantbox.plugins.strategies._universe import DEFAULT_STABLECOINS
 
 logger = logging.getLogger(__name__)
 
@@ -305,10 +304,13 @@ class CrossAssetMomentumStrategy:
     meta = PluginMeta(
         name="strategy.cross_asset_momentum.v1",
         kind="strategy",
-        version="0.1.0",
-        core_compat=">=0.1,<0.2",
+        version="1.0.0",
+        core_compat=">=0.1,<1.0",
         description="Cross-asset momentum (XSMOM) with core-satellite portfolio construction",
-        tags=("multi-asset", "momentum", "xsmom", "core-satellite"),
+        tags=("multi-asset", "momentum", "xsmom", "core-satellite", "tactical"),
+        capabilities=("backtest", "live"),
+        inputs=("prices",),
+        outputs=("weights",),
     )
 
     # Momentum parameters
@@ -327,10 +329,11 @@ class CrossAssetMomentumStrategy:
 
     # Core-satellite
     core_weight: float = 0.6
-    risk_off_ticker: str = "USDT"
+    risk_off_ticker: str | None = None  # Must be set by caller (no crypto default)
 
-    # Universe filtering
-    exclude_tickers: list[str] = field(default_factory=lambda: DEFAULT_STABLECOINS.copy())
+    # Universe filtering — empty by default (generic); set to
+    # CRYPTO_STABLECOINS for crypto use cases.
+    exclude_tickers: list[str] = field(default_factory=list)
 
     # Output
     output_periods: int = 30
