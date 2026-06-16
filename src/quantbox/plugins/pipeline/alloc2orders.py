@@ -260,7 +260,9 @@ class AllocationsToOrdersPipeline:
         universe = pd.DataFrame({"symbol": alloc["symbol"].tolist()})
         store.put_parquet("universe", universe)
 
-        market_data = data.load_market_data(universe, asof, params.get("prices", {"lookback_days": 5}))
+        market_data = data.load_market_data(
+            universe, asof, {**params.get("prices", {"lookback_days": 5}), "mode": mode}
+        )
         prices_wide = market_data["prices"]
         latest = _latest_prices(prices_wide)
         store.put_parquet(

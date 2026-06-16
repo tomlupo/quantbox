@@ -22,7 +22,7 @@ import pandas as pd
 
 from quantbox.contracts import PluginMeta
 
-from ._utils import MarketCapProvider
+from ._utils import MarketCapProvider, resolve_screen_inputs
 from .hyperliquid_data_plugin import HyperliquidDataPlugin
 
 logger = logging.getLogger(__name__)
@@ -208,16 +208,14 @@ class HyperliquidCachedDataPlugin:
 
         # 8. build return frames in memory (no second read)
         result = {s: self._long_to_wide(merged[s], requested, start, asof_dt) for s in _SERIES}
-        # Market-wide screen inputs from CoinGecko, recomputed each run (current
-        # snapshot — not cached incrementally like the per-venue series).
+        # Mode-aware universe-screen inputs, recomputed each run (not cached
+        # incrementally like the per-venue series). LIVE/paper uses the CoinGecko
+        # snapshot; BACKTEST uses point-in-time curated market cap + per-venue
+        # volume ranking — never the flat snapshot. See resolve_screen_inputs.
         prices_wide = result["prices"]
-        if prices_wide.empty:
-            result["market_cap"] = pd.DataFrame()
-            result["screen_volume"] = pd.DataFrame()
-        else:
-            provider = self.mcap_provider or MarketCapProvider()
-            result["market_cap"] = provider.estimate_market_cap(prices_wide, result["volume"])
-            result["screen_volume"] = provider.estimate_aggregate_volume(prices_wide)
+        result["market_cap"], result["screen_volume"] = resolve_screen_inputs(
+            params.get("mode"), prices_wide, result["volume"], self.mcap_provider
+        )
         logger.info(
             "Hyperliquid cached: %d new + %d cached coins, %d price date-rows returned",
             len(new_coins),

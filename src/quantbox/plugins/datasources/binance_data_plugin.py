@@ -51,7 +51,7 @@ class BinanceDataPlugin:
                 "quote_asset": {"type": "string", "default": "USDT"},
             },
         },
-        outputs=("universe", "prices", "volume", "market_cap"),
+        outputs=("universe", "prices", "volume", "market_cap", "screen_volume"),
         examples=("plugins:\n  data:\n    name: binance.live_data.v1\n    params_init:\n      quote_asset: USDT",),
     )
 
@@ -94,14 +94,20 @@ class BinanceDataPlugin:
     ) -> dict[str, pd.DataFrame]:
         """Fetch historical OHLCV from Binance and return wide-format dict.
 
-        Returns dict with keys: ``prices``, ``volume``, ``market_cap``
-        (DataFrames with date index, ticker columns).
+        Returns dict with keys: ``prices``, ``volume``, ``market_cap``,
+        ``screen_volume`` (DataFrames with date index, ticker columns). The
+        universe-screen inputs (``market_cap`` / ``screen_volume``) are resolved
+        mode-aware (see :func:`resolve_screen_inputs`): a CoinGecko snapshot in
+        live/paper, point-in-time curated market cap + per-venue volume ranking
+        in backtest (no look-ahead). The mode is read from ``params["mode"]``,
+        injected by the pipeline (defaults to the backtest path).
         """
         if universe.empty or "symbol" not in universe.columns:
             return {
                 "prices": pd.DataFrame(),
                 "volume": pd.DataFrame(),
                 "market_cap": pd.DataFrame(),
+                "screen_volume": pd.DataFrame(),
             }
 
         tickers = universe["symbol"].tolist()
@@ -113,6 +119,7 @@ class BinanceDataPlugin:
             lookback_days=lookback,
             end_date=asof,
             interval=interval,
+            mode=params.get("mode"),
         )
 
         logger.info(

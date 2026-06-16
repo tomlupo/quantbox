@@ -52,7 +52,7 @@ import requests
 
 from quantbox.contracts import PluginMeta
 
-from ._utils import MarketCapProvider
+from ._utils import MarketCapProvider, resolve_screen_inputs
 
 logger = logging.getLogger(__name__)
 
@@ -173,9 +173,14 @@ class HyperliquidDataPlugin:
 
         Returns dict with keys: ``prices``, ``volume``, ``funding_rates``,
         ``market_cap`` and ``screen_volume``. Hyperliquid exposes neither market
-        cap nor cross-venue volume, so both are sourced from CoinGecko (free, no
-        key) via :class:`MarketCapProvider` — the same market-wide screen the
-        Binance book uses. ``volume`` stays per-venue (Hyperliquid) for sizing.
+        cap nor cross-venue volume, so the universe-screen inputs
+        (``market_cap`` / ``screen_volume``) are resolved mode-aware via
+        :func:`resolve_screen_inputs`: a CoinGecko snapshot in live/paper
+        ("today" is the decision point), point-in-time curated market cap +
+        per-venue volume ranking in backtest (no look-ahead). The run mode is
+        read from ``params["mode"]`` (injected by the pipeline; defaults to the
+        backtest/point-in-time path). ``volume`` stays per-venue (Hyperliquid)
+        for sizing.
         """
         if universe.empty or "symbol" not in universe.columns:
             return {
@@ -275,17 +280,12 @@ class HyperliquidDataPlugin:
             len(prices.columns),
         )
 
-        # Market-wide screen inputs from CoinGecko (Hyperliquid has neither
-        # market cap nor cross-venue volume). This gives the HL book the same
-        # two-stage market-wide screen as the Binance book; per-venue `volume`
-        # above stays for sizing.
-        if prices.empty:
-            market_cap = pd.DataFrame()
-            screen_volume = pd.DataFrame()
-        else:
-            provider = self.mcap_provider or MarketCapProvider()
-            market_cap = provider.estimate_market_cap(prices, volume)
-            screen_volume = provider.estimate_aggregate_volume(prices)
+        # Mode-aware universe-screen inputs (Hyperliquid exposes neither market
+        # cap nor cross-venue volume). LIVE/paper uses the CoinGecko snapshot;
+        # BACKTEST uses point-in-time curated market cap + per-venue volume
+        # ranking — never the flat snapshot. Per-venue `volume` above stays for
+        # sizing in both modes.
+        market_cap, screen_volume = resolve_screen_inputs(params.get("mode"), prices, volume, self.mcap_provider)
 
         return {
             "prices": prices,

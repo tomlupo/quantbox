@@ -65,6 +65,7 @@ from quantbox.plugins.datasources._utils import (
     MarketCapProvider,
     OHLCVCache,
     interval_step,
+    resolve_screen_inputs,
     retry_transient,
     validate_ohlcv,
 )
@@ -609,6 +610,7 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
         lookback_days: int = 400,
         end_date: str | None = None,
         interval: str = "1d",
+        mode: str | None = None,
     ) -> dict[str, pd.DataFrame]:
         """
         Get full market data for strategies (prices, volume, market_cap).
@@ -620,6 +622,9 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
             tickers: List of base asset symbols
             lookback_days: Number of days of history to fetch
             end_date: End date (default: yesterday)
+            mode: Run mode ("backtest"/"paper"/"live"). Selects the universe-
+                screen source: snapshot in live/paper, point-in-time in backtest.
+                Defaults to the backtest (point-in-time) path.
 
         Returns:
             Dict with:
@@ -677,16 +682,14 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
         prices = pd.DataFrame(prices_data)
         volume = pd.DataFrame(volume_data)
 
-        # Estimate market cap (price * circulating supply) from CoinGecko,
-        # with a hardcoded-supply fallback.
-        market_cap = self._estimate_market_cap(prices, volume)
-
-        # Market-wide aggregate volume (CoinGecko total_volume) for the universe
-        # liquidity SCREEN — decoupled from the per-venue `volume` above, which
-        # stays for execution/sizing. Prevents dropping a legitimately liquid
-        # coin for a thin single-quote-pair (e.g. USDC) book. Sourced from the
-        # same CoinGecko rankings call as market cap, so no extra API request.
-        screen_volume = self._cmc_provider.estimate_aggregate_volume(prices)
+        # Mode-aware universe-screen inputs. LIVE/paper uses the CoinGecko
+        # snapshot — today's market cap + today's market-wide aggregate volume
+        # (decoupled from the per-venue `volume` above, which stays for
+        # execution/sizing) — correct because "today" is the decision point.
+        # BACKTEST uses point-in-time curated market cap and ranks Stage-2 volume
+        # on the per-venue PIT `volume` (screen_volume empty); the flat snapshot
+        # is never broadcast onto history. See resolve_screen_inputs.
+        market_cap, screen_volume = resolve_screen_inputs(mode, prices, volume, self._cmc_provider)
 
         logger.info(f"Fetched data for {len(prices.columns)} tickers, {len(prices)} days")
 

@@ -57,7 +57,7 @@ class FundSelectionPipeline:
         universe = data.load_universe(params.get("universe", {}))
         store.put_parquet("universe", universe)
 
-        market_data = data.load_market_data(universe, asof, params.get("prices", {}))
+        market_data = data.load_market_data(universe, asof, {**params.get("prices", {}), "mode": mode})
         prices_wide = market_data["prices"]
         store.put_parquet("prices", prices_wide.reset_index() if hasattr(prices_wide.index, "name") else prices_wide)
 

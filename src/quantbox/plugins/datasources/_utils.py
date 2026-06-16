@@ -637,3 +637,148 @@ class MarketCapProvider:
 
 # Backwards compatibility alias
 CMCMarketCapProvider = MarketCapProvider
+
+
+# ============================================================================
+# Point-in-time screen inputs for BACKTEST (no look-ahead)
+# ============================================================================
+#
+# The live data plugins (Hyperliquid, Binance) feed a two-stage universe screen
+# (``select_universe``): Stage 1 ranks by market cap, Stage 2 by volume. For
+# LIVE trading the screen inputs come from a CoinGecko *snapshot* — today's
+# market cap and today's market-wide 24h volume — which is correct: "today" is
+# the point of decision. In a BACKTEST that same snapshot, broadcast onto every
+# historical row, is look-ahead + survivorship bias — a coin's PAST universe
+# membership would be decided by its PRESENT size/liquidity.
+#
+# These helpers provide the point-in-time backtest replacement:
+#   - market cap: curated daily PIT series from quantbox-datasets
+#     (``crypto-spot-daily/market_cap.parquet``), carried forward causally.
+#   - volume rank: NOT sourced here. The backtest Stage-2 rank uses the
+#     per-venue point-in-time dollar volume the plugin already returns
+#     (``select_universe`` ranks on it when ``screen_volume`` is empty). The
+#     curated market-wide ``cmc_volume_usd`` series is monthly and ends mid-2025,
+#     so for recent backtests it would forward-fill a many-month-stale value;
+#     fresh per-venue PIT volume is the faithful liquidity record for a single-
+#     venue book replica. See the fix report for the full tradeoff.
+
+_CURATED_CRYPTO_DATASET = "crypto-spot-daily"
+
+
+def load_pit_market_cap(prices: pd.DataFrame) -> pd.DataFrame:
+    """Point-in-time daily market cap aligned to *prices*, for backtests.
+
+    Reads the curated, survivorship-augmented daily market-cap series from the
+    optional ``quantbox-datasets`` package
+    (``crypto-spot-daily/market_cap.parquet``) and aligns it to *prices* (date
+    index x ticker columns). Reindexing uses a forward fill, which is **causal**
+    — every date carries only the most recent *past* market-cap observation, so
+    there is no look-ahead.
+
+    Hyperliquid quotes some high-supply tokens with a ``k`` (1000x) prefix
+    (``kPEPE``, ``kBONK`` ...). Market cap is notation-independent (it is the
+    coin's total cap), so these map to the unprefixed base symbol.
+
+    Returns an empty DataFrame when ``quantbox-datasets`` is not installed or the
+    file is missing — callers then skip the market-cap tier and rank on
+    point-in-time per-venue volume only (clean, no look-ahead). Tickers not
+    covered by the curated dataset are excluded from the market-cap tier; this
+    is logged.
+    """
+    if prices is None or prices.empty:
+        return pd.DataFrame()
+    try:
+        from quantbox_datasets.builtins import crypto_spot_daily
+    except ImportError:
+        logger.debug("quantbox-datasets not installed; skipping PIT market-cap tier in backtest")
+        return pd.DataFrame()
+    try:
+        ds_path = Path(crypto_spot_daily()._ds_path())
+        mc_path = ds_path / "market_cap.parquet"
+        if not mc_path.exists():
+            logger.debug("curated market_cap.parquet not found at %s; skipping PIT mcap tier", mc_path)
+            return pd.DataFrame()
+        cur = pd.read_parquet(mc_path)
+    except Exception as exc:  # noqa: BLE001 — never break data loading on a soft dep
+        logger.warning("Failed to read curated PIT market cap: %s; skipping mcap tier", exc)
+        return pd.DataFrame()
+
+    cur.index = pd.DatetimeIndex(cur.index)
+    # Align tz to the price index (curated is tz-naive UTC dates).
+    if prices.index.tz is not None and cur.index.tz is None:
+        cur.index = cur.index.tz_localize("UTC")
+    elif prices.index.tz is None and cur.index.tz is not None:
+        cur.index = cur.index.tz_localize(None)
+    cur = cur.sort_index()
+
+    cur_cols = set(cur.columns)
+    selected: dict[str, pd.Series] = {}
+    missing: list[str] = []
+    for t in prices.columns:
+        src = None
+        if t in cur_cols:
+            src = t
+        elif t.upper() in cur_cols:
+            src = t.upper()
+        elif len(t) > 1 and t[0] == "k" and t[1:].upper() in cur_cols:
+            src = t[1:].upper()  # Hyperliquid 1000x notation -> base symbol
+        if src is None:
+            missing.append(t)
+        else:
+            selected[t] = cur[src]
+
+    if not selected:
+        logger.info(
+            "PIT market cap: no curated coverage for any of %d tickers; skipping mcap tier", len(prices.columns)
+        )
+        return pd.DataFrame()
+    if missing:
+        logger.info(
+            "PIT market cap: %d/%d tickers covered by curated dataset; uncovered (excluded from the mcap tier): %s",
+            len(selected),
+            len(prices.columns),
+            missing,
+        )
+    mc = pd.DataFrame(selected)
+    # Causal forward-fill onto the price index: each date gets the latest mcap
+    # observation at or before it (and carries the last known value across the
+    # short tail beyond the curated file's end). reindex(method="ffill") never
+    # uses a future observation, so this is look-ahead-free.
+    mc = mc.reindex(prices.index, method="ffill")
+    return mc
+
+
+def resolve_screen_inputs(
+    mode: str | None,
+    prices: pd.DataFrame,
+    volume: pd.DataFrame,
+    provider: MarketCapProvider | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Resolve ``(market_cap, screen_volume)`` for the universe screen, mode-aware.
+
+    LIVE / paper
+        The CoinGecko snapshot *is* the point of decision ("today"), so use it:
+        ``market_cap = provider.estimate_market_cap`` and
+        ``screen_volume = provider.estimate_aggregate_volume`` (the market-wide,
+        cross-exchange 24h volume that powers the live liquidity screen).
+
+    BACKTEST (and any non-live mode, including the unset default)
+        The snapshot would be look-ahead. Source point-in-time market cap from
+        the curated dataset (:func:`load_pit_market_cap`) and return an EMPTY
+        ``screen_volume`` so :func:`select_universe` ranks Stage 2 on the
+        per-venue, point-in-time dollar volume the plugin already returns. The
+        flat today-anchored snapshot is NEVER used in a backtest.
+
+    The default for an unset/unknown mode is the backtest (point-in-time) path —
+    the conservative choice that can never silently introduce look-ahead.
+    """
+    empty = pd.DataFrame()
+    if prices is None or prices.empty:
+        return empty, empty
+    if str(mode).lower() in ("live", "paper"):
+        prov = provider or MarketCapProvider()
+        market_cap = prov.estimate_market_cap(prices, volume)
+        screen_volume = prov.estimate_aggregate_volume(prices)
+        return market_cap, screen_volume
+    # backtest / default: point-in-time market cap, per-venue volume for Stage 2.
+    return load_pit_market_cap(prices), empty

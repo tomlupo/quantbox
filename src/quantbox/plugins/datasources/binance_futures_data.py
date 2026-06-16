@@ -23,6 +23,7 @@ from quantbox.plugins.datasources._utils import (
     MarketCapProvider,
     OHLCVCache,
     interval_step,
+    resolve_screen_inputs,
     retry_transient,
     validate_ohlcv,
 )
@@ -425,11 +426,16 @@ class BinanceFuturesDataFetcher:
         lookback_days: int = 400,
         end_date: str | None = None,
         interval: str = "1d",
+        mode: str | None = None,
     ) -> dict[str, pd.DataFrame]:
         """Fetch prices, volume, funding rates, and estimated market cap.
 
         Returns dict with wide DataFrames (date index, ticker columns):
-        ``prices``, ``volume``, ``funding_rates``, ``market_cap``.
+        ``prices``, ``volume``, ``funding_rates``, ``market_cap``,
+        ``screen_volume``. The universe-screen inputs are resolved mode-aware
+        (see :func:`resolve_screen_inputs`): a CoinGecko snapshot in live/paper,
+        point-in-time curated market cap + per-venue volume ranking in backtest
+        (no look-ahead). ``mode`` defaults to the backtest (point-in-time) path.
         """
         if end_date is None:
             end_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -470,6 +476,7 @@ class BinanceFuturesDataFetcher:
                 "volume": pd.DataFrame(),
                 "funding_rates": pd.DataFrame(),
                 "market_cap": pd.DataFrame(),
+                "screen_volume": pd.DataFrame(),
             }
 
         prices = pd.DataFrame(prices_data)
@@ -480,8 +487,10 @@ class BinanceFuturesDataFetcher:
         if not funding_rates.empty:
             funding_rates = funding_rates.reindex(prices.index).ffill().fillna(0.0)
 
-        # Market cap via CMC with hardcoded fallback
-        market_cap = self._cmc_provider.estimate_market_cap(prices, volume)
+        # Mode-aware universe-screen inputs: CoinGecko snapshot in live/paper,
+        # point-in-time curated market cap + per-venue volume ranking in backtest
+        # (no look-ahead). See resolve_screen_inputs.
+        market_cap, screen_volume = resolve_screen_inputs(mode, prices, volume, self._cmc_provider)
 
         logger.info(
             "Fetched futures data: %d tickers, %d days",
@@ -494,4 +503,5 @@ class BinanceFuturesDataFetcher:
             "volume": volume,
             "funding_rates": funding_rates,
             "market_cap": market_cap,
+            "screen_volume": screen_volume,
         }
