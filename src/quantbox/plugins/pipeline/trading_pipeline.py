@@ -204,7 +204,10 @@ class TradingPipeline:
 
         # --- Stage 1: Universe & Prices ---
         universe_params = params.get("universe", {})
-        prices_params = params.get("prices", {"lookback_days": 365})
+        # Copy + inject run mode so mode-aware data sources (universe-screen
+        # market_cap / screen_volume) pick the live snapshot vs the point-in-time
+        # backtest path. Run mode is authoritative; never mutate the config dict.
+        prices_params = {**params.get("prices", {"lookback_days": 365}), "mode": mode}
         universe = data.load_universe(universe_params)
 
         # Token policy filtering (universe scope)

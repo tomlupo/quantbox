@@ -256,6 +256,10 @@ class BacktestPipeline:
                 )
 
         universe = data.load_universe(universe_params)
+        # Wire the run mode to the data plugin so mode-aware sources (e.g. the
+        # universe-screen market_cap / screen_volume) pick the point-in-time
+        # backtest path vs the live snapshot. Run mode is authoritative.
+        prices_params["mode"] = mode
         market_data_dict = data.load_market_data(universe, asof, prices_params)
 
         store.put_parquet("universe", universe)

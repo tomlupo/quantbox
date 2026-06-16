@@ -65,6 +65,7 @@ from quantbox.plugins.datasources._utils import (
     MarketCapProvider,
     OHLCVCache,
     interval_step,
+    resolve_screen_inputs,
     retry_transient,
     validate_ohlcv,
 )
@@ -609,6 +610,7 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
         lookback_days: int = 400,
         end_date: str | None = None,
         interval: str = "1d",
+        mode: str | None = None,
     ) -> dict[str, pd.DataFrame]:
         """
         Get full market data for strategies (prices, volume, market_cap).
@@ -620,12 +622,18 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
             tickers: List of base asset symbols
             lookback_days: Number of days of history to fetch
             end_date: End date (default: yesterday)
+            mode: Run mode ("backtest"/"paper"/"live"). Selects the universe-
+                screen source: snapshot in live/paper, point-in-time in backtest.
+                Defaults to the backtest (point-in-time) path.
 
         Returns:
             Dict with:
             - 'prices': DataFrame (date index, ticker columns)
-            - 'volume': DataFrame (date index, ticker columns)
+            - 'volume': DataFrame (date index, ticker columns) — per-venue
+              (this exchange) volume, for execution/sizing
             - 'market_cap': DataFrame (date index, ticker columns)
+            - 'screen_volume': DataFrame (date index, ticker columns) —
+              market-wide aggregate volume (CoinGecko), for the universe screen
 
         Example:
             >>> data = fetcher.get_market_data(['BTC', 'ETH', 'SOL'], lookback_days=90)
@@ -667,15 +675,21 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
                 "prices": pd.DataFrame(),
                 "volume": pd.DataFrame(),
                 "market_cap": pd.DataFrame(),
+                "screen_volume": pd.DataFrame(),
             }
 
         # Combine into DataFrames
         prices = pd.DataFrame(prices_data)
         volume = pd.DataFrame(volume_data)
 
-        # Estimate market cap (price * volume as proxy)
-        # Real market cap would come from CoinGecko/CoinMarketCap
-        market_cap = self._estimate_market_cap(prices, volume)
+        # Mode-aware universe-screen inputs. LIVE/paper uses the CoinGecko
+        # snapshot — today's market cap + today's market-wide aggregate volume
+        # (decoupled from the per-venue `volume` above, which stays for
+        # execution/sizing) — correct because "today" is the decision point.
+        # BACKTEST uses point-in-time curated market cap and ranks Stage-2 volume
+        # on the per-venue PIT `volume` (screen_volume empty); the flat snapshot
+        # is never broadcast onto history. See resolve_screen_inputs.
+        market_cap, screen_volume = resolve_screen_inputs(mode, prices, volume, self._cmc_provider)
 
         logger.info(f"Fetched data for {len(prices.columns)} tickers, {len(prices)} days")
 
@@ -683,6 +697,7 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
             "prices": prices,
             "volume": volume,
             "market_cap": market_cap,
+            "screen_volume": screen_volume,
         }
 
     def _estimate_market_cap(
@@ -690,11 +705,12 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
         prices: pd.DataFrame,
         volume: pd.DataFrame,
     ) -> pd.DataFrame:
-        """Estimate market cap using CoinMarketCap data with hardcoded fallback.
+        """Estimate market cap using CoinGecko data with hardcoded fallback.
 
-        If ``CMC_API_KEY`` is set (or passed via ``cmc_api_key``), fetches live
-        rankings from CoinMarketCap and caches them as Parquet.  Falls back to
-        hardcoded circulating-supply estimates for coins not covered by CMC.
+        Fetches live rankings from CoinGecko (free, no API key) via
+        :class:`MarketCapProvider`, caches them as Parquet, and computes
+        ``price * circulating_supply``.  Falls back to hardcoded
+        circulating-supply estimates for coins CoinGecko does not cover.
         """
         return self._cmc_provider.estimate_market_cap(prices, volume)
 

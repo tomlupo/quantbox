@@ -52,6 +52,8 @@ import requests
 
 from quantbox.contracts import PluginMeta
 
+from ._utils import MarketCapProvider, resolve_screen_inputs
+
 logger = logging.getLogger(__name__)
 
 HL_INFO_URL = "https://api.hyperliquid.xyz/info"
@@ -84,6 +86,9 @@ class HyperliquidDataPlugin:
             params_init: {}
     """
 
+    # Injectable for testing; defaults to a live CoinGecko provider at use.
+    mcap_provider: MarketCapProvider | None = None
+
     meta = PluginMeta(
         name="hyperliquid.data.v1",
         kind="data",
@@ -97,7 +102,7 @@ class HyperliquidDataPlugin:
             "type": "object",
             "properties": {},
         },
-        outputs=("universe", "prices", "volume", "funding_rates", "market_cap"),
+        outputs=("universe", "prices", "volume", "funding_rates", "market_cap", "screen_volume"),
         examples=("plugins:\n  data:\n    name: hyperliquid.data.v1\n    params_init: {}",),
     )
 
@@ -167,7 +172,15 @@ class HyperliquidDataPlugin:
         """Fetch OHLCV candles and funding-rate history.
 
         Returns dict with keys: ``prices``, ``volume``, ``funding_rates``,
-        ``market_cap`` (empty -- not available on Hyperliquid).
+        ``market_cap`` and ``screen_volume``. Hyperliquid exposes neither market
+        cap nor cross-venue volume, so the universe-screen inputs
+        (``market_cap`` / ``screen_volume``) are resolved mode-aware via
+        :func:`resolve_screen_inputs`: a CoinGecko snapshot in live/paper
+        ("today" is the decision point), point-in-time curated market cap +
+        per-venue volume ranking in backtest (no look-ahead). The run mode is
+        read from ``params["mode"]`` (injected by the pipeline; defaults to the
+        backtest/point-in-time path). ``volume`` stays per-venue (Hyperliquid)
+        for sizing.
         """
         if universe.empty or "symbol" not in universe.columns:
             return {
@@ -175,6 +188,7 @@ class HyperliquidDataPlugin:
                 "volume": pd.DataFrame(),
                 "funding_rates": pd.DataFrame(),
                 "market_cap": pd.DataFrame(),
+                "screen_volume": pd.DataFrame(),
             }
 
         tickers = universe["symbol"].tolist()
@@ -266,11 +280,19 @@ class HyperliquidDataPlugin:
             len(prices.columns),
         )
 
+        # Mode-aware universe-screen inputs (Hyperliquid exposes neither market
+        # cap nor cross-venue volume). LIVE/paper uses the CoinGecko snapshot;
+        # BACKTEST uses point-in-time curated market cap + per-venue volume
+        # ranking — never the flat snapshot. Per-venue `volume` above stays for
+        # sizing in both modes.
+        market_cap, screen_volume = resolve_screen_inputs(params.get("mode"), prices, volume, self.mcap_provider)
+
         return {
             "prices": prices,
             "volume": volume,
             "funding_rates": funding_rates,
-            "market_cap": pd.DataFrame(),  # Not available on Hyperliquid
+            "market_cap": market_cap,
+            "screen_volume": screen_volume,
         }
 
     def load_fx(self, asof: str, params: dict[str, Any]) -> pd.DataFrame | None:

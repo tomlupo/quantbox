@@ -586,17 +586,25 @@ class CarverTrendStrategy:
         valid_tickers = [t for t in prices.columns if t not in self.exclude_tickers]
         prices = prices[valid_tickers]
 
-        # 0. Universe selection — time-varying, no look-ahead bias.
-        #    Computes a 0/1 mask for every date: top-N by trailing dollar-volume
-        #    at that date.  Signals are generated for ALL tickers; the mask is
-        #    applied to positions AFTER sizing so a coin only has non-zero weight
-        #    when it is actually in the top-N at that point in time.
+        # 0. Universe selection — time-varying two-stage screen, point-in-time in
+        #    backtest (no look-ahead). select_universe computes a 0/1 mask for
+        #    every date: Stage 1 keeps the top-N by market cap, Stage 2 the top-M
+        #    by volume within that tier (when market_cap is empty the mcap tier is
+        #    skipped and it ranks on volume alone). The screen inputs are sourced
+        #    mode-aware by the data plugin (see datasources._utils.resolve_screen_inputs):
+        #    in backtest, point-in-time curated market cap + per-venue dollar
+        #    volume; in live/paper, a CoinGecko snapshot (market cap + market-wide
+        #    aggregate volume). The today-anchored snapshot is never broadcast onto
+        #    history. Signals are generated for ALL tickers; the mask is applied to
+        #    positions AFTER sizing, so a coin only has non-zero weight when it is
+        #    actually in the universe at that point in time.
         universe_mask_ts: pd.DataFrame | None = None
         if self.use_universe_selection:
             from quantbox.plugins.strategies._universe import select_universe
 
             volume = data.get("volume", pd.DataFrame())
             market_cap = data.get("market_cap", pd.DataFrame())
+            screen_volume = data.get("screen_volume", pd.DataFrame())
             universe_mask_ts = select_universe(
                 prices,
                 volume.reindex(index=prices.index, columns=prices.columns).fillna(0.0),
@@ -605,6 +613,7 @@ class CarverTrendStrategy:
                 self.top_by_volume,
                 self.exclude_tickers,
                 volume_is_dollar=self.volume_is_dollar,
+                screen_volume=screen_volume if not screen_volume.empty else None,
             )
             n_avg = universe_mask_ts.sum(axis=1).mean()
             logger.info(

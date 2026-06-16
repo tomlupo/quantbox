@@ -544,18 +544,21 @@ class CryptoTrendStrategy:
         prices = data["prices"]
         volume = data["volume"]
         market_cap = data["market_cap"]
+        screen_volume = data.get("screen_volume", pd.DataFrame())
+        screen_volume = screen_volume if not screen_volume.empty else None
 
         logger.info(f"Running CryptoTrendStrategy on {len(prices.columns)} tickers, {len(prices)} days")
 
         # 1. Universe selection. The DuckDB path does not yet support the
         # best-practice knobs (volume_is_dollar, rolling-window, listing
-        # cool-off, hysteresis), so fall back to the vectorized impl whenever
-        # any of them is set away from its default.
+        # cool-off, hysteresis) or the market-wide screen_volume override, so
+        # fall back to the vectorized impl whenever any of them is in effect.
         needs_vectorized = (
             self.volume_is_dollar
             or self.volume_rolling_window > 1
             or self.min_listing_days > 0
             or self.hysteresis_rank_band > 0
+            or screen_volume is not None
         )
         if self.use_duckdb and DUCKDB_AVAILABLE and not needs_vectorized:
             universe = select_universe_duckdb(
@@ -573,6 +576,7 @@ class CryptoTrendStrategy:
                 volume_rolling_window=self.volume_rolling_window,
                 min_listing_days=self.min_listing_days,
                 hysteresis_rank_band=self.hysteresis_rank_band,
+                screen_volume=screen_volume,
             )
 
         # 2. Signal generation

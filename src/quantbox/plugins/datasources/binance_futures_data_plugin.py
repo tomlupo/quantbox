@@ -51,7 +51,7 @@ class BinanceFuturesDataPlugin:
                 "min_open_interest_usd": {"type": "number", "default": 0},
             },
         },
-        outputs=("universe", "prices", "volume", "funding_rates", "market_cap"),
+        outputs=("universe", "prices", "volume", "funding_rates", "market_cap", "screen_volume"),
         examples=(
             "plugins:\n  data:\n    name: binance.futures_data.v1\n    params_init:\n"
             "      quote_asset: USDT\n      min_open_interest_usd: 5000000",
@@ -118,7 +118,9 @@ class BinanceFuturesDataPlugin:
         """Fetch OHLCV + funding rates and return wide-format dict.
 
         Returns dict with keys: ``prices``, ``volume``, ``funding_rates``,
-        ``market_cap`` (DataFrames with date index, ticker columns).
+        ``market_cap``, ``screen_volume`` (DataFrames with date index, ticker
+        columns). Universe-screen inputs are resolved mode-aware from
+        ``params["mode"]`` (snapshot in live/paper, point-in-time in backtest).
         """
         if universe.empty or "symbol" not in universe.columns:
             return {
@@ -126,6 +128,7 @@ class BinanceFuturesDataPlugin:
                 "volume": pd.DataFrame(),
                 "funding_rates": pd.DataFrame(),
                 "market_cap": pd.DataFrame(),
+                "screen_volume": pd.DataFrame(),
             }
 
         tickers = universe["symbol"].tolist()
@@ -137,6 +140,7 @@ class BinanceFuturesDataPlugin:
             lookback_days=lookback,
             end_date=asof,
             interval=interval,
+            mode=params.get("mode"),
         )
 
         logger.info(

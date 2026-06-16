@@ -393,7 +393,7 @@ class MarketCapProvider:
         cache_dir: str | Path | None = None,
         fresh_ttl_hours: float = 4.0,
         fallback_ttl_hours: float = 28.0,
-        limit: int = 100,
+        limit: int = 250,
         # Legacy params (ignored, kept for backwards compat)
         api_key: str | None = None,
     ) -> None:
@@ -444,8 +444,12 @@ class MarketCapProvider:
     def fetch_rankings(self) -> pd.DataFrame | None:
         """Fetch top coin rankings from CoinGecko API.
 
-        Returns DataFrame with columns: symbol, market_cap, circulating_supply,
-        rank, fetch_timestamp.
+        Returns DataFrame with columns: symbol, market_cap, total_volume,
+        circulating_supply, rank, fetch_timestamp.
+
+        ``total_volume`` is CoinGecko's market-wide 24h volume (USD, aggregated
+        across all tracked pairs and exchanges) — used to screen the universe on
+        true market liquidity rather than a single venue/quote-pair book.
 
         Returns None if the API call fails and no usable cache exists.
         """
@@ -479,6 +483,7 @@ class MarketCapProvider:
                     {
                         "symbol": str(coin.get("symbol", "")).upper(),
                         "market_cap": float(coin.get("market_cap", 0) or 0),
+                        "total_volume": float(coin.get("total_volume", 0) or 0),
                         "circulating_supply": float(coin.get("circulating_supply", 0) or 0),
                         "rank": int(coin.get("market_cap_rank", 0) or 0),
                         "fetch_timestamp": pd.Timestamp.now().isoformat(),
@@ -499,17 +504,41 @@ class MarketCapProvider:
         prices: pd.DataFrame,
         volume: pd.DataFrame,
     ) -> pd.DataFrame:
-        """Compute market cap DataFrame using CoinGecko data with hardcoded fallback.
+        """Best-practice multi-layer, multi-venue market-cap estimate.
 
-        Tries CoinGecko rankings first.  For any ticker not covered,
-        falls back to hardcoded circulating supply estimates.
+        For each ticker a single CURRENT market-cap *anchor* is resolved from
+        the highest-quality source available, then projected across history by
+        the coin's own price path::
+
+            market_cap[t] = anchor * price[t] / price[latest]
+
+        This pins the cross-sectional RANK (what the universe screen consumes)
+        to the most accurate **multi-venue** value while still yielding a time
+        series for backtests. Market cap moves slowly relative to price, so a
+        price-path projection is a faithful proxy between vendor snapshots.
+
+        Source layers, best → worst (per-layer coverage is logged):
+
+        ====  =================================================  ============
+        L1    CoinGecko reported ``market_cap``                  multi-venue
+              (global VWAP price × circulating supply)           aggregate
+        L2    CoinGecko ``circulating_supply`` × price           supply only
+        L3    hardcoded circulating supply × price               off-vendor
+        L4    default supply (1e9) × price                       last resort
+        ====  =================================================  ============
+
+        L1 is preferred over the legacy single-venue ``price × supply`` because
+        the reported market cap already aggregates price across venues, so the
+        rank is not skewed by one exchange's quote. Adding a second vendor is a
+        clean extension — merge its rankings into ``mc_map`` / ``cs_map`` ahead
+        of the off-vendor fallbacks.
 
         Parameters
         ----------
         prices : DataFrame
             Wide DataFrame (date index, ticker columns) of close prices.
         volume : DataFrame
-            Wide DataFrame of volumes (unused but kept for API compat).
+            Unused; kept for API compatibility.
 
         Returns
         -------
@@ -517,44 +546,239 @@ class MarketCapProvider:
             Same shape as *prices* with estimated market cap values.
         """
         rankings = self.fetch_rankings()
-        supply_map: dict[str, float] = {}
-
+        mc_map: dict[str, float] = {}
+        cs_map: dict[str, float] = {}
         if rankings is not None and not rankings.empty:
             for _, row in rankings.iterrows():
                 sym = str(row["symbol"]).upper()
+                mc = float(row.get("market_cap", 0) or 0)
                 cs = float(row.get("circulating_supply", 0) or 0)
+                if mc > 0:
+                    mc_map[sym] = mc
                 if cs > 0:
-                    supply_map[sym] = cs
-            logger.info(
-                "Using CoinGecko supply data for %d coins, fallback for remainder",
-                len(supply_map),
-            )
+                    cs_map[sym] = cs
 
         market_cap = pd.DataFrame(index=prices.index)
+        layers = {"L1_reported": 0, "L2_supply": 0, "L3_hardcoded": 0, "L4_default": 0}
         for ticker in prices.columns:
             t_upper = ticker.upper()
-            if t_upper in supply_map and supply_map[t_upper] > 0:
-                market_cap[ticker] = prices[ticker] * supply_map[t_upper]
-            elif rankings is not None and not rankings.empty:
-                # Use market_cap directly if supply is 0 but mc exists
-                row = rankings[rankings["symbol"] == t_upper]
-                if not row.empty:
-                    mc_val = float(row["market_cap"].iloc[0])
-                    if mc_val > 0:
-                        latest_price = prices[ticker].dropna().iloc[-1] if not prices[ticker].dropna().empty else 1.0
-                        market_cap[ticker] = (prices[ticker] / latest_price) * mc_val
-                        continue
+            col = prices[ticker]
+            valid = col.dropna()
+            latest_price = float(valid.iloc[-1]) if not valid.empty else 0.0
 
-                # Final fallback: hardcoded supply
-                supply = self._FALLBACK_SUPPLY.get(t_upper, 1e9)
-                market_cap[ticker] = prices[ticker] * supply
-                logger.debug("Using fallback supply for %s: %.0f", ticker, supply)
+            if t_upper in mc_map and latest_price > 0:
+                # L1: anchor to the multi-venue reported mcap, project by price
+                market_cap[ticker] = (col / latest_price) * mc_map[t_upper]
+                layers["L1_reported"] += 1
+            elif t_upper in cs_map:
+                # L2: CoinGecko circulating supply × price
+                market_cap[ticker] = col * cs_map[t_upper]
+                layers["L2_supply"] += 1
+            elif t_upper in self._FALLBACK_SUPPLY:
+                # L3: hardcoded circulating supply × price
+                market_cap[ticker] = col * self._FALLBACK_SUPPLY[t_upper]
+                layers["L3_hardcoded"] += 1
             else:
-                supply = self._FALLBACK_SUPPLY.get(t_upper, 1e9)
-                market_cap[ticker] = prices[ticker] * supply
+                # L4: default supply × price (last resort)
+                market_cap[ticker] = col * 1e9
+                layers["L4_default"] += 1
 
+        logger.info(
+            "Market-cap layers — L1 reported(multi-venue): %d, L2 supply: %d, L3 hardcoded: %d, L4 default: %d",
+            layers["L1_reported"],
+            layers["L2_supply"],
+            layers["L3_hardcoded"],
+            layers["L4_default"],
+        )
         return market_cap
+
+    def estimate_aggregate_volume(self, prices: pd.DataFrame) -> pd.DataFrame:
+        """Market-wide aggregate 24h volume per coin (USD), as a date×ticker frame.
+
+        Sources CoinGecko ``total_volume`` (summed across all tracked pairs and
+        exchanges) from the same rankings call as :meth:`estimate_market_cap`,
+        so it adds no extra API request. This is the market-wide liquidity used
+        to SCREEN the universe, as opposed to a single venue/quote-pair book.
+
+        Like :meth:`estimate_market_cap`, the value is a current snapshot
+        broadcast across the price index — CoinGecko's free endpoint is
+        point-in-time. For the daily live screen this is exactly today's market
+        state; for historical backtests prefer a dataset with a true aggregate-
+        volume time series. Coins not covered by the rankings are left ``NaN`` so
+        the caller (:func:`select_universe`) falls back to per-venue volume.
+
+        Parameters
+        ----------
+        prices : DataFrame
+            Wide DataFrame (date index, ticker columns) of close prices.
+
+        Returns
+        -------
+        DataFrame
+            Same shape as *prices*; each column is the coin's market-wide 24h
+            volume broadcast across the index, or ``NaN`` if not covered.
+        """
+        rankings = self.fetch_rankings()
+        vol_map: dict[str, float] = {}
+        if rankings is not None and not rankings.empty and "total_volume" in rankings.columns:
+            for _, row in rankings.iterrows():
+                sym = str(row["symbol"]).upper()
+                tv = float(row.get("total_volume", 0) or 0)
+                if tv > 0:
+                    vol_map[sym] = tv
+            logger.info("Using CoinGecko aggregate volume for %d coins", len(vol_map))
+
+        agg = pd.DataFrame(index=prices.index)
+        for ticker in prices.columns:
+            tv = vol_map.get(ticker.upper())
+            agg[ticker] = float(tv) if tv else float("nan")
+        return agg
 
 
 # Backwards compatibility alias
 CMCMarketCapProvider = MarketCapProvider
+
+
+# ============================================================================
+# Point-in-time screen inputs for BACKTEST (no look-ahead)
+# ============================================================================
+#
+# The live data plugins (Hyperliquid, Binance) feed a two-stage universe screen
+# (``select_universe``): Stage 1 ranks by market cap, Stage 2 by volume. For
+# LIVE trading the screen inputs come from a CoinGecko *snapshot* — today's
+# market cap and today's market-wide 24h volume — which is correct: "today" is
+# the point of decision. In a BACKTEST that same snapshot, broadcast onto every
+# historical row, is look-ahead + survivorship bias — a coin's PAST universe
+# membership would be decided by its PRESENT size/liquidity.
+#
+# These helpers provide the point-in-time backtest replacement:
+#   - market cap: curated daily PIT series from quantbox-datasets
+#     (``crypto-spot-daily/market_cap.parquet``), carried forward causally.
+#   - volume rank: NOT sourced here. The backtest Stage-2 rank uses the
+#     per-venue point-in-time dollar volume the plugin already returns
+#     (``select_universe`` ranks on it when ``screen_volume`` is empty). The
+#     curated market-wide ``cmc_volume_usd`` series is monthly and ends mid-2025,
+#     so for recent backtests it would forward-fill a many-month-stale value;
+#     fresh per-venue PIT volume is the faithful liquidity record for a single-
+#     venue book replica. See the fix report for the full tradeoff.
+
+_CURATED_CRYPTO_DATASET = "crypto-spot-daily"
+
+
+def load_pit_market_cap(prices: pd.DataFrame) -> pd.DataFrame:
+    """Point-in-time daily market cap aligned to *prices*, for backtests.
+
+    Reads the curated, survivorship-augmented daily market-cap series from the
+    optional ``quantbox-datasets`` package
+    (``crypto-spot-daily/market_cap.parquet``) and aligns it to *prices* (date
+    index x ticker columns). Reindexing uses a forward fill, which is **causal**
+    — every date carries only the most recent *past* market-cap observation, so
+    there is no look-ahead.
+
+    Hyperliquid quotes some high-supply tokens with a ``k`` (1000x) prefix
+    (``kPEPE``, ``kBONK`` ...). Market cap is notation-independent (it is the
+    coin's total cap), so these map to the unprefixed base symbol.
+
+    Returns an empty DataFrame when ``quantbox-datasets`` is not installed or the
+    file is missing — callers then skip the market-cap tier and rank on
+    point-in-time per-venue volume only (clean, no look-ahead). Tickers not
+    covered by the curated dataset are excluded from the market-cap tier; this
+    is logged.
+    """
+    if prices is None or prices.empty:
+        return pd.DataFrame()
+    try:
+        from quantbox_datasets.builtins import crypto_spot_daily
+    except ImportError:
+        logger.debug("quantbox-datasets not installed; skipping PIT market-cap tier in backtest")
+        return pd.DataFrame()
+    try:
+        ds_path = Path(crypto_spot_daily()._ds_path())
+        mc_path = ds_path / "market_cap.parquet"
+        if not mc_path.exists():
+            logger.debug("curated market_cap.parquet not found at %s; skipping PIT mcap tier", mc_path)
+            return pd.DataFrame()
+        cur = pd.read_parquet(mc_path)
+    except Exception as exc:  # noqa: BLE001 — never break data loading on a soft dep
+        logger.warning("Failed to read curated PIT market cap: %s; skipping mcap tier", exc)
+        return pd.DataFrame()
+
+    cur.index = pd.DatetimeIndex(cur.index)
+    # Align tz to the price index (curated is tz-naive UTC dates).
+    if prices.index.tz is not None and cur.index.tz is None:
+        cur.index = cur.index.tz_localize("UTC")
+    elif prices.index.tz is None and cur.index.tz is not None:
+        cur.index = cur.index.tz_localize(None)
+    cur = cur.sort_index()
+
+    cur_cols = set(cur.columns)
+    selected: dict[str, pd.Series] = {}
+    missing: list[str] = []
+    for t in prices.columns:
+        src = None
+        if t in cur_cols:
+            src = t
+        elif t.upper() in cur_cols:
+            src = t.upper()
+        elif len(t) > 1 and t[0] == "k" and t[1:].upper() in cur_cols:
+            src = t[1:].upper()  # Hyperliquid 1000x notation -> base symbol
+        if src is None:
+            missing.append(t)
+        else:
+            selected[t] = cur[src]
+
+    if not selected:
+        logger.info(
+            "PIT market cap: no curated coverage for any of %d tickers; skipping mcap tier", len(prices.columns)
+        )
+        return pd.DataFrame()
+    if missing:
+        logger.info(
+            "PIT market cap: %d/%d tickers covered by curated dataset; uncovered (excluded from the mcap tier): %s",
+            len(selected),
+            len(prices.columns),
+            missing,
+        )
+    mc = pd.DataFrame(selected)
+    # Causal forward-fill onto the price index: each date gets the latest mcap
+    # observation at or before it (and carries the last known value across the
+    # short tail beyond the curated file's end). reindex(method="ffill") never
+    # uses a future observation, so this is look-ahead-free.
+    mc = mc.reindex(prices.index, method="ffill")
+    return mc
+
+
+def resolve_screen_inputs(
+    mode: str | None,
+    prices: pd.DataFrame,
+    volume: pd.DataFrame,
+    provider: MarketCapProvider | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Resolve ``(market_cap, screen_volume)`` for the universe screen, mode-aware.
+
+    LIVE / paper
+        The CoinGecko snapshot *is* the point of decision ("today"), so use it:
+        ``market_cap = provider.estimate_market_cap`` and
+        ``screen_volume = provider.estimate_aggregate_volume`` (the market-wide,
+        cross-exchange 24h volume that powers the live liquidity screen).
+
+    BACKTEST (and any non-live mode, including the unset default)
+        The snapshot would be look-ahead. Source point-in-time market cap from
+        the curated dataset (:func:`load_pit_market_cap`) and return an EMPTY
+        ``screen_volume`` so :func:`select_universe` ranks Stage 2 on the
+        per-venue, point-in-time dollar volume the plugin already returns. The
+        flat today-anchored snapshot is NEVER used in a backtest.
+
+    The default for an unset/unknown mode is the backtest (point-in-time) path —
+    the conservative choice that can never silently introduce look-ahead.
+    """
+    empty = pd.DataFrame()
+    if prices is None or prices.empty:
+        return empty, empty
+    if str(mode).lower() in ("live", "paper"):
+        prov = provider or MarketCapProvider()
+        market_cap = prov.estimate_market_cap(prices, volume)
+        screen_volume = prov.estimate_aggregate_volume(prices)
+        return market_cap, screen_volume
+    # backtest / default: point-in-time market cap, per-venue volume for Stage 2.
+    return load_pit_market_cap(prices), empty

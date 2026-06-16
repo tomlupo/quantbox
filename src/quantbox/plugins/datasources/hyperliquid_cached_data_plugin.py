@@ -22,6 +22,7 @@ import pandas as pd
 
 from quantbox.contracts import PluginMeta
 
+from ._utils import MarketCapProvider, resolve_screen_inputs
 from .hyperliquid_data_plugin import HyperliquidDataPlugin
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,8 @@ class HyperliquidCachedDataPlugin:
 
     cache_dir: str = "./cache/hyperliquid"
     overlap_days: int = 3
+    # Injectable for testing; defaults to a live CoinGecko provider at use.
+    mcap_provider: MarketCapProvider | None = None
 
     meta = PluginMeta(
         name="hyperliquid.data.cached.v1",
@@ -63,7 +66,7 @@ class HyperliquidCachedDataPlugin:
         description="Incremental on-disk cache over hyperliquid.data.v1 (flat long-format parquet).",
         tags=("hyperliquid", "crypto", "futures", "live", "cache"),
         capabilities=("paper", "live", "crypto", "futures"),
-        outputs=("universe", "prices", "volume", "funding_rates", "market_cap"),
+        outputs=("universe", "prices", "volume", "funding_rates", "market_cap", "screen_volume"),
         params_schema={
             "type": "object",
             "properties": {
@@ -154,6 +157,7 @@ class HyperliquidCachedDataPlugin:
         if universe.empty or "symbol" not in universe.columns:
             empty = {s: pd.DataFrame() for s in _SERIES}
             empty["market_cap"] = pd.DataFrame()
+            empty["screen_volume"] = pd.DataFrame()
             return empty
 
         requested = universe["symbol"].tolist()
@@ -204,7 +208,14 @@ class HyperliquidCachedDataPlugin:
 
         # 8. build return frames in memory (no second read)
         result = {s: self._long_to_wide(merged[s], requested, start, asof_dt) for s in _SERIES}
-        result["market_cap"] = pd.DataFrame()
+        # Mode-aware universe-screen inputs, recomputed each run (not cached
+        # incrementally like the per-venue series). LIVE/paper uses the CoinGecko
+        # snapshot; BACKTEST uses point-in-time curated market cap + per-venue
+        # volume ranking — never the flat snapshot. See resolve_screen_inputs.
+        prices_wide = result["prices"]
+        result["market_cap"], result["screen_volume"] = resolve_screen_inputs(
+            params.get("mode"), prices_wide, result["volume"], self.mcap_provider
+        )
         logger.info(
             "Hyperliquid cached: %d new + %d cached coins, %d price date-rows returned",
             len(new_coins),
