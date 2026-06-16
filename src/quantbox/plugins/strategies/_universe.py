@@ -63,6 +63,9 @@ def select_universe(
     min_listing_days: int = 0,
     hysteresis_rank_band: int = 0,
     screen_volume: pd.DataFrame | None = None,
+    fine_lot_sz_decimals: dict[str, int] | None = None,
+    fine_lot_min_notional: float = 0.0,
+    fine_lot_max_lot_fraction: float = 0.0,
 ) -> pd.DataFrame:
     """Select tradable universe – vectorized pandas implementation.
 
@@ -130,6 +133,18 @@ def select_universe(
         missing/zero in *screen_volume* fall back to per-venue dollar volume so a
         tradable coin the screen source doesn't cover is never silently zeroed.
         Default ``None`` keeps the legacy per-venue ranking unchanged.
+    fine_lot_sz_decimals : dict[str, int] | None
+        Per-coin Hyperliquid ``szDecimals`` (lot-size precision). When supplied
+        together with the two thresholds below, activates the small-book fine-lot
+        guard (see body). Default ``None`` disables it.
+    fine_lot_min_notional : float
+        Exchange minimum-notional floor (USD) used as the guard anchor (e.g.
+        ``10.0`` on Hyperliquid). Default ``0.0`` disables the guard.
+    fine_lot_max_lot_fraction : float
+        Maximum allowed ratio of 1-lot notional to ``fine_lot_min_notional``. A
+        coin is kept iff ``price * 10**-szDecimals <= fine_lot_max_lot_fraction *
+        fine_lot_min_notional``. E.g. ``0.2`` => at the min-notional floor you get
+        >= 5 lots of sizing granularity. Default ``0.0`` disables the guard.
 
     Returns
     -------
@@ -162,6 +177,38 @@ def select_universe(
         listing_mask = days_since >= min_listing_days
     else:
         listing_mask = pd.DataFrame(True, index=prices.index, columns=valid_tickers)
+
+    # Fine-lot tradeability guard (small-book guardrail).
+    #
+    # At a small book the minimum tradeable increment (1 lot = 10**-szDecimals
+    # base units) can be a large fraction of a leg, so a leg cannot be sized to
+    # its target without coarse quantization error. A coin is kept on a date iff
+    # its 1-lot notional (``price * 10**-szDecimals``) is <=
+    # ``fine_lot_max_lot_fraction * fine_lot_min_notional`` — i.e. at the
+    # exchange min-notional floor you still get >= ``1/max_lot_fraction`` lots of
+    # granularity. ``min_notional`` is a hard exchange constant ($10 on
+    # Hyperliquid), a far more stable anchor than the regime-dependent realized
+    # per-leg notional. szDecimals is a (slowly varying) microstructure constant,
+    # not a return series, so using the current snapshot against historical
+    # prices is a tradeability approximation, not return look-ahead.
+    #
+    # Folded into ``listing_mask`` so it propagates to every downstream cut: an
+    # excluded coin also frees its market-cap rank slot for the next tradeable
+    # coin. Coins with no szDecimals entry fail closed (excluded) — the guard is
+    # a tradeability *guarantee*. Disabled (no-op) unless both thresholds > 0 and
+    # a szDecimals map is supplied.
+    if fine_lot_sz_decimals and fine_lot_max_lot_fraction > 0 and fine_lot_min_notional > 0:
+        threshold = fine_lot_max_lot_fraction * fine_lot_min_notional
+        lot_step = pd.Series(
+            {
+                t: (10.0 ** (-int(fine_lot_sz_decimals[t])) if t in fine_lot_sz_decimals else float("nan"))
+                for t in valid_tickers
+            }
+        )
+        lot_notional = prices[valid_tickers].mul(lot_step, axis=1)
+        # NaN lot_step (unknown szDecimals) -> NaN lot_notional -> excluded.
+        fine_lot_mask = (lot_notional <= threshold) & lot_notional.notna()
+        listing_mask = listing_mask & fine_lot_mask
 
     has_mcap = market_cap is not None and not market_cap.empty
 
