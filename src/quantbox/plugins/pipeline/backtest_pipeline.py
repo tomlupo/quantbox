@@ -132,8 +132,14 @@ class BacktestPipeline:
                 "margin": {
                     "type": "number",
                     "minimum": 0,
-                    "default": 0.05,
-                    "description": "Maintenance margin rate (rsims only).",
+                    "default": 0.0,
+                    "description": (
+                        "Maintenance-margin rate for rsims exchange-liquidation modelling. "
+                        "DEFAULT 0.0 (off): the legacy 0.05 maintenance/deleverage path is "
+                        "unreliable for leveraged long/short books — it spuriously liquidates as "
+                        "gross grows and breaks vol-invariance (target_vol 0.50 collapsed +0.51 "
+                        "Sharpe to -0.64). Opt in only to study exchange liquidation explicitly."
+                    ),
                 },
                 "trade_buffer": {
                     "type": "number",
@@ -150,6 +156,13 @@ class BacktestPipeline:
                     "type": "string",
                     "enum": ["rsims", "mtm"],
                     "default": "rsims",
+                    "description": (
+                        "Equity for sizing. 'rsims' = cash + maint_margin; with margin=0 this "
+                        "reduces to cash (= true equity for perps, where cash accumulates MTM "
+                        "PnL) and is stable. 'mtm' = cash + sum(signed position_value) — double "
+                        "-counts notional for perps and destabilises sizing on leveraged books; "
+                        "use only for cash-instrument backtests."
+                    ),
                 },
                 "trading_days": {
                     "type": "integer",
@@ -414,7 +427,7 @@ class BacktestPipeline:
                 fees=fees,
                 trade_buffer=float(params.get("trade_buffer", 0.0)),
                 initial_cash=float(params.get("initial_cash", 10000)),
-                margin=float(params.get("margin", 0.05)),
+                margin=float(params.get("margin", 0.0)),
                 capitalise_profits=bool(params.get("capitalise_profits", False)),
                 equity_basis=str(params.get("equity_basis", "rsims")),
                 trading_days=trading_days,

@@ -87,7 +87,7 @@ def fixed_commission_backtest_with_funding(
     funding_rates: pd.DataFrame,
     trade_buffer: float = 0.0,
     initial_cash: float = 10_000,
-    margin: float = 0.05,
+    margin: float = 0.0,
     commission_pct: float = 0.0,
     capitalise_profits: bool = False,
     *,
