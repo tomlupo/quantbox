@@ -1,6 +1,7 @@
 """regime_ticker=None disables the donchian-overlay diagnostic without crashing,
 and is weight-neutral (the overlay is diagnostic-only) — needed for a literal
 1:1 port comparison vs quantlab's crypto_trend_catcher (no regime overlay)."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -21,9 +22,16 @@ def _panel(n=120, k=8, seed=3):
 
 def _params(regime):
     return dict(
-        lookback_windows=[5, 10, 20, 30], vol_targets=[0.5], tranches=[5],
-        top_by_mcap=6, top_by_volume=4, vol_lookback=30, periods=20,
-        output_track=["50", 5], volume_is_dollar=False, regime_ticker=regime,
+        lookback_windows=[5, 10, 20, 30],
+        vol_targets=[0.5],
+        tranches=[5],
+        top_by_mcap=6,
+        top_by_volume=4,
+        vol_lookback=30,
+        periods=20,
+        output_track=["50", 5],
+        volume_is_dollar=False,
+        regime_ticker=regime,
     )
 
 
@@ -37,6 +45,4 @@ def test_regime_is_weight_neutral():
     w_on = crypto_trend_run(data, _params("C0"))["weights"]
     w_off = crypto_trend_run(data, _params(None))["weights"]
     cols = w_on.columns.intersection(w_off.columns)
-    np.testing.assert_allclose(
-        w_on[cols].fillna(0).values, w_off[cols].fillna(0).values, atol=1e-9
-    )
+    np.testing.assert_allclose(w_on[cols].fillna(0).values, w_off[cols].fillna(0).values, atol=1e-9)
