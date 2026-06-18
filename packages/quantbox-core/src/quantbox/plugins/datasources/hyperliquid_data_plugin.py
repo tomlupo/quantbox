@@ -57,11 +57,30 @@ logger = logging.getLogger(__name__)
 HL_INFO_URL = "https://api.hyperliquid.xyz/info"
 
 
-def _post(payload: dict) -> Any:
-    """POST JSON to the Hyperliquid info endpoint."""
-    resp = requests.post(HL_INFO_URL, json=payload, timeout=30)
-    resp.raise_for_status()
-    return resp.json()
+def _post(payload: dict, max_retries: int = 5) -> Any:
+    """POST JSON to the Hyperliquid info endpoint with retry on 429.
+
+    Hyperliquid rate-limits the info endpoint under load; without backoff a
+    burst of per-ticker candle requests 429-cascades, leaving symbols without a
+    latest price so fetch_data aborts on a systemic feed gap. Retry the 429s
+    with exponential backoff (capped) before giving up.
+    """
+    delay = 1.0
+    for attempt in range(max_retries):
+        resp = requests.post(HL_INFO_URL, json=payload, timeout=30)
+        if resp.status_code == 429:
+            logger.warning(
+                "Rate limited (429), sleeping %.1fs before retry %d/%d",
+                delay,
+                attempt + 1,
+                max_retries,
+            )
+            time.sleep(delay)
+            delay = min(delay * 2, 30.0)
+            continue
+        resp.raise_for_status()
+        return resp.json()
+    resp.raise_for_status()  # raise on final failure (last response was a 429)
 
 
 @dataclass
@@ -184,7 +203,7 @@ class HyperliquidDataPlugin:
 
         for i, ticker in enumerate(tickers):
             if i > 0:
-                time.sleep(0.1)  # 100ms between calls
+                time.sleep(0.5)  # 500ms between tickers to stay under the rate limit
 
             # --- OHLCV candles ---
             try:
@@ -210,7 +229,7 @@ class HyperliquidDataPlugin:
             except Exception:
                 logger.warning("Failed to fetch candles for %s", ticker, exc_info=True)
 
-            time.sleep(0.1)
+            time.sleep(0.3)
 
             # --- Funding rates ---
             try:
