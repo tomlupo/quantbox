@@ -450,14 +450,17 @@ class CryptoTrendStrategy:
     #    Default ``(0.1, 10.0)`` preserves the prior behaviour; pass ``None`` to
     #    skip clipping (notebook-faithful — no clamp applied).
     #  * ``regime_ticker``: ticker used for the ``donchian_overlay`` diagnostic
-    #    (notebook charts 3, 6, 22). Default ``"BTC"``.
+    #    (notebook charts 3, 6, 22). Default ``"BTC"``. Set to ``None`` to disable
+    #    the regime/donchian-overlay diagnostic entirely (e.g. for a literal port
+    #    comparison vs quantlab's crypto_trend_catcher, which has no regime overlay).
+    #    The overlay is DIAGNOSTIC-ONLY — it never affects the output weights.
     #  * ``output_track``: (vol_target, tranches) slice returned in ``weights``
     #    for the pipeline. The full multi-index panel is preserved under
     #    ``details["weights_panel"]`` for research. Default ``("50", 5)`` —
     #    the notebook-chosen paper trade variant.
     inv_vol_track: bool = False
     clip_vol_scaler: tuple[float, float] | None = (0.1, 10.0)
-    regime_ticker: str = "BTC"
+    regime_ticker: str | None = "BTC"
     output_track: tuple[str, int] = ("50", 5)
     # Volume convention for universe selection. Curated Binance/Hyperliquid
     # datasets store quote-volume (USD notional) directly, so DO NOT multiply
@@ -698,10 +701,16 @@ class CryptoTrendStrategy:
         """
         diagnostics: dict[str, Any] = {}
 
-        # Resolve regime ticker (may be quoted as BTCUSDT etc.)
-        regime_col = next(
-            (c for c in prices.columns if c in (self.regime_ticker, self.regime_ticker + "USDT")),
-            None,
+        # Resolve regime ticker (may be quoted as BTCUSDT etc.). ``None`` disables
+        # the regime/donchian-overlay diagnostic entirely (diagnostic-only — no
+        # weight impact; used for literal 1:1 ports vs quantlab's catcher).
+        regime_col = (
+            None
+            if self.regime_ticker is None
+            else next(
+                (c for c in prices.columns if c in (self.regime_ticker, self.regime_ticker + "USDT")),
+                None,
+            )
         )
 
         # Active-signal count across the top-N universe.
