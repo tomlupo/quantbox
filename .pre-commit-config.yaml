@@ -1,19 +1,30 @@
-# Pre-commit hooks mirror the lint job in .github/workflows/ci.yml so
-# violations are caught locally before push instead of on the CI run.
+# Pre-commit hooks mirror the lint job in .github/workflows/ci.yml so violations
+# are caught locally before push instead of on the CI run.
+#
+# The ruff hooks run the PROJECT's pinned ruff via `uv run` (a local/system hook)
+# rather than ruff-pre-commit's own pinned version — this guarantees the local
+# checks match CI exactly (CI runs `uv run ruff check .` + `uv run ruff format
+# --check .`), with no version to keep in sync.
 #
 # Install once per clone:
-#   uv tool install pre-commit
-#   pre-commit install
-#
-# Run on all files (e.g. after pulling a big change):
+#   uv tool install pre-commit && pre-commit install
+# Run on all files:
 #   pre-commit run --all-files
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.13.0
+  - repo: local
     hooks:
-      - id: ruff
-        args: [--fix]
+      - id: ruff-check
+        name: ruff check (project ruff via uv)
+        entry: uv run ruff check --fix
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
       - id: ruff-format
+        name: ruff format (project ruff via uv)
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
