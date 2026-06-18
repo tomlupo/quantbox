@@ -37,8 +37,10 @@ provenance defect until you've checked each item below.**
    the universe screen this week — the screen used current values to decide historical membership.
 3. **PIT market cap.** Curated daily/point-in-time mcap series vs a single today's-snapshot mcap
    broadcast across all history. The broadcast case silently ranks the past by the present — flag it.
-4. **Listing / delisting windows.** Are positions only taken inside a symbol's real tradeable
-   window? No trading before listing, no zombie positions after delisting/halt.
+4. **Listing / delisting windows + tradeable size.** Are positions only taken inside a symbol's real
+   tradeable window? No trading before listing, no zombie positions after delisting/halt. And was the
+   name liquid enough to hold the assumed size at each date (ADV / depth) — a backtest can "trade" a
+   microcap it could never have filled. Flag names where assumed size dwarfs historical volume.
 5. **Mode-aware sourcing.** Live/production may legitimately use a fresh snapshot; a *backtest* must
    use the PIT series. Confirm the code branches correctly and the backtest path is not silently
    reading the live snapshot.

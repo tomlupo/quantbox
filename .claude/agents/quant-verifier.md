@@ -42,8 +42,11 @@ isn't.** A result you cannot independently reproduce is UNVERIFIED, not "probabl
 3. **Fair baseline.** Is the comparison honest — same costs, same universe, same window, same
    rebalance cadence? Is it beating an *honest* baseline (passive hold, naive equal-weight, the
    prior production strategy) or just collecting beta / leverage it didn't pay for?
-4. **Costs / slippage / funding.** Modelled at all? Realistic for the instrument (crypto funding,
-   spread, fees)? Does the edge survive a doubling of the cost assumption?
+4. **Costs / slippage / funding + capacity.** Modelled at all? Realistic for the instrument (crypto
+   funding, spread, fees)? Does the edge survive a doubling of the cost assumption? AND could the
+   assumed size actually trade — position vs ADV / market impact? A strategy that passes a 2× cost
+   stress can still be uninvestable if its surviving names are thin (thin-universe carvers especially).
+   Fills at mid on illiquid names = a phantom edge.
 5. **Regime & window coverage.** Tested across more than one lucky regime? Does it hold per-subsample
    and out-of-window, or only full-sample? One bull run is not coverage.
 6. **Multiple-testing / deflation.** How many variants/params were tried to land here? Does the
@@ -51,7 +54,12 @@ isn't.** A result you cannot independently reproduce is UNVERIFIED, not "probabl
    "best of 200" config is presumed overfit.
 7. **Sensitivity.** Does the edge survive a small perturbation of each key parameter (±1 step)? A
    result that collapses off its exact tuned value is overfit, not an edge.
-8. **Data provenance (shallow pass).** mcap / volume source, units ($-volume vs base), staleness,
+8. **Label / fold leakage (ML signals).** Distinct from time-ordering: is the target itself encoding
+   future returns it shouldn't? Were the scaler / feature-selection / imputation FIT on the full
+   sample or across the train→test boundary (must be fit on train only, applied to test)? Cross-
+   validation that shuffles a time series is leakage. This survives a same-bar-lag check yet still
+   inflates OOS.
+9. **Data provenance (shallow pass).** mcap / volume source, units ($-volume vs base), staleness,
    NaN handling. If the result depends on these, hand off to **pit-data-auditor** for the deep audit.
 
 ## Output
