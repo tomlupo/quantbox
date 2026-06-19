@@ -198,8 +198,12 @@ class BinanceDataFetcher:
     _exchange_info_time: float = field(default=0.0, repr=False)
     _ohlcv_cache: OHLCVCache | None = field(default=None, repr=False)
 
-    # CoinMarketCap integration
-    cmc_api_key: str | None = None  # Falls back to CMC_API_KEY env var
+    # Market-cap rankings source: "coingecko" (default) or "coinmarketcap"/"cmc".
+    mcap_source: str = "coingecko"
+    # CoinMarketCap integration. NOTE: cmc_api_key is legacy/dead for ranking —
+    # MarketCapProvider ignores it; the CMC key is read from API_KEY_COINMARKETCAP
+    # (then CMC_API_KEY) inside the provider. Kept only for back-compat.
+    cmc_api_key: str | None = None
     _cmc_provider: MarketCapProvider | None = field(default=None, repr=False)
 
     # CCXT exchange instance
@@ -228,6 +232,7 @@ class BinanceDataFetcher:
                 api_key=self.cmc_api_key,
                 cache_dir=self.cache_dir,
                 fresh_ttl_hours=self.cache_fresh_ttl_hours,
+                source=self.mcap_source,
             )
 
     def describe(self) -> dict[str, Any]:

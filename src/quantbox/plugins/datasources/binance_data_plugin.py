@@ -49,17 +49,29 @@ class BinanceDataPlugin:
             "type": "object",
             "properties": {
                 "quote_asset": {"type": "string", "default": "USDT"},
+                "mcap_source": {
+                    "type": "string",
+                    "enum": ["coingecko", "coinmarketcap", "cmc"],
+                    "default": "coingecko",
+                },
             },
         },
         outputs=("universe", "prices", "volume", "market_cap", "screen_volume"),
-        examples=("plugins:\n  data:\n    name: binance.live_data.v1\n    params_init:\n      quote_asset: USDT",),
+        examples=(
+            "plugins:\n  data:\n    name: binance.live_data.v1\n    params_init:\n      quote_asset: USDT\n      mcap_source: coinmarketcap",
+        ),
     )
 
     quote_asset: str = "USDT"
+    # Market-cap rankings source: "coingecko" (default) or "coinmarketcap"/"cmc".
+    mcap_source: str = "coingecko"
     _fetcher: BinanceDataFetcher = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self._fetcher = BinanceDataFetcher(quote_asset=self.quote_asset)
+        self._fetcher = BinanceDataFetcher(
+            quote_asset=self.quote_asset,
+            mcap_source=self.mcap_source,
+        )
 
     # ------------------------------------------------------------------
     # DataPlugin protocol
