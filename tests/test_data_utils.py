@@ -461,3 +461,63 @@ class TestMarketCapProviderSource:
         mc = MarketCapProvider(cache_dir=tmp_path, source="cmc").estimate_market_cap(prices, pd.DataFrame())
         # BTC mcap > ETH mcap at every row (uses CMC circulating supply).
         assert (mc["BTC"] > mc["ETH"]).all()
+
+
+class TestMarketCapNeverFabricates:
+    """An uncovered ticker (no genuine mcap source) yields NaN and is dropped
+    from the mcap-ranked universe screen — it is NOT given a fake ``price*1e9``
+    cap (the old L4 default, which corrupted top_by_mcap selection)."""
+
+    def _provider_with_only_btc_eth(self, tmp_path):
+        # Rankings cover BTC + ETH only; ZZZ is genuinely uncovered.
+        prov = MarketCapProvider(cache_dir=tmp_path, source="cmc")
+        rankings = pd.DataFrame(
+            {
+                "symbol": ["BTC", "ETH"],
+                "market_cap": [1.2e12, 4.0e11],
+                "total_volume": [4.0e10, 2.0e10],
+                "circulating_supply": [2.0e7, 1.2e8],
+                "rank": [1, 2],
+                "fetch_timestamp": pd.Timestamp.utcnow(),
+            }
+        )
+        prov.fetch_rankings = lambda: rankings  # type: ignore[method-assign]
+        return prov
+
+    def test_uncovered_symbol_yields_nan(self, tmp_path):
+        prov = self._provider_with_only_btc_eth(tmp_path)
+        dates = pd.date_range("2025-01-01", periods=4, freq="D")
+        # ZZZ has a HUGE unit price — under the old `price * 1e9` default it
+        # would have been fabricated into a fake top-rank mega-cap.
+        prices = pd.DataFrame({"BTC": 60000.0, "ETH": 3000.0, "ZZZ": 250000.0}, index=dates)
+        mc = prov.estimate_market_cap(prices, pd.DataFrame())
+
+        # Covered coins carry a finite cap; the uncovered coin is all-NaN.
+        assert mc["BTC"].notna().all()
+        assert mc["ETH"].notna().all()
+        assert mc["ZZZ"].isna().all()
+        # And specifically NOT the old fabricated price*1e9 value.
+        assert not (mc["ZZZ"] == prices["ZZZ"] * 1e9).any()
+
+    def test_uncovered_symbol_excluded_from_ranking(self, tmp_path):
+        from quantbox.plugins.strategies._universe import select_universe
+
+        prov = self._provider_with_only_btc_eth(tmp_path)
+        dates = pd.date_range("2025-01-01", periods=4, freq="D")
+        prices = pd.DataFrame({"BTC": 60000.0, "ETH": 3000.0, "ZZZ": 250000.0}, index=dates)
+        # ZZZ has the highest dollar volume — if it leaked into the mcap tier
+        # (via the old fabricated cap) it would dominate the screen.
+        volume = pd.DataFrame({"BTC": 1000.0, "ETH": 1000.0, "ZZZ": 1_000_000.0}, index=dates)
+        mc = prov.estimate_market_cap(prices, pd.DataFrame())
+
+        mask = select_universe(
+            prices,
+            volume,
+            mc,
+            top_by_mcap=2,
+            top_by_volume=2,
+        )
+        # ZZZ (NaN mcap) must never be selected; BTC/ETH are.
+        assert not mask["ZZZ"].any()
+        assert mask["BTC"].any()
+        assert mask["ETH"].any()
