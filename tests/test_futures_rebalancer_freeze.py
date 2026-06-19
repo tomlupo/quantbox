@@ -18,7 +18,6 @@ Plus a NaN-target guard so a missing-candle glitch fails loudly.
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
