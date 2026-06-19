@@ -200,8 +200,10 @@ class BinanceDataFetcher:
 
     # Market-cap rankings source: "coingecko" (default) or "coinmarketcap"/"cmc".
     mcap_source: str = "coingecko"
-    # CoinMarketCap integration
-    cmc_api_key: str | None = None  # Falls back to CMC_API_KEY env var
+    # CoinMarketCap integration. NOTE: cmc_api_key is legacy/dead for ranking —
+    # MarketCapProvider ignores it; the CMC key is read from API_KEY_COINMARKETCAP
+    # (then CMC_API_KEY) inside the provider. Kept only for back-compat.
+    cmc_api_key: str | None = None
     _cmc_provider: MarketCapProvider | None = field(default=None, repr=False)
 
     # CCXT exchange instance
