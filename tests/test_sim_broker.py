@@ -362,6 +362,39 @@ class TestSimPaperBroker:
         broker._load_state()
         assert broker.cash == 100_000.0
 
+    def test_load_state_rejects_nonfinite_cash(self, tmp_path):
+        """A persisted NaN/inf cash (or fees) must NOT clobber the config seed.
+
+        Regression: a prior run once persisted ``cash: NaN``; ``_load_state``
+        loaded it over the healthy seed, so ``get_cash()`` returned NaN and the
+        rebalancer raised "Portfolio value is zero or negative". The write side
+        guards against persisting NaN; this hardens the read side too.
+        """
+        import math
+
+        state_file = tmp_path / "state.json"
+        # json.dumps emits bare NaN/Infinity tokens, which json.loads parses back
+        # to float('nan')/float('inf') (Python extension to strict JSON).
+        state_file.write_text(
+            json.dumps(
+                {
+                    "cash": float("nan"),
+                    "positions": {"SOL": 100.0},
+                    "cumulative_fees": float("inf"),
+                    "fill_log": [],
+                }
+            )
+        )
+
+        broker = SimPaperBroker(cash=50_000.0, state_file=str(state_file))
+
+        assert math.isfinite(broker.cash)
+        assert broker.cash == 50_000.0  # fell back to the configured seed
+        assert math.isfinite(broker._cumulative_fees)
+        assert broker._cumulative_fees == 0.0
+        # Finite fields still load normally.
+        assert broker.positions == {"SOL": 100.0}
+
     # ------------------------------------------------------------------
     # 12. Price impact model (slippage)
     # ------------------------------------------------------------------

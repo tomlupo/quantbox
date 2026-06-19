@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -162,9 +163,25 @@ class SimPaperBroker:
             return
         try:
             state = json.loads(path.read_text())
-            self.cash = float(state.get("cash", self.cash))
+            loaded_cash = float(state.get("cash", self.cash))
+            if math.isfinite(loaded_cash):
+                self.cash = loaded_cash
+            else:
+                logger.warning(
+                    "Persisted cash is non-finite (%r); rejecting and keeping seed value %.2f",
+                    loaded_cash,
+                    self.cash,
+                )
             self.positions = {str(k): float(v) for k, v in state.get("positions", {}).items()}
-            self._cumulative_fees = float(state.get("cumulative_fees", 0.0))
+            loaded_fees = float(state.get("cumulative_fees", 0.0))
+            if math.isfinite(loaded_fees):
+                self._cumulative_fees = loaded_fees
+            else:
+                logger.warning(
+                    "Persisted cumulative_fees is non-finite (%r); rejecting and keeping 0.0",
+                    loaded_fees,
+                )
+                self._cumulative_fees = 0.0
             self._fill_log = state.get("fill_log", [])
             logger.info(
                 "Loaded broker state: cash=%.2f, %d positions, %d fills",
