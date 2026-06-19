@@ -1396,6 +1396,8 @@ class BinanceLiveBroker:
 DEFAULT_STABLECOIN_EXCLUSIONS = [
     "USDT",
     "USDC",
+    "USD1",
+    "USDE",
     "BUSD",
     "TUSD",
     "DAI",

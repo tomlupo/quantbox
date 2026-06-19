@@ -602,8 +602,13 @@ class MarketCapProvider:
               (global VWAP price × circulating supply)           aggregate
         L2    CoinGecko ``circulating_supply`` × price           supply only
         L3    hardcoded circulating supply × price               off-vendor
-        L4    default supply (1e9) × price                       last resort
+        L4    no genuine source → NaN (dropped from screen)     excluded
         ====  =================================================  ============
+
+        L4 emits ``NaN`` rather than fabricating a cap: a ticker with no
+        genuine market-cap source is *excluded* from the mcap-ranked universe
+        screen instead of being given a fake ``price * 1e9`` cap (which mis-ranked
+        high- and low-unit-price coins). The dropped tickers are logged.
 
         L1 is preferred over the legacy single-venue ``price × supply`` because
         the reported market cap already aggregates price across venues, so the
@@ -637,7 +642,7 @@ class MarketCapProvider:
                     cs_map[sym] = cs
 
         market_cap = pd.DataFrame(index=prices.index)
-        layers = {"L1_reported": 0, "L2_supply": 0, "L3_hardcoded": 0, "L4_default": 0}
+        layers = {"L1_reported": 0, "L2_supply": 0, "L3_hardcoded": 0, "L4_dropped": 0}
         for ticker in prices.columns:
             t_upper = ticker.upper()
             col = prices[ticker]
@@ -657,17 +662,36 @@ class MarketCapProvider:
                 market_cap[ticker] = col * self._FALLBACK_SUPPLY[t_upper]
                 layers["L3_hardcoded"] += 1
             else:
-                # L4: default supply × price (last resort)
-                market_cap[ticker] = col * 1e9
-                layers["L4_default"] += 1
+                # No genuine market-cap source covers this ticker. Emit NaN so it
+                # is EXCLUDED from the mcap-ranked universe screen rather than
+                # fabricating a cap (the old `price * 1e9` default gave high-unit-
+                # price junk fake mega-caps and low-unit-price large-caps fake tiny
+                # caps, corrupting any top_by_mcap selection).
+                market_cap[ticker] = float("nan")
+                layers["L4_dropped"] += 1
 
+        layers_msg = (
+            "Market-cap layers — L1 reported(multi-venue): %d, L2 supply: %d, "
+            "L3 hardcoded: %d, L4 dropped(NaN, excluded): %d"
+        )
         logger.info(
-            "Market-cap layers — L1 reported(multi-venue): %d, L2 supply: %d, L3 hardcoded: %d, L4 default: %d",
+            layers_msg,
             layers["L1_reported"],
             layers["L2_supply"],
             layers["L3_hardcoded"],
-            layers["L4_default"],
+            layers["L4_dropped"],
         )
+        if layers["L4_dropped"]:
+            dropped = [
+                t
+                for t in prices.columns
+                if t.upper() not in mc_map and t.upper() not in cs_map and t.upper() not in self._FALLBACK_SUPPLY
+            ]
+            logger.warning(
+                "Dropped %d uncovered ticker(s) from market-cap ranking (no genuine source — NaN, excluded): %s",
+                layers["L4_dropped"],
+                ", ".join(sorted(dropped)),
+            )
         return market_cap
 
     def estimate_aggregate_volume(self, prices: pd.DataFrame) -> pd.DataFrame:
