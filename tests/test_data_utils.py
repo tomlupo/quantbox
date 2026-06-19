@@ -15,6 +15,7 @@ import pandas as pd
 import pytest
 
 from quantbox.plugins.datasources._utils import (
+    MarketCapProvider,
     OHLCVCache,
     is_transient,
     retry_transient,
@@ -358,3 +359,105 @@ class TestRetry:
             bad_value()
 
         assert call_count == 1  # no retries for non-transient
+
+
+# ---------------------------------------------------------------------------
+# MarketCapProvider — CoinMarketCap source
+# ---------------------------------------------------------------------------
+
+
+_FAKE_CMC_PAYLOAD = {
+    "data": [
+        {
+            "symbol": "btc",
+            "cmc_rank": 1,
+            "circulating_supply": 19_600_000,
+            "quote": {"USD": {"market_cap": 1.2e12, "volume_24h": 4.0e10}},
+        },
+        {
+            "symbol": "eth",
+            "cmc_rank": 2,
+            "circulating_supply": 120_000_000,
+            "quote": {"USD": {"market_cap": 4.0e11, "volume_24h": 2.0e10}},
+        },
+    ]
+}
+
+
+class _FakeResp:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class TestMarketCapProviderSource:
+    def test_default_source_is_coingecko(self):
+        assert MarketCapProvider().source == "coingecko"
+
+    def test_cmc_aliases_normalize(self):
+        for alias in ("cmc", "CMC", "coinmarketcap", "CoinMarketCap", "coin_market_cap"):
+            assert MarketCapProvider(source=alias).source == "coinmarketcap"
+
+    def test_unknown_source_falls_back_to_coingecko(self):
+        assert MarketCapProvider(source="nasdaq").source == "coingecko"
+
+    def test_cache_path_namespaced_by_source(self, tmp_path):
+        cg = MarketCapProvider(cache_dir=tmp_path, source="coingecko")
+        cmc = MarketCapProvider(cache_dir=tmp_path, source="cmc")
+        # Back-compat: CoinGecko keeps the original filename.
+        assert cg._cache_path().name == "rankings.parquet"
+        # CMC is namespaced so the two never overwrite each other.
+        assert cmc._cache_path().name == "rankings_coinmarketcap.parquet"
+        assert cg._cache_path() != cmc._cache_path()
+
+    def test_cmc_fetch_maps_schema(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("API_KEY_COINMARKETCAP", "test-key")
+        captured = {}
+
+        def fake_get(url, headers=None, params=None, timeout=None):
+            captured["url"] = url
+            captured["headers"] = headers
+            return _FakeResp(_FAKE_CMC_PAYLOAD)
+
+        monkeypatch.setattr("quantbox.plugins.datasources._utils.httpx.get", fake_get)
+
+        prov = MarketCapProvider(cache_dir=tmp_path, source="cmc")
+        df = prov.fetch_rankings()
+
+        assert "pro-api.coinmarketcap.com" in captured["url"]
+        assert captured["headers"]["X-CMC_PRO_API_KEY"] == "test-key"
+        assert set(df.columns) == {
+            "symbol",
+            "market_cap",
+            "total_volume",
+            "circulating_supply",
+            "rank",
+            "fetch_timestamp",
+        }
+        btc = df[df["symbol"] == "BTC"].iloc[0]
+        assert btc["market_cap"] == 1.2e12
+        assert btc["total_volume"] == 4.0e10
+        assert btc["rank"] == 1
+
+    def test_cmc_missing_key_returns_none_gracefully(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("API_KEY_COINMARKETCAP", raising=False)
+        monkeypatch.delenv("CMC_API_KEY", raising=False)
+        prov = MarketCapProvider(cache_dir=tmp_path, source="cmc")
+        assert prov.fetch_rankings() is None
+
+    def test_cmc_estimate_market_cap_uses_cmc(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("API_KEY_COINMARKETCAP", "test-key")
+        monkeypatch.setattr(
+            "quantbox.plugins.datasources._utils.httpx.get",
+            lambda *a, **k: _FakeResp(_FAKE_CMC_PAYLOAD),
+        )
+        dates = pd.date_range("2025-01-01", periods=5, freq="D")
+        prices = pd.DataFrame({"BTC": 60000.0, "ETH": 3000.0}, index=dates)
+        mc = MarketCapProvider(cache_dir=tmp_path, source="cmc").estimate_market_cap(prices, pd.DataFrame())
+        # BTC mcap > ETH mcap at every row (uses CMC circulating supply).
+        assert (mc["BTC"] > mc["ETH"]).all()

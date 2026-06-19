@@ -10,6 +10,7 @@ Provides:
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -347,7 +348,7 @@ class OHLCVCache:
 
 
 class MarketCapProvider:
-    """Fetch market cap rankings from CoinGecko (free, no API key).
+    """Fetch market cap rankings from CoinGecko (default) or CoinMarketCap.
 
     Falls back to hardcoded circulating-supply estimates when the API
     is unavailable.
@@ -362,6 +363,10 @@ class MarketCapProvider:
         Use stale cache up to this age when API fails (default 28h).
     limit : int
         Number of top coins to fetch.
+    source : str
+        Rankings source: ``"coingecko"`` (default; free, no key) or
+        ``"coinmarketcap"``/``"cmc"`` (CMC pro-api, reads
+        ``API_KEY_COINMARKETCAP``). CMC mirrors quantlab's universe screen.
     """
 
     # Hardcoded fallback circulating supplies
@@ -388,12 +393,16 @@ class MarketCapProvider:
         "FIL": 530e6,
     }
 
+    # Names that select the CoinMarketCap rankings source (case-insensitive).
+    _CMC_ALIASES = frozenset({"cmc", "coinmarketcap", "coin_market_cap"})
+
     def __init__(
         self,
         cache_dir: str | Path | None = None,
         fresh_ttl_hours: float = 4.0,
         fallback_ttl_hours: float = 28.0,
         limit: int = 250,
+        source: str = "coingecko",
         # Legacy params (ignored, kept for backwards compat)
         api_key: str | None = None,
     ) -> None:
@@ -401,6 +410,9 @@ class MarketCapProvider:
         self.fresh_ttl_hours = fresh_ttl_hours
         self.fallback_ttl_hours = fallback_ttl_hours
         self.limit = limit
+        # Rankings source: "coingecko" (default, free, no key) or "coinmarketcap"
+        # (CMC pro-api, needs API_KEY_COINMARKETCAP — mirrors quantlab's screen).
+        self.source = "coinmarketcap" if str(source).lower() in self._CMC_ALIASES else "coingecko"
 
         if self.cache_dir:
             (self.cache_dir / "market_cap").mkdir(parents=True, exist_ok=True)
@@ -408,7 +420,10 @@ class MarketCapProvider:
     def _cache_path(self) -> Path | None:
         if self.cache_dir is None:
             return None
-        return self.cache_dir / "market_cap" / "rankings.parquet"
+        # Keep the CoinGecko filename unchanged for back-compat; namespace CMC so
+        # the two sources never overwrite each other's cached rankings.
+        name = "rankings.parquet" if self.source == "coingecko" else f"rankings_{self.source}.parquet"
+        return self.cache_dir / "market_cap" / name
 
     def _read_cache(self) -> pd.DataFrame | None:
         """Read cached rankings if fresh or usable as fallback."""
@@ -460,6 +475,9 @@ class MarketCapProvider:
             if age_hours < self.fresh_ttl_hours:
                 return cached
 
+        if self.source == "coinmarketcap":
+            return self._fetch_cmc_rankings(cached)
+
         # Fetch from CoinGecko (free, no API key needed)
         try:
             from pycoingecko import CoinGeckoAPI
@@ -497,6 +515,66 @@ class MarketCapProvider:
 
         except Exception as exc:
             logger.warning("CoinGecko API call failed: %s", exc)
+            return cached  # fall back to stale cache
+
+    def _fetch_cmc_rankings(self, cached: pd.DataFrame | None) -> pd.DataFrame | None:
+        """Fetch top coin rankings from CoinMarketCap (pro-api listings/latest).
+
+        Returns the SAME schema as the CoinGecko path (symbol, market_cap,
+        total_volume, circulating_supply, rank, fetch_timestamp) so every
+        downstream consumer (estimate_market_cap / estimate_aggregate_volume) is
+        source-agnostic. ``total_volume`` is CMC's 24h USD volume and
+        ``market_cap`` its reported USD market cap — this is the same screen
+        quantlab's crypto_trend_catcher uses, so a CMC-sourced book is a true
+        mirror of quantlab's universe rather than the CoinGecko default.
+
+        The API key is read from ``API_KEY_COINMARKETCAP`` (the var quantlab
+        uses) with ``CMC_API_KEY`` as a fallback. Missing key or any API error
+        falls back to the stale cache (then to hardcoded supplies upstream) —
+        never raises, so the daily run degrades gracefully instead of aborting.
+        """
+        api_key = os.environ.get("API_KEY_COINMARKETCAP") or os.environ.get("CMC_API_KEY")
+        if not api_key:
+            logger.warning(
+                "CoinMarketCap source requested but no API_KEY_COINMARKETCAP/CMC_API_KEY "
+                "in env; falling back to cached/hardcoded market cap."
+            )
+            return cached
+
+        try:
+            resp = httpx.get(
+                "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
+                headers={"X-CMC_PRO_API_KEY": api_key, "Accepts": "application/json"},
+                params={"start": 1, "limit": self.limit, "convert": "USD"},
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+            if not data:
+                logger.warning("CoinMarketCap API returned empty data")
+                return cached
+
+            rows = []
+            for coin in data:
+                quote = (coin.get("quote") or {}).get("USD") or {}
+                rows.append(
+                    {
+                        "symbol": str(coin.get("symbol", "")).upper(),
+                        "market_cap": float(quote.get("market_cap", 0) or 0),
+                        "total_volume": float(quote.get("volume_24h", 0) or 0),
+                        "circulating_supply": float(coin.get("circulating_supply", 0) or 0),
+                        "rank": int(coin.get("cmc_rank", 0) or 0),
+                        "fetch_timestamp": pd.Timestamp.now().isoformat(),
+                    }
+                )
+
+            df = pd.DataFrame(rows)
+            self._write_cache(df)
+            logger.info("Fetched CoinMarketCap rankings for %d coins", len(df))
+            return df
+
+        except Exception as exc:
+            logger.warning("CoinMarketCap API call failed: %s", exc)
             return cached  # fall back to stale cache
 
     def estimate_market_cap(
