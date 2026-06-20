@@ -358,7 +358,12 @@ def construct_weights(
             if signals_have_universe:
                 w = sig_tranched.fillna(0.0)
             else:
-                w = sig_tranched.where(universe != 0, 0.0).fillna(0.0)
+                # Guard the mask itself: `universe != 0` is True for a NaN mask
+                # cell (NaN != 0 == True), which would RETAIN a non-selected
+                # asset. Treat any NaN/absent mask value as not-selected via
+                # ``fillna(0) > 0`` so a malformed mask can never leak a coin
+                # into the book regardless of which universe path produced it.
+                w = sig_tranched.where(universe.fillna(0.0) > 0, 0.0).fillna(0.0)
 
             # Normalize by number of positions
             if normalize:

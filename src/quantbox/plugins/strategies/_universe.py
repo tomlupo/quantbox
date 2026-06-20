@@ -391,4 +391,14 @@ def select_universe_duckdb(
     universe = result.pivot(index="date", columns="ticker", values="in_universe")
     universe = universe.reindex(columns=prices.columns, fill_value=0.0)
     universe = universe.reindex(index=prices.index, fill_value=0.0)
+    # pivot() leaves NaN for every (date, ticker) that fell OUTSIDE the day's
+    # top-30 mcap cut (no row in `mc_filtered`), and reindex(fill_value=0) only
+    # fills wholly-absent columns — never these per-cell NaNs. A NaN here means
+    # "not selected that day", so it MUST be 0.0. Leaving it as NaN let a
+    # rank-31 near-stablecoin (e.g. "U") leak into the book: downstream
+    # construct_weights does `signal.where(universe != 0, 0.0)`, and `NaN != 0`
+    # is True, so the excluded coin was retained and — with an unclipped
+    # vol-scaler — exploded to ~92% of the book. fillna(0.0) makes this path
+    # byte-identical to select_universe() (0 cell mismatches on the live cache).
+    universe = universe.fillna(0.0)
     return universe
