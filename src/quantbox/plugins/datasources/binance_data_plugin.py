@@ -84,6 +84,9 @@ class BinanceDataPlugin:
             symbols (list[str]): Explicit list of ticker symbols.
             top_n (int): Auto-discover top N liquid tickers from Binance.
             min_volume_usd (float): Min 24h volume for auto-discovery (default 1M).
+            not_tradable (list[str]): On the CMC path, opt-out symbols removed
+                from the CMC ranking BEFORE the top_n cut (quantlab's
+                ``not_tradable_on_binance``). Ignored on the coingecko path.
         """
         symbols: list[str] | None = params.get("symbols")
         if symbols:
@@ -92,6 +95,7 @@ class BinanceDataPlugin:
         top_n = params.get("top_n")
         if top_n:
             min_vol = float(params.get("min_volume_usd", 1_000_000))
+            not_tradable: list[str] | None = params.get("not_tradable")
             tickers: list[str] | None = None
 
             # CMC path (mirror = quantlab): rank the candidate set by GENUINE
@@ -102,7 +106,11 @@ class BinanceDataPlugin:
             # sees. The coingecko path keeps Binance-volume ordering (the shadow
             # book is allowlist-gated, so its candidate set is already bounded).
             if str(self.mcap_source).lower() in ("coinmarketcap", "cmc"):
-                tickers = self._fetcher.get_mcap_ranked_candidates(top_n=int(top_n), min_volume_usd=min_vol)
+                tickers = self._fetcher.get_mcap_ranked_candidates(
+                    top_n=int(top_n),
+                    min_volume_usd=min_vol,
+                    not_tradable=not_tradable,
+                )
                 if tickers is None:
                     logger.warning(
                         "CMC candidate ranking unavailable; falling back to "
