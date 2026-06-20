@@ -74,3 +74,96 @@ def test_top_n_truncation_keeps_high_volume_late_symbol(monkeypatch):
     tickers = fetcher.get_tradable_tickers(min_volume_usd=1_000_000)
     top1 = tickers[:1]
     assert top1 == ["ZZZ"], "top_n truncation must keep the most-liquid pair"
+
+
+# ---------------------------------------------------------------------------
+# FIX B: CMC-mcap-ranked candidate universe (quantlab match).
+# A high-Binance-VOLUME but low-CMC-mcap new listing must NOT enter the
+# candidate set when mcap_source=coinmarketcap — exactly like quantlab, whose
+# candidate set is CMC-top-N by genuine market cap (mature coins only).
+# ---------------------------------------------------------------------------
+
+import pandas as pd  # noqa: E402
+
+from quantbox.plugins.datasources.binance_data_plugin import (  # noqa: E402
+    BinanceDataPlugin,
+)
+
+
+def _cmc_rankings() -> pd.DataFrame:
+    """A genuine CMC market-cap ranking: mature majors only. The new
+    high-Binance-volume junk listing PUMP is deliberately ABSENT (low real
+    mcap -> not in CMC top-N)."""
+    return pd.DataFrame(
+        [
+            {"symbol": "BTC", "market_cap": 1.3e12, "rank": 1},
+            {"symbol": "ETH", "market_cap": 4.0e11, "rank": 2},
+            {"symbol": "BNB", "market_cap": 9.0e10, "rank": 3},
+            {"symbol": "SOL", "market_cap": 8.0e10, "rank": 4},
+            {"symbol": "XRP", "market_cap": 7.0e10, "rank": 5},
+            {"symbol": "USDT", "market_cap": 1.2e11, "rank": 6},  # stablecoin
+        ]
+    )
+
+
+def test_cmc_path_excludes_high_volume_low_mcap_new_coin(monkeypatch):
+    """mcap_source=coinmarketcap: candidate set is CMC-rank-ordered and the
+    high-Binance-VOLUME new coin PUMP is NOT in it (quantlab parity)."""
+    plugin = BinanceDataPlugin(quote_asset="USDT", mcap_source="coinmarketcap")
+    fetcher = plugin._fetcher
+    fetcher.stablecoins = ["USDT", "USDC"]
+
+    monkeypatch.setattr(fetcher._cmc_provider, "fetch_rankings", lambda: _cmc_rankings())
+    # PUMP IS Binance-tradable with huge volume, so the OLD volume-ranked path
+    # would have included it. CMC ranking must drop it.
+    monkeypatch.setattr(
+        fetcher,
+        "get_tradable_tickers",
+        lambda min_volume_usd=1e6: ["PUMP", "BTC", "ETH", "BNB", "SOL", "XRP"],
+    )
+
+    uni = plugin.load_universe({"top_n": 5})
+    syms = uni["symbol"].tolist()
+
+    assert "PUMP" not in syms, "CMC ranking must exclude the low-mcap new listing"
+    assert syms == ["BTC", "ETH", "BNB", "SOL", "XRP"]
+    assert "USDT" not in syms
+
+
+def test_cmc_path_falls_back_to_volume_when_ranking_unavailable(monkeypatch):
+    """No genuine CMC ranking (no key / API fail) -> fall back to the
+    Binance-volume candidate set rather than produce an empty/wrong universe."""
+    plugin = BinanceDataPlugin(quote_asset="USDT", mcap_source="coinmarketcap")
+    fetcher = plugin._fetcher
+    fetcher.stablecoins = ["USDT", "USDC"]
+
+    monkeypatch.setattr(fetcher._cmc_provider, "fetch_rankings", lambda: None)
+    monkeypatch.setattr(
+        fetcher,
+        "get_tradable_tickers",
+        lambda min_volume_usd=1e6: ["PUMP", "BTC", "ETH"],
+    )
+
+    uni = plugin.load_universe({"top_n": 2})
+    assert uni["symbol"].tolist() == ["PUMP", "BTC"]
+
+
+def test_coingecko_path_keeps_volume_ordering(monkeypatch):
+    """coingecko (shadow) path is unchanged: Binance-volume ordering, and
+    fetch_rankings is NOT consulted for candidate selection."""
+    plugin = BinanceDataPlugin(quote_asset="USDC", mcap_source="coingecko")
+    fetcher = plugin._fetcher
+    fetcher.stablecoins = ["USDT", "USDC"]
+
+    def _boom():
+        raise AssertionError("coingecko path must not call fetch_rankings")
+
+    monkeypatch.setattr(fetcher._cmc_provider, "fetch_rankings", _boom)
+    monkeypatch.setattr(
+        fetcher,
+        "get_tradable_tickers",
+        lambda min_volume_usd=1e6: ["ZZZ", "MID", "AAA"],
+    )
+
+    uni = plugin.load_universe({"top_n": 2})
+    assert uni["symbol"].tolist() == ["ZZZ", "MID"]
