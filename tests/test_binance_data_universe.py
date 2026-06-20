@@ -130,6 +130,51 @@ def test_cmc_path_excludes_high_volume_low_mcap_new_coin(monkeypatch):
     assert "USDT" not in syms
 
 
+def test_cmc_path_not_tradable_removed_before_top_n_cut(monkeypatch):
+    """quantlab parity: ``not_tradable`` symbols are removed from the CMC ranking
+    BEFORE the iloc[:top_n] cut, so a not_tradable coin frees a slot for the next
+    tradable coin. A Binance-USDT-tradable opt-out (e.g. ZEC/XMR analogue, here
+    BNB) must NOT leak into the candidate set even though it IS tradable, and the
+    coin that was ranked just past top_n (XRP) takes the freed slot."""
+    plugin = BinanceDataPlugin(quote_asset="USDT", mcap_source="coinmarketcap")
+    fetcher = plugin._fetcher
+    fetcher.stablecoins = ["USDT", "USDC"]
+
+    monkeypatch.setattr(fetcher._cmc_provider, "fetch_rankings", lambda: _cmc_rankings())
+    # All of BTC/ETH/BNB/SOL/XRP are Binance-tradable: the tradable intersection
+    # alone would NOT drop BNB. Only the not_tradable opt-out removes it.
+    monkeypatch.setattr(
+        fetcher,
+        "get_tradable_tickers",
+        lambda min_volume_usd=1e6: ["BTC", "ETH", "BNB", "SOL", "XRP"],
+    )
+
+    # top_n=4 with BNB opted out: ranking minus stablecoin USDT is
+    # [BTC, ETH, BNB, SOL, XRP]; drop BNB BEFORE the cut -> [BTC, ETH, SOL, XRP];
+    # first 4 -> all four. If not_tradable were applied AFTER the cut, XRP would
+    # be missing (BNB would have consumed slot 3).
+    uni = plugin.load_universe({"top_n": 4, "not_tradable": ["BNB"]})
+    syms = uni["symbol"].tolist()
+
+    assert "BNB" not in syms, "not_tradable opt-out must be excluded even if Binance-tradable"
+    assert syms == ["BTC", "ETH", "SOL", "XRP"], "removal must precede the top_n cut (frees a slot)"
+
+
+def test_cmc_path_not_tradable_case_insensitive(monkeypatch):
+    """not_tradable matching is case-insensitive against the upper-cased ranking."""
+    plugin = BinanceDataPlugin(quote_asset="USDT", mcap_source="coinmarketcap")
+    fetcher = plugin._fetcher
+    fetcher.stablecoins = ["USDT", "USDC"]
+    monkeypatch.setattr(fetcher._cmc_provider, "fetch_rankings", lambda: _cmc_rankings())
+    monkeypatch.setattr(
+        fetcher,
+        "get_tradable_tickers",
+        lambda min_volume_usd=1e6: ["BTC", "ETH", "BNB", "SOL", "XRP"],
+    )
+    uni = plugin.load_universe({"top_n": 5, "not_tradable": ["bnb", "Xrp"]})
+    assert uni["symbol"].tolist() == ["BTC", "ETH", "SOL"]
+
+
 def test_cmc_path_falls_back_to_volume_when_ranking_unavailable(monkeypatch):
     """No genuine CMC ranking (no key / API fail) -> fall back to the
     Binance-volume candidate set rather than produce an empty/wrong universe."""

@@ -766,22 +766,33 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
         self,
         top_n: int,
         min_volume_usd: float = 1e6,
+        not_tradable: list[str] | None = None,
     ) -> list[str] | None:
         """Candidate universe ranked by genuine market cap (quantlab match).
 
         Mirrors quantlab's ``crypto_trend_catcher`` Stage-0 candidate selection
-        (``workflow/trading.py``): take the CMC market-cap ranking, keep only the
-        Binance-USDT-tradable symbols (our analogue of quantlab's ``not_tradable``
-        filter + OHLCV availability), preserve CMC rank order, and cut to
-        ``top_n``. This excludes new high-Binance-VOLUME but low-CMC-mcap listings
+        (``workflow/trading.py``): take the CMC market-cap ranking, remove the
+        configured ``not_tradable`` opt-out symbols, cut to the FIRST ``top_n``
+        rows by rank, then keep only the Binance-USDT-tradable symbols (our
+        analogue of quantlab's OHLCV-availability drop), preserving CMC rank
+        order. This excludes new high-Binance-VOLUME but low-CMC-mcap listings
         (RE, MEGA, GENIUS, PUMP, TRUMP, PENGU, XPL, …) that the volume-ranked
         candidate set would otherwise pull in — coins quantlab never sees because
         its candidate set is CMC-mcap-top-N (mature coins only).
+
+        ``not_tradable``: quantlab's ``not_tradable_on_binance`` opt-out list
+        (``config/accounts/binance.yaml``). Quantlab removes these from the CMC
+        ranking *before* the ``iloc[:top_n]`` cut, so a not_tradable coin frees a
+        slot for the next-ranked tradable coin. The Binance-tradable intersection
+        alone does NOT reproduce this: symbols that ARE Binance-USDT-tradable but
+        quantlab opts out of (e.g. ZEC, XMR) would otherwise leak into the mirror.
+        Symbols are matched case-insensitively against the upper-cased CMC ranking.
 
         Returns ``None`` if no genuine CMC ranking is available (no key / API
         failure / empty cache), so the caller can fall back to the Binance-volume
         candidate set rather than silently produce a wrong universe.
         """
+        not_tradable_set = {s.upper() for s in (not_tradable or [])}
         rankings = self._cmc_provider.fetch_rankings()
         if rankings is None or rankings.empty or "symbol" not in rankings.columns:
             logger.warning(
@@ -815,7 +826,7 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
         seen: set[str] = set()
         ranked_syms: list[str] = []
         for sym in ranked["symbol"].astype(str).str.upper():
-            if sym in seen or sym in self.stablecoins:
+            if sym in seen or sym in self.stablecoins or sym in not_tradable_set:
                 continue
             seen.add(sym)
             ranked_syms.append(sym)
@@ -825,10 +836,11 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
 
         logger.info(
             "Built CMC-mcap-ranked candidate universe: %d symbols "
-            "(first top_n=%d by CMC rank, then intersected with %d "
-            "Binance-tradable pairs).",
+            "(first top_n=%d by CMC rank after dropping %d not_tradable, then "
+            "intersected with %d Binance-tradable pairs).",
             len(candidates),
             int(top_n),
+            len(not_tradable_set),
             len(tradable),
         )
         return candidates
