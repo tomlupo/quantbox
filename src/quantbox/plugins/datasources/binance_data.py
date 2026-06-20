@@ -729,7 +729,8 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
             min_volume_usd: Minimum 24h volume in USD
 
         Returns:
-            List of ticker symbols
+            List of ticker symbols, ordered by 24h quote-volume DESCENDING
+            (so a downstream ``top_n`` truncation keeps the most-liquid pairs).
         """
         try:
             resp = httpx.get(BINANCE_TICKER_24H, timeout=15)
@@ -751,6 +752,12 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
             if quote_vol >= min_volume_usd:
                 base = symbol[: -len(self.quote_asset)]
                 if base not in self.stablecoins:
-                    tickers.append(base)
+                    tickers.append((base, quote_vol))
 
-        return sorted(tickers)
+        # Rank by 24h quote-volume DESCENDING so that ``load_universe`` taking
+        # ``tickers[:top_n]`` keeps the most-liquid pairs. Previously this
+        # returned ``sorted(tickers)`` (ALPHABETICAL), so the top_n cut silently
+        # dropped every symbol past the cutoff letter — e.g. SOL/XRP/XLM/NEAR —
+        # from the candidate universe entirely.
+        tickers.sort(key=lambda x: x[1], reverse=True)
+        return [base for base, _ in tickers]
