@@ -345,16 +345,25 @@ def construct_weights(
             else:
                 sig_tranched = sig_scaled
 
-            # Apply universe mask (skip if signals already have it baked in)
+            # Apply universe mask (skip if signals already have it baked in).
+            # CRITICAL: a NON-selected asset must get weight 0, never NaN. Plain
+            # ``sig_tranched * universe`` yields ``NaN * 0 = NaN`` whenever the
+            # signal is NaN (e.g. a newly-listed coin with insufficient history)
+            # AND the asset is outside the selected universe. That NaN then leaks
+            # into ``aggregated_weights`` and FREEZES the rebalancer ("Invalid
+            # (NaN)") even though the asset is never held. Use ``where`` so the
+            # mask hard-zeros non-selected columns regardless of the signal value,
+            # then fill any residual NaN (selected asset with NaN signal due to
+            # short history) with 0 so no NaN can ever reach the aggregator.
             if signals_have_universe:
-                w = sig_tranched
+                w = sig_tranched.fillna(0.0)
             else:
-                w = sig_tranched * universe
+                w = sig_tranched.where(universe != 0, 0.0).fillna(0.0)
 
             # Normalize by number of positions
             if normalize:
                 n_positions = universe.sum(axis=1).replace(0, np.nan)
-                w = w.div(n_positions, axis=0)
+                w = w.div(n_positions, axis=0).fillna(0.0)
 
             # Store with MultiIndex key
             for col in w.columns:

@@ -92,8 +92,27 @@ class BinanceDataPlugin:
         top_n = params.get("top_n")
         if top_n:
             min_vol = float(params.get("min_volume_usd", 1_000_000))
-            tickers = self._fetcher.get_tradable_tickers(min_volume_usd=min_vol)
-            tickers = tickers[: int(top_n)]
+            tickers: list[str] | None = None
+
+            # CMC path (mirror = quantlab): rank the candidate set by GENUINE
+            # market cap (CMC top-N), intersected with Binance-USDT-tradable and
+            # ordered by CMC rank — exactly like quantlab's crypto_trend_catcher.
+            # This keeps mature coins only and excludes new high-Binance-VOLUME
+            # but low-mcap listings (RE/MEGA/GENIUS/PUMP/...) that quantlab never
+            # sees. The coingecko path keeps Binance-volume ordering (the shadow
+            # book is allowlist-gated, so its candidate set is already bounded).
+            if str(self.mcap_source).lower() in ("coinmarketcap", "cmc"):
+                tickers = self._fetcher.get_mcap_ranked_candidates(top_n=int(top_n), min_volume_usd=min_vol)
+                if tickers is None:
+                    logger.warning(
+                        "CMC candidate ranking unavailable; falling back to "
+                        "Binance-volume ordering for the candidate universe."
+                    )
+
+            if tickers is None:
+                tickers = self._fetcher.get_tradable_tickers(min_volume_usd=min_vol)
+                tickers = tickers[: int(top_n)]
+
             return pd.DataFrame({"symbol": tickers})
 
         return pd.DataFrame(columns=["symbol"])

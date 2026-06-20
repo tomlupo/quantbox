@@ -761,3 +761,74 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
         # from the candidate universe entirely.
         tickers.sort(key=lambda x: x[1], reverse=True)
         return [base for base, _ in tickers]
+
+    def get_mcap_ranked_candidates(
+        self,
+        top_n: int,
+        min_volume_usd: float = 1e6,
+    ) -> list[str] | None:
+        """Candidate universe ranked by genuine market cap (quantlab match).
+
+        Mirrors quantlab's ``crypto_trend_catcher`` Stage-0 candidate selection
+        (``workflow/trading.py``): take the CMC market-cap ranking, keep only the
+        Binance-USDT-tradable symbols (our analogue of quantlab's ``not_tradable``
+        filter + OHLCV availability), preserve CMC rank order, and cut to
+        ``top_n``. This excludes new high-Binance-VOLUME but low-CMC-mcap listings
+        (RE, MEGA, GENIUS, PUMP, TRUMP, PENGU, XPL, …) that the volume-ranked
+        candidate set would otherwise pull in — coins quantlab never sees because
+        its candidate set is CMC-mcap-top-N (mature coins only).
+
+        Returns ``None`` if no genuine CMC ranking is available (no key / API
+        failure / empty cache), so the caller can fall back to the Binance-volume
+        candidate set rather than silently produce a wrong universe.
+        """
+        rankings = self._cmc_provider.fetch_rankings()
+        if rankings is None or rankings.empty or "symbol" not in rankings.columns:
+            logger.warning(
+                "No CMC ranking available for candidate selection; caller should fall back to Binance-volume ordering."
+            )
+            return None
+
+        # Binance-USDT-tradable filter (volume-sorted; order doesn't matter here,
+        # we only use it as a membership set). This is the mirror's analogue of
+        # quantlab's not_tradable list + OHLCV-availability drop.
+        tradable = set(self.get_tradable_tickers(min_volume_usd=min_volume_usd))
+        if not tradable:
+            logger.warning("No tradable Binance tickers; cannot build mcap candidates.")
+            return None
+
+        ranked = rankings.copy()
+        # Order by genuine CMC market-cap rank (ascending = largest first). Prefer
+        # the explicit ``rank`` column; fall back to market_cap desc if absent.
+        if "rank" in ranked.columns and ranked["rank"].gt(0).any():
+            ranked = ranked.sort_values("rank", kind="stable")
+        elif "market_cap" in ranked.columns:
+            ranked = ranked.sort_values("market_cap", ascending=False, kind="stable")
+
+        # Quantlab semantics (workflow/trading.py): take the FIRST ``top_n`` rows
+        # of the mcap ranking (``iloc[:top_coins]``) AFTER removing the opt-out
+        # symbols, THEN keep the tradable ones — it does NOT walk deeper to refill
+        # to ``top_n``. So the candidate set's CMC-rank CEILING is ~top_n, and a
+        # coin ranked below that (e.g. XPL #137, GENIUS #158, RE #238) is excluded
+        # even though it is Binance-tradable. Mirror that: drop stablecoins/dupes
+        # first, cut to the first ``top_n`` by rank, then intersect with tradable.
+        seen: set[str] = set()
+        ranked_syms: list[str] = []
+        for sym in ranked["symbol"].astype(str).str.upper():
+            if sym in seen or sym in self.stablecoins:
+                continue
+            seen.add(sym)
+            ranked_syms.append(sym)
+
+        top_by_rank = ranked_syms[: int(top_n)]  # == quantlab iloc[:top_coins]
+        candidates = [s for s in top_by_rank if s in tradable]
+
+        logger.info(
+            "Built CMC-mcap-ranked candidate universe: %d symbols "
+            "(first top_n=%d by CMC rank, then intersected with %d "
+            "Binance-tradable pairs).",
+            len(candidates),
+            int(top_n),
+            len(tradable),
+        )
+        return candidates
