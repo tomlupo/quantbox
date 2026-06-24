@@ -15,6 +15,14 @@ Quick start::
 
     result = backtest(prices, weights, fees=0.001, rebalancing_freq='1W')
     print(result["metrics"])
+
+Trade analytics::
+
+    from quantbox.plugins.backtesting import trade_summary, drawdown_table
+
+    pf = result["vbt_portfolio"]
+    print(trade_summary(pf))
+    print(drawdown_table(pf))
 """
 
 from __future__ import annotations
@@ -30,7 +38,10 @@ from .metrics import (
     compute_portfolio_cvar,
     compute_portfolio_var,
     compute_rolling_sharpe,
+    compute_trade_metrics,
     compute_var,
+    drawdown_table,
+    trade_summary,
 )
 from .optimizer import optimize
 from .rsims_engine import fixed_commission_backtest_with_funding, positions_from_no_trade_buffer
@@ -48,7 +59,10 @@ __all__ = [
     "compute_portfolio_cvar",
     "compute_portfolio_var",
     "compute_rolling_sharpe",
+    "compute_trade_metrics",
     "compute_var",
+    "drawdown_table",
+    "trade_summary",
 ]
 
 
@@ -92,7 +106,9 @@ def backtest(
     dict
         ``"vbt_portfolio"`` — the vbt.Portfolio object,
         ``"metrics"`` — dict of performance metrics,
-        ``"returns"`` — daily returns Series.
+        ``"returns"`` — daily returns Series,
+        ``"trades"`` — trade records DataFrame (closed trades),
+        ``"drawdowns"`` — drawdown records DataFrame.
     """
     pf = run_vectorbt(
         prices,
@@ -105,8 +121,21 @@ def backtest(
         use_numba=use_numba,
     )
     metrics = compute_backtest_metrics(pf, trading_days=trading_days)
+
+    # Trade and drawdown records (new)
+    try:
+        trades_df = pf.trades.records_readable
+    except Exception:
+        trades_df = pd.DataFrame()
+    try:
+        dd_df = pf.drawdowns.records_readable
+    except Exception:
+        dd_df = pd.DataFrame()
+
     return {
         "vbt_portfolio": pf,
         "metrics": metrics,
         "returns": pf.returns(),
+        "trades": trades_df,
+        "drawdowns": dd_df,
     }
