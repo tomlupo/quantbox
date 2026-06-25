@@ -4,6 +4,8 @@ from .binance_futures_data import BinanceFuturesDataFetcher
 from .binance_futures_data_plugin import BinanceFuturesDataPlugin
 from .hyperliquid_cached_data_plugin import HyperliquidCachedDataPlugin
 from .hyperliquid_data_plugin import HyperliquidDataPlugin
+from .kraken_data import KrakenDataFetcher
+from .kraken_data_plugin import KrakenDataPlugin
 from .local_file_data import LocalFileDataPlugin
 from .synthetic_data import SyntheticDataPlugin
 
@@ -20,6 +22,8 @@ __all__ = [
     "DuckDBParquetData",
     "HyperliquidCachedDataPlugin",
     "HyperliquidDataPlugin",
+    "KrakenDataFetcher",
+    "KrakenDataPlugin",
     "LocalFileDataPlugin",
     "MarketDataSnapshot",
     "SyntheticDataPlugin",
