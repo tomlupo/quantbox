@@ -14,6 +14,7 @@ from .broker import (
     HyperliquidBroker,
     IBKRBroker,
     IBKRPaperBrokerStub,
+    KrakenBroker,
     SimPaperBroker,
 )
 from .datasources import (
@@ -21,6 +22,7 @@ from .datasources import (
     BinanceFuturesDataPlugin,
     HyperliquidCachedDataPlugin,
     HyperliquidDataPlugin,
+    KrakenDataPlugin,
     LocalFileDataPlugin,
     SyntheticDataPlugin,
 )
@@ -77,6 +79,7 @@ def builtins() -> dict[str, dict[str, type]]:
             BinanceFuturesDataPlugin,
             HyperliquidDataPlugin,
             HyperliquidCachedDataPlugin,
+            KrakenDataPlugin,
             SyntheticDataPlugin,
         ),
         "broker": _map(
@@ -88,6 +91,7 @@ def builtins() -> dict[str, dict[str, type]]:
             BinanceBroker,
             BinanceFuturesBroker,
             HyperliquidBroker,
+            KrakenBroker,
         ),
         "publisher": _map(TelegramPublisher),
         "risk": _map(

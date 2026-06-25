@@ -5,6 +5,7 @@ from .futures_paper import FuturesPaperBroker
 from .hyperliquid import HyperliquidBroker
 from .ibkr import IBKRBroker
 from .ibkr_stub import PaperBrokerStub as IBKRPaperBrokerStub
+from .kraken import KrakenBroker
 from .sim import SimPaperBroker
 
 try:
@@ -23,6 +24,7 @@ __all__ = [
     "HyperliquidBroker",
     "IBKRBroker",
     "IBKRPaperBrokerStub",
+    "KrakenBroker",
     "SimPaperBroker",
     "UniverseSelector",
     "UniverseConfig",
