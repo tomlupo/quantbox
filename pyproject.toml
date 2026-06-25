@@ -87,4 +87,5 @@ version_files = [
 ]
 update_changelog_on_bump = true
 tag_format = "v$version"
+ignored_tag_formats = ["rb-$version", "rb-*"]
 major_version_zero = true
