@@ -332,7 +332,21 @@ class KrakenBroker:
         precision = (market.get("precision", {}) or {}).get("amount", 8)
         if isinstance(precision, float) and 0 < precision < 1:
             precision = max(0, -int(math.floor(math.log10(precision))))
-        quantity = round(quantity, int(precision))
+        # Use ccxt's amount_to_precision (floors to the market's precision) so a
+        # SELL can never round UP past the available balance. round() could push
+        # a sell qty above what we hold; flooring keeps it safe. Fall back to a
+        # floor-via-round only if amount_to_precision is unavailable.
+        amount_to_precision = getattr(self._exchange, "amount_to_precision", None)
+        if callable(amount_to_precision):
+            try:
+                quantity = float(amount_to_precision(ms, quantity))
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning("amount_to_precision failed for %s (%s); flooring", symbol, e)
+                factor = 10 ** int(precision)
+                quantity = math.floor(quantity * factor) / factor
+        else:
+            factor = 10 ** int(precision)
+            quantity = math.floor(quantity * factor) / factor
         if quantity <= 0:
             logger.warning("Quantity rounds to zero for %s (precision=%s)", symbol, precision)
             return None
@@ -342,7 +356,8 @@ class KrakenBroker:
             logger.warning("Quantity %s below Kraken minimum %s for %s", quantity, min_qty, symbol)
             return None
 
-        has_price = price is not None and not (isinstance(price, float) and price == 0.0)
+        # A NaN price must NOT route to a limit order (pd.notna(NaN) is False).
+        has_price = pd.notna(price) and price > 0
         order_type = "limit" if has_price else "market"
 
         for attempt in range(MAX_RETRIES):

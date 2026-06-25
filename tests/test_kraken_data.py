@@ -64,9 +64,14 @@ def _tickers() -> dict:
     }
 
 
-def test_tradable_tickers_ranked_by_volume_desc():
-    fetcher = KrakenDataFetcher(quote_asset="USD", stablecoins=["USDC"])
-    fetcher._exchange = _FakeExchange(_tickers())
+def test_tradable_tickers_ranked_by_volume_desc(monkeypatch):
+    # get_tradable_tickers short-circuits on the module-level CCXT_AVAILABLE
+    # guard; force it True so the injected fake exchange is used even when the
+    # ccxt extra isn't installed (the CI no-extra env).
+    monkeypatch.setattr("quantbox.plugins.datasources.kraken_data.CCXT_AVAILABLE", True)
+    # Inject the fake exchange at construction so __post_init__ doesn't try to
+    # build a real ccxt.kraken (ccxt is absent in the CI no-extra env).
+    fetcher = KrakenDataFetcher(quote_asset="USD", stablecoins=["USDC"], _exchange=_FakeExchange(_tickers()))
 
     tickers = fetcher.get_tradable_tickers(min_volume_usd=1_000_000)
 
@@ -78,14 +83,18 @@ def test_tradable_tickers_ranked_by_volume_desc():
     assert "USDC" not in tickers  # stablecoin base
 
 
-def test_quote_asset_filter_usdc():
+def test_quote_asset_filter_usdc(monkeypatch):
     """quote_asset=USDC only keeps */USDC books."""
-    fetcher = KrakenDataFetcher(quote_asset="USDC", stablecoins=["USDC", "USDT"])
-    fetcher._exchange = _FakeExchange(
-        {
-            "BTC/USDC": {"quoteVolume": 5_000_000, "last": 60000},
-            "ETH/USD": {"quoteVolume": 9_000_000_000, "last": 3000},
-        }
+    monkeypatch.setattr("quantbox.plugins.datasources.kraken_data.CCXT_AVAILABLE", True)
+    fetcher = KrakenDataFetcher(
+        quote_asset="USDC",
+        stablecoins=["USDC", "USDT"],
+        _exchange=_FakeExchange(
+            {
+                "BTC/USDC": {"quoteVolume": 5_000_000, "last": 60000},
+                "ETH/USD": {"quoteVolume": 9_000_000_000, "last": 3000},
+            }
+        ),
     )
     assert fetcher.get_tradable_tickers(min_volume_usd=1_000_000) == ["BTC"]
 
