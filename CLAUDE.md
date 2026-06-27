@@ -14,6 +14,10 @@ The plugin runtime (`run_from_config`, CLI) is *one* of multiple entry points �
 
 QuantBox is a **composing framework** — owned and opinionated, but composing external libraries (vectorbt, MLflow, riskfolio, optionally Qlib) rather than competing with them on their turf. See [ADR-0001](docs/decisions/DEC-0001-library-not-framework.md).
 
+## Task source: github (repo: tomlupo/quantbox)
+
+Tasks and issues live in **GitHub Issues** on `tomlupo/quantbox`. Create with `gh issue create`, list with `gh issue list` (or the qute-essentials `/task` and `/board` skills, which honor this `## Task source: github` declaration and route to GitHub). **Never Paperclip** — the fleet's Paperclip orchestrator is retired.
+
 ## Authoritative docs (read in order)
 
 | # | Doc | When |
