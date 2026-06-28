@@ -1,0 +1,133 @@
+name: claude-review
+
+# Auto-triggers Claude on every PR opened/reopened against main.
+# Posts inline review comments + a top-level summary via gh CLI.
+# Authenticates via OIDC (Claude GitHub App must be installed on this repo);
+# no ANTHROPIC_API_KEY secret required.
+#
+# Triggers on `opened` + `reopened` only (not `synchronize`) to avoid
+# double-commenting on every push. Re-trigger a fresh review by closing
+# and reopening the PR or by posting `@claude review` on the PR.
+
+on:
+  pull_request:
+    types: [opened, reopened]
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - ".github/ISSUE_TEMPLATE/**"
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write  # required for Claude GitHub App OIDC auth (no API key)
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: claude-review
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history for git diff against base
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          # Tool allowlist — without these Claude can't post anything.
+          # See https://github.com/anthropics/claude-code-action/blob/v1/docs/solutions.md#automatic-pr-code-review
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(rg:*),Bash(grep:*),Bash(cat:*),Bash(ls:*),Bash(find:*),Bash(git log:*),Bash(git diff:*),Read,Glob"
+
+          # Prompt — broad first-pass review tuned to QuantBox's architecture.
+          # Authoritative doctrine lives in docs/architecture/*; Claude reads
+          # CLAUDE.md and the relevant docs/rules transitively.
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Review this pull request for production-readiness. The PR branch
+            is already checked out in the current working directory. Read
+            `CLAUDE.md` first, then the architecture docs whose subject
+            matches the diff — especially
+            `docs/architecture/principles.md`,
+            `docs/architecture/api-layers.md`,
+            `docs/architecture/plugin-authoring.md`, and
+            `docs/architecture/adapters.md`. When CLAUDE.md and the
+            architecture docs conflict, **architecture wins**.
+
+            ## Primary focus (in priority order)
+
+            1. **Correctness** — logic errors, edge cases, off-by-one,
+               state management, error propagation, look-ahead / same-bar
+               leakage in any signal or backtest code, intent-vs-implementation
+               mismatches.
+
+            2. **Layer discipline (L0–L5)** — code must sit at the right
+               layer per `docs/architecture/api-layers.md`. Flag pipeline /
+               plugin code reaching into internals it shouldn't, or
+               convenience helpers leaking production-only concerns.
+               Production paths must honour `--strict`.
+
+            3. **Wrap-don't-rebuild (adapters)** — per
+               `docs/architecture/adapters.md`, hand-rolled implementations of
+               work a composed library already does (vectorbt, riskfolio,
+               MLflow, …) are a smell. A new core adapter is justified only
+               when ≥2 consumers need the same bridge; single-consumer
+               libraries belong in the downstream repo, imported directly.
+
+            4. **Plugin authoring** — per
+               `docs/architecture/plugin-authoring.md`: correct `meta.status`,
+               registration, naming, and tests for any new/changed plugin.
+               Flag plugins promoted in lifecycle state without the evidence
+               the state machine requires (`docs/architecture/lifecycle.md`).
+
+            5. **Reproducibility & data integrity** — run-artifact shape,
+               deterministic config-driven runs, no fabricated/fallback data
+               silently corrupting a result (e.g. mcap/volume universe
+               selection, price×constant fallbacks). Cached-data discipline
+               for backtests.
+
+            6. **Cross-module symbol scope** — any name referenced at runtime
+               that isn't imported in that module (classes, functions,
+               `*_AVAILABLE` flags that may have moved). Lazy imports inside
+               function bodies should import from the canonical source, not a
+               re-export module (those break under ruff F401 auto-strip).
+
+            7. **Test coverage** — untested branches in changed code,
+               brittle implementation-coupled assertions, missing edge-case
+               coverage. Pipeline-smoke parity where relevant.
+
+            8. **Security** — input validation at trust boundaries
+               (user input, external APIs/exchanges), command/SQL injection,
+               secrets in code, broker/exchange-key handling.
+
+            9. **Maintainability** — premature abstraction, dead code,
+               naming that obscures intent, over-deep nesting.
+
+            ## How to post
+
+            - Use `mcp__github_inline_comment__create_inline_comment` (with
+              `confirmed: true`) for line-level findings.
+            - Use `gh pr comment $PR_NUMBER --body "..."` for the
+              end-of-review summary.
+            - Group inline comments by severity in the body: **Blocker**
+              (must fix before merge), **Major** (should fix), **Minor**
+              (nice-to-have).
+            - End with a one-paragraph summary in a top-level PR comment
+              with overall PR shape and merge recommendation.
+            - **Only post comments via the GitHub tools — do not output
+              the review as plain assistant text.**
+
+            ## Skip
+
+            - Formatting nits (ruff/black handle those).
+            - Comments that just restate what the diff already shows.
+            - Speculation about code outside the diff unless directly
+              load-bearing on a flagged finding.
