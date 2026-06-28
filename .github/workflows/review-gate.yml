@@ -1,0 +1,54 @@
+name: review-gate
+
+# Makes the absence of an independent reviewer verdict LOUD.
+#
+# The CI `claude-review` action posts inline + top-level *comments*, which do
+# NOT create a GitHub review object and never populate the Reviewers box. The
+# operating rule is that the independent reviewer (codex by default; a Code
+# Reviewer subagent when codex is unavailable) posts its verdict as a native
+# review:  gh pr review <#> --repo <r> --comment --body "codex: SHIP/..."
+#
+# This gate fails until at least one such review object exists on the PR, so a
+# clean-looking PR that was never independently reviewed shows a red check
+# instead of a green "No reviews". It re-evaluates when a review is submitted.
+#
+# NOTE: these repos have no GitHub branch protection (plan limitation; an
+# agent-side guard hook stands in). So this check reports but cannot itself
+# block merge — mark it a required check once branch protection is available.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    branches: [dev, main]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: review-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  require-reviewer-verdict:
+    name: require-reviewer-verdict
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for an independent reviewer verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          COUNT=$(gh api "repos/$REPO/pulls/$PR/reviews" \
+            --jq '[.[] | select(.state=="COMMENTED" or .state=="APPROVED" or .state=="CHANGES_REQUESTED")] | length')
+          echo "Review objects on PR #$PR: $COUNT"
+          if [ "${COUNT:-0}" -ge 1 ]; then
+            echo "Gate satisfied — an independent reviewer verdict is on the PR."
+          else
+            echo "::error::No reviewer verdict on this PR. The independent reviewer must post one:"
+            echo "::error::  gh pr review $PR --repo $REPO --comment --body \"codex: SHIP / SHIP-WITH-NITS / blocker …\""
+            exit 1
+          fi
