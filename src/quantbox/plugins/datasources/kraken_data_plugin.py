@@ -62,6 +62,17 @@ class KrakenDataPlugin:
                     "enum": ["coingecko", "coinmarketcap", "cmc"],
                     "default": "coingecko",
                 },
+                "screen_volume_source": {
+                    "type": "string",
+                    "enum": ["market", "venue"],
+                    "default": "market",
+                    "description": (
+                        "Stage-2 liquidity ranker in live/paper. 'market' (default) "
+                        "= market-wide aggregate volume (index/mirror books); 'venue' "
+                        "= per-venue dollar volume (single-venue execution books, e.g. "
+                        "live Kraken-USD spot). Stage-1 market cap is unaffected."
+                    ),
+                },
             },
         },
         outputs=("universe", "prices", "volume", "market_cap", "screen_volume"),
@@ -71,6 +82,9 @@ class KrakenDataPlugin:
     quote_asset: str = "USD"
     # Market-cap rankings source: "coingecko" (default) or "coinmarketcap"/"cmc".
     mcap_source: str = "coingecko"
+    # Stage-2 liquidity ranker (live/paper): "market" (default, aggregate) or
+    # "venue" (per-venue dollar volume — single-venue execution books). OPT-IN.
+    screen_volume_source: str = "market"
     _fetcher: KrakenDataFetcher = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -161,6 +175,7 @@ class KrakenDataPlugin:
             end_date=asof,
             interval=interval,
             mode=params.get("mode"),
+            screen_volume_source=self.screen_volume_source,
         )
 
         logger.info(

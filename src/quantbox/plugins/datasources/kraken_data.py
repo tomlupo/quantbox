@@ -475,6 +475,7 @@ class KrakenDataFetcher:
         end_date: str | None = None,
         interval: str = "1d",
         mode: str | None = None,
+        screen_volume_source: str = "market",
     ) -> dict[str, pd.DataFrame]:
         """Full market data for strategies (prices, volume, market_cap, screen_volume).
 
@@ -514,7 +515,9 @@ class KrakenDataFetcher:
 
         prices = pd.DataFrame(prices_data)
         volume = pd.DataFrame(volume_data)
-        market_cap, screen_volume = resolve_screen_inputs(mode, prices, volume, self._cmc_provider)
+        market_cap, screen_volume = resolve_screen_inputs(
+            mode, prices, volume, self._cmc_provider, screen_volume_source=screen_volume_source
+        )
 
         logger.info(f"Fetched Kraken data for {len(prices.columns)} tickers, {len(prices)} days")
         return {
