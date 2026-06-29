@@ -10,7 +10,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from quantbox.plugins.datasources._utils import resolve_screen_inputs
+from quantbox.plugins.datasources._utils import MarketCapProvider, resolve_screen_inputs
 from quantbox.plugins.datasources.kraken_data_plugin import KrakenDataPlugin
 from quantbox.plugins.strategies._universe import select_universe
 
@@ -126,3 +126,30 @@ def test_select_universe_picks_different_names_market_vs_venue():
     )
     assert picked(venue_sel) == {"A"}
     assert picked(market_sel) == {"B"}
+
+
+# --- Fail-closed CMC mcap (require_genuine_mcap / MarketCapProvider.strict) ---
+
+
+def test_strict_cmc_raises_without_key(monkeypatch):
+    # strict + CMC + no key -> RAISE, never silently degrade to cache/hardcoded
+    monkeypatch.delenv("API_KEY_COINMARKETCAP", raising=False)
+    monkeypatch.delenv("CMC_API_KEY", raising=False)
+    prov = MarketCapProvider(source="cmc", strict=True, cache_dir=None)
+    with pytest.raises(RuntimeError, match="strict CMC"):
+        prov.fetch_rankings()
+
+
+def test_non_strict_cmc_degrades_without_key(monkeypatch):
+    # default (strict=False) keeps graceful degradation — no raise
+    monkeypatch.delenv("API_KEY_COINMARKETCAP", raising=False)
+    monkeypatch.delenv("CMC_API_KEY", raising=False)
+    prov = MarketCapProvider(source="cmc", strict=False, cache_dir=None)
+    prov.fetch_rankings()  # returns cached/None, must not raise
+
+
+def test_plugin_forwards_require_genuine_mcap():
+    opted = KrakenDataPlugin(mcap_source="cmc", require_genuine_mcap=True)
+    assert opted._fetcher._cmc_provider.strict is True
+    # default config stays graceful (no fail-closed)
+    assert KrakenDataPlugin(mcap_source="cmc")._fetcher._cmc_provider.strict is False
