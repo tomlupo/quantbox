@@ -886,6 +886,11 @@ def resolve_screen_inputs(
     The default for an unset/unknown mode is the backtest (point-in-time) path —
     the conservative choice that can never silently introduce look-ahead.
     """
+    # Fail loud on an unknown source: a typo must NOT silently degrade a live
+    # venue book to the market-wide screen. Validated regardless of mode.
+    src = str(screen_volume_source).lower()
+    if src not in ("market", "venue"):
+        raise ValueError(f"screen_volume_source must be 'market' or 'venue', got {screen_volume_source!r}")
     empty = pd.DataFrame()
     if prices is None or prices.empty:
         return empty, empty
@@ -894,7 +899,7 @@ def resolve_screen_inputs(
         market_cap = prov.estimate_market_cap(prices, volume)
         # OPT-IN venue-liquidity screen: empty screen_volume -> select_universe
         # ranks Stage-2 on per-venue dollar volume. Default keeps market-wide.
-        if str(screen_volume_source).lower() == "venue":
+        if src == "venue":
             return market_cap, empty
         screen_volume = prov.estimate_aggregate_volume(prices)
         return market_cap, screen_volume

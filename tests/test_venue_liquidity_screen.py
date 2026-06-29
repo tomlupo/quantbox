@@ -8,9 +8,11 @@ the market-wide aggregate screen. ccxt is never touched (fetcher stubbed).
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from quantbox.plugins.datasources._utils import resolve_screen_inputs
 from quantbox.plugins.datasources.kraken_data_plugin import KrakenDataPlugin
+from quantbox.plugins.strategies._universe import select_universe
 
 _IDX = pd.date_range("2026-01-01", periods=3, freq="D")
 _PRICES = pd.DataFrame({"BTC": [1.0, 1.1, 1.2], "ETH": [2.0, 2.1, 2.2]}, index=_IDX)
@@ -80,3 +82,47 @@ def test_kraken_book_forwards_venue_when_opted_in():
 def test_non_opted_kraken_book_stays_market_wide():
     # default config (no screen_volume_source) must keep market-wide behaviour
     assert _run(KrakenDataPlugin()) == "market"
+
+
+@pytest.mark.parametrize("bad", ["veneu", "Venue ", "kraken", "", None])
+def test_unknown_source_fails_loud_not_silent_market(bad):
+    # a typo must raise, never silently degrade a live venue book to market-wide
+    with pytest.raises(ValueError, match="screen_volume_source"):
+        resolve_screen_inputs("live", _PRICES, _VOLUME, _FakeProvider(), screen_volume_source=bad)
+
+
+def test_select_universe_picks_different_names_market_vs_venue():
+    """End-to-end proof: the two rankers select different Stage-2 tickers.
+
+    A is liquid on-venue; B is liquid market-wide. All three pass the mcap tier.
+    """
+    idx = pd.date_range("2026-01-01", periods=5, freq="D")
+    cols = ["A", "B", "C"]
+    prices = pd.DataFrame(1.0, index=idx, columns=cols)
+    mcap = pd.DataFrame({"A": 3e9, "B": 2e9, "C": 1e9}, index=idx)  # all top-3
+    venue_vol = pd.DataFrame({"A": 100.0, "B": 1.0, "C": 1.0}, index=idx)  # A wins on-venue
+    market_vol = pd.DataFrame({"A": 1.0, "B": 100.0, "C": 1.0}, index=idx)  # B wins market-wide
+
+    def picked(mask):
+        return set(mask.columns[mask.iloc[-1].astype(bool)])
+
+    venue_sel = select_universe(
+        prices,
+        venue_vol,
+        market_cap=mcap,
+        top_by_mcap=3,
+        top_by_volume=1,
+        volume_is_dollar=True,
+        screen_volume=None,  # empty -> per-venue
+    )
+    market_sel = select_universe(
+        prices,
+        venue_vol,
+        market_cap=mcap,
+        top_by_mcap=3,
+        top_by_volume=1,
+        volume_is_dollar=True,
+        screen_volume=market_vol,  # populated -> market-wide
+    )
+    assert picked(venue_sel) == {"A"}
+    assert picked(market_sel) == {"B"}
