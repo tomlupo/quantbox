@@ -855,6 +855,7 @@ def resolve_screen_inputs(
     prices: pd.DataFrame,
     volume: pd.DataFrame,
     provider: MarketCapProvider | None = None,
+    screen_volume_source: str = "market",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Resolve ``(market_cap, screen_volume)`` for the universe screen, mode-aware.
 
@@ -863,6 +864,17 @@ def resolve_screen_inputs(
         ``market_cap = provider.estimate_market_cap`` and
         ``screen_volume = provider.estimate_aggregate_volume`` (the market-wide,
         cross-exchange 24h volume that powers the live liquidity screen).
+
+        ``screen_volume_source`` (default ``"market"``) selects the Stage-2
+        liquidity ranker in live/paper — OPT-IN; the default is unchanged:
+
+        - ``"market"`` (default) — market-wide aggregate volume. Right for an
+          index/mirror book screened against a cross-venue reference.
+        - ``"venue"`` — return an EMPTY ``screen_volume`` so :func:`select_universe`
+          ranks Stage-2 on the plugin's per-venue dollar volume instead. Right for
+          a single-venue *execution* book (e.g. a live Kraken-USD spot book), which
+          must only hold names actually fillable on that venue. Market cap (Stage-1)
+          is unaffected — still the genuine cross-venue snapshot.
 
     BACKTEST (and any non-live mode, including the unset default)
         The snapshot would be look-ahead. Source point-in-time market cap from
@@ -874,12 +886,21 @@ def resolve_screen_inputs(
     The default for an unset/unknown mode is the backtest (point-in-time) path —
     the conservative choice that can never silently introduce look-ahead.
     """
+    # Fail loud on an unknown source: a typo must NOT silently degrade a live
+    # venue book to the market-wide screen. Validated regardless of mode.
+    src = str(screen_volume_source).lower()
+    if src not in ("market", "venue"):
+        raise ValueError(f"screen_volume_source must be 'market' or 'venue', got {screen_volume_source!r}")
     empty = pd.DataFrame()
     if prices is None or prices.empty:
         return empty, empty
     if str(mode).lower() in ("live", "paper"):
         prov = provider or MarketCapProvider()
         market_cap = prov.estimate_market_cap(prices, volume)
+        # OPT-IN venue-liquidity screen: empty screen_volume -> select_universe
+        # ranks Stage-2 on per-venue dollar volume. Default keeps market-wide.
+        if src == "venue":
+            return market_cap, empty
         screen_volume = prov.estimate_aggregate_volume(prices)
         return market_cap, screen_volume
     # backtest / default: point-in-time market cap, per-venue volume for Stage 2.
