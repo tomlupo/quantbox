@@ -403,6 +403,7 @@ class MarketCapProvider:
         fallback_ttl_hours: float = 28.0,
         limit: int = 250,
         source: str = "coingecko",
+        strict: bool = False,
         # Legacy params (ignored, kept for backwards compat)
         api_key: str | None = None,
     ) -> None:
@@ -410,6 +411,12 @@ class MarketCapProvider:
         self.fresh_ttl_hours = fresh_ttl_hours
         self.fallback_ttl_hours = fallback_ttl_hours
         self.limit = limit
+        # Fail-closed (OPT-IN): when True and source is CoinMarketCap, a missing
+        # key / empty / failed CMC fetch RAISES instead of silently degrading to
+        # stale cache or hardcoded supplies. For a funded single-venue book whose
+        # universe ranks on genuine CMC mcap, a degraded screen must never trade.
+        # Default False keeps the graceful-degrade behaviour (paper/mirror books).
+        self.strict = bool(strict)
         # Rankings source: "coingecko" (default, free, no key) or "coinmarketcap"
         # (CMC pro-api, needs API_KEY_COINMARKETCAP — mirrors quantlab's screen).
         self.source = "coinmarketcap" if str(source).lower() in self._CMC_ALIASES else "coingecko"
@@ -535,6 +542,11 @@ class MarketCapProvider:
         """
         api_key = os.environ.get("API_KEY_COINMARKETCAP") or os.environ.get("CMC_API_KEY")
         if not api_key:
+            if self.strict:
+                raise RuntimeError(
+                    "strict CMC mcap: no API_KEY_COINMARKETCAP/CMC_API_KEY in env — refusing "
+                    "to trade a degraded (cached/hardcoded) universe."
+                )
             logger.warning(
                 "CoinMarketCap source requested but no API_KEY_COINMARKETCAP/CMC_API_KEY "
                 "in env; falling back to cached/hardcoded market cap."
@@ -551,6 +563,8 @@ class MarketCapProvider:
             resp.raise_for_status()
             data = resp.json().get("data", [])
             if not data:
+                if self.strict:
+                    raise RuntimeError("strict CMC mcap: CoinMarketCap returned empty data.")
                 logger.warning("CoinMarketCap API returned empty data")
                 return cached
 
@@ -573,7 +587,11 @@ class MarketCapProvider:
             logger.info("Fetched CoinMarketCap rankings for %d coins", len(df))
             return df
 
+        except RuntimeError:
+            raise  # strict fail-closed already raised above — propagate
         except Exception as exc:
+            if self.strict:
+                raise RuntimeError(f"strict CMC mcap: CoinMarketCap fetch failed: {exc!r}") from exc
             logger.warning("CoinMarketCap API call failed: %s", exc)
             return cached  # fall back to stale cache
 
