@@ -73,6 +73,16 @@ class KrakenDataPlugin:
                         "live Kraken-USD spot). Stage-1 market cap is unaffected."
                     ),
                 },
+                "require_genuine_mcap": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Fail-closed (opt-in). When true and mcap_source is CMC, a "
+                        "missing-key/empty/failed CMC fetch RAISES instead of silently "
+                        "degrading to cached/hardcoded market cap — so a funded book whose "
+                        "universe ranks on genuine CMC mcap never trades a degraded screen."
+                    ),
+                },
             },
         },
         outputs=("universe", "prices", "volume", "market_cap", "screen_volume"),
@@ -85,12 +95,15 @@ class KrakenDataPlugin:
     # Stage-2 liquidity ranker (live/paper): "market" (default, aggregate) or
     # "venue" (per-venue dollar volume — single-venue execution books). OPT-IN.
     screen_volume_source: str = "market"
+    # Fail-closed on degraded CMC mcap (opt-in; funded books). Default off.
+    require_genuine_mcap: bool = False
     _fetcher: KrakenDataFetcher = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._fetcher = KrakenDataFetcher(
             quote_asset=self.quote_asset,
             mcap_source=self.mcap_source,
+            require_genuine_mcap=self.require_genuine_mcap,
         )
 
     # ------------------------------------------------------------------

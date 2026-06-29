@@ -159,6 +159,9 @@ class KrakenDataFetcher:
     # Market-cap rankings source: "coingecko" (default) or "coinmarketcap"/"cmc".
     mcap_source: str = "coingecko"
     cmc_api_key: str | None = None
+    # Fail-closed (OPT-IN): when True + CMC source, a missing-key/empty/failed CMC
+    # fetch RAISES instead of degrading to cache/hardcoded. For a funded book.
+    require_genuine_mcap: bool = False
     _cmc_provider: MarketCapProvider | None = field(default=None, repr=False)
 
     # CCXT exchange instance (injectable for tests)
@@ -185,6 +188,7 @@ class KrakenDataFetcher:
                 cache_dir=self.cache_dir,
                 fresh_ttl_hours=self.cache_fresh_ttl_hours,
                 source=self.mcap_source,
+                strict=self.require_genuine_mcap,
             )
 
     def describe(self) -> dict[str, Any]:
