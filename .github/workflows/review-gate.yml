@@ -1,21 +1,12 @@
 name: review-gate
 
-# Makes the absence of an independent reviewer verdict LOUD.
-#
-# The CI `claude-review` action posts inline + top-level *comments*, which do
-# NOT create a GitHub review object and never populate the Reviewers box. The
-# operating rule is that the independent reviewer (codex by default; a Code
-# Reviewer subagent when codex is unavailable) posts its verdict as a native
-# review:  gh pr review <#> --repo <r> --comment --body "codex: SHIP/..."
-#
-# This gate fails until at least one such review object exists on the PR, so a
-# clean-looking PR that was never independently reviewed shows a red check
-# instead of a green "No reviews". It re-evaluates when a review is submitted.
-#
-# NOTE: these repos have no GitHub branch protection (plan limitation; an
-# agent-side guard hook stands in). So this check reports but cannot itself
-# block merge — mark it a required check once branch protection is available.
-
+# Fails a PR until an INDEPENDENT reviewer (a party other than the author) posts
+# a verdict as a native GitHub review object. The standardized independent
+# reviewer is qute-review[bot] (posted by the local cross-model review: codex /
+# Code Reviewer / qute-review); a human reviewer who isn't the author also
+# satisfies it. A self-review by the author never counts — so a builder cannot
+# self-certify. (No branch protection on this plan, so this REPORTS red but
+# can't hard-block; an agent-side guard + the GH pull-tick back it up.)
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
@@ -32,23 +23,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  require-reviewer-verdict:
-    name: require-reviewer-verdict
+  require-independent-reviewer:
+    name: require-independent-reviewer
     runs-on: ubuntu-latest
     steps:
-      - name: Check for an independent reviewer verdict
+      - name: Check for an independent (non-author) reviewer verdict
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           COUNT=$(gh api "repos/$REPO/pulls/$PR/reviews" \
-            --jq '[.[] | select(.state=="COMMENTED" or .state=="APPROVED" or .state=="CHANGES_REQUESTED")] | length')
-          echo "Review objects on PR #$PR: $COUNT"
+            | jq --arg a "$AUTHOR" '[.[] | select((.state=="COMMENTED" or .state=="APPROVED" or .state=="CHANGES_REQUESTED") and .user.login != $a)] | length')
+          echo "Independent (non-author) review objects on PR #$PR: $COUNT"
           if [ "${COUNT:-0}" -ge 1 ]; then
-            echo "Gate satisfied — an independent reviewer verdict is on the PR."
+            echo "Gate satisfied — an independent reviewer (not the author) posted a verdict."
           else
-            echo "::error::No reviewer verdict on this PR. The independent reviewer must post one:"
-            echo "::error::  gh pr review $PR --repo $REPO --comment --body \"codex: SHIP / SHIP-WITH-NITS / blocker …\""
+            echo "::error::No INDEPENDENT reviewer verdict. A party other than the author must post one (qute-review[bot] via the local cross-model review, or another reviewer): gh pr review $PR --repo $REPO --comment --body \"codex: SHIP / SHIP-WITH-NITS / blocker …\""
             exit 1
           fi
