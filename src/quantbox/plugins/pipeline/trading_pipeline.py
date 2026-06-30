@@ -1229,7 +1229,14 @@ class TradingPipeline:
             reasons: dict[str, Any] = {}
             # Statuses that mean "the strategy WANTED to trade but the order was
             # suppressed by a guard" (vs. a legitimately quiet day of zero-deltas).
-            suppressed_statuses = {"Below min notional", "Below threshold", "Zero price", "Invalid (NaN)"}
+            suppressed_statuses = {
+                "Below min notional",
+                "Below threshold",
+                "Below min qty",
+                "Zero quantity",
+                "Zero price",
+                "Invalid (NaN)",
+            }
             suppressed = pd.DataFrame()
             if "Order Status" in orders_df.columns:
                 reasons = orders_df["Order Status"].value_counts().to_dict()
