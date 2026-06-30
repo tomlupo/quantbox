@@ -321,9 +321,12 @@ def test_pipeline_quiet_day_all_cash_sub_min_targets():
     assert "Below min notional" in str(report.get("quiet_reasons"))
 
 
-def test_pipeline_quiet_day_without_get_positions_uses_order_actions():
-    """Broker lacking get_positions: all-buy suppression still => QUIET (no
-    suppressed sells means nothing is trapped)."""
+def test_pipeline_quiet_day_without_get_positions_fails_safe_to_freeze():
+    """Issue #82: a broker that exposes NO get_positions cannot confirm the book
+    is flat. All-buy suppression looks quiet on a long-only spot book, but on a
+    futures book a suppressed BUY can be a short-close EXIT the has_suppressed_sell
+    heuristic does not catch. Without the position probe we must NOT downgrade to
+    quiet — fail safe to FROZEN and alert."""
     pipe = TradingPipeline()
     broker = _FakeBroker()  # no get_positions
     report = pipe._execute_orders(
@@ -333,9 +336,10 @@ def test_pipeline_quiet_day_without_get_positions_uses_order_actions():
         trading_enabled=True,
         mode="live",
     )
-    assert report.get("quiet_day") is True
-    assert not report.get("frozen")
-    assert broker.messages == []
+    assert report.get("frozen") is True
+    assert not report.get("quiet_day")
+    assert len(broker.messages) == 1
+    assert "FROZEN" in broker.messages[0]
 
 
 def test_pipeline_trapped_position_with_only_buy_orders_still_freezes():

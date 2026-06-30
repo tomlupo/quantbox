@@ -1356,6 +1356,7 @@ class TradingPipeline:
                 has_suppressed_sell = bool((actions == "sell").any())
 
                 has_liquidatable_positions = False
+                cannot_confirm_flat = False
                 get_positions = getattr(broker, "get_positions", None)
                 if callable(get_positions):
                     try:
@@ -1365,9 +1366,25 @@ class TradingPipeline:
                         # Fail SAFE: if we cannot confirm the book is flat, treat
                         # it as potentially trapped (do not downgrade to quiet).
                         logger.warning("Position probe for quiet/freeze classification failed: %s", exc)
-                        has_liquidatable_positions = True
+                        cannot_confirm_flat = True
+                else:
+                    # Fail SAFE (issue #82): a broker with no position probe cannot
+                    # confirm the book is flat. On a long-only spot book a suppressed
+                    # BUY is always a (harmless) entry, but on a futures book a BUY can
+                    # be a short-close EXIT that the has_suppressed_sell heuristic does
+                    # NOT catch. Without get_positions we cannot tell quiet from
+                    # trapped, so we must NOT silently downgrade to quiet — classify as
+                    # potentially trapped and alert. (Both live books — Kraken spot and
+                    # Hyperliquid perps — always expose get_positions, so this never
+                    # false-fires on a healthy live run.)
+                    logger.warning(
+                        "Broker %s exposes no get_positions; cannot confirm a flat book "
+                        "for quiet/freeze classification — failing safe to trapped.",
+                        type(broker).__name__,
+                    )
+                    cannot_confirm_flat = True
 
-                trapped = has_suppressed_sell or has_liquidatable_positions
+                trapped = has_suppressed_sell or has_liquidatable_positions or cannot_confirm_flat
 
                 if not trapped:
                     # QUIET DAY: all-cash, every target leg sub-min. Stay in cash.
