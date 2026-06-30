@@ -52,6 +52,48 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 2
 
+# Quote-equivalent stablecoins. A balance in one of these on a fiat-quoted
+# (USD/EUR) spot book is cash-equivalent *dust*, NOT a trading position to
+# liquidate. Treating e.g. a 0.0014 USDC residue as a sellable position emits a
+# guaranteed below-minimum order (Kraken's USDC min is 5.0) that can only fail —
+# and on a low-exposure day it becomes the *only* executable order, masking an
+# otherwise-clean no-trade signal. Excluded from get_positions, analogous to the
+# staking-suffix skip in _fetch_balances. quantbox-datasets' DEFAULT_STABLECOINS
+# is additive but may be empty when that package is absent, so the broker carries
+# an explicit self-contained floor set here.
+QUOTE_STABLECOINS = frozenset(
+    {
+        "USDC",
+        "USDT",
+        "DAI",
+        "TUSD",
+        "BUSD",
+        "FDUSD",
+        "USDP",
+        "GUSD",
+        "PYUSD",
+        "USD1",
+        "USDS",
+        "USDD",
+        "FRAX",
+        "LUSD",
+        "EURT",
+        "EURC",
+        "USTC",
+    }
+)
+
+
+class _SkipOrder:
+    """Sentinel: an order intentionally NOT placed (sub-minimum / sub-precision
+    dust). A clean no-op — neither a fill nor a failure."""
+
+    __slots__ = ()
+
+
+# Singleton sentinel returned by _place_one for orders too small to place.
+SKIP_ORDER = _SkipOrder()
+
 
 @dataclass
 class KrakenBroker:
@@ -178,6 +220,18 @@ class KrakenBroker:
         for asset, qty in balances.items():
             if asset == quote:
                 continue
+            # Quote-equivalent stablecoins are cash-equivalent dust, not trading
+            # positions to liquidate (see QUOTE_STABLECOINS). A USDC residue on a
+            # USD-quoted book would otherwise become a guaranteed sub-minimum sell.
+            if asset in QUOTE_STABLECOINS:
+                if qty > 0:
+                    logger.info(
+                        "Skipping quote-equivalent stablecoin balance %s=%s "
+                        "(cash-equivalent dust, not a liquidatable position)",
+                        asset,
+                        qty,
+                    )
+                continue
             if qty > 0:
                 rows.append({"symbol": asset, "qty": float(qty)})
         return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["symbol", "qty"])
@@ -271,13 +325,30 @@ class KrakenBroker:
 
         rows: list[dict[str, Any]] = []
         n_failed = 0
+        n_skipped = 0
         for _, o in orders.iterrows():
             sym = str(o["symbol"])
             side = str(o["side"]).lower()
             qty = float(o["qty"])
             price = o.get("price", None)
             result = self._place_one(sym, side, qty, price)
-            if result is not None:
+            if result is SKIP_ORDER:
+                # Sub-minimum / sub-precision dust: a clean no-op, NOT a failure.
+                # Reported as SKIPPED so the pipeline counts it as neither a fill
+                # nor a failed order, and it never blocks the rest of the batch.
+                rows.append(
+                    {
+                        "symbol": sym,
+                        "side": side,
+                        "qty": qty,
+                        "price": 0.0,
+                        "order_id": None,
+                        "status": "SKIPPED",
+                        "error": "below exchange minimum (skipped)",
+                    }
+                )
+                n_skipped += 1
+            elif result is not None:
                 fill_price = float(result.get("average", result.get("price", 0)) or 0)
                 filled_qty = float(result.get("filled", qty) or qty)
                 rows.append(
@@ -305,6 +376,8 @@ class KrakenBroker:
                 )
                 n_failed += 1
 
+        if n_skipped:
+            logger.info("Kraken orders skipped as sub-minimum dust (%d/%d)", n_skipped, len(orders))
         if n_failed:
             logger.error("Kraken orders failed (%d/%d)", n_failed, len(orders))
         return pd.DataFrame(rows, columns=cols)
@@ -315,7 +388,7 @@ class KrakenBroker:
         side: str,
         quantity: float,
         price: Any = None,
-    ) -> dict | None:
+    ) -> dict | _SkipOrder | None:
         if side not in ("buy", "sell"):
             logger.error("Invalid side %r for %s (spot is long-only buy/sell)", side, symbol)
             return None
@@ -349,12 +422,12 @@ class KrakenBroker:
             quantity = math.floor(quantity * factor) / factor
         if quantity <= 0:
             logger.warning("Quantity rounds to zero for %s (precision=%s)", symbol, precision)
-            return None
+            return SKIP_ORDER
 
         min_qty = (market.get("limits", {}).get("amount", {}) or {}).get("min") or 0
         if min_qty and quantity < min_qty:
             logger.warning("Quantity %s below Kraken minimum %s for %s", quantity, min_qty, symbol)
-            return None
+            return SKIP_ORDER
 
         # A NaN price must NOT route to a limit order (pd.notna(NaN) is False).
         has_price = pd.notna(price) and price > 0

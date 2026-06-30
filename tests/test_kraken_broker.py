@@ -159,18 +159,47 @@ def test_readonly_blocks_orders():
         b.place_orders(pd.DataFrame([{"symbol": "BTC", "side": "buy", "qty": 0.01}]))
 
 
-def test_below_min_qty_fails():
+def test_below_min_qty_skips_not_fails():
+    # A sub-minimum / sub-precision order is a clean SKIP, never a FAILURE — it
+    # placed no order and moved no capital, so it must not inflate total_failed.
     b = _broker()
     orders = pd.DataFrame([{"symbol": "BTC", "side": "buy", "qty": 0.00001}])  # < min 0.0001
     fills = b.place_orders(orders)
-    assert fills.iloc[0]["status"] == "FAILED"
+    assert fills.iloc[0]["status"] == "SKIPPED"
     assert b._exchange.created_orders == []
+
+
+def test_skip_does_not_block_other_orders():
+    # A sub-min dust order must NOT abort the rest of the batch: the legitimate
+    # BTC buy still fills even though the dust sell is skipped.
+    b = _broker()
+    orders = pd.DataFrame(
+        [
+            {"symbol": "BTC", "side": "sell", "qty": 0.00001},  # dust -> SKIPPED
+            {"symbol": "BTC", "side": "buy", "qty": 0.01},  # real -> FILLED
+        ]
+    )
+    fills = b.place_orders(orders)
+    statuses = fills["status"].tolist()
+    assert statuses == ["SKIPPED", "FILLED"]
+    assert len(b._exchange.created_orders) == 1  # only the real buy reached Kraken
 
 
 def test_negative_qty_rejected():
     b = _broker()
     fills = b.place_orders(pd.DataFrame([{"symbol": "BTC", "side": "buy", "qty": -1.0}]))
     assert fills.iloc[0]["status"] == "FAILED"
+
+
+def test_get_positions_excludes_stablecoin_dust():
+    # A USDC residue alongside a USD quote is cash-equivalent dust, NOT a
+    # liquidatable position — it must never appear in get_positions (else the
+    # rebalancer emits a guaranteed sub-minimum sell). Real positions remain.
+    b = _broker({"total": {"ZUSD": 278.0, "USDC": 0.001442, "ETH": 2.0}})
+    pos = b.get_positions()
+    syms = dict(zip(pos["symbol"], pos["qty"], strict=False))
+    assert syms == {"ETH": 2.0}
+    assert "USDC" not in pos["symbol"].tolist()
 
 
 def test_unknown_market_fails():

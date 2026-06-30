@@ -1304,6 +1304,20 @@ class TradingPipeline:
         if fills is not None and not fills.empty:
             for _, fill_row in fills.iterrows():
                 status = str(fill_row.get("status", "FILLED"))
+                if status == "SKIPPED":
+                    # Broker intentionally did not place this order (sub-minimum /
+                    # sub-precision dust). A clean no-op: neither executed nor
+                    # failed — record for visibility but do not count it.
+                    report["orders_details"].append(
+                        {
+                            "symbol": str(fill_row.get("symbol", "")),
+                            "action": str(fill_row.get("side", "")),
+                            "quantity": float(fill_row.get("qty", 0)),
+                            "status": "SKIPPED",
+                            "error": str(fill_row.get("error", "below exchange minimum (skipped)")),
+                        }
+                    )
+                    continue
                 if status == "FAILED":
                     report["orders_details"].append(
                         {
