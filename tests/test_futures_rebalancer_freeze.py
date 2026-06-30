@@ -397,3 +397,142 @@ def test_pipeline_freeze_survives_broker_without_notify():
         mode="live",
     )
     assert report.get("frozen") is True
+
+
+# ---------------------------------------------------------------------------
+# Issue #81: all-skipped-at-broker close-out SELL must still trip the freeze
+# ---------------------------------------------------------------------------
+
+
+class _SkipAllBroker(_FakeBroker):
+    """Broker that accepts the batch but SKIPS every order (sub-exchange-min).
+
+    Mirrors the post-dust-fix KrakenBroker behaviour where a sub-minimum order
+    is a clean SKIP (status SKIPPED) rather than a hard FAILED.
+    """
+
+    def place_orders(self, orders: pd.DataFrame) -> pd.DataFrame:
+        cols = ["symbol", "side", "qty", "price", "order_id", "status", "error"]
+        rows = []
+        for _, o in orders.iterrows():
+            rows.append(
+                {
+                    "symbol": str(o["symbol"]),
+                    "side": str(o["side"]).lower(),
+                    "qty": float(o["qty"]),
+                    "price": 0.0,
+                    "order_id": None,
+                    "status": "SKIPPED",
+                    "error": "below exchange minimum (skipped)",
+                }
+            )
+        return pd.DataFrame(rows, columns=cols)
+
+
+def _executable_closeout_sell_df() -> pd.DataFrame:
+    """An *executable* close-out SELL (min-notional-exempt) plus a normal buy —
+    both of which the broker will skip sub-minimum."""
+    rows = [
+        ("ADA", "Sell", 0.5, "To be placed", True),
+        ("BTC", "Buy", 0.0001, "To be placed", True),
+    ]
+    return pd.DataFrame(
+        [
+            {
+                "Asset": a,
+                "Action": act,
+                "Adjusted Quantity": qty,
+                "Price": 1.0,
+                "Notional Value": 0.5,
+                "Order Status": status,
+                "Executable": ex,
+            }
+            for (a, act, qty, status, ex) in rows
+        ]
+    )
+
+
+def test_pipeline_all_skipped_closeout_sell_trips_freeze():
+    """Issue #81: an executable close-out SELL the broker returns as SKIPPED
+    (zero fills, no hard failures) is a trapped residual — it must trip the
+    freeze/alert path, not read as a healthy run."""
+    pipe = TradingPipeline()
+    broker = _SkipAllBroker()
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=_executable_closeout_sell_df(),
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+    )
+    assert report.get("frozen") is True
+    assert report["summary"]["total_executed"] == 0
+    assert report["summary"]["total_failed"] == 0
+    assert report["freeze_reasons"]["skipped_sell"] >= 1
+    assert len(broker.messages) == 1
+    assert "FROZEN" in broker.messages[0]
+
+
+def test_pipeline_all_skipped_buys_only_is_not_a_freeze():
+    """Guard against false positives: an all-skipped batch with NO close-out
+    SELL (entries only) is a quiet all-cash outcome, not a trapped book."""
+    pipe = TradingPipeline()
+    broker = _SkipAllBroker()
+    orders_df = pd.DataFrame(
+        [
+            {
+                "Asset": "BTC",
+                "Action": "Buy",
+                "Adjusted Quantity": 0.0001,
+                "Price": 1.0,
+                "Notional Value": 0.5,
+                "Order Status": "To be placed",
+                "Executable": True,
+            }
+        ]
+    )
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=orders_df,
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+    )
+    assert not report.get("frozen")
+    assert broker.messages == []
+
+
+def test_pipeline_skipped_sell_with_a_real_fill_is_not_frozen():
+    """A skipped SELL alongside a genuine fill is NOT a frozen book — there was
+    real execution, so the dead-man must stay quiet."""
+
+    class _PartlyFillBroker(_FakeBroker):
+        def place_orders(self, orders: pd.DataFrame) -> pd.DataFrame:
+            cols = ["symbol", "side", "qty", "price", "order_id", "status", "error"]
+            rows = []
+            for _, o in orders.iterrows():
+                side = str(o["side"]).lower()
+                if side == "sell":
+                    rows.append(
+                        {"symbol": o["symbol"], "side": side, "qty": float(o["qty"]),
+                         "price": 0.0, "order_id": None, "status": "SKIPPED", "error": "dust"}
+                    )
+                else:
+                    rows.append(
+                        {"symbol": o["symbol"], "side": side, "qty": float(o["qty"]),
+                         "price": 100.0, "order_id": "1", "status": "FILLED", "error": ""}
+                    )
+            return pd.DataFrame(rows, columns=cols)
+
+    pipe = TradingPipeline()
+    broker = _PartlyFillBroker()
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=_executable_closeout_sell_df(),
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+    )
+    assert not report.get("frozen")
+    assert report["summary"]["total_executed"] == 1
+    assert broker.messages == []

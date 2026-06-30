@@ -1477,6 +1477,8 @@ class TradingPipeline:
 
         # Process fills and failures
         if fills is not None and not fills.empty:
+            n_skipped = 0
+            n_skipped_sell = 0  # close-out SELLs the broker could not place (#81)
             for _, fill_row in fills.iterrows():
                 status = str(fill_row.get("status", "FILLED")).upper()
                 side = str(fill_row.get("side", "")).lower()
@@ -1493,6 +1495,13 @@ class TradingPipeline:
                             "error": str(fill_row.get("error", "below exchange minimum (skipped)")),
                         }
                     )
+                    n_skipped += 1
+                    if side == "sell":
+                        # A close-out/reduce the book WANTED to make but the broker
+                        # could not place (sub-exchange-min). Tracked so an all-
+                        # skipped batch with a trapped residual is not mistaken for
+                        # a healthy run (#81).
+                        n_skipped_sell += 1
                     continue
                 if status == "FAILED":
                     report["orders_details"].append(
@@ -1542,6 +1551,48 @@ class TradingPipeline:
 
                 report["orders_details"].append(detail)
                 report["summary"]["total_executed"] += 1
+
+            # Freeze guard (issue #81): the broker returned rows, but if EVERY
+            # submitted order was SKIPPED (zero fills, zero hard failures) and at
+            # least one of those skips was a close-out SELL, the book has a
+            # trapped residual it wanted to exit but could not place at the venue.
+            # Post the dust-fix this surfaces as SKIPPED instead of the pre-PR
+            # FAILED count, so without this it would read as a healthy run. Treat
+            # it as a freeze and alert — the trapped-residual signal must not be
+            # lost just because the orders were *executable* upstream.
+            if (
+                report["summary"]["total_executed"] == 0
+                and report["summary"]["total_failed"] == 0
+                and n_skipped_sell >= 1
+            ):
+                report["frozen"] = True
+                reasons = {"skipped_sell": n_skipped_sell, "skipped_total": n_skipped}
+                report["freeze_reasons"] = reasons
+                skipped_list = ", ".join(
+                    f"{str(d.get('action', '')).upper()} {d.get('symbol', '')}"
+                    for d in report["orders_details"]
+                    if d.get("status") == "SKIPPED"
+                )
+                logger.error(
+                    "REBALANCER FROZEN: all %d submitted order(s) skipped at broker "
+                    "(0 fills, %d close-out SELL(s) skipped sub-minimum). Residual "
+                    "exposure RETAINED — book NOT rebalanced. Skipped: %s",
+                    n_skipped,
+                    n_skipped_sell,
+                    skipped_list,
+                )
+                notify = getattr(broker, "notify", None)
+                if notify:
+                    try:
+                        notify(
+                            f"🧊 <b>REBALANCER FROZEN — all {n_skipped} order(s) skipped at broker</b>\n"
+                            f"{n_skipped_sell} close-out SELL(s) below exchange minimum; "
+                            "residual exposure RETAINED.\n"
+                            f"Skipped: {skipped_list}\n"
+                            "Book NOT rebalanced — monitor for a trapped residual."
+                        )
+                    except Exception as exc:  # never let alerting crash the run
+                        logger.warning("Freeze alert notify failed: %s", exc)
         else:
             # Submitted orders but received zero fills — broker-level failure.
             order_list = ", ".join(
