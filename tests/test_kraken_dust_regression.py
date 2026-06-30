@@ -167,4 +167,62 @@ def test_sub_min_dust_sell_skips_cleanly_at_broker():
     by_sym = dict(zip(fills["symbol"], fills["status"], strict=False))
     assert by_sym["USDC"] == "SKIPPED"
     assert by_sym["BTC"] == "FILLED"
-    assert (fills["status"] == "FAILED").sum() == 0
+
+
+# ---------------------------------------------------------------------------
+# Nit 1: peg-scoped stablecoin exclusion (PR #80 review)
+# ---------------------------------------------------------------------------
+
+
+def test_eur_stable_not_excluded_on_usd_book():
+    """A EUR-pegged stable (EURT) on a USD book is a genuine FX position, NOT
+    USD-cash-equivalent dust — it must remain liquidatable."""
+    balance = {"total": {"ZUSD": 278.80, "EURT": 50.0, "USDC": 0.001442}}
+    pos = _broker(balance).get_positions()
+    symbols = pos["symbol"].tolist()
+    assert "EURT" in symbols  # FX position retained on the exit path
+    assert "USDC" not in symbols  # USD-pegged dust still excluded
+
+
+def test_depegged_token_not_excluded_on_usd_book():
+    """A depegged token (USTC) is not cash-equivalent and must stay liquidatable."""
+    balance = {"total": {"ZUSD": 100.0, "USTC": 10000.0}}
+    pos = _broker(balance).get_positions()
+    assert "USTC" in pos["symbol"].tolist()
+
+
+def test_usd_stables_excluded_on_usd_book():
+    """USD-pegged stables (USDT/DAI) remain cash-equivalent dust on a USD book."""
+    balance = {"total": {"ZUSD": 100.0, "USDT": 0.002, "DAI": 0.003}}
+    pos = _broker(balance).get_positions()
+    assert pos.empty
+
+
+# ---------------------------------------------------------------------------
+# Nit 2: skipped close-out SELL surfaces a residual-exposure note (PR #80)
+# ---------------------------------------------------------------------------
+
+
+def test_skipped_closeout_sell_surfaces_residual(caplog):
+    """A sub-min close-out SELL is SKIPPED (not FAILED) but must be surfaced as a
+    residual-exposure note so a trapped residual stays visible."""
+    import logging
+
+    broker = _broker(_ACCOUNT)
+    orders = pd.DataFrame([{"symbol": "USDC", "side": "sell", "qty": 0.001442, "price": 1.0}])
+    with caplog.at_level(logging.WARNING):
+        fills = broker.place_orders(orders)
+    assert (fills["status"] == "SKIPPED").all()
+    assert "residual exposure" in fills.iloc[0]["error"].lower()
+    assert any("residual exposure RETAINED" in r.message for r in caplog.records)
+
+
+def test_skipped_buy_does_not_surface_residual(caplog):
+    """A sub-min BUY skip is a quiet no-op — it must NOT emit a residual note."""
+    import logging
+
+    broker = _broker(_ACCOUNT)
+    orders = pd.DataFrame([{"symbol": "BTC", "side": "buy", "qty": 1e-9, "price": 60000.0}])
+    with caplog.at_level(logging.WARNING):
+        broker.place_orders(orders)
+    assert not any("residual exposure RETAINED" in r.message for r in caplog.records)

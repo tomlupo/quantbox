@@ -535,6 +535,10 @@ class TradingPipeline:
             # but every order was suppressed (book frozen on stale positions).
             # Monitors/dashboards should alarm on rebalance_frozen == 1.
             "rebalance_frozen": 1.0 if execution_report.get("frozen") else 0.0,
+            # Quiet-day signal: 1.0 means all-cash with every target leg sub-min
+            # (staying in cash). This is INFO-level, NOT a freeze — monitors must
+            # NOT alarm on it.
+            "quiet_day": 1.0 if execution_report.get("quiet_day") else 0.0,
         }
 
         return RunResult(
@@ -559,6 +563,8 @@ class TradingPipeline:
                 "artifact_payload": artifact_payload,
                 "rebalance_frozen": bool(execution_report.get("frozen", False)),
                 "freeze_reasons": execution_report.get("freeze_reasons", {}),
+                "quiet_day": bool(execution_report.get("quiet_day", False)),
+                "quiet_reasons": execution_report.get("quiet_reasons", {}),
                 **token_policy_notes,
             },
         )
@@ -1230,6 +1236,55 @@ class TradingPipeline:
                 suppressed = orders_df[orders_df["Order Status"].isin(suppressed_statuses)]
 
             if len(suppressed) > 0:
+                # Distinguish a TRAPPED book (real freeze) from a QUIET DAY
+                # (all-cash, nothing to do). The dead-man freeze exists to catch
+                # a book that SHOULD be rebalanced/exited but CANNOT — i.e. a
+                # held position whose exit/reduce order is sub-min and therefore
+                # suppressed. That manifests as a suppressed SELL leg, and/or the
+                # broker still reporting liquidatable positions (post stablecoin-
+                # dust exclusion, see kraken.get_positions).
+                #
+                # By contrast, on a weak-signal day an all-cash book produces a
+                # ~few-percent gross target where every ENTRY (buy) leg is below
+                # min_notional. Nothing is stuck — there are no positions to exit
+                # and no suppressed sells. Staying in cash is the correct, clean
+                # outcome, not a frozen rebalancer. Classify it as a QUIET DAY at
+                # INFO level so flat-trend days don't fire the loud freeze alert.
+                actions = suppressed.get("Action", pd.Series(dtype=object)).astype(str).str.lower()
+                has_suppressed_sell = bool((actions == "sell").any())
+
+                has_liquidatable_positions = False
+                get_positions = getattr(broker, "get_positions", None)
+                if callable(get_positions):
+                    try:
+                        pos = get_positions()
+                        has_liquidatable_positions = pos is not None and len(pos) > 0
+                    except Exception as exc:  # never let a position probe crash the run
+                        # Fail SAFE: if we cannot confirm the book is flat, treat
+                        # it as potentially trapped (do not downgrade to quiet).
+                        logger.warning("Position probe for quiet/freeze classification failed: %s", exc)
+                        has_liquidatable_positions = True
+
+                trapped = has_suppressed_sell or has_liquidatable_positions
+
+                if not trapped:
+                    # QUIET DAY: all-cash, every target leg sub-min. Stay in cash.
+                    report["quiet_day"] = True
+                    report["quiet_reasons"] = reasons
+                    order_list = ", ".join(
+                        f"{str(r.get('Action', '')).upper()} {r.get('Asset', '')} "
+                        f"(${float(r.get('Notional Value', 0) or 0):.2f}, {r.get('Order Status', '')})"
+                        for _, r in suppressed.iterrows()
+                    )
+                    logger.info(
+                        "QUIET DAY: all-cash, %d sub-min target leg(s) — staying in cash. "
+                        "No liquidatable positions and no suppressed exits, so the book is "
+                        "NOT frozen. Suppressed targets: %s",
+                        len(suppressed),
+                        order_list,
+                    )
+                    return report
+
                 # DEAD-MAN: a real rebalance was intended but EVERY order was
                 # filtered. The book is NOT tracking its targets — it is frozen
                 # on stale positions. Do not exit quietly: flag the run and alert.
