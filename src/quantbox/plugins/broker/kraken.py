@@ -52,6 +52,73 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 2
 
+# Quote-equivalent stablecoins, grouped BY PEG. A balance in a stablecoin pegged
+# to the book's configured quote currency is cash-equivalent *dust*, NOT a trading
+# position to liquidate. Treating e.g. a 0.0014 USDC residue on a USD book as a
+# sellable position emits a guaranteed below-minimum order (Kraken's USDC min is
+# 5.0) that can only fail — and on a low-exposure day it becomes the *only*
+# executable order, masking an otherwise-clean no-trade signal.
+#
+# The exclusion is SCOPED TO THE QUOTE'S PEG, not "any stablecoin": on a USD-quoted
+# book a EUR-pegged stable (EURT/EURC) is a genuine FX position that must remain
+# liquidatable, and a *depegged* token (USTC) is not cash-equivalent at all — both
+# must keep their place on the exit path. Excluded from get_positions analogous to
+# the staking-suffix skip in _fetch_balances.
+USD_PEGGED_STABLECOINS = frozenset(
+    {
+        "USDC",
+        "USDT",
+        "DAI",
+        "TUSD",
+        "BUSD",
+        "FDUSD",
+        "USDP",
+        "GUSD",
+        "PYUSD",
+        "USD1",
+        "USDS",
+        "USDD",
+        "FRAX",
+        "LUSD",
+    }
+)
+EUR_PEGGED_STABLECOINS = frozenset(
+    {
+        "EURT",
+        "EURC",
+        "EURS",
+        "EURR",
+    }
+)
+# Map a normalised fiat quote currency to the set of stables pegged to it. A quote
+# not listed here (or a crypto quote) yields an empty set — nothing is excluded,
+# which is the safe default (every balance stays liquidatable).
+_PEG_BY_QUOTE = {
+    "USD": USD_PEGGED_STABLECOINS,
+    "EUR": EUR_PEGGED_STABLECOINS,
+}
+
+
+def quote_equivalent_stablecoins(quote_asset: str) -> frozenset:
+    """Stablecoins that are cash-equivalent dust for the given quote currency.
+
+    Scoped to the quote's peg: a USD book excludes USD-pegged stables only; a EUR
+    book excludes EUR-pegged stables only. Depegged tokens (e.g. USTC) belong to no
+    peg set and are therefore never excluded.
+    """
+    return _PEG_BY_QUOTE.get(normalize_kraken_asset(quote_asset), frozenset())
+
+
+class _SkipOrder:
+    """Sentinel: an order intentionally NOT placed (sub-minimum / sub-precision
+    dust). A clean no-op — neither a fill nor a failure."""
+
+    __slots__ = ()
+
+
+# Singleton sentinel returned by _place_one for orders too small to place.
+SKIP_ORDER = _SkipOrder()
+
 
 @dataclass
 class KrakenBroker:
@@ -174,9 +241,24 @@ class KrakenBroker:
         """Non-quote asset balances as ``[symbol, qty]`` (long-only, qty >= 0)."""
         balances = self._fetch_balances()
         quote = normalize_kraken_asset(self.quote_asset)
+        # Only stables pegged to THIS book's quote are cash-equivalent dust; a
+        # EUR-stable on a USD book (or a depegged token) stays liquidatable.
+        quote_stables = quote_equivalent_stablecoins(self.quote_asset)
         rows = []
         for asset, qty in balances.items():
             if asset == quote:
+                continue
+            # Quote-equivalent stablecoins are cash-equivalent dust, not trading
+            # positions to liquidate. A USDC residue on a USD-quoted book would
+            # otherwise become a guaranteed sub-minimum sell.
+            if asset in quote_stables:
+                if qty > 0:
+                    logger.info(
+                        "Skipping quote-equivalent stablecoin balance %s=%s "
+                        "(cash-equivalent dust, not a liquidatable position)",
+                        asset,
+                        qty,
+                    )
                 continue
             if qty > 0:
                 rows.append({"symbol": asset, "qty": float(qty)})
@@ -271,13 +353,45 @@ class KrakenBroker:
 
         rows: list[dict[str, Any]] = []
         n_failed = 0
+        n_skipped = 0
+        residual_exits: list[str] = []
         for _, o in orders.iterrows():
             sym = str(o["symbol"])
             side = str(o["side"]).lower()
             qty = float(o["qty"])
             price = o.get("price", None)
             result = self._place_one(sym, side, qty, price)
-            if result is not None:
+            if result is SKIP_ORDER:
+                # Sub-minimum / sub-precision dust: a clean no-op, NOT a failure.
+                # Reported as SKIPPED so the pipeline counts it as neither a fill
+                # nor a failed order, and it never blocks the rest of the batch.
+                #
+                # A skipped *SELL* is special: it is a close-out/reduce the book
+                # WANTED to make but cannot (untradeable either way). Tradeability
+                # is unchanged from the old FAILED path, but silently dropping it
+                # could hide a trapped residual, so we surface it as a residual-
+                # exposure note (see residual_exits below) — distinct from a quiet
+                # all-cash day where only entries are skipped.
+                is_exit = side == "sell"
+                rows.append(
+                    {
+                        "symbol": sym,
+                        "side": side,
+                        "qty": qty,
+                        "price": 0.0,
+                        "order_id": None,
+                        "status": "SKIPPED",
+                        "error": (
+                            "below exchange minimum (skipped; residual exposure retained)"
+                            if is_exit
+                            else "below exchange minimum (skipped)"
+                        ),
+                    }
+                )
+                n_skipped += 1
+                if is_exit:
+                    residual_exits.append(f"{sym} (~{qty:g})")
+            elif result is not None:
                 fill_price = float(result.get("average", result.get("price", 0)) or 0)
                 filled_qty = float(result.get("filled", qty) or qty)
                 rows.append(
@@ -305,6 +419,18 @@ class KrakenBroker:
                 )
                 n_failed += 1
 
+        if n_skipped:
+            logger.info("Kraken orders skipped as sub-minimum dust (%d/%d)", n_skipped, len(orders))
+        if residual_exits:
+            # A close-out the book intended but could not place: the position is
+            # untradeable (sub-min) yet still on the book. Surface it so a stuck
+            # residual stays visible rather than vanishing as a silent SKIP.
+            logger.warning(
+                "Kraken close-out SELL(s) skipped sub-minimum — residual exposure RETAINED "
+                "on %d position(s): %s. Untradeable at current size; monitor for a trapped residual.",
+                len(residual_exits),
+                ", ".join(residual_exits),
+            )
         if n_failed:
             logger.error("Kraken orders failed (%d/%d)", n_failed, len(orders))
         return pd.DataFrame(rows, columns=cols)
@@ -315,7 +441,7 @@ class KrakenBroker:
         side: str,
         quantity: float,
         price: Any = None,
-    ) -> dict | None:
+    ) -> dict | _SkipOrder | None:
         if side not in ("buy", "sell"):
             logger.error("Invalid side %r for %s (spot is long-only buy/sell)", side, symbol)
             return None
@@ -349,12 +475,12 @@ class KrakenBroker:
             quantity = math.floor(quantity * factor) / factor
         if quantity <= 0:
             logger.warning("Quantity rounds to zero for %s (precision=%s)", symbol, precision)
-            return None
+            return SKIP_ORDER
 
         min_qty = (market.get("limits", {}).get("amount", {}) or {}).get("min") or 0
         if min_qty and quantity < min_qty:
             logger.warning("Quantity %s below Kraken minimum %s for %s", quantity, min_qty, symbol)
-            return None
+            return SKIP_ORDER
 
         # A NaN price must NOT route to a limit order (pd.notna(NaN) is False).
         has_price = pd.notna(price) and price > 0

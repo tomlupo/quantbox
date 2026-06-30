@@ -270,6 +270,114 @@ def test_pipeline_quiet_day_not_flagged():
     assert broker.messages == []
 
 
+class _FakeBrokerWithPositions(_FakeBroker):
+    """Broker that also reports liquidatable positions (post dust-exclusion)."""
+
+    def __init__(self, positions=None):
+        super().__init__()
+        self._positions = positions if positions is not None else {}
+
+    def get_positions(self):
+        return self._positions
+
+
+def _quiet_day_orders_df() -> pd.DataFrame:
+    """All-cash book on a weak-signal day: every ENTRY (buy) leg sub-min."""
+    rows = [
+        ("BTC", "Buy", 3.10, "Below min notional"),
+        ("ETH", "Buy", 2.80, "Below min notional"),
+        ("SOL", "Buy", 4.05, "Below min notional"),
+    ]
+    return pd.DataFrame(
+        [
+            {
+                "Asset": a,
+                "Action": act,
+                "Adjusted Quantity": 0.0,
+                "Price": 1.0,
+                "Notional Value": notion,
+                "Order Status": status,
+                "Executable": False,
+            }
+            for (a, act, notion, status) in rows
+        ]
+    )
+
+
+def test_pipeline_quiet_day_all_cash_sub_min_targets():
+    """All-cash + every target leg sub-min => QUIET DAY, no freeze alert."""
+    pipe = TradingPipeline()
+    broker = _FakeBrokerWithPositions(positions={})  # flat book
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=_quiet_day_orders_df(),
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+    )
+    assert report.get("quiet_day") is True
+    assert not report.get("frozen")
+    assert broker.messages == []  # no loud freeze alert on a flat-trend day
+    assert "Below min notional" in str(report.get("quiet_reasons"))
+
+
+def test_pipeline_quiet_day_without_get_positions_uses_order_actions():
+    """Broker lacking get_positions: all-buy suppression still => QUIET (no
+    suppressed sells means nothing is trapped)."""
+    pipe = TradingPipeline()
+    broker = _FakeBroker()  # no get_positions
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=_quiet_day_orders_df(),
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+    )
+    assert report.get("quiet_day") is True
+    assert not report.get("frozen")
+    assert broker.messages == []
+
+
+def test_pipeline_trapped_position_with_only_buy_orders_still_freezes():
+    """Defensive: even if the suppressed legs are all buys, a broker reporting
+    a liquidatable position means the book is NOT flat => FREEZE, not quiet."""
+    pipe = TradingPipeline()
+    broker = _FakeBrokerWithPositions(positions={"ADA": 1000.0})
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=_quiet_day_orders_df(),
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+    )
+    assert report.get("frozen") is True
+    assert not report.get("quiet_day")
+    assert len(broker.messages) == 1
+    assert "FROZEN" in broker.messages[0]
+
+
+def test_pipeline_quiet_day_boundary_one_leg_executable():
+    """One leg above min_notional => a normal trade, neither quiet nor frozen."""
+    pipe = TradingPipeline()
+    broker = _FakeBrokerWithPositions(positions={})
+    orders_df = _quiet_day_orders_df()
+    # Promote one leg to executable (above min, to-be-placed).
+    orders_df.loc[0, "Adjusted Quantity"] = 5.0
+    orders_df.loc[0, "Notional Value"] = 25.0
+    orders_df.loc[0, "Order Status"] = "To be placed"
+    orders_df.loc[0, "Executable"] = True
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=orders_df,
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+    )
+    assert not report.get("quiet_day")
+    assert not report.get("frozen")
+    assert broker.messages == []
+
+
 def test_pipeline_freeze_survives_broker_without_notify():
     """Freeze flag is still set even if the broker can't alert."""
 
