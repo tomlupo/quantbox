@@ -41,6 +41,7 @@ import pandas as pd
 from quantbox.contracts import PluginMeta
 
 from ..datasources.kraken_data import KRAKEN_BALANCE_SUFFIXES, normalize_kraken_asset
+from ._fills import resolve_fill
 
 try:
     import ccxt
@@ -338,6 +339,23 @@ class KrakenBroker:
     # Orders
     # ------------------------------------------------------------------
 
+    def _refetch_order(self, order: dict, symbol: str) -> dict | None:
+        """Re-read an order from Kraken to confirm its fill (issue #68).
+
+        Called only when the initial order result is too ambiguous to classify
+        (no status and no ``filled`` field). Read-only; any failure returns None
+        so the caller fails safe to not-filled.
+        """
+        order_id = order.get("id")
+        ms = self._market_symbol(symbol)
+        if not order_id or ms is None:
+            return None
+        try:
+            return self._exchange.fetch_order(order_id, ms)
+        except Exception as exc:  # noqa: BLE001 - confirmation must never crash execution
+            logger.warning("Kraken fill confirmation fetch_order failed for %s: %s", symbol, exc)
+            return None
+
     def place_orders(self, orders: pd.DataFrame) -> pd.DataFrame:
         """Place spot orders (MARKET by default, LIMIT when ``price`` given).
 
@@ -392,8 +410,14 @@ class KrakenBroker:
                 if is_exit:
                     residual_exits.append(f"{sym} (~{qty:g})")
             elif result is not None:
-                fill_price = float(result.get("average", result.get("price", 0)) or 0)
-                filled_qty = float(result.get("filled", qty) or qty)
+                # Confirm the REAL fill (issue #68): an order Kraken accepted but
+                # did not actually fill is reported FAILED/PARTIAL, never an
+                # unconditional FILLED. Never assume requested == filled.
+                status, filled_qty, fill_price, reason = resolve_fill(
+                    result,
+                    qty,
+                    refetch=lambda r=result, s=sym: self._refetch_order(r, s),
+                )
                 rows.append(
                     {
                         "symbol": sym,
@@ -401,10 +425,14 @@ class KrakenBroker:
                         "qty": filled_qty,
                         "price": fill_price,
                         "order_id": result.get("id"),
-                        "status": "FILLED",
-                        "error": "",
+                        "status": status,
+                        "error": reason,
                     }
                 )
+                if status == "FAILED":
+                    n_failed += 1
+                elif status == "PARTIAL":
+                    logger.warning("Kraken order partially filled: %s %s — %s", side, sym, reason)
             else:
                 rows.append(
                     {

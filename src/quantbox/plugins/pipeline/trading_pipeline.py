@@ -482,7 +482,7 @@ class TradingPipeline:
 
         fills_data = []
         for detail in execution_report.get("orders_details", []):
-            if detail.get("status") == "FILLED":
+            if detail.get("status") in ("FILLED", "PARTIAL"):
                 fills_data.append(
                     {
                         "symbol": detail.get("symbol", ""),
@@ -1478,7 +1478,8 @@ class TradingPipeline:
         # Process fills and failures
         if fills is not None and not fills.empty:
             for _, fill_row in fills.iterrows():
-                status = str(fill_row.get("status", "FILLED"))
+                status = str(fill_row.get("status", "FILLED")).upper()
+                side = str(fill_row.get("side", "")).lower()
                 if status == "SKIPPED":
                     # Broker intentionally did not place this order (sub-minimum /
                     # sub-precision dust). A clean no-op: neither executed nor
@@ -1506,6 +1507,18 @@ class TradingPipeline:
                     report["summary"]["total_failed"] += 1
                     continue
 
+                # FILLED or PARTIAL: a real (possibly partial) fill. Record the
+                # ACTUAL filled qty the broker confirmed (issue #68) so the book's
+                # recorded position matches reality; a partial is flagged so
+                # monitors can see the unfilled remainder.
+                is_partial = status == "PARTIAL"
+                if is_partial:
+                    logger.warning(
+                        "Partial fill: %s %s — %s",
+                        side,
+                        str(fill_row.get("symbol", "")),
+                        str(fill_row.get("error", "")),
+                    )
                 detail = {
                     "symbol": str(fill_row.get("symbol", "")),
                     "action": str(fill_row.get("side", "")),
@@ -1513,7 +1526,7 @@ class TradingPipeline:
                     "executed_quantity": float(fill_row.get("qty", 0)),
                     "executed_price": float(fill_row.get("price", 0)),
                     "fee": float(fill_row.get("fee", 0) or 0),
-                    "status": "FILLED",
+                    "status": "PARTIAL" if is_partial else "FILLED",
                 }
                 # Find reference price
                 ref_price = 0.0
@@ -1550,7 +1563,7 @@ class TradingPipeline:
         report["summary"]["total_value"] = sum(
             d.get("executed_quantity", 0) * d.get("executed_price", 0)
             for d in report["orders_details"]
-            if d.get("status") == "FILLED"
+            if d.get("status") in ("FILLED", "PARTIAL")
         )
 
         return report
@@ -1608,7 +1621,8 @@ class TradingPipeline:
         failed_orders: list[dict[str, Any]] = []
         total_order_fees = 0.0
         for detail in execution_report.get("orders_details", []):
-            if detail.get("status") == "FILLED":
+            detail_status = detail.get("status")
+            if detail_status in ("FILLED", "PARTIAL"):
                 order_fee = float(detail.get("fee", 0) or 0)
                 total_order_fees += order_fee
                 executed_orders.append(
@@ -1620,10 +1634,10 @@ class TradingPipeline:
                         "reference_price": detail.get("reference_price"),
                         "spread_bps": round(float(detail.get("spread_pct", 0) or 0) * 10000, 1),
                         "fee": round(order_fee, 4),
-                        "status": "FILLED",
+                        "status": detail_status,
                     }
                 )
-            elif detail.get("status") == "FAILED":
+            elif detail_status == "FAILED":
                 failed_orders.append(
                     {
                         "symbol": str(detail.get("symbol", "")),

@@ -58,6 +58,8 @@ import pandas as pd
 
 from quantbox.contracts import PluginMeta
 
+from ._fills import resolve_fill
+
 try:
     import ccxt
 except ImportError:  # pragma: no cover
@@ -436,8 +438,30 @@ class HyperliquidBroker:
             )
         return pd.DataFrame(rows)
 
+    def _refetch_order(self, order: dict, symbol: str) -> dict | None:
+        """Re-read an order from the venue to confirm its fill (issue #68).
+
+        Called only when the initial order result is too ambiguous to classify
+        (no status and no ``filled`` field). Read-only; any failure returns None
+        so the caller fails safe to not-filled.
+        """
+        order_id = order.get("id")
+        market_symbol = self._get_market_symbol(symbol)
+        if not order_id or not market_symbol:
+            return None
+        try:
+            return self._exchange.fetch_order(order_id, market_symbol)
+        except Exception as exc:  # noqa: BLE001 - confirmation must never crash execution
+            logger.warning("Fill confirmation fetch_order failed for %s: %s", symbol, exc)
+            return None
+
     def place_orders(self, orders: pd.DataFrame) -> pd.DataFrame:
-        """BrokerPlugin-compliant order execution."""
+        """BrokerPlugin-compliant order execution.
+
+        Reports the *confirmed* fill state of each order (issue #68): an order
+        the venue accepted but did not actually fill is reported FAILED/PARTIAL,
+        never an unconditional FILLED. See :mod:`quantbox.plugins.broker._fills`.
+        """
         rows: list[dict[str, Any]] = []
         n_failed = 0
         for _, o in orders.iterrows():
@@ -446,8 +470,11 @@ class HyperliquidBroker:
             qty = float(o["qty"])
             result = self.place_order(sym, side, qty)
             if result:
-                fill_price = float(result.get("average", result.get("price", 0)) or 0)
-                filled_qty = float(result.get("filled", qty) or qty)
+                status, filled_qty, fill_price, reason = resolve_fill(
+                    result,
+                    qty,
+                    refetch=lambda r=result, s=sym: self._refetch_order(r, s),
+                )
                 rows.append(
                     {
                         "symbol": sym,
@@ -455,10 +482,14 @@ class HyperliquidBroker:
                         "qty": filled_qty,
                         "price": fill_price,
                         "order_id": result.get("id"),
-                        "status": "FILLED",
-                        "error": "",
+                        "status": status,
+                        "error": reason,
                     }
                 )
+                if status == "FAILED":
+                    n_failed += 1
+                elif status == "PARTIAL":
+                    logger.warning("Order partially filled: %s %s — %s", side, sym, reason)
             else:
                 rows.append(
                     {
