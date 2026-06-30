@@ -75,6 +75,52 @@ def _get_lot_size_and_min_notional(
     return min_qty, step_size, min_notional
 
 
+def _compute_data_age(prices: pd.DataFrame, asof: str) -> tuple[float | None, float | None]:
+    """Return ``(data_age_seconds, bar_interval_seconds)`` for a wide price frame.
+
+    ``data_age_seconds`` is ``asof - latest bar timestamp`` — how stale the feed
+    is as of the run. ``bar_interval_seconds`` is the median spacing of the price
+    index (the expected bar cadence). Either may be ``None`` when it cannot be
+    determined (empty feed, non-datetime index, unparseable ``asof``). Used to
+    surface the data-staleness exception signal the notifier consumes (issue
+    #62 — the HL 429 feed-gap class).
+    """
+    if prices is None or getattr(prices, "empty", True):
+        return None, None
+    idx = prices.index
+    if not isinstance(idx, pd.DatetimeIndex):
+        # Only coerce a string/object index (e.g. ISO date labels). A numeric
+        # index must NOT be coerced — pandas would read ints as 1970-epoch
+        # nanoseconds and fabricate a huge, false staleness age.
+        if idx.dtype != object:
+            return None, None
+        try:
+            idx = pd.DatetimeIndex(pd.to_datetime(idx, errors="raise"))
+        except Exception:  # noqa: BLE001 - unparseable labels: cannot age the feed
+            return None, None
+    if len(idx) == 0:
+        return None, None
+    try:
+        asof_ts = pd.Timestamp(asof)
+    except Exception:  # noqa: BLE001 - unparseable asof
+        return None, None
+
+    latest = idx.max()
+    # Compare naive-to-naive so a tz-aware feed and a naive asof don't raise.
+    if latest.tzinfo is not None and asof_ts.tzinfo is None:
+        latest = latest.tz_localize(None)
+    elif latest.tzinfo is None and asof_ts.tzinfo is not None:
+        asof_ts = asof_ts.tz_localize(None)
+
+    age = float((asof_ts - latest).total_seconds())
+    interval: float | None = None
+    if len(idx) >= 2:
+        diffs = pd.Series(idx).diff().dropna()
+        if not diffs.empty:
+            interval = float(diffs.median().total_seconds())
+    return age, interval
+
+
 # ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
@@ -192,6 +238,11 @@ class TradingPipeline:
     ) -> RunResult:
         if mode in ("paper", "live") and broker is None:
             raise ValueError("broker_required_for_paper_or_live")
+
+        # Run-state exception inputs the Tier-2 notifier consumes (issue #62):
+        # API errors caught (but survived) during the run. Data-staleness and
+        # pipeline-failure are derived later from the feed + the run completing.
+        api_errors: list[dict[str, Any]] = []
 
         # Resolve strategies config: from injected plugins or from pipeline params
         strategies_cfg = params.get("_strategies_cfg", params.get("strategies", []))
@@ -473,8 +524,11 @@ class TradingPipeline:
                         portfolio_value_post = cash_usd_post
                 else:
                     portfolio_value_post = cash_usd_post
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - snapshot is best-effort, never fatal
+            # A broker read failing here is a (survived) API error — surface it as
+            # an exception input for the notifier rather than swallowing it (#62).
+            logger.warning("Portfolio snapshot read failed: %s", exc)
+            api_errors.append({"stage": "portfolio_snapshot", "error": str(exc)})
 
         portfolio_daily = pd.DataFrame(
             [
@@ -520,6 +574,40 @@ class TradingPipeline:
             },
         )
 
+        # --- Exception inputs for the Tier-2 notifier (issue #62) ---
+        # Three previously-dormant alert conditions need their input signals
+        # produced by the run: data-staleness (feed older than Nx bar interval —
+        # the HL 429 feed-gap class), API-error (a survived broker/data API
+        # failure), and pipeline-failure (a run crash; surfaced by run() raising
+        # before this point, so a returned RunResult always has pipeline_ok=True).
+        api_errors.extend(execution_report.get("api_errors", []))
+        prices_for_age = market_data.get("prices", pd.DataFrame())
+        data_age_seconds, bar_interval_seconds = _compute_data_age(prices_for_age, asof)
+        staleness_factor = float(params.get("staleness_factor", 2.0))
+        data_stale = (
+            data_age_seconds is not None
+            and bar_interval_seconds is not None
+            and bar_interval_seconds > 0
+            and data_age_seconds > staleness_factor * bar_interval_seconds
+        )
+        exception_signals: dict[str, Any] = {
+            "pipeline_ok": True,
+            "data_age_seconds": data_age_seconds,
+            "bar_interval_seconds": bar_interval_seconds,
+            "staleness_factor": staleness_factor,
+            "data_stale": bool(data_stale),
+            "api_errors": list(api_errors),
+            "api_error_count": len(api_errors),
+        }
+        if data_stale:
+            logger.warning(
+                "DATA STALE: feed latest bar is %.0fs old (> %.1fx the %.0fs bar interval). "
+                "Possible feed gap (e.g. rate-limit 429) — exception signal raised.",
+                data_age_seconds,
+                staleness_factor,
+                bar_interval_seconds,
+            )
+
         metrics = {
             "n_strategies": float(len(strategy_results)),
             "n_assets": float(len(final_weights)),
@@ -539,6 +627,10 @@ class TradingPipeline:
             # (staying in cash). This is INFO-level, NOT a freeze — monitors must
             # NOT alarm on it.
             "quiet_day": 1.0 if execution_report.get("quiet_day") else 0.0,
+            # Tier-2 exception inputs (#62).
+            "data_stale": 1.0 if data_stale else 0.0,
+            "data_age_seconds": float(data_age_seconds) if data_age_seconds is not None else -1.0,
+            "api_error_count": float(len(api_errors)),
         }
 
         return RunResult(
@@ -565,6 +657,8 @@ class TradingPipeline:
                 "freeze_reasons": execution_report.get("freeze_reasons", {}),
                 "quiet_day": bool(execution_report.get("quiet_day", False)),
                 "quiet_reasons": execution_report.get("quiet_reasons", {}),
+                # Tier-2 exception inputs the notifier threads into BookContext (#62).
+                "exceptions": exception_signals,
                 **token_policy_notes,
             },
         )
@@ -1210,6 +1304,7 @@ class TradingPipeline:
                 "total_cost": 0.0,
             },
             "orders_details": [],
+            "api_errors": [],  # broker API errors caught during execution (#62)
         }
 
         if orders_df is None or orders_df.empty:
@@ -1350,6 +1445,7 @@ class TradingPipeline:
             fills = broker.place_orders(broker_orders)
         except Exception as exc:
             logger.error("Broker place_orders failed: %s", exc)
+            report["api_errors"].append({"stage": "place_orders", "error": str(exc)})
             for _, row in broker_orders.iterrows():
                 report["orders_details"].append(
                     {
