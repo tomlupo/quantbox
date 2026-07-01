@@ -75,6 +75,60 @@ def _get_lot_size_and_min_notional(
     return min_qty, step_size, min_notional
 
 
+def _compute_data_age(prices: pd.DataFrame, asof: str) -> tuple[float | None, float | None]:
+    """Return ``(data_age_seconds, bar_interval_seconds)`` for a wide price frame.
+
+    ``data_age_seconds`` is ``asof - latest bar timestamp`` — how stale the feed
+    is as of the run. ``bar_interval_seconds`` is the median spacing of the price
+    index (the expected bar cadence). Either may be ``None`` when it cannot be
+    determined (empty feed, non-datetime index, unparseable ``asof``). Used to
+    surface the data-staleness exception signal the notifier consumes (issue
+    #62 — the HL 429 feed-gap class).
+    """
+    if prices is None or getattr(prices, "empty", True):
+        return None, None
+    idx = prices.index
+    if not isinstance(idx, pd.DatetimeIndex):
+        # Only coerce a string/object index (e.g. ISO date labels). A numeric
+        # index must NOT be coerced — pandas would read ints as 1970-epoch
+        # nanoseconds and fabricate a huge, false staleness age.
+        if idx.dtype != object:
+            return None, None
+        # An object-dtype index can still hold NUMERIC labels (Python or numpy
+        # ints/floats) — pandas would read those as 1970-epoch nanoseconds and
+        # fabricate a huge false staleness. Reject any numeric label element-wise;
+        # only genuine date-like labels (strings, dates) are ageable.
+        import numbers
+
+        if any(isinstance(x, numbers.Number) and not isinstance(x, bool) for x in idx):
+            return None, None
+        try:
+            idx = pd.DatetimeIndex(pd.to_datetime(idx, errors="raise"))
+        except Exception:  # noqa: BLE001 - unparseable labels: cannot age the feed
+            return None, None
+    if len(idx) == 0:
+        return None, None
+    try:
+        asof_ts = pd.Timestamp(asof)
+    except Exception:  # noqa: BLE001 - unparseable asof
+        return None, None
+
+    latest = idx.max()
+    # Compare naive-to-naive so a tz-aware feed and a naive asof don't raise.
+    if latest.tzinfo is not None and asof_ts.tzinfo is None:
+        latest = latest.tz_localize(None)
+    elif latest.tzinfo is None and asof_ts.tzinfo is not None:
+        asof_ts = asof_ts.tz_localize(None)
+
+    age = float((asof_ts - latest).total_seconds())
+    interval: float | None = None
+    if len(idx) >= 2:
+        diffs = pd.Series(idx).diff().dropna()
+        if not diffs.empty:
+            interval = float(diffs.median().total_seconds())
+    return age, interval
+
+
 # ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
@@ -192,6 +246,11 @@ class TradingPipeline:
     ) -> RunResult:
         if mode in ("paper", "live") and broker is None:
             raise ValueError("broker_required_for_paper_or_live")
+
+        # Run-state exception inputs the Tier-2 notifier consumes (issue #62):
+        # API errors caught (but survived) during the run. Data-staleness and
+        # pipeline-failure are derived later from the feed + the run completing.
+        api_errors: list[dict[str, Any]] = []
 
         # Resolve strategies config: from injected plugins or from pipeline params
         strategies_cfg = params.get("_strategies_cfg", params.get("strategies", []))
@@ -431,7 +490,7 @@ class TradingPipeline:
 
         fills_data = []
         for detail in execution_report.get("orders_details", []):
-            if detail.get("status") == "FILLED":
+            if detail.get("status") in ("FILLED", "PARTIAL"):
                 fills_data.append(
                     {
                         "symbol": detail.get("symbol", ""),
@@ -473,8 +532,11 @@ class TradingPipeline:
                         portfolio_value_post = cash_usd_post
                 else:
                     portfolio_value_post = cash_usd_post
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - snapshot is best-effort, never fatal
+            # A broker read failing here is a (survived) API error — surface it as
+            # an exception input for the notifier rather than swallowing it (#62).
+            logger.warning("Portfolio snapshot read failed: %s", exc)
+            api_errors.append({"stage": "portfolio_snapshot", "error": str(exc)})
 
         portfolio_daily = pd.DataFrame(
             [
@@ -520,6 +582,40 @@ class TradingPipeline:
             },
         )
 
+        # --- Exception inputs for the Tier-2 notifier (issue #62) ---
+        # Three previously-dormant alert conditions need their input signals
+        # produced by the run: data-staleness (feed older than Nx bar interval —
+        # the HL 429 feed-gap class), API-error (a survived broker/data API
+        # failure), and pipeline-failure (a run crash; surfaced by run() raising
+        # before this point, so a returned RunResult always has pipeline_ok=True).
+        api_errors.extend(execution_report.get("api_errors", []))
+        prices_for_age = market_data.get("prices", pd.DataFrame())
+        data_age_seconds, bar_interval_seconds = _compute_data_age(prices_for_age, asof)
+        staleness_factor = float(params.get("staleness_factor", 2.0))
+        data_stale = (
+            data_age_seconds is not None
+            and bar_interval_seconds is not None
+            and bar_interval_seconds > 0
+            and data_age_seconds > staleness_factor * bar_interval_seconds
+        )
+        exception_signals: dict[str, Any] = {
+            "pipeline_ok": True,
+            "data_age_seconds": data_age_seconds,
+            "bar_interval_seconds": bar_interval_seconds,
+            "staleness_factor": staleness_factor,
+            "data_stale": bool(data_stale),
+            "api_errors": list(api_errors),
+            "api_error_count": len(api_errors),
+        }
+        if data_stale:
+            logger.warning(
+                "DATA STALE: feed latest bar is %.0fs old (> %.1fx the %.0fs bar interval). "
+                "Possible feed gap (e.g. rate-limit 429) — exception signal raised.",
+                data_age_seconds,
+                staleness_factor,
+                bar_interval_seconds,
+            )
+
         metrics = {
             "n_strategies": float(len(strategy_results)),
             "n_assets": float(len(final_weights)),
@@ -528,6 +624,7 @@ class TradingPipeline:
             "n_orders": float(len(orders_df)),
             "n_fills": float(len(fills)),
             "total_executed": float(execution_report.get("summary", {}).get("total_executed", 0)),
+            "total_partial": float(execution_report.get("summary", {}).get("total_partial", 0)),
             "total_failed": float(execution_report.get("summary", {}).get("total_failed", 0)),
             "funding_charge": float(funding_charge),
             "cumulative_fees": cumulative_fees,
@@ -539,6 +636,10 @@ class TradingPipeline:
             # (staying in cash). This is INFO-level, NOT a freeze — monitors must
             # NOT alarm on it.
             "quiet_day": 1.0 if execution_report.get("quiet_day") else 0.0,
+            # Tier-2 exception inputs (#62).
+            "data_stale": 1.0 if data_stale else 0.0,
+            "data_age_seconds": float(data_age_seconds) if data_age_seconds is not None else -1.0,
+            "api_error_count": float(len(api_errors)),
         }
 
         return RunResult(
@@ -565,6 +666,8 @@ class TradingPipeline:
                 "freeze_reasons": execution_report.get("freeze_reasons", {}),
                 "quiet_day": bool(execution_report.get("quiet_day", False)),
                 "quiet_reasons": execution_report.get("quiet_reasons", {}),
+                # Tier-2 exception inputs the notifier threads into BookContext (#62).
+                "exceptions": exception_signals,
                 **token_policy_notes,
             },
         )
@@ -1205,11 +1308,13 @@ class TradingPipeline:
             "failed_orders": [],
             "summary": {
                 "total_executed": 0,
+                "total_partial": 0,
                 "total_failed": 0,
                 "total_value": 0.0,
                 "total_cost": 0.0,
             },
             "orders_details": [],
+            "api_errors": [],  # broker API errors caught during execution (#62)
         }
 
         if orders_df is None or orders_df.empty:
@@ -1261,6 +1366,7 @@ class TradingPipeline:
                 has_suppressed_sell = bool((actions == "sell").any())
 
                 has_liquidatable_positions = False
+                cannot_confirm_flat = False
                 get_positions = getattr(broker, "get_positions", None)
                 if callable(get_positions):
                     try:
@@ -1270,9 +1376,25 @@ class TradingPipeline:
                         # Fail SAFE: if we cannot confirm the book is flat, treat
                         # it as potentially trapped (do not downgrade to quiet).
                         logger.warning("Position probe for quiet/freeze classification failed: %s", exc)
-                        has_liquidatable_positions = True
+                        cannot_confirm_flat = True
+                else:
+                    # Fail SAFE (issue #82): a broker with no position probe cannot
+                    # confirm the book is flat. On a long-only spot book a suppressed
+                    # BUY is always a (harmless) entry, but on a futures book a BUY can
+                    # be a short-close EXIT that the has_suppressed_sell heuristic does
+                    # NOT catch. Without get_positions we cannot tell quiet from
+                    # trapped, so we must NOT silently downgrade to quiet — classify as
+                    # potentially trapped and alert. (Both live books — Kraken spot and
+                    # Hyperliquid perps — always expose get_positions, so this never
+                    # false-fires on a healthy live run.)
+                    logger.warning(
+                        "Broker %s exposes no get_positions; cannot confirm a flat book "
+                        "for quiet/freeze classification — failing safe to trapped.",
+                        type(broker).__name__,
+                    )
+                    cannot_confirm_flat = True
 
-                trapped = has_suppressed_sell or has_liquidatable_positions
+                trapped = has_suppressed_sell or has_liquidatable_positions or cannot_confirm_flat
 
                 if not trapped:
                     # QUIET DAY: all-cash, every target leg sub-min. Stay in cash.
@@ -1350,6 +1472,7 @@ class TradingPipeline:
             fills = broker.place_orders(broker_orders)
         except Exception as exc:
             logger.error("Broker place_orders failed: %s", exc)
+            report["api_errors"].append({"stage": "place_orders", "error": str(exc)})
             for _, row in broker_orders.iterrows():
                 report["orders_details"].append(
                     {
@@ -1364,8 +1487,11 @@ class TradingPipeline:
 
         # Process fills and failures
         if fills is not None and not fills.empty:
+            n_skipped = 0
+            n_skipped_sell = 0  # close-out SELLs the broker could not place (#81)
             for _, fill_row in fills.iterrows():
-                status = str(fill_row.get("status", "FILLED"))
+                status = str(fill_row.get("status", "FILLED")).upper()
+                side = str(fill_row.get("side", "")).lower()
                 if status == "SKIPPED":
                     # Broker intentionally did not place this order (sub-minimum /
                     # sub-precision dust). A clean no-op: neither executed nor
@@ -1379,6 +1505,13 @@ class TradingPipeline:
                             "error": str(fill_row.get("error", "below exchange minimum (skipped)")),
                         }
                     )
+                    n_skipped += 1
+                    if side == "sell":
+                        # A close-out/reduce the book WANTED to make but the broker
+                        # could not place (sub-exchange-min). Tracked so an all-
+                        # skipped batch with a trapped residual is not mistaken for
+                        # a healthy run (#81).
+                        n_skipped_sell += 1
                     continue
                 if status == "FAILED":
                     report["orders_details"].append(
@@ -1393,6 +1526,18 @@ class TradingPipeline:
                     report["summary"]["total_failed"] += 1
                     continue
 
+                # FILLED or PARTIAL: a real (possibly partial) fill. Record the
+                # ACTUAL filled qty the broker confirmed (issue #68) so the book's
+                # recorded position matches reality; a partial is flagged so
+                # monitors can see the unfilled remainder.
+                is_partial = status == "PARTIAL"
+                if is_partial:
+                    logger.warning(
+                        "Partial fill: %s %s — %s",
+                        side,
+                        str(fill_row.get("symbol", "")),
+                        str(fill_row.get("error", "")),
+                    )
                 detail = {
                     "symbol": str(fill_row.get("symbol", "")),
                     "action": str(fill_row.get("side", "")),
@@ -1400,7 +1545,7 @@ class TradingPipeline:
                     "executed_quantity": float(fill_row.get("qty", 0)),
                     "executed_price": float(fill_row.get("price", 0)),
                     "fee": float(fill_row.get("fee", 0) or 0),
-                    "status": "FILLED",
+                    "status": "PARTIAL" if is_partial else "FILLED",
                 }
                 # Find reference price
                 ref_price = 0.0
@@ -1416,6 +1561,62 @@ class TradingPipeline:
 
                 report["orders_details"].append(detail)
                 report["summary"]["total_executed"] += 1
+                if is_partial:
+                    # A partial fill DID execute (so it counts as executed and keeps
+                    # the freeze logic honest), but the unfilled remainder is real
+                    # residual exposure — surface it as a first-class incomplete
+                    # outcome so the notifier can raise an exception on it instead of
+                    # reading the run as a clean success.
+                    report["summary"]["total_partial"] += 1
+
+            # Freeze guard (issue #81): the broker returned rows, but if EVERY
+            # submitted order was SKIPPED (zero fills, zero hard failures) and at
+            # least one of those skips was a close-out SELL, the book has a
+            # trapped residual it wanted to exit but could not place at the venue.
+            # Post the dust-fix this surfaces as SKIPPED instead of the pre-PR
+            # FAILED count, so without this it would read as a healthy run. Treat
+            # it as a freeze and alert — the trapped-residual signal must not be
+            # lost just because the orders were *executable* upstream.
+            # Fires whenever zero orders filled AND at least one close-out SELL was
+            # skipped — regardless of whether other orders ALSO hard-failed. The
+            # trapped-residual signal must NOT be masked just because total_failed>0
+            # (a concurrent placement failure would otherwise hide the retained
+            # residual behind the generic FAILED alert).
+            if report["summary"]["total_executed"] == 0 and n_skipped_sell >= 1:
+                report["frozen"] = True
+                reasons = {
+                    "skipped_sell": n_skipped_sell,
+                    "skipped_total": n_skipped,
+                    "failed": int(report["summary"]["total_failed"]),
+                }
+                report["freeze_reasons"] = reasons
+                skipped_list = ", ".join(
+                    f"{str(d.get('action', '')).upper()} {d.get('symbol', '')}"
+                    for d in report["orders_details"]
+                    if d.get("status") == "SKIPPED"
+                )
+                failed_n = int(report["summary"]["total_failed"])
+                failed_note = f"; {failed_n} order(s) also hard-failed" if failed_n else ""
+                logger.error(
+                    "REBALANCER FROZEN: 0 fills; %d close-out SELL(s) skipped "
+                    "sub-minimum (trapped residual)%s. Residual exposure RETAINED — "
+                    "book NOT rebalanced. Skipped: %s",
+                    n_skipped_sell,
+                    failed_note,
+                    skipped_list,
+                )
+                notify = getattr(broker, "notify", None)
+                if notify:
+                    try:
+                        notify(
+                            "🧊 <b>REBALANCER FROZEN — trapped residual</b>\n"
+                            f"0 fills; {n_skipped_sell} close-out SELL(s) below exchange "
+                            f"minimum{failed_note}; residual exposure RETAINED.\n"
+                            f"Skipped: {skipped_list}\n"
+                            "Book NOT rebalanced — monitor for a trapped residual."
+                        )
+                    except Exception as exc:  # never let alerting crash the run
+                        logger.warning("Freeze alert notify failed: %s", exc)
         else:
             # Submitted orders but received zero fills — broker-level failure.
             order_list = ", ".join(
@@ -1437,7 +1638,7 @@ class TradingPipeline:
         report["summary"]["total_value"] = sum(
             d.get("executed_quantity", 0) * d.get("executed_price", 0)
             for d in report["orders_details"]
-            if d.get("status") == "FILLED"
+            if d.get("status") in ("FILLED", "PARTIAL")
         )
 
         return report
@@ -1495,7 +1696,8 @@ class TradingPipeline:
         failed_orders: list[dict[str, Any]] = []
         total_order_fees = 0.0
         for detail in execution_report.get("orders_details", []):
-            if detail.get("status") == "FILLED":
+            detail_status = detail.get("status")
+            if detail_status in ("FILLED", "PARTIAL"):
                 order_fee = float(detail.get("fee", 0) or 0)
                 total_order_fees += order_fee
                 executed_orders.append(
@@ -1507,10 +1709,10 @@ class TradingPipeline:
                         "reference_price": detail.get("reference_price"),
                         "spread_bps": round(float(detail.get("spread_pct", 0) or 0) * 10000, 1),
                         "fee": round(order_fee, 4),
-                        "status": "FILLED",
+                        "status": detail_status,
                     }
                 )
-            elif detail.get("status") == "FAILED":
+            elif detail_status == "FAILED":
                 failed_orders.append(
                     {
                         "symbol": str(detail.get("symbol", "")),
