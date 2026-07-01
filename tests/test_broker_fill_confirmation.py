@@ -229,3 +229,14 @@ def test_closed_partial_fill_is_partial_not_filled():
     # exact-to-requested still FILLED
     v2, q2, _ = classify_fill({"status": "closed", "filled": 10.0, "average": 100.0}, 10.0)
     assert v2 == _fills.FILL_FILLED and q2 == 10.0
+
+
+def test_statusless_underfill_is_partial_not_filled():
+    """No status + filled<requested + no remaining field must be PARTIAL, not a clean
+    FILLED — the status-less path must not let a real partial slip through (#85 re-review)."""
+    verdict, qty, _ = classify_fill({"filled": 1.0, "average": 100.0}, 10.0)
+    assert verdict == _fills.FILL_PARTIAL
+    assert qty == 1.0
+    # reached requested -> FILLED
+    v2, _, _ = classify_fill({"filled": 10.0, "average": 100.0}, 10.0)
+    assert v2 == _fills.FILL_FILLED

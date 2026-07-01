@@ -105,7 +105,12 @@ def classify_fill(order: dict | None, requested_qty: float) -> tuple[str, float,
             return FILL_UNFILLED, 0.0, price
         if remaining is not None and remaining > _EPS:
             return FILL_PARTIAL, filled, price
-        # filled > 0 and remainder 0 / unknown: take the visible filled amount.
+        # filled > 0 and remainder 0 / unknown: FILLED only if it reached the
+        # requested qty. A visible underfill (filled < requested) is a PARTIAL even
+        # without an explicit ``remaining`` field — same rule as the CLOSED branch,
+        # so a real partial can't slip through the status-less path as a clean fill.
+        if req > _EPS and filled < req - _EPS:
+            return FILL_PARTIAL, filled, price
         return FILL_FILLED, filled, price
 
     # No status AND no ``filled`` field: genuinely unknown — caller must verify.
