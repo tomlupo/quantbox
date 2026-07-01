@@ -76,6 +76,14 @@ def classify_fill(order: dict | None, requested_qty: float) -> tuple[str, float,
     price = _fill_price(order)
     has_fill = filled is not None and filled > _EPS
 
+    # Reference qty for "did it fully fill": the amount ACTUALLY submitted to the
+    # venue (order["amount"], which the broker floors to lot/precision before
+    # placing), NOT the pre-rounding strategy target `requested_qty`. Otherwise a
+    # fully-filled floored order (filled == submitted < requested) reads as a false
+    # PARTIAL and spams residual alerts. A genuine partial is still filled < ref.
+    ordered = _to_float(order.get("amount"))
+    ref = ordered if (ordered is not None and ordered > _EPS) else req
+
     if status == _CLOSED:
         # Venue says the order is done. Trust the reported filled amount; only
         # when the venue *omits* ``filled`` entirely do we treat a closed order
@@ -84,11 +92,12 @@ def classify_fill(order: dict | None, requested_qty: float) -> tuple[str, float,
         if filled is None:
             return FILL_FILLED, req, price
         if has_fill:
-            # A closed order that filled LESS than requested (e.g. an IOC that
+            # A closed order that filled LESS than it SUBMITTED (e.g. an IOC that
             # partially filled then canceled the remainder) is a PARTIAL, not a
             # full fill — the unfilled remainder is real residual exposure, which
-            # is critical on a close-out SELL. Only filled >= requested is FILLED.
-            if req > _EPS and filled < req - _EPS:
+            # is critical on a close-out SELL. Compared against `ref` (the submitted
+            # amount) so lot/precision flooring isn't mistaken for a partial.
+            if ref > _EPS and filled < ref - _EPS:
                 return FILL_PARTIAL, filled, price
             return FILL_FILLED, filled, price
         return FILL_UNFILLED, 0.0, price
@@ -109,7 +118,7 @@ def classify_fill(order: dict | None, requested_qty: float) -> tuple[str, float,
         # requested qty. A visible underfill (filled < requested) is a PARTIAL even
         # without an explicit ``remaining`` field — same rule as the CLOSED branch,
         # so a real partial can't slip through the status-less path as a clean fill.
-        if req > _EPS and filled < req - _EPS:
+        if ref > _EPS and filled < ref - _EPS:
             return FILL_PARTIAL, filled, price
         return FILL_FILLED, filled, price
 

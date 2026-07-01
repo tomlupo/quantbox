@@ -240,3 +240,18 @@ def test_statusless_underfill_is_partial_not_filled():
     # reached requested -> FILLED
     v2, _, _ = classify_fill({"filled": 10.0, "average": 100.0}, 10.0)
     assert v2 == _fills.FILL_FILLED
+
+
+def test_floored_full_fill_is_not_a_false_partial():
+    """A fully-filled order whose submitted amount was floored below the pre-rounding
+    requested qty must be FILLED, not a false PARTIAL — compare filled to the order's
+    own submitted `amount`, not the strategy target (lot/precision rounding)."""
+    # requested 0.12345; broker floored+submitted 0.123; filled 0.123 fully.
+    verdict, qty, _ = classify_fill({"status": "closed", "amount": 0.123, "filled": 0.123, "average": 100.0}, 0.12345)
+    assert verdict == _fills.FILL_FILLED and qty == 0.123
+    # status-less variant (no status/remaining) — same via order["amount"].
+    v2, _, _ = classify_fill({"amount": 0.123, "filled": 0.123, "average": 100.0}, 0.12345)
+    assert v2 == _fills.FILL_FILLED
+    # a genuine partial (filled < submitted amount) is still PARTIAL.
+    v3, q3, _ = classify_fill({"amount": 0.123, "filled": 0.05, "average": 100.0}, 0.12345)
+    assert v3 == _fills.FILL_PARTIAL and q3 == 0.05
