@@ -94,6 +94,14 @@ def _compute_data_age(prices: pd.DataFrame, asof: str) -> tuple[float | None, fl
         # nanoseconds and fabricate a huge, false staleness age.
         if idx.dtype != object:
             return None, None
+        # An object-dtype index can still hold NUMERIC labels (Python or numpy
+        # ints/floats) — pandas would read those as 1970-epoch nanoseconds and
+        # fabricate a huge false staleness. Reject any numeric label element-wise;
+        # only genuine date-like labels (strings, dates) are ageable.
+        import numbers
+
+        if any(isinstance(x, numbers.Number) and not isinstance(x, bool) for x in idx):
+            return None, None
         try:
             idx = pd.DatetimeIndex(pd.to_datetime(idx, errors="raise"))
         except Exception:  # noqa: BLE001 - unparseable labels: cannot age the feed
@@ -616,6 +624,7 @@ class TradingPipeline:
             "n_orders": float(len(orders_df)),
             "n_fills": float(len(fills)),
             "total_executed": float(execution_report.get("summary", {}).get("total_executed", 0)),
+            "total_partial": float(execution_report.get("summary", {}).get("total_partial", 0)),
             "total_failed": float(execution_report.get("summary", {}).get("total_failed", 0)),
             "funding_charge": float(funding_charge),
             "cumulative_fees": cumulative_fees,
@@ -1299,6 +1308,7 @@ class TradingPipeline:
             "failed_orders": [],
             "summary": {
                 "total_executed": 0,
+                "total_partial": 0,
                 "total_failed": 0,
                 "total_value": 0.0,
                 "total_cost": 0.0,
@@ -1551,6 +1561,13 @@ class TradingPipeline:
 
                 report["orders_details"].append(detail)
                 report["summary"]["total_executed"] += 1
+                if is_partial:
+                    # A partial fill DID execute (so it counts as executed and keeps
+                    # the freeze logic honest), but the unfilled remainder is real
+                    # residual exposure — surface it as a first-class incomplete
+                    # outcome so the notifier can raise an exception on it instead of
+                    # reading the run as a clean success.
+                    report["summary"]["total_partial"] += 1
 
             # Freeze guard (issue #81): the broker returned rows, but if EVERY
             # submitted order was SKIPPED (zero fills, zero hard failures) and at
@@ -1560,34 +1577,41 @@ class TradingPipeline:
             # FAILED count, so without this it would read as a healthy run. Treat
             # it as a freeze and alert — the trapped-residual signal must not be
             # lost just because the orders were *executable* upstream.
-            if (
-                report["summary"]["total_executed"] == 0
-                and report["summary"]["total_failed"] == 0
-                and n_skipped_sell >= 1
-            ):
+            # Fires whenever zero orders filled AND at least one close-out SELL was
+            # skipped — regardless of whether other orders ALSO hard-failed. The
+            # trapped-residual signal must NOT be masked just because total_failed>0
+            # (a concurrent placement failure would otherwise hide the retained
+            # residual behind the generic FAILED alert).
+            if report["summary"]["total_executed"] == 0 and n_skipped_sell >= 1:
                 report["frozen"] = True
-                reasons = {"skipped_sell": n_skipped_sell, "skipped_total": n_skipped}
+                reasons = {
+                    "skipped_sell": n_skipped_sell,
+                    "skipped_total": n_skipped,
+                    "failed": int(report["summary"]["total_failed"]),
+                }
                 report["freeze_reasons"] = reasons
                 skipped_list = ", ".join(
                     f"{str(d.get('action', '')).upper()} {d.get('symbol', '')}"
                     for d in report["orders_details"]
                     if d.get("status") == "SKIPPED"
                 )
+                failed_n = int(report["summary"]["total_failed"])
+                failed_note = f"; {failed_n} order(s) also hard-failed" if failed_n else ""
                 logger.error(
-                    "REBALANCER FROZEN: all %d submitted order(s) skipped at broker "
-                    "(0 fills, %d close-out SELL(s) skipped sub-minimum). Residual "
-                    "exposure RETAINED — book NOT rebalanced. Skipped: %s",
-                    n_skipped,
+                    "REBALANCER FROZEN: 0 fills; %d close-out SELL(s) skipped "
+                    "sub-minimum (trapped residual)%s. Residual exposure RETAINED — "
+                    "book NOT rebalanced. Skipped: %s",
                     n_skipped_sell,
+                    failed_note,
                     skipped_list,
                 )
                 notify = getattr(broker, "notify", None)
                 if notify:
                     try:
                         notify(
-                            f"🧊 <b>REBALANCER FROZEN — all {n_skipped} order(s) skipped at broker</b>\n"
-                            f"{n_skipped_sell} close-out SELL(s) below exchange minimum; "
-                            "residual exposure RETAINED.\n"
+                            "🧊 <b>REBALANCER FROZEN — trapped residual</b>\n"
+                            f"0 fills; {n_skipped_sell} close-out SELL(s) below exchange "
+                            f"minimum{failed_note}; residual exposure RETAINED.\n"
                             f"Skipped: {skipped_list}\n"
                             "Book NOT rebalanced — monitor for a trapped residual."
                         )

@@ -21,9 +21,7 @@ from quantbox.plugins.broker._fills import classify_fill, resolve_fill
 
 
 def test_closed_full_fill_is_filled():
-    verdict, qty, price = classify_fill(
-        {"status": "closed", "filled": 2.0, "average": 100.0}, 2.0
-    )
+    verdict, qty, price = classify_fill({"status": "closed", "filled": 2.0, "average": 100.0}, 2.0)
     assert verdict == _fills.FILL_FILLED
     assert qty == 2.0
     assert price == 100.0
@@ -98,9 +96,7 @@ def test_empty_order_is_unknown():
 
 
 def test_resolve_unknown_confirmed_by_refetch():
-    status, qty, _, reason = resolve_fill(
-        {"id": "x"}, 1.0, refetch=lambda: {"status": "closed", "filled": 1.0}
-    )
+    status, qty, _, reason = resolve_fill({"id": "x"}, 1.0, refetch=lambda: {"status": "closed", "filled": 1.0})
     assert status == "FILLED"
     assert qty == 1.0
     assert reason == ""
@@ -221,3 +217,15 @@ def test_kraken_rejected_order_not_reported_filled():
     row = out.iloc[0]
     assert row["status"] == "FAILED"
     assert row["qty"] == 0.0
+
+
+def test_closed_partial_fill_is_partial_not_filled():
+    """A CLOSED order that filled less than requested = residual remains = PARTIAL,
+    never a full FILLED (critical: a close-out SELL that only partly filled must not
+    read as a clean exit)."""
+    verdict, qty, _ = classify_fill({"status": "closed", "filled": 4.0, "average": 100.0}, 10.0)
+    assert verdict == _fills.FILL_PARTIAL
+    assert qty == 4.0
+    # exact-to-requested still FILLED
+    v2, q2, _ = classify_fill({"status": "closed", "filled": 10.0, "average": 100.0}, 10.0)
+    assert v2 == _fills.FILL_FILLED and q2 == 10.0

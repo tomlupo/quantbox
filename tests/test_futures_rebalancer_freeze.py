@@ -514,13 +514,27 @@ def test_pipeline_skipped_sell_with_a_real_fill_is_not_frozen():
                 side = str(o["side"]).lower()
                 if side == "sell":
                     rows.append(
-                        {"symbol": o["symbol"], "side": side, "qty": float(o["qty"]),
-                         "price": 0.0, "order_id": None, "status": "SKIPPED", "error": "dust"}
+                        {
+                            "symbol": o["symbol"],
+                            "side": side,
+                            "qty": float(o["qty"]),
+                            "price": 0.0,
+                            "order_id": None,
+                            "status": "SKIPPED",
+                            "error": "dust",
+                        }
                     )
                 else:
                     rows.append(
-                        {"symbol": o["symbol"], "side": side, "qty": float(o["qty"]),
-                         "price": 100.0, "order_id": "1", "status": "FILLED", "error": ""}
+                        {
+                            "symbol": o["symbol"],
+                            "side": side,
+                            "qty": float(o["qty"]),
+                            "price": 100.0,
+                            "order_id": "1",
+                            "status": "FILLED",
+                            "error": "",
+                        }
                     )
             return pd.DataFrame(rows, columns=cols)
 
@@ -536,3 +550,72 @@ def test_pipeline_skipped_sell_with_a_real_fill_is_not_frozen():
     assert not report.get("frozen")
     assert report["summary"]["total_executed"] == 1
     assert broker.messages == []
+
+
+def test_skipped_close_out_sell_freezes_even_with_a_concurrent_failure():
+    """The trapped-residual freeze (skipped close-out SELL, 0 fills) must fire even
+    when another order ALSO hard-failed — total_failed>0 must NOT mask the residual
+    signal behind the generic FAILED alert (#85 review)."""
+
+    class _SkipAndFailBroker(_FakeBroker):
+        def place_orders(self, orders):  # noqa: ANN001 - test double
+            return pd.DataFrame(
+                [
+                    {
+                        "symbol": "DOGE",
+                        "side": "sell",
+                        "qty": 0.0,
+                        "price": 0.1,
+                        "order_id": "",
+                        "status": "SKIPPED",
+                        "error": "below exchange minimum",
+                    },
+                    {
+                        "symbol": "ETH",
+                        "side": "buy",
+                        "qty": 0.0,
+                        "price": 2000.0,
+                        "order_id": "",
+                        "status": "FAILED",
+                        "error": "placement failed",
+                    },
+                ]
+            )
+
+    orders = pd.DataFrame(
+        [
+            {
+                "Asset": "DOGE",
+                "Action": "Sell",
+                "Adjusted Quantity": 1.0,
+                "Price": 0.1,
+                "Notional Value": 600.0,
+                "Order Status": "To be placed",
+                "Executable": True,
+            },
+            {
+                "Asset": "ETH",
+                "Action": "Buy",
+                "Adjusted Quantity": 0.3,
+                "Price": 2000.0,
+                "Notional Value": 600.0,
+                "Order Status": "To be placed",
+                "Executable": True,
+            },
+        ]
+    )
+    pipe = TradingPipeline()
+    broker = _SkipAndFailBroker()
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=orders,
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+    )
+    assert report.get("frozen") is True
+    assert report["summary"]["total_executed"] == 0
+    assert report["summary"]["total_failed"] == 1
+    assert report["freeze_reasons"]["skipped_sell"] >= 1
+    assert report["freeze_reasons"]["failed"] == 1
+    assert any("FROZEN" in m for m in broker.messages)

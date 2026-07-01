@@ -119,8 +119,15 @@ def test_no_api_error_on_clean_execution():
         def place_orders(self, orders):  # noqa: ANN001 - test double
             cols = ["symbol", "side", "qty", "price", "order_id", "status", "error"]
             rows = [
-                {"symbol": o["symbol"], "side": str(o["side"]).lower(), "qty": float(o["qty"]),
-                 "price": 60000.0, "order_id": "1", "status": "FILLED", "error": ""}
+                {
+                    "symbol": o["symbol"],
+                    "side": str(o["side"]).lower(),
+                    "qty": float(o["qty"]),
+                    "price": 60000.0,
+                    "order_id": "1",
+                    "status": "FILLED",
+                    "error": "",
+                }
                 for _, o in orders.iterrows()
             ]
             return pd.DataFrame(rows, columns=cols)
@@ -135,3 +142,48 @@ def test_no_api_error_on_clean_execution():
     )
     assert report["api_errors"] == []
     assert report["summary"]["total_executed"] == 1
+
+
+def test_object_index_with_numeric_labels_returns_none():
+    """An object-dtype index holding numeric labels must NOT coerce to 1970-epoch
+    nanoseconds and fabricate a huge false staleness (the half-fix gap)."""
+    import numpy as np
+
+    df = pd.DataFrame({"BTC": [1.0, 2.0, 3.0]}, index=pd.Index([1, 2, 3], dtype=object))
+    assert _compute_data_age(df, "2026-06-30") == (None, None)
+    df2 = pd.DataFrame({"BTC": [1.0, 2.0]}, index=pd.Index([np.int64(1), np.int64(2)], dtype=object))
+    assert _compute_data_age(df2, "2026-06-30") == (None, None)
+
+
+def test_partial_fill_surfaced_as_total_partial():
+    """A partial fill counts as executed (keeps freeze logic honest) AND is surfaced
+    as total_partial so the notifier can raise an incomplete-fill exception instead
+    of reading the run as a clean success."""
+
+    class _PartialBroker:
+        def place_orders(self, orders):  # noqa: ANN001 - test double
+            return pd.DataFrame(
+                [
+                    {
+                        "symbol": str(o["symbol"]),
+                        "side": str(o["side"]).lower(),
+                        "qty": float(o["qty"]) / 2.0,
+                        "price": 60000.0,
+                        "order_id": "1",
+                        "status": "PARTIAL",
+                        "error": "partial fill: half/full",
+                    }
+                    for _, o in orders.iterrows()
+                ]
+            )
+
+    pipe = TradingPipeline()
+    report = pipe._execute_orders(
+        broker=_PartialBroker(),
+        orders_df=_executable_order_df(),
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+    )
+    assert report["summary"]["total_executed"] == 1
+    assert report["summary"]["total_partial"] == 1

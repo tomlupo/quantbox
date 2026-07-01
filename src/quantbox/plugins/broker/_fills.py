@@ -84,6 +84,12 @@ def classify_fill(order: dict | None, requested_qty: float) -> tuple[str, float,
         if filled is None:
             return FILL_FILLED, req, price
         if has_fill:
+            # A closed order that filled LESS than requested (e.g. an IOC that
+            # partially filled then canceled the remainder) is a PARTIAL, not a
+            # full fill — the unfilled remainder is real residual exposure, which
+            # is critical on a close-out SELL. Only filled >= requested is FILLED.
+            if req > _EPS and filled < req - _EPS:
+                return FILL_PARTIAL, filled, price
             return FILL_FILLED, filled, price
         return FILL_UNFILLED, 0.0, price
 
@@ -142,7 +148,12 @@ def resolve_fill(
             f"partial fill: {filled_qty:g}/{float(requested_qty):g} filled",
         )
 
-    # FILL_UNFILLED or still-FILL_UNKNOWN: not confirmed filled. Report honestly.
+    # FILL_UNFILLED or still-FILL_UNKNOWN: not confirmed filled. Report honestly as
+    # FAILED. This is safe against double-placement: the pipeline reconciles from the
+    # broker's ACTUAL positions every cycle (get_positions -> target-vs-current diff),
+    # so if this order in fact filled, the next cycle sees the resulting position and
+    # places no duplicate; a genuine miss is simply re-attempted. A false FAILED costs
+    # an alert + one re-check, never a double order.
     raw_status = "unknown"
     if order:
         raw_status = str(order.get("status") or "unknown")
