@@ -375,7 +375,13 @@ def test_phantom_uses_recent_intent_window_not_all_history(tmp_path):
             ),
             execution_report={
                 "orders_details": [
-                    {"symbol": order_asset, "side": "buy", "status": "FILLED", "executed_quantity": 1.0, "executed_price": 1.0}
+                    {
+                        "symbol": order_asset,
+                        "side": "buy",
+                        "status": "FILLED",
+                        "executed_quantity": 1.0,
+                        "executed_price": 1.0,
+                    }
                 ],
                 "summary": {},
             },
@@ -399,12 +405,36 @@ def test_phantom_uses_recent_intent_window_not_all_history(tmp_path):
 
     def _cycle2(cycle_id, held, target, order_asset):
         return pipe2._run_reconciliation(
-            params={"reconciliation": {"book_key": "b2", "data_dir": dd2, "cycle_id": cycle_id, "mode": "observe", "tolerances": {"phantom_lookback": 2}}},
+            params={
+                "reconciliation": {
+                    "book_key": "b2",
+                    "data_dir": dd2,
+                    "cycle_id": cycle_id,
+                    "mode": "observe",
+                    "tolerances": {"phantom_lookback": 2},
+                }
+            },
             broker=_FakeBroker([{"symbol": s, "qty": 10.0} for s in held]),
             final_weights=target,
-            orders_df=pd.DataFrame([{"Asset": order_asset, "Action": "Buy", "Adjusted Quantity": 1.0, "Price": 1.0, "Executable": True}]),
-            execution_report={"orders_details": [{"symbol": order_asset, "side": "buy", "status": "FILLED", "executed_quantity": 1.0, "executed_price": 1.0}], "summary": {}},
-            portfolio_value=100.0, stable_coin="USDC", asof="2026-01-01", run_id=cycle_id,
+            orders_df=pd.DataFrame(
+                [{"Asset": order_asset, "Action": "Buy", "Adjusted Quantity": 1.0, "Price": 1.0, "Executable": True}]
+            ),
+            execution_report={
+                "orders_details": [
+                    {
+                        "symbol": order_asset,
+                        "side": "buy",
+                        "status": "FILLED",
+                        "executed_quantity": 1.0,
+                        "executed_price": 1.0,
+                    }
+                ],
+                "summary": {},
+            },
+            portfolio_value=100.0,
+            stable_coin="USDC",
+            asof="2026-01-01",
+            run_id=cycle_id,
         )
 
     _cycle2("prev", held=[], target={"DOGE": 0.5}, order_asset="DOGE")
