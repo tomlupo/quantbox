@@ -599,6 +599,9 @@ class TradingPipeline:
             # Enforce-mode pre-execution gate (permissive defaults when not applied).
             gate_orders_allowed=recon_preflight.get("orders_allowed", True) if gate_applied else True,
             gate_reduce_only=recon_preflight.get("reduce_only", False) if gate_applied else False,
+            # Under enforce, a failed intent write drops the order (fail closed) —
+            # never trade live without the durable intent record.
+            capture_fail_closed=bool(recon_ctx is not None and recon_ctx.tol.is_enforce),
         )
 
         fills_data = []
@@ -1448,6 +1451,7 @@ class TradingPipeline:
         cycle_id: str | None = None,
         gate_orders_allowed: bool = True,
         gate_reduce_only: bool = False,
+        capture_fail_closed: bool = False,
     ) -> dict[str, Any]:
         """Execute orders via broker with sell-before-buy ordering.
 
@@ -1465,6 +1469,11 @@ class TradingPipeline:
           mode only). ``gate_orders_allowed=False`` halts all orders this cycle;
           ``gate_reduce_only=True`` keeps only exposure-reducing orders. In observe
           mode the caller passes the permissive defaults, so behavior is unchanged.
+        * ``capture_fail_closed`` (enforce mode): if intent capture fails for an
+          order, that order is DROPPED (not submitted) — under enforcement we must
+          never trade live without the crash-durable intent record. In observe mode
+          (default) a capture failure is only an observability loss and the order
+          still sends.
         """
         report: dict[str, Any] = {
             "executed_orders": [],
@@ -1680,6 +1689,7 @@ class TradingPipeline:
 
         intent_refs: dict[tuple[str, str], list[str]] = defaultdict(list)
         if ledger is not None and cycle_id is not None:
+            dropped_idx: list[int] = []
             for i, (_, brow) in enumerate(broker_orders.iterrows()):
                 sym = str(brow["symbol"])
                 side = str(brow["side"]).strip().lower()
@@ -1693,15 +1703,42 @@ class TradingPipeline:
                         target_qty=_safe_float(brow.get("qty")),
                         limit_px=_safe_float(brow.get("price")),
                     )
-                except Exception as exc:  # ledger must never block execution
-                    # Do NOT track this ref: the intent was never durably written,
-                    # so we must not later record a RESULT against a phantom intent
-                    # (that would leave a result with no intent and mislead Stage
-                    # 7b's read-back). The order still executes — the ledger simply
-                    # has no record for it (an observability loss, not corruption).
+                except Exception as exc:
+                    if capture_fail_closed:
+                        # ENFORCE: never trade live without the durable intent
+                        # record — DROP the order (do not submit it).
+                        logger.error(
+                            "RECON ENFORCE: intent capture failed for %s %s — DROPPING order "
+                            "(fail closed; not sent): %s",
+                            side,
+                            sym,
+                            exc,
+                        )
+                        report["orders_details"].append(
+                            {
+                                "symbol": sym,
+                                "action": side,
+                                "status": "FAILED",
+                                "error": f"intent capture failed under enforce (order dropped): {exc}",
+                            }
+                        )
+                        report["summary"]["total_failed"] += 1
+                        report["recon_capture_dropped"] = report.get("recon_capture_dropped", 0) + 1
+                        dropped_idx.append(i)
+                        continue
+                    # OBSERVE: ledger must never block execution. Do NOT track this
+                    # ref (no RESULT against a never-written intent), but the order
+                    # still executes — an observability loss, not corruption.
                     logger.warning("Intent capture failed for %s %s (order still sent): %s", side, sym, exc)
                     continue
                 intent_refs[(sym, side)].append(order_ref)
+
+            # Under enforce, actually remove the dropped orders before submission.
+            if dropped_idx:
+                broker_orders = broker_orders.drop(broker_orders.index[dropped_idx]).reset_index(drop=True)
+                if broker_orders.empty:
+                    logger.error("RECON ENFORCE: all orders dropped (intent capture failed) — nothing sent.")
+                    return report
 
         def _record_result(symbol: str, side: str, status: str, filled_qty: Any = None, avg_px: Any = None) -> None:
             """Bind a broker result back to a captured intent (one-to-one, FIFO)."""
@@ -2151,7 +2188,11 @@ class TradingPipeline:
         try:
             return self._run_reconciliation_impl(**kwargs)
         except Exception as exc:  # noqa: BLE001 - recon is never allowed to be fatal
-            logger.error("Reconciliation stage failed (non-fatal, observe-mode): %s", exc)
+            # Even a critical enforce-mode failure (e.g. unwritable state authority)
+            # must not lose the run's artifacts — the impl already alerted hard and
+            # logged before raising. Surface it as an error note the artifact/monitor
+            # layer can see, and keep the run alive.
+            logger.error("Reconciliation stage failed (non-fatal to the run): %s", exc)
             return {"error": str(exc)}
 
     def _run_reconciliation_impl(
@@ -2369,24 +2410,49 @@ class TradingPipeline:
 
         decision = machine.evaluate(breaks)
 
-        try:
-            import json
+        import json
 
-            # Atomic write (temp + fsync + os.replace): the state file is the
-            # enforcement authority, so a crash mid-persist must never leave it
-            # truncated/corrupt (which would then fail closed to HALT next cycle).
-            _atomic_write_text(
-                state_path,
-                json.dumps(
-                    {
-                        "state": machine.state.value,
-                        "degraded_cycles": machine.degraded_cycles,
-                        "streaks": streaks,
-                    }
-                ),
-            )
-        except Exception as exc:
-            logger.warning("Reconciliation state persist failed: %s", exc)
+        state_payload = json.dumps(
+            {
+                "state": machine.state.value,
+                "degraded_cycles": machine.degraded_cycles,
+                "streaks": streaks,
+            }
+        )
+        # Atomic write (temp + fsync + os.replace): the state file is the
+        # enforcement authority, so a crash mid-persist must never leave it
+        # truncated/corrupt. Retry once on failure.
+        persist_err: Exception | None = None
+        for _attempt in range(2):
+            try:
+                _atomic_write_text(state_path, state_payload)
+                persist_err = None
+                break
+            except Exception as exc:  # noqa: BLE001
+                persist_err = exc
+        if persist_err is not None:
+            if tol.is_enforce:
+                # ENFORCE: the next cycle's gate reads this file. If we cannot
+                # persist a (possibly more severe) state, the enforcement authority
+                # is unwritable — do NOT continue silently. Alert hard and RAISE so
+                # the run surfaces as failed and the operator halts the book; a
+                # silent continue would let the next cycle trade from stale state.
+                logger.error(
+                    "RECON ENFORCE [%s]: could not persist recon state (%s) — enforcement "
+                    "authority unwritable. Raising to fail the run.",
+                    book_key,
+                    persist_err,
+                )
+                notify = getattr(broker, "notify", None)
+                if callable(notify):
+                    with contextlib.suppress(Exception):
+                        notify(
+                            f"🛑 <b>RECON ENFORCE [{book_key}] — state persist FAILED</b>\n"
+                            f"Could not write recon_state.json ({persist_err}). The next cycle's "
+                            "enforcement gate cannot be trusted — HALT the book and investigate disk."
+                        )
+                raise RuntimeError(f"recon state persist failed under enforce: {persist_err}") from persist_err
+            logger.warning("Reconciliation state persist failed (observe): %s", persist_err)
 
         # --- Alert (observe = log/alert only, no gating) -------------------
         if decision.alert:

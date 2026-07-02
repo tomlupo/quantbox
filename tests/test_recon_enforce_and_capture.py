@@ -350,6 +350,89 @@ def test_reduce_only_drops_unknown_action_fail_closed(tmp_path):
     assert b2.placed == []  # the unknown-action order was NOT sent
 
 
+def test_enforce_drops_order_when_intent_capture_fails(tmp_path):
+    """Under enforce, an order whose intent write fails must NOT be submitted —
+    we never trade live without the crash-durable intent record (review BLOCKER)."""
+    params = _enforce_params(tmp_path, ack=True)
+    pipe = TradingPipeline()
+    ctx = pipe._recon_load(params, run_id="r1", asof="d")
+
+    real = ctx.ledger.record_intent
+    calls = {"n": 0}
+
+    def _flaky(**kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("disk full")
+        return real(**kw)
+
+    ctx.ledger.record_intent = _flaky
+    broker = _FakeBroker(fills_fn=_fills_all("FILLED"))
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=pd.DataFrame([_order("DOGE", "Buy"), _order("ETH", "Buy")]),
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+        ledger=ctx.ledger,
+        cycle_id=ctx.cycle_id,
+        capture_fail_closed=True,
+    )
+    # Only ONE order reached the broker — the un-captured one was dropped.
+    assert len(broker.placed) == 1
+    sent = broker.placed[0]
+    assert set(sent["symbol"]) == {"ETH"}  # DOGE (first, failed capture) dropped
+    assert report.get("recon_capture_dropped") == 1
+    assert report["summary"]["total_failed"] == 1
+
+
+def test_enforce_state_persist_failure_raises_and_alerts(tmp_path):
+    """Under enforce, a total state-persist failure must fail LOUD (hard alert +
+    error), not silently continue from stale state (review BLOCKER)."""
+    import quantbox.plugins.pipeline.trading_pipeline as tp
+
+    params = _enforce_params(tmp_path, ack=True, halt_failed_streak=1)
+    pipe = TradingPipeline()
+    broker = _FakeBroker(fills_fn=_fills_all("FAILED"))
+
+    # Force the atomic write to always fail.
+    orig = tp._atomic_write_text
+
+    def _boom(path, text):
+        raise OSError("read-only filesystem")
+
+    tp._atomic_write_text = _boom
+    try:
+        _report, notes, _pre = _drive_cycle(pipe, params, broker, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1")
+    finally:
+        tp._atomic_write_text = orig
+
+    # The wrapper caught the raised error and surfaced it (run stays alive).
+    assert "error" in notes
+    assert "persist failed under enforce" in notes["error"]
+    # A hard operator alert fired.
+    assert any("state persist FAILED" in a for a in broker.alerts)
+
+
+def test_observe_state_persist_failure_is_non_fatal(tmp_path):
+    """In observe mode a persist failure is a warning, not fatal, and does not
+    alert as an enforcement failure."""
+    import quantbox.plugins.pipeline.trading_pipeline as tp
+
+    params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
+    pipe = TradingPipeline()
+    broker = _FakeBroker(fills_fn=_fills_all("FILLED"))
+    orig = tp._atomic_write_text
+    tp._atomic_write_text = lambda p, t: (_ for _ in ()).throw(OSError("boom"))
+    try:
+        _report, notes, _pre = _drive_cycle(pipe, params, broker, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1")
+    finally:
+        tp._atomic_write_text = orig
+    # No 'error' from a raise — observe swallows the persist failure.
+    assert "error" not in notes
+    assert not any("persist FAILED" in a for a in broker.alerts)
+
+
 def test_corrupt_state_fails_closed_to_halt_under_enforce(tmp_path):
     """The persisted state IS the enforcement authority: a corrupt state file must
     fail CLOSED to HALT under enforce, never silently reset to NORMAL (review
