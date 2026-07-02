@@ -47,6 +47,47 @@ def _exec_report(status="FAILED"):
     }
 
 
+def test_duplicate_symbol_side_results_bind_one_to_one(tmp_path):
+    """N same-(symbol,side) orders in a cycle must each bind to a DISTINCT result,
+    not all to the first — else a fill is duplicated or a missed one is masked."""
+    import json
+
+    pipe = TradingPipeline()
+    two_doge = pd.DataFrame(
+        [
+            {"Asset": "DOGE", "Action": "Buy", "Adjusted Quantity": 5.0, "Price": 1.0, "Executable": True},
+            {"Asset": "DOGE", "Action": "Buy", "Adjusted Quantity": 5.0, "Price": 1.0, "Executable": True},
+        ]
+    )
+    report = {
+        "orders_details": [
+            {"symbol": "DOGE", "side": "buy", "status": "FILLED", "executed_quantity": 5.0, "executed_price": 1.0},
+            {"symbol": "DOGE", "side": "buy", "status": "FAILED", "executed_quantity": 0.0, "executed_price": 0.0},
+        ],
+        "summary": {},
+    }
+    params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
+    pipe._run_reconciliation(
+        params=params,
+        broker=_FakeBroker([]),
+        final_weights={"DOGE": 0.5},
+        orders_df=two_doge,
+        execution_report=report,
+        portfolio_value=1000.0,
+        stable_coin="USDC",
+        asof="d1",
+        run_id="r",
+    )
+    results = [
+        json.loads(x)
+        for x in (tmp_path / "carver-HL" / "orders.jsonl").read_text().splitlines()
+        if json.loads(x).get("kind") == "result"
+    ]
+    statuses = sorted(r["status"] for r in results)
+    # Exactly one filled + one failed — not two filled (duplicate) or a phantom miss.
+    assert statuses == ["failed", "filled"]
+
+
 def test_no_config_is_noop(tmp_path):
     pipe = TradingPipeline()
     notes = pipe._run_reconciliation(
