@@ -1,21 +1,26 @@
-"""Reconciliation-break detector + enforcement STATE MACHINE (issue #87, #2).
+"""Reconciliation-break detector + enforcement STATE MACHINE (issue #87, #90).
 
 This is the ACTION layer. Each cycle, after external truth is fetched, the
 detector classifies breaks and the state machine computes the transition
 NORMAL -> DEGRADED -> HALT / FLATTEN and the action to take.
 
-**OBSERVE-ONLY (by design, not by default).** The machine ALWAYS computes the
-full transition and the action it *would* take (``would_be_action``), so shadow
-alerting and the carver-HL replay test work. But it NEVER gates orders here:
-``orders_allowed`` stays True and ``reduce_only`` stays False — ZERO
-order-behavior change. ``mode`` accepts only ``"observe"`` (``"shadow"`` alias);
-``BookTolerances`` REJECTS ``"enforce"``.
+**Observe by default; real enforcement is Tom-gated (issue #90).** The machine
+ALWAYS computes the full transition and the action it *would* take
+(``would_be_action``), so shadow alerting and the carver-HL replay test work.
 
-Why reject rather than default-off: this stage runs AFTER order execution in the
-pipeline, so an "enforce" gate here would be FALSE SAFETY — it would report
-orders_allowed=False / "action taken" while the orders have already been sent.
-Real enforcement (consume the gate pre-execution, or gate the NEXT cycle) is a
-separate future issue; until it's wired, no config may claim orders are gated.
+* ``mode="observe"`` (default; ``"shadow"`` alias) — NEVER gates orders:
+  ``orders_allowed`` stays True and ``reduce_only`` stays False. ZERO
+  order-behavior change.
+* ``mode="enforce"`` — the machine's resulting state DOES set the gate
+  (``orders_allowed`` / ``reduce_only``). This is only safe because the gate is
+  consumed PRE-EXECUTION: the pipeline persists the state after each cycle and
+  reads it back BEFORE constructing/executing the next cycle's orders (the
+  "gate the NEXT cycle" model — see :func:`preflight_gate`). Enforcing here is
+  NOT false safety the way a post-execution gate would be, because no order is
+  sent on a decision computed too late. Enabling enforce on a live book is a
+  deliberate, Tom-gated action (an explicit config acknowledgment plus a deploy),
+  never a casual flag flip — the pipeline REFUSES ``enforce`` unless the book
+  config carries an explicit acknowledgment (see the trading pipeline).
 
 Authority rule (see also ledger.py):
 
@@ -68,6 +73,33 @@ _STATE_RANK = {
 # the underlying fault is gone. Only DEGRADED auto-recovers.
 _HARD_STATES = {ReconState.FLATTEN, ReconState.HALT}
 
+# Recognised enforcement modes. ``shadow`` is an alias for ``observe``.
+_OBSERVE_MODES = frozenset({"observe", "shadow"})
+_ENFORCE_MODE = "enforce"
+_VALID_MODES = _OBSERVE_MODES | {_ENFORCE_MODE}
+
+
+def preflight_gate(state: ReconState) -> tuple[bool, bool]:
+    """Map a persisted per-book state to a PRE-EXECUTION order gate.
+
+    Returns ``(orders_allowed, reduce_only)``:
+
+    * ``HALT``    → ``(False, False)`` — no new orders at all.
+    * ``FLATTEN`` → ``(True, True)``   — reduce-only: only orders that reduce or
+      exit existing exposure are allowed.
+    * ``DEGRADED`` / ``NORMAL`` → ``(True, False)`` — trade normally.
+
+    This is a PURE function of the state so the pipeline can consume it before it
+    constructs/executes a cycle's orders. Whether the gate is actually APPLIED is
+    the caller's decision (only in enforce mode); observe mode computes it for
+    reporting but never applies it.
+    """
+    if state == ReconState.HALT:
+        return (False, False)
+    if state == ReconState.FLATTEN:
+        return (True, True)
+    return (True, False)
+
 
 class BreakClass(str, Enum):
     """The break taxonomy from issue #87."""
@@ -111,20 +143,20 @@ class BookTolerances:
     # is explained (carryover); older reappearances count as phantom.
 
     def __post_init__(self) -> None:
-        # OBSERVE-ONLY by design (#87). ``enforce`` is deliberately REJECTED, not
-        # merely defaulted-off: this reconciliation stage runs AFTER order
-        # execution, so an "enforce" gate here would be FALSE SAFETY — it would
-        # report orders_allowed=False and alert "action taken" while the orders
-        # have already been sent. Real enforcement (consume the gate pre-execution
-        # or gate the next cycle) is a separate future issue; until it exists,
-        # accepting mode="enforce" anywhere is unsafe. The machine still computes
-        # the full would_be_action so observe/shadow alerting + the replay test work.
-        if self.mode not in ("observe", "shadow"):
-            raise ValueError(
-                f"reconciliation mode must be 'observe' (got {self.mode!r}). "
-                "'enforce' is NOT accepted: this stage runs post-execution, so a "
-                "gate here is false safety. Real enforcement is a future issue."
-            )
+        # Observe by default; ``enforce`` is now a real mode (#90) because the
+        # pipeline consumes the gate PRE-EXECUTION (persist state, read it back
+        # before the next cycle's orders — see preflight_gate). A post-execution
+        # gate would still be false safety, but that is no longer the enforcement
+        # path. Enabling enforce on a live book stays a deliberate, Tom-gated
+        # action: the trading pipeline additionally REFUSES enforce unless the
+        # book config carries an explicit acknowledgment. Here we only validate
+        # the mode string.
+        if self.mode not in _VALID_MODES:
+            raise ValueError(f"reconciliation mode must be one of {sorted(_VALID_MODES)} (got {self.mode!r}).")
+
+    @property
+    def is_enforce(self) -> bool:
+        return self.mode == _ENFORCE_MODE
 
 
 @dataclass
@@ -149,9 +181,10 @@ class ReconDecision:
 
     @property
     def enforced(self) -> bool:
-        # Always False: enforce is rejected at config (BookTolerances); this stage
-        # runs post-execution so it can never actually gate. Here for API stability.
-        return self.mode == "enforce"
+        # True iff this decision was computed under enforce mode. The gate
+        # (orders_allowed / reduce_only) is only actually consumed by the pipeline
+        # PRE-EXECUTION (next-cycle gating); see preflight_gate.
+        return self.mode == _ENFORCE_MODE
 
     @property
     def transitioned(self) -> bool:
@@ -289,16 +322,17 @@ class ReconciliationStateMachine:
             self.degraded_cycles = 0
 
         would_be_action = target
-        # enforce is ALWAYS False here: BookTolerances rejects mode="enforce"
-        # (this stage is post-execution, so gating here would be false safety —
-        # #87). The gate stays permissive; we only surface the WOULD-BE action.
-        # A future issue that wires real pre-execution gating flips this on.
-        enforce = False
+        enforce = self.tol.mode == _ENFORCE_MODE
 
-        # Observe-only: NEVER restrict orders — zero order-behavior change — but
-        # still surface the alert describing the action the machine WOULD take.
-        orders_allowed = True
-        reduce_only = False
+        # The gate for THIS decision reflects the resulting state — but only under
+        # enforce mode does it carry non-permissive values. Observe/shadow ALWAYS
+        # report the permissive gate (zero order-behavior change), while still
+        # surfacing the would_be_action + alert. The pipeline consumes the gate
+        # PRE-EXECUTION on the NEXT cycle (persist-then-read), never here.
+        if enforce:
+            orders_allowed, reduce_only = preflight_gate(target)
+        else:
+            orders_allowed, reduce_only = True, False
 
         alert = self._build_alert(from_state, target, breaks, enforce)
 

@@ -3,14 +3,15 @@
 Two cooperating pieces that let a live book be safely re-armed:
 
 * :class:`OrderFillLedger` — append-only per-book JSONL record of INTENT and
-  OBSERVED RESULT (on fill/failure). In the current pipeline wiring intent is
-  reconstructed post-execution (observe-v1), not captured at submission — see the
-  ``_run_reconciliation_impl`` caveat; true submission-time capture is follow-up.
+  OBSERVED RESULT (on fill/failure). Intent is captured at the broker submission
+  call inside the pipeline's execution stage (crash-durable audit trail, #90);
+  the post-execution reconciliation stage reads it back rather than reconstructing.
 * :class:`ReconciliationStateMachine` + :func:`classify_breaks` — classify
   reconciliation breaks and compute the NORMAL → DEGRADED → HALT/FLATTEN
-  transition the machine WOULD take. OBSERVE-ONLY: it only logs/alerts and never
-  gates orders. ``enforce`` is REJECTED (this stage is post-execution, so gating
-  here is false safety); real, Tom-gated enforcement is a future issue.
+  transition. Observe by default (logs/alerts, never gates). ``enforce`` is a
+  REAL mode (#90) whose gate (:func:`preflight_gate`) is consumed PRE-EXECUTION —
+  the pipeline persists state and reads it back before the next cycle's orders.
+  Enabling enforce on a live book is a deliberate, Tom-gated action.
 
 Authority rule (encoded throughout): exchange = truth for HOLDINGS, internal
 ledger = truth for INTENT.
@@ -30,6 +31,7 @@ from quantbox.reconciliation.state_machine import (
     ReconDecision,
     ReconState,
     classify_breaks,
+    preflight_gate,
 )
 
 __all__ = [
@@ -44,4 +46,5 @@ __all__ = [
     "ReconState",
     "ReconciliationStateMachine",
     "classify_breaks",
+    "preflight_gate",
 ]
