@@ -350,6 +350,74 @@ def test_reduce_only_drops_unknown_action_fail_closed(tmp_path):
     assert b2.placed == []  # the unknown-action order was NOT sent
 
 
+def test_corrupt_state_fails_closed_to_halt_under_enforce(tmp_path):
+    """The persisted state IS the enforcement authority: a corrupt state file must
+    fail CLOSED to HALT under enforce, never silently reset to NORMAL (review
+    BLOCKER)."""
+    book_dir = tmp_path / "carver-HL"
+    book_dir.mkdir(parents=True)
+    (book_dir / "recon_state.json").write_text("{ this is not valid json ")
+
+    params = _enforce_params(tmp_path, ack=True)
+    pipe = TradingPipeline()
+    # Preflight must read the corrupt state as HALT and gate this cycle.
+    ctx = pipe._recon_load(params, run_id="r1", asof="d")
+    pre = pipe._recon_preflight(ctx, _FakeBroker())
+    assert pre["applied"] is True
+    assert pre["orders_allowed"] is False
+
+    # And a full cycle sends nothing.
+    b = _FakeBroker(fills_fn=_fills_all("FILLED"))
+    r, _n, p = _drive_cycle(pipe, params, b, [_order("BTC", "Buy")], {"BTC": 0.5}, run_id="r1")
+    assert p["orders_allowed"] is False
+    assert r.get("recon_gated") == "halt"
+    assert b.placed == []
+
+
+def test_corrupt_state_in_observe_does_not_gate(tmp_path):
+    """In observe mode a corrupt state is only an observability loss — it resets
+    to NORMAL and never gates orders."""
+    book_dir = tmp_path / "carver-HL"
+    book_dir.mkdir(parents=True)
+    (book_dir / "recon_state.json").write_text("garbage")
+
+    params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
+    pipe = TradingPipeline()
+    b = _FakeBroker(fills_fn=_fills_all("FILLED"))
+    r, _n, p = _drive_cycle(pipe, params, b, [_order("BTC", "Buy")], {"BTC": 0.5}, run_id="r1")
+    assert p["applied"] is False
+    assert "recon_gated" not in r
+    assert len(b.placed) == 1
+
+
+def test_state_write_is_atomic_no_partial_file(tmp_path):
+    """The state file is replaced atomically — after a persist it is always valid
+    JSON with the expected keys (temp + fsync + os.replace)."""
+    params = _enforce_params(tmp_path, ack=True, halt_failed_streak=1)
+    pipe = TradingPipeline()
+    b = _FakeBroker(fills_fn=_fills_all("FAILED"))
+    _drive_cycle(pipe, params, b, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1")
+    state = json.loads((tmp_path / "carver-HL" / "recon_state.json").read_text())
+    assert state["state"] == "halt"
+    assert "degraded_cycles" in state and "streaks" in state
+    # No leftover temp files in the book dir.
+    assert not list((tmp_path / "carver-HL").glob(".*tmp*"))
+
+
+def test_preflight_exception_fails_closed_under_enforce(tmp_path):
+    """If preflight itself raises under acknowledged enforce, run()'s guard must
+    fail CLOSED. We assert the decision helper _enforce_requested drives that."""
+    pipe = TradingPipeline()
+    enforce_params = _enforce_params(tmp_path, ack=True)
+    observe_params = {"reconciliation": {"book_key": "b", "data_dir": str(tmp_path), "mode": "observe"}}
+    no_recon = {}
+    enforce_no_ack = _enforce_params(tmp_path, ack=False)
+    assert pipe._enforce_requested(enforce_params) is True
+    assert pipe._enforce_requested(observe_params) is False
+    assert pipe._enforce_requested(no_recon) is False
+    assert pipe._enforce_requested(enforce_no_ack) is False
+
+
 def test_observe_mode_never_applies_the_gate(tmp_path):
     """Even with a persisted HALT, OBSERVE mode never gates — orders flow."""
     # Cycle 1 (enforce+ack) → HALT persisted.

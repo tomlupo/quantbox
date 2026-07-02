@@ -59,6 +59,31 @@ def _safe_float(v: Any) -> float | None:
         return None
 
 
+def _atomic_write_text(path: Any, text: str) -> None:
+    """Durably replace ``path`` with ``text``: write a temp file in the same dir,
+    fsync it, then ``os.replace`` (atomic on POSIX). A crash can never leave the
+    target truncated/half-written — the reader sees either the old file or the new
+    one, never a corrupt one. Used for the recon state file, which IS the
+    enforcement authority (a corrupt state must never silently fail open).
+    """
+    import os
+    import tempfile
+    from pathlib import Path
+
+    path = Path(path)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
 # Ledger result status mapped from an execution ``orders_details`` row status.
 _EXEC_STATUS_TO_LEDGER = {
     "FILLED": "filled",
@@ -535,9 +560,27 @@ class TradingPipeline:
             if recon_ctx is not None:
                 recon_preflight = self._recon_preflight(recon_ctx, broker)
         except Exception as exc:  # noqa: BLE001 - recon must never be fatal
-            logger.error("Recon preflight failed (non-fatal, fail-safe to no-gate): %s", exc)
             recon_ctx = None
-            recon_preflight = {}
+            if self._enforce_requested(params):
+                # FAIL CLOSED: under acknowledged enforce, an inability to load or
+                # compute the persisted gate must NOT let orders through — block
+                # this cycle. (Observe mode fails open to no-gate: no gating claimed.)
+                logger.error(
+                    "RECON ENFORCE: preflight failed under acknowledged enforce — failing CLOSED (HALT) "
+                    "this cycle; no orders will be sent. Error: %s",
+                    exc,
+                )
+                recon_preflight = {
+                    "applied": True,
+                    "orders_allowed": False,
+                    "reduce_only": False,
+                    "enforced": True,
+                    "gate_from_state": "unknown",
+                    "fail_closed": True,
+                }
+            else:
+                logger.error("Recon preflight failed (observe, non-fatal, fail-safe to no-gate): %s", exc)
+                recon_preflight = {}
 
         gate_applied = bool(recon_preflight.get("applied"))
 
@@ -1938,11 +1981,28 @@ class TradingPipeline:
         state_path = ledger.path.parent / "recon_state.json"
 
         persisted: dict[str, Any] = {}
+        state_corrupt = False
         if state_path.exists():
             try:
                 persisted = json.loads(state_path.read_text())
-            except Exception:  # corrupt state → start fresh, fail safe to NORMAL
+                if not isinstance(persisted, dict):
+                    raise ValueError("recon state is not a JSON object")
+            except Exception as exc:
+                state_corrupt = True
                 persisted = {}
+                logger.error("Reconciliation state at %s is unreadable/corrupt: %s", state_path, exc)
+
+        # FAIL CLOSED under enforce: the persisted state IS the enforcement
+        # authority, so a corrupt/unreadable state must NOT silently reset to
+        # NORMAL and let the next cycle trade freely. Force HALT so the book stops
+        # until Tom clears it. In observe mode a corrupt state is only an
+        # observability loss, so we fall back to a fresh NORMAL.
+        if state_corrupt and tol.is_enforce:
+            logger.error(
+                "RECON ENFORCE [%s]: corrupt persisted state — failing CLOSED to HALT until manually cleared.",
+                book_key,
+            )
+            persisted = {"state": "halt", "degraded_cycles": 0, "streaks": {}}
 
         machine = ReconciliationStateMachine(book_key=book_key, tol=tol)
         with contextlib.suppress(Exception):
@@ -1961,6 +2021,18 @@ class TradingPipeline:
             state_path=state_path,
             persisted=persisted,
         )
+
+    def _enforce_requested(self, params: dict[str, Any]) -> bool:
+        """True iff the config asks for acknowledged enforce, WITHOUT loading the
+        ledger. Used to decide fail-open vs fail-closed when `_recon_load` itself
+        raised (so we cannot trust its parsed mode)."""
+        cfg = params.get("reconciliation")
+        if not isinstance(cfg, dict):
+            return False
+        tol_cfg = cfg.get("tolerances")
+        tol_mode = tol_cfg.get("mode") if isinstance(tol_cfg, dict) else None
+        mode = str(cfg.get("mode", tol_mode or "observe"))
+        return mode == "enforce" and bool(cfg.get("enforce_acknowledged", False))
 
     def _recon_preflight(self, ctx: _ReconCtx, broker: BrokerPlugin | None) -> dict[str, Any]:
         """Compute the PRE-EXECUTION gate from the PERSISTED (prior-cycle) state.
@@ -2300,14 +2372,18 @@ class TradingPipeline:
         try:
             import json
 
-            state_path.write_text(
+            # Atomic write (temp + fsync + os.replace): the state file is the
+            # enforcement authority, so a crash mid-persist must never leave it
+            # truncated/corrupt (which would then fail closed to HALT next cycle).
+            _atomic_write_text(
+                state_path,
                 json.dumps(
                     {
                         "state": machine.state.value,
                         "degraded_cycles": machine.degraded_cycles,
                         "streaks": streaks,
                     }
-                )
+                ),
             )
         except Exception as exc:
             logger.warning("Reconciliation state persist failed: %s", exc)
