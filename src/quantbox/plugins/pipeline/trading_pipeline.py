@@ -1651,7 +1651,13 @@ class TradingPipeline:
                         limit_px=_safe_float(brow.get("price")),
                     )
                 except Exception as exc:  # ledger must never block execution
-                    logger.warning("Intent capture failed for %s %s: %s", side, sym, exc)
+                    # Do NOT track this ref: the intent was never durably written,
+                    # so we must not later record a RESULT against a phantom intent
+                    # (that would leave a result with no intent and mislead Stage
+                    # 7b's read-back). The order still executes — the ledger simply
+                    # has no record for it (an observability loss, not corruption).
+                    logger.warning("Intent capture failed for %s %s (order still sent): %s", side, sym, exc)
+                    continue
                 intent_refs[(sym, side)].append(order_ref)
 
         def _record_result(symbol: str, side: str, status: str, filled_qty: Any = None, avg_px: Any = None) -> None:
@@ -2030,10 +2036,20 @@ class TradingPipeline:
         kept: list[Any] = []
         for _, row in executable.iterrows():
             sym = str(row.get("Asset", ""))
-            action = str(row.get("Action", "")).lower()
+            action = str(row.get("Action", "")).strip().lower()
             qty = float(row.get("Adjusted Quantity", 0) or 0)
             cur = positions.get(sym, 0.0)
             if qty <= 0 or cur == 0:
+                continue
+            # FAIL CLOSED: only a recognised buy/sell can be judged reduce-or-not.
+            # An unknown action under a FLATTEN gate must be DROPPED, never assumed
+            # to be exposure-reducing (assuming sell could send an opening order).
+            if action not in ("buy", "sell"):
+                logger.warning(
+                    "Reduce-only gate: dropping order with unrecognised action %r for %s (fail closed).",
+                    action,
+                    sym,
+                )
                 continue
             delta = qty if action == "buy" else -qty
             # Reduces only if the order's signed delta opposes the current position.

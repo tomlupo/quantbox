@@ -279,6 +279,77 @@ def test_enforce_flatten_keeps_only_reducing_orders(tmp_path):
     assert sent.iloc[0]["side"] == "sell"
 
 
+def test_failed_intent_write_does_not_leave_a_dangling_result(tmp_path):
+    """If record_intent raises (disk/permission), the order still sends but NO
+    result is recorded against the never-written intent — the ledger must never
+    hold a result with no matching intent (review BLOCKER)."""
+    broker = _FakeBroker(fills_fn=_fills_all("FILLED"))
+    params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
+    pipe = TradingPipeline()
+    ctx = pipe._recon_load(params, run_id="r1", asof="d")
+
+    # Make the FIRST intent write fail, the rest succeed.
+    real_record_intent = ctx.ledger.record_intent
+    calls = {"n": 0}
+
+    def _flaky_intent(**kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("disk full")
+        return real_record_intent(**kw)
+
+    ctx.ledger.record_intent = _flaky_intent
+
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=pd.DataFrame([_order("DOGE", "Buy"), _order("ETH", "Buy")]),
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+        ledger=ctx.ledger,
+        cycle_id=ctx.cycle_id,
+    )
+    # Both orders still executed (ledger never blocks execution).
+    assert report["summary"]["total_executed"] == 2
+
+    recs = _ledger_records(tmp_path)
+    intents = {r["order_ref"] for r in recs if r.get("kind") == "intent"}
+    results = [r for r in recs if r.get("kind") == "result"]
+    # Every RESULT references an intent that was actually written — no dangling.
+    assert intents  # ETH intent was written
+    for r in results:
+        assert r["order_ref"] in intents
+    # The order whose intent write failed has neither intent nor result on disk.
+    assert len(intents) == 1  # only ETH
+
+
+def test_reduce_only_drops_unknown_action_fail_closed(tmp_path):
+    """An unrecognised order action under a FLATTEN gate must be DROPPED, not
+    treated as an exposure-reducing sell (review BLOCKER)."""
+    params = _enforce_params(tmp_path, ack=True)
+    pipe = TradingPipeline()
+
+    # Cycle 1 → FLATTEN via a phantom holding.
+    b1 = _FakeBroker(positions=[{"symbol": "XRP", "qty": 100.0}], fills_fn=_fills_all("FILLED"))
+    _r1, n1, _p1 = _drive_cycle(pipe, params, b1, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1")
+    assert n1["to_state"] == "flatten"
+
+    # Cycle 2: hold LONG SOL; an order with a garbage action must be dropped even
+    # though SOL is held (a naive "non-buy == sell" would have sent it).
+    b2 = _FakeBroker(positions=[{"symbol": "SOL", "qty": 5.0}], fills_fn=_fills_all("FILLED"))
+    r2, _n2, p2 = _drive_cycle(
+        pipe,
+        params,
+        b2,
+        [{"Asset": "SOL", "Action": "Rebalance", "Adjusted Quantity": 3.0, "Price": 1.0, "Executable": True}],
+        {"SOL": 0.5},
+        run_id="r2",
+    )
+    assert p2["reduce_only"] is True
+    assert r2.get("recon_reduce_only_noop") is True  # nothing valid to reduce
+    assert b2.placed == []  # the unknown-action order was NOT sent
+
+
 def test_observe_mode_never_applies_the_gate(tmp_path):
     """Even with a persisted HALT, OBSERVE mode never gates — orders flow."""
     # Cycle 1 (enforce+ack) → HALT persisted.
