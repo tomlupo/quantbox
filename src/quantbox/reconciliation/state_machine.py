@@ -137,17 +137,20 @@ class ReconDecision:
     breaks: list[Break]
     mode: str
     # would_be_action is the state the machine computed (the action it WOULD take).
-    # In enforce mode it equals to_state; in observe mode it is still populated so
-    # the replay/shadow test can prove the machine "would have" acted.
+    # Populated in every mode so the replay/shadow test can prove the machine
+    # "would have" acted (observe-only never acts on it).
     would_be_action: ReconState
     alert: str | None
-    # Effective gate the caller must honour. In observe mode these are always the
-    # permissive values (allow everything) so there is ZERO order-behavior change.
+    # Observe-only gate: ALWAYS the permissive values (allow everything) — ZERO
+    # order-behavior change. Kept on the dataclass for the future enforcement
+    # wiring (a pre-execution consumer), which does not exist yet.
     orders_allowed: bool
     reduce_only: bool
 
     @property
     def enforced(self) -> bool:
+        # Always False: enforce is rejected at config (BookTolerances); this stage
+        # runs post-execution so it can never actually gate. Here for API stability.
         return self.mode == "enforce"
 
     @property

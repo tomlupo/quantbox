@@ -1901,7 +1901,9 @@ class TradingPipeline:
                 phantom.append(sym)
 
         # --- Persistent per-book state (streaks + machine state) -----------
-        state_path = root / book_key / "recon_state.json"
+        # Sits next to the ledger, in the SAME dir the ledger already validated to
+        # be within root (book_key can't escape — see OrderFillLedger.__post_init__).
+        state_path = ledger.path.parent / "recon_state.json"
         persisted = {}
         if state_path.exists():
             try:

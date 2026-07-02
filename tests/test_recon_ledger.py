@@ -86,3 +86,18 @@ def test_intents_for_cycle_filters(tmp_path):
     led.record_intent(cycle_id="c2", symbol="B", side="buy", order_ref="r2")
     got = led.intents_for_cycle("c1")
     assert [r["symbol"] for r in got] == ["A"]
+
+
+def test_book_key_cannot_escape_root(tmp_path):
+    """book_key is YAML-controlled and used as a path segment — a traversal like
+    '../x' or an absolute path must be rejected, not written outside root (#88)."""
+    import pytest
+
+    from quantbox.reconciliation import OrderFillLedger
+
+    for bad in ("../evil", "..", "a/b", "/tmp/foo", "."):
+        with pytest.raises(ValueError):
+            OrderFillLedger(book_key=bad, root=str(tmp_path))
+    # a normal single-segment key is fine
+    ok = OrderFillLedger(book_key="carver-HL", root=str(tmp_path))
+    assert ok.path.parent.parent == tmp_path.resolve() or ok.path.parent == tmp_path / "carver-HL"

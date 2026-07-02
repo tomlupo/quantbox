@@ -69,7 +69,21 @@ class OrderFillLedger:
     def __post_init__(self) -> None:
         if not self.book_key:
             raise ValueError("book_key is required for a per-book ledger")
-        book_dir = Path(self.root) / self.book_key
+        # book_key is YAML/config-controlled and used as a path segment, so it
+        # must NOT be able to escape ``root``. Reject anything that isn't a single
+        # safe segment (path separators, "..", or an absolute path) — fail closed
+        # rather than silently writing the ledger/state outside the recon root.
+        bk = str(self.book_key)
+        if bk in (".", "..") or "/" in bk or "\\" in bk or os.sep in bk or (os.altsep and os.altsep in bk):
+            raise ValueError(
+                f"book_key must be a single safe path segment, got {bk!r} "
+                "(no path separators or '..' — it namespaces a directory under root)"
+            )
+        book_dir = Path(self.root) / bk
+        # Defense in depth: the resolved dir must stay within root.
+        root_resolved = Path(self.root).resolve()
+        if root_resolved not in book_dir.resolve().parents and book_dir.resolve() != root_resolved:
+            raise ValueError(f"book_key {bk!r} escapes the reconciliation root {self.root!r}")
         book_dir.mkdir(parents=True, exist_ok=True)
         self.path = book_dir / "orders.jsonl"
         if self.clock is None:
