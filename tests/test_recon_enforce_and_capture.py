@@ -386,16 +386,18 @@ def test_enforce_drops_order_when_intent_capture_fails(tmp_path):
     assert report["summary"]["total_failed"] == 1
 
 
-def test_enforce_state_persist_failure_raises_and_alerts(tmp_path):
-    """Under enforce, a total state-persist failure must fail LOUD (hard alert +
-    error), not silently continue from stale state (review BLOCKER)."""
+def test_enforce_state_persist_failure_escapes_and_alerts(tmp_path):
+    """Under enforce, a total state-persist failure must ESCAPE the guard (fail the
+    run) and alert hard — not be swallowed into a success (review BLOCKER)."""
+    import pytest
+
     import quantbox.plugins.pipeline.trading_pipeline as tp
+    from quantbox.plugins.pipeline.trading_pipeline import ReconEnforcementError
 
     params = _enforce_params(tmp_path, ack=True, halt_failed_streak=1)
     pipe = TradingPipeline()
     broker = _FakeBroker(fills_fn=_fills_all("FAILED"))
 
-    # Force the atomic write to always fail.
     orig = tp._atomic_write_text
 
     def _boom(path, text):
@@ -403,15 +405,36 @@ def test_enforce_state_persist_failure_raises_and_alerts(tmp_path):
 
     tp._atomic_write_text = _boom
     try:
-        _report, notes, _pre = _drive_cycle(pipe, params, broker, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1")
+        with pytest.raises(ReconEnforcementError, match="persist failed under enforce"):
+            _drive_cycle(pipe, params, broker, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1")
     finally:
         tp._atomic_write_text = orig
 
-    # The wrapper caught the raised error and surfaced it (run stays alive).
-    assert "error" in notes
-    assert "persist failed under enforce" in notes["error"]
-    # A hard operator alert fired.
+    # A hard operator alert fired before the raise.
     assert any("state persist FAILED" in a for a in broker.alerts)
+
+
+def test_enforce_ignores_config_cycle_id_and_uses_run_id(tmp_path):
+    """A static/reused config cycle_id conflates ledger refs — under enforce it is
+    ignored and the run-unique run_id is used instead (review BLOCKER)."""
+    params = {
+        "reconciliation": {
+            "book_key": "carver-HL",
+            "data_dir": str(tmp_path),
+            "mode": "enforce",
+            "enforce_acknowledged": True,
+            "cycle_id": "STATIC",  # must be ignored under enforce
+        }
+    }
+    pipe = TradingPipeline()
+    ctx = pipe._recon_load(params, run_id="run-unique-123", asof="2026-01-01")
+    assert ctx.cycle_id == "run-unique-123"
+
+    # Observe, by contrast, honours the config cycle_id (backfill/testing).
+    params["reconciliation"]["mode"] = "observe"
+    params["reconciliation"].pop("enforce_acknowledged")
+    ctx_obs = pipe._recon_load(params, run_id="run-unique-123", asof="2026-01-01")
+    assert ctx_obs.cycle_id == "STATIC"
 
 
 def test_observe_state_persist_failure_is_non_fatal(tmp_path):

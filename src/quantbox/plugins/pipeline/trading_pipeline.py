@@ -59,6 +59,17 @@ def _safe_float(v: Any) -> float | None:
         return None
 
 
+class ReconEnforcementError(RuntimeError):
+    """A CRITICAL enforce-mode reconciliation failure that must NOT be swallowed.
+
+    Raised when the enforcement authority itself is untrustworthy under acknowledged
+    enforce (e.g. the persisted state file cannot be written). Unlike ordinary recon
+    faults — which are observability losses and never fatal — this must escape the
+    guard and fail the run, so the book stops rather than silently trading the next
+    cycle from stale/absent enforcement state.
+    """
+
+
 def _atomic_write_text(path: Any, text: str) -> None:
     """Durably replace ``path`` with ``text``: write a temp file in the same dir,
     fsync it, then ``os.replace`` (atomic on POSIX). A crash can never leave the
@@ -2021,7 +2032,25 @@ class TradingPipeline:
             mode = "observe"
 
         tol = BookTolerances(mode=mode, **tol_cfg)
-        cycle_id = str(cfg.get("cycle_id") or run_id or asof)
+        # cycle_id namespaces order_refs in the ledger. A STATIC/reused cycle_id
+        # conflates old and new intents/results (ledger matching is by order_ref),
+        # which corrupts the failure/missed-fill signals the enforcement gate acts
+        # on. Under enforce we therefore IGNORE any config-supplied cycle_id and
+        # force the run-unique run_id (issue #90 review). Observe keeps the flexible
+        # config override for testing/backfills.
+        cfg_cycle = cfg.get("cycle_id")
+        if tol.is_enforce:
+            if cfg_cycle:
+                logger.warning(
+                    "RECON ENFORCE [%s]: ignoring config cycle_id %r — forcing run-unique run_id for live gating.",
+                    book_key,
+                    cfg_cycle,
+                )
+            if not run_id:
+                raise ReconEnforcementError("enforce mode requires a run-unique run_id for cycle_id; none was provided")
+            cycle_id = str(run_id)
+        else:
+            cycle_id = str(cfg_cycle or run_id or asof)
         ledger = OrderFillLedger(book_key=book_key, root=root)
         state_path = ledger.path.parent / "recon_state.json"
 
@@ -2214,11 +2243,13 @@ class TradingPipeline:
         """
         try:
             return self._run_reconciliation_impl(**kwargs)
-        except Exception as exc:  # noqa: BLE001 - recon is never allowed to be fatal
-            # Even a critical enforce-mode failure (e.g. unwritable state authority)
-            # must not lose the run's artifacts — the impl already alerted hard and
-            # logged before raising. Surface it as an error note the artifact/monitor
-            # layer can see, and keep the run alive.
+        except ReconEnforcementError:
+            # CRITICAL under enforce (e.g. unwritable enforcement authority): must
+            # NOT be swallowed. Let it escape and fail the run so the book stops,
+            # rather than completing "successfully" while the next cycle trades from
+            # stale/absent enforcement state. The impl already alerted hard.
+            raise
+        except Exception as exc:  # noqa: BLE001 - ordinary recon faults are never fatal
             logger.error("Reconciliation stage failed (non-fatal to the run): %s", exc)
             return {"error": str(exc)}
 
@@ -2478,7 +2509,7 @@ class TradingPipeline:
                             f"Could not write recon_state.json ({persist_err}). The next cycle's "
                             "enforcement gate cannot be trusted — HALT the book and investigate disk."
                         )
-                raise RuntimeError(f"recon state persist failed under enforce: {persist_err}") from persist_err
+                raise ReconEnforcementError(f"recon state persist failed under enforce: {persist_err}") from persist_err
             logger.warning("Reconciliation state persist failed (observe): %s", persist_err)
 
         # --- Alert (observe = log/alert only, no gating) -------------------
