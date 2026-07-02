@@ -11,6 +11,7 @@ failed placement must NOT report FILLED.
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from quantbox.plugins.broker import _fills
 from quantbox.plugins.broker._fills import classify_fill, resolve_fill
@@ -33,6 +34,23 @@ def test_closed_without_filled_field_assumes_full_fill():
     verdict, qty, _ = classify_fill({"status": "closed", "average": 5.0}, 3.0)
     assert verdict == _fills.FILL_FILLED
     assert qty == 3.0
+
+
+def test_closed_without_filled_but_positive_remaining_is_partial():
+    # Issue #68 hardening: a 'closed' order that OMITS ``filled`` but still reports
+    # a positive ``remaining`` did NOT fully fill. The old code returned FILLED at
+    # the requested qty (a silent full-fill on a partially-filled close-out); the
+    # implied fill (amount - remaining) must be reported PARTIAL instead.
+    verdict, qty, _ = classify_fill({"status": "closed", "amount": 0.10, "remaining": 0.04, "average": 100.0}, 0.10)
+    assert verdict == _fills.FILL_PARTIAL
+    assert qty == pytest.approx(0.06)
+
+
+def test_closed_without_filled_fully_remaining_is_unfilled():
+    # Same path, but remaining == amount => nothing filled => UNFILLED, never FILLED.
+    verdict, qty, _ = classify_fill({"status": "closed", "amount": 0.10, "remaining": 0.10, "average": 100.0}, 0.10)
+    assert verdict == _fills.FILL_UNFILLED
+    assert qty == 0.0
 
 
 def test_closed_but_zero_filled_is_not_a_fill():
