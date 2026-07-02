@@ -1790,6 +1790,17 @@ class TradingPipeline:
         attempted_syms: set[str] = set()
         missed_fills: list[str] = []
 
+        # Match results to intents by (symbol, side) CONSUMING each result once, so
+        # N same-(symbol, side) orders in a cycle can't all bind to the first
+        # result (which would duplicate a fill or mask a missed one). An intent
+        # with no remaining result falls through to the timeout/missed path below.
+        from collections import defaultdict
+
+        details_pool: dict[tuple[str, str], list[dict]] = defaultdict(list)
+        for d in details:
+            k = (str(d.get("symbol", "")), str(d.get("side", d.get("action", ""))).lower())
+            details_pool[k].append(d)
+
         if isinstance(executable, pd.DataFrame) and not executable.empty:
             for i, (_, row) in enumerate(executable.iterrows()):
                 sym = str(row.get("Asset", ""))
@@ -1805,14 +1816,8 @@ class TradingPipeline:
                     target_wt=final_weights.get(sym),
                     limit_px=_safe_float(row.get("Price")),
                 )
-                match = next(
-                    (
-                        d
-                        for d in details
-                        if str(d.get("symbol", "")) == sym and str(d.get("side", d.get("action", ""))).lower() == side
-                    ),
-                    None,
-                )
+                pool = details_pool.get((sym, side))
+                match = pool.pop(0) if pool else None
                 if match is not None:
                     status = str(match.get("status", "failed")).upper()
                     ledger.record_result(

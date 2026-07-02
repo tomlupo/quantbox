@@ -16,7 +16,7 @@ from quantbox.reconciliation import (
 )
 
 
-def _machine(mode="enforce", **tol):
+def _machine(mode="observe", **tol):
     return ReconciliationStateMachine(book_key="carver-HL", tol=BookTolerances(mode=mode, **tol))
 
 
@@ -139,18 +139,25 @@ def test_observe_mode_never_gates_orders():
     assert "OBSERVE" in d.alert
 
 
-def test_enforce_mode_gates_orders():
-    m = _machine(mode="enforce")
+def test_enforce_mode_is_rejected_at_config():
+    """enforce is REJECTED, not defaulted-off: this stage is post-execution, so a
+    gate here would be false safety. No config can construct an enforcing book."""
+    import pytest
+
+    with pytest.raises(ValueError, match="enforce"):
+        BookTolerances(mode="enforce")
+
+
+def test_hard_break_computes_would_be_action_without_gating():
+    """Even for a hard break, observe-only NEVER gates — it only reports the
+    would-be action (the shadow signal the replay test relies on)."""
+    m = _machine(mode="observe")
     d = m.evaluate(classify_breaks(tol=m.tol, failed_streaks={"SOL": 3}))
     assert d.to_state == ReconState.HALT
-    assert d.orders_allowed is False
-    assert d.enforced is True
-
-    m2 = _machine(mode="enforce")
-    d2 = m2.evaluate(classify_breaks(tol=m2.tol, phantom_symbols=["ETH"]))
-    assert d2.to_state == ReconState.FLATTEN
-    assert d2.orders_allowed is True
-    assert d2.reduce_only is True
+    assert d.would_be_action == ReconState.HALT
+    assert d.orders_allowed is True  # never gated here
+    assert d.reduce_only is False
+    assert d.enforced is False
 
 
 # ---------------------------------------------------------------------------

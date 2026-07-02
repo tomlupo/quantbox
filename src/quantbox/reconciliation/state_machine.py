@@ -4,17 +4,18 @@ This is the ACTION layer. Each cycle, after external truth is fetched, the
 detector classifies breaks and the state machine computes the transition
 NORMAL -> DEGRADED -> HALT / FLATTEN and the action to take.
 
-**Observe vs enforce.** The machine ALWAYS computes the full transition and the
-action it *would* take. A per-book ``mode`` flag (default ``"observe"``) decides
-whether that action is *enforced*:
+**OBSERVE-ONLY (by design, not by default).** The machine ALWAYS computes the
+full transition and the action it *would* take (``would_be_action``), so shadow
+alerting and the carver-HL replay test work. But it NEVER gates orders here:
+``orders_allowed`` stays True and ``reduce_only`` stays False — ZERO
+order-behavior change. ``mode`` accepts only ``"observe"`` (``"shadow"`` alias);
+``BookTolerances`` REJECTS ``"enforce"``.
 
-    observe  -> log + alert only; ``decision.orders_allowed`` stays True and
-                ``decision.reduce_only`` stays False (ZERO order-behavior change).
-    enforce  -> the caller must honour ``orders_allowed`` / ``reduce_only``.
-
-``enforce`` is NOT to be enabled by anyone but Tom, and never on a live book
-without his explicit go (live-capital limit, issue #87). The default is observe,
-so wiring this in changes nothing until someone deliberately flips a book.
+Why reject rather than default-off: this stage runs AFTER order execution in the
+pipeline, so an "enforce" gate here would be FALSE SAFETY — it would report
+orders_allowed=False / "action taken" while the orders have already been sent.
+Real enforcement (consume the gate pre-execution, or gate the NEXT cycle) is a
+separate future issue; until it's wired, no config may claim orders are gated.
 
 Authority rule (see also ledger.py):
 
@@ -99,7 +100,7 @@ class BookTolerances:
     are always hard.
     """
 
-    mode: str = "observe"  # "observe" | "enforce" — DEFAULT observe (#87)
+    mode: str = "observe"  # "observe" only — see __post_init__ (#87)
     max_drift: float = 0.10  # 10% target-vs-actual drift → soft break
     drift_halt: float = 0.25  # 25% drift → hard break (trapped/uncontrolled)
     degraded_failed_streak: int = 1  # 1 failed/zero-fill → soft
@@ -108,8 +109,20 @@ class BookTolerances:
     max_degraded_cycles: int = 3  # DEGRADED this many cycles → escalate to HALT
 
     def __post_init__(self) -> None:
-        if self.mode not in ("observe", "enforce"):
-            raise ValueError(f"mode must be 'observe' or 'enforce', got {self.mode!r}")
+        # OBSERVE-ONLY by design (#87). ``enforce`` is deliberately REJECTED, not
+        # merely defaulted-off: this reconciliation stage runs AFTER order
+        # execution, so an "enforce" gate here would be FALSE SAFETY — it would
+        # report orders_allowed=False and alert "action taken" while the orders
+        # have already been sent. Real enforcement (consume the gate pre-execution
+        # or gate the next cycle) is a separate future issue; until it exists,
+        # accepting mode="enforce" anywhere is unsafe. The machine still computes
+        # the full would_be_action so observe/shadow alerting + the replay test work.
+        if self.mode not in ("observe", "shadow"):
+            raise ValueError(
+                f"reconciliation mode must be 'observe' (got {self.mode!r}). "
+                "'enforce' is NOT accepted: this stage runs post-execution, so a "
+                "gate here is false safety. Real enforcement is a future issue."
+            )
 
 
 @dataclass
@@ -271,16 +284,16 @@ class ReconciliationStateMachine:
             self.degraded_cycles = 0
 
         would_be_action = target
-        enforce = self.tol.mode == "enforce"
+        # enforce is ALWAYS False here: BookTolerances rejects mode="enforce"
+        # (this stage is post-execution, so gating here would be false safety —
+        # #87). The gate stays permissive; we only surface the WOULD-BE action.
+        # A future issue that wires real pre-execution gating flips this on.
+        enforce = False
 
-        # The effective gate. In observe mode we NEVER restrict orders — zero
-        # order-behavior change — but we still surface the alert.
-        if enforce:
-            orders_allowed = target != ReconState.HALT
-            reduce_only = target == ReconState.FLATTEN
-        else:
-            orders_allowed = True
-            reduce_only = False
+        # Observe-only: NEVER restrict orders — zero order-behavior change — but
+        # still surface the alert describing the action the machine WOULD take.
+        orders_allowed = True
+        reduce_only = False
 
         alert = self._build_alert(from_state, target, breaks, enforce)
 
