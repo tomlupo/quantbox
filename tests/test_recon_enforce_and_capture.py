@@ -457,6 +457,42 @@ def test_corrupt_state_fails_closed_to_halt_under_enforce(tmp_path):
     assert b.placed == []
 
 
+def test_invalid_state_value_fails_closed_under_enforce(tmp_path):
+    """A readable JSON state file with a BOGUS state value is as dangerous as
+    corrupt JSON — under enforce it must fail CLOSED to HALT, not fall back to the
+    default NORMAL (review BLOCKER)."""
+    from quantbox.reconciliation import ReconState
+
+    book_dir = tmp_path / "carver-HL"
+    book_dir.mkdir(parents=True)
+    (book_dir / "recon_state.json").write_text('{"state": "bogus", "degraded_cycles": 0, "streaks": {}}')
+
+    params = _enforce_params(tmp_path, ack=True)
+    pipe = TradingPipeline()
+    ctx = pipe._recon_load(params, run_id="r1", asof="d")
+    assert ctx.machine.state == ReconState.HALT
+
+    b = _FakeBroker(fills_fn=_fills_all("FILLED"))
+    r, _n, p = _drive_cycle(pipe, params, b, [_order("BTC", "Buy")], {"BTC": 0.5}, run_id="r1")
+    assert p["orders_allowed"] is False
+    assert r.get("recon_gated") == "halt"
+    assert b.placed == []
+
+
+def test_invalid_state_value_in_observe_resets_to_normal(tmp_path):
+    """In observe a bogus state value resets to NORMAL and never gates."""
+    from quantbox.reconciliation import ReconState
+
+    book_dir = tmp_path / "carver-HL"
+    book_dir.mkdir(parents=True)
+    (book_dir / "recon_state.json").write_text('{"state": "bogus"}')
+
+    params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
+    pipe = TradingPipeline()
+    ctx = pipe._recon_load(params, run_id="r1", asof="d")
+    assert ctx.machine.state == ReconState.NORMAL
+
+
 def test_corrupt_state_in_observe_does_not_gate(tmp_path):
     """In observe mode a corrupt state is only an observability loss — it resets
     to NORMAL and never gates orders."""

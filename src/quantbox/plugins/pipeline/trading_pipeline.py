@@ -78,6 +78,14 @@ def _atomic_write_text(path: Any, text: str) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path)
+        # fsync the parent directory so the rename itself is crash-durable on POSIX
+        # (a bare os.replace is not persisted until the dir entry is synced).
+        with contextlib.suppress(OSError, AttributeError):
+            dir_fd = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
     except Exception:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
@@ -2042,9 +2050,28 @@ class TradingPipeline:
             persisted = {"state": "halt", "degraded_cycles": 0, "streaks": {}}
 
         machine = ReconciliationStateMachine(book_key=book_key, tol=tol)
-        with contextlib.suppress(Exception):
-            machine.state = ReconState(persisted.get("state", "normal"))
-        machine.degraded_cycles = int(persisted.get("degraded_cycles", 0))
+        # Validate the persisted STATE VALUE (not just JSON well-formedness): a
+        # readable file with a bogus state like {"state": "bogus"} is just as
+        # dangerous as corrupt JSON — under enforce it must fail CLOSED to HALT,
+        # never silently fall back to the default NORMAL and permit trading.
+        raw_state = persisted.get("state", "normal")
+        try:
+            machine.state = ReconState(raw_state)
+        except (ValueError, KeyError):
+            if tol.is_enforce:
+                logger.error(
+                    "RECON ENFORCE [%s]: invalid persisted state value %r — failing CLOSED to HALT.",
+                    book_key,
+                    raw_state,
+                )
+                machine.state = ReconState.HALT
+            else:
+                logger.warning("Reconciliation state value %r invalid — resetting to NORMAL (observe).", raw_state)
+                machine.state = ReconState.NORMAL
+        try:
+            machine.degraded_cycles = int(persisted.get("degraded_cycles", 0))
+        except (TypeError, ValueError):
+            machine.degraded_cycles = 0
 
         return _ReconCtx(
             book_key=book_key,
