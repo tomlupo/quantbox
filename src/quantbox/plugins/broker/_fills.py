@@ -90,6 +90,16 @@ def classify_fill(order: dict | None, requested_qty: float) -> tuple[str, float,
         # as a full fill. A closed order that explicitly reports filled==0 is
         # contradictory — do NOT claim a fill.
         if filled is None:
+            # Venue omitted ``filled``. Treat a closed order as fully filled ONLY
+            # when nothing contradicts it. A closed order that still reports a
+            # positive ``remaining`` (issue #68 hardening) did NOT fully fill —
+            # the unfilled remainder is real residual exposure, critical on a
+            # close-out SELL. Never claim a full fill against that evidence.
+            if remaining is not None and remaining > _EPS:
+                implied = (ref - remaining) if ref > _EPS else 0.0
+                if implied > _EPS:
+                    return FILL_PARTIAL, implied, price
+                return FILL_UNFILLED, 0.0, price
             return FILL_FILLED, req, price
         if has_fill:
             # A closed order that filled LESS than it SUBMITTED (e.g. an IOC that

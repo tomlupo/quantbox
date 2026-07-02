@@ -1524,8 +1524,11 @@ class TradingPipeline:
             n_skipped = 0
             n_skipped_sell = 0  # close-out SELLs the broker could not place (#81)
             for _, fill_row in fills.iterrows():
-                status = str(fill_row.get("status", "FILLED")).upper()
-                side = str(fill_row.get("side", "")).lower()
+                # Strip whitespace before normalising: a broker that returns a
+                # padded side/status (e.g. "SELL " / "SKIPPED ") must not slip
+                # past the SKIPPED / close-out-SELL freeze counter (#81).
+                status = str(fill_row.get("status", "FILLED")).strip().upper()
+                side = str(fill_row.get("side", "")).strip().lower()
                 if status == "SKIPPED":
                     # Broker intentionally did not place this order (sub-minimum /
                     # sub-precision dust). A clean no-op: neither executed nor

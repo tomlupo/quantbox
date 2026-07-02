@@ -473,6 +473,45 @@ def test_pipeline_all_skipped_closeout_sell_trips_freeze():
     assert "FROZEN" in broker.messages[0]
 
 
+def test_pipeline_all_skipped_padded_side_status_still_trips_freeze():
+    """Issue #81 hardening: a broker that returns a whitespace-padded side/status
+    (e.g. "SELL " / "SKIPPED ") must NOT evade the SKIPPED / close-out-SELL freeze
+    counter. Before the .strip() normalisation the padded rows compared unequal to
+    'sell'/'SKIPPED' and the all-skipped close-out SELL read as a clean run."""
+
+    class _PaddedSkipAllBroker(_FakeBroker):
+        def place_orders(self, orders: pd.DataFrame) -> pd.DataFrame:
+            cols = ["symbol", "side", "qty", "price", "order_id", "status", "error"]
+            rows = [
+                {
+                    "symbol": str(o["symbol"]),
+                    "side": f" {str(o['side']).upper()} ",  # padded + upper-cased
+                    "qty": float(o["qty"]),
+                    "price": 0.0,
+                    "order_id": None,
+                    "status": " SKIPPED ",  # padded
+                    "error": "below exchange minimum (skipped)",
+                }
+                for _, o in orders.iterrows()
+            ]
+            return pd.DataFrame(rows, columns=cols)
+
+    pipe = TradingPipeline()
+    broker = _PaddedSkipAllBroker()
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=_executable_closeout_sell_df(),
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+    )
+    assert report.get("frozen") is True
+    assert report["summary"]["total_executed"] == 0
+    assert report["freeze_reasons"]["skipped_sell"] >= 1
+    assert len(broker.messages) == 1
+    assert "FROZEN" in broker.messages[0]
+
+
 def test_pipeline_all_skipped_buys_only_is_not_a_freeze():
     """Guard against false positives: an all-skipped batch with NO close-out
     SELL (entries only) is a quiet all-cash outcome, not a trapped book."""
