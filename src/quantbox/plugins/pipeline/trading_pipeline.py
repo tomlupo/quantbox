@@ -48,6 +48,16 @@ DEFAULT_STABLE_COIN = "USDC"
 # ---------------------------------------------------------------------------
 
 
+def _safe_float(v: Any) -> float | None:
+    """Best-effort float coercion for ledger records; None on failure/None."""
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _adjust_quantity(qty: float, step_size: float) -> float:
     """Round *qty* down to the nearest *step_size* (Binance-style)."""
     if step_size <= 0:
@@ -549,6 +559,26 @@ class TradingPipeline:
         )
         a_port = store.put_parquet("portfolio_daily", portfolio_daily)
 
+        # --- Stage 7b: Reconciliation ledger + break enforcement (issue #87) ---
+        # OBSERVE mode by default: records intent/result to the append-only ledger
+        # and CLASSIFIES breaks + computes the NORMAL→DEGRADED→HALT/FLATTEN
+        # transition, but only LOGS/ALERTS — it does NOT gate/halt/flatten orders.
+        # Enforce is Tom-only and never touched here. No-op unless a
+        # `reconciliation` config block is present, so existing books are unchanged.
+        # Runs after the portfolio snapshot so drift/phantom are computed against
+        # the reconciled real book (authority rule: exchange = truth for holdings).
+        recon_notes = self._run_reconciliation(
+            params=params,
+            broker=broker,
+            final_weights=final_weights,
+            orders_df=orders_df,
+            execution_report=execution_report,
+            portfolio_value=portfolio_value_post,
+            stable_coin=stable_coin,
+            asof=asof,
+            run_id=store.run_id,
+        )
+
         # Collect fee/funding metrics from broker
         cumulative_fees = 0.0
         if broker is not None and hasattr(broker, "_cumulative_fees"):
@@ -668,6 +698,10 @@ class TradingPipeline:
                 "quiet_reasons": execution_report.get("quiet_reasons", {}),
                 # Tier-2 exception inputs the notifier threads into BookContext (#62).
                 "exceptions": exception_signals,
+                # Reconciliation-break enforcement (issue #87). Observe-mode by
+                # default: populated with the classified breaks + would-be action,
+                # but no order gating happens here.
+                "reconciliation": recon_notes,
                 **token_policy_notes,
             },
         )
@@ -1642,6 +1676,221 @@ class TradingPipeline:
         )
 
         return report
+
+    # ==================================================================
+    # Stage 7b helper: reconciliation ledger + break enforcement (#87)
+    # ==================================================================
+    def _run_reconciliation(
+        self,
+        *,
+        params: dict[str, Any],
+        broker: BrokerPlugin | None,
+        final_weights: dict[str, float],
+        orders_df: pd.DataFrame,
+        execution_report: dict[str, Any],
+        portfolio_value: float,
+        stable_coin: str,
+        asof: str,
+        run_id: str,
+    ) -> dict[str, Any]:
+        """Record the order/fill ledger + evaluate the break state machine.
+
+        OBSERVE-mode by default (issue #87): classifies breaks and computes the
+        NORMAL→DEGRADED→HALT/FLATTEN transition, then only logs/alerts. It never
+        gates, halts or flattens orders here — enforce is Tom-only and the state
+        machine's `orders_allowed`/`reduce_only` gate is not consulted by this
+        pipeline. No-op unless a `reconciliation` config block is present.
+
+        Authority rule: exchange = truth for holdings (drift/phantom are computed
+        against the broker's real positions); the ledger = truth for intent
+        (proves a submitted order that produced no fill).
+        """
+        # Imported lazily so the reconciliation subpackage is only loaded when a
+        # book opts in — keeps import cost off every backtest/paper run.
+        import json
+        from pathlib import Path
+
+        from quantbox.reconciliation import (
+            BookTolerances,
+            OrderFillLedger,
+            ReconciliationStateMachine,
+            classify_breaks,
+        )
+
+        cfg = params.get("reconciliation")
+        if not cfg:
+            return {}
+
+        book_key = str(cfg.get("book_key") or params.get("book_key") or "default")
+        root = Path(str(cfg.get("data_dir", "data")))
+        tol_cfg = dict(cfg.get("tolerances", {}))
+        # `mode` may sit at the block top-level or inside tolerances; block wins.
+        mode = str(cfg.get("mode", tol_cfg.pop("mode", "observe")))
+        tol = BookTolerances(mode=mode, **tol_cfg)
+
+        cycle_id = str(cfg.get("cycle_id") or run_id or asof)
+
+        # --- Ledger: record intent (submitted) + result (observed) ---------
+        ledger = OrderFillLedger(book_key=book_key, root=root)
+        details = execution_report.get("orders_details", [])
+        # Match results back to intents by (symbol, side). Orders in this cycle
+        # get a deterministic order_ref so a result can reference its intent.
+        executable = (
+            orders_df[orders_df.get("Executable", pd.Series(dtype=bool))]
+            if isinstance(orders_df, pd.DataFrame) and "Executable" in orders_df.columns
+            else orders_df
+        )
+        # Failed/zero-fill counting for the consecutive-failure break class.
+        this_cycle_failed: dict[str, int] = {}
+        filled_syms: set[str] = set()
+        for d in details:
+            sym = str(d.get("symbol", ""))
+            status = str(d.get("status", "")).upper()
+            if status in ("FILLED", "PARTIAL"):
+                filled_syms.add(sym)
+            elif status in ("FAILED", "SKIPPED"):
+                this_cycle_failed[sym] = this_cycle_failed.get(sym, 0) + 1
+
+        if isinstance(executable, pd.DataFrame) and not executable.empty:
+            for i, (_, row) in enumerate(executable.iterrows()):
+                sym = str(row.get("Asset", ""))
+                side = str(row.get("Action", "")).lower()
+                order_ref = f"{cycle_id}:{i}:{sym}:{side}"
+                ledger.record_intent(
+                    cycle_id=cycle_id,
+                    symbol=sym,
+                    side=side,
+                    order_ref=order_ref,
+                    target_qty=_safe_float(row.get("Adjusted Quantity")),
+                    target_wt=final_weights.get(sym),
+                    limit_px=_safe_float(row.get("Price")),
+                )
+                match = next(
+                    (
+                        d
+                        for d in details
+                        if str(d.get("symbol", "")) == sym and str(d.get("side", d.get("action", ""))).lower() == side
+                    ),
+                    None,
+                )
+                if match is not None:
+                    ledger.record_result(
+                        order_ref=order_ref,
+                        cycle_id=cycle_id,
+                        status=str(match.get("status", "failed")).lower(),
+                        filled_qty=_safe_float(match.get("executed_quantity")),
+                        avg_px=_safe_float(match.get("executed_price")),
+                    )
+
+        # --- Reconcile against external truth (holdings) -------------------
+        actual_wt: dict[str, float] = {}
+        phantom: list[str] = []
+        get_positions = getattr(broker, "get_positions", None)
+        pv = float(portfolio_value) if portfolio_value else 0.0
+        if callable(get_positions) and pv > 0:
+            try:
+                pos = get_positions()
+                if pos is not None and len(pos) > 0 and hasattr(broker, "get_market_snapshot"):
+                    snap = broker.get_market_snapshot(pos["symbol"].tolist())
+                    if snap is not None and "mid" in snap.columns:
+                        merged = pos.merge(snap[["symbol", "mid"]], on="symbol", how="left")
+                        for _, r in merged.iterrows():
+                            sym = str(r.get("symbol", ""))
+                            val = float(r.get("qty", 0) or 0) * float(r.get("mid", 0) or 0)
+                            actual_wt[sym] = val / pv
+            except Exception as exc:  # never let recon crash the run
+                logger.warning("Reconciliation position read failed: %s", exc)
+
+        drifts: dict[str, float] = {}
+        for sym in set(final_weights) | set(actual_wt):
+            if sym == stable_coin:
+                continue
+            drifts[sym] = actual_wt.get(sym, 0.0) - float(final_weights.get(sym, 0.0))
+        for sym in actual_wt:
+            if sym == stable_coin:
+                continue
+            no_intent = sym not in final_weights or abs(final_weights.get(sym, 0.0)) < 1e-9
+            if no_intent and abs(actual_wt.get(sym, 0.0)) > 1e-6:
+                phantom.append(sym)
+
+        # --- Persistent per-book state (streaks + machine state) -----------
+        state_path = root / book_key / "recon_state.json"
+        persisted = {}
+        if state_path.exists():
+            try:
+                persisted = json.loads(state_path.read_text())
+            except Exception:  # corrupt state → start fresh, fail safe to NORMAL
+                persisted = {}
+        streaks: dict[str, int] = dict(persisted.get("streaks", {}))
+        for sym in filled_syms:
+            streaks.pop(sym, None)  # a fill breaks the failure streak
+        for sym, n in this_cycle_failed.items():
+            streaks[sym] = streaks.get(sym, 0) + n
+
+        breaks = classify_breaks(
+            tol=tol,
+            drifts=drifts,
+            failed_streaks=streaks,
+            phantom_symbols=phantom,
+        )
+
+        machine = ReconciliationStateMachine(book_key=book_key, tol=tol)
+        try:
+            from quantbox.reconciliation import ReconState
+
+            machine.state = ReconState(persisted.get("state", "normal"))
+        except Exception:
+            pass
+        machine.degraded_cycles = int(persisted.get("degraded_cycles", 0))
+        decision = machine.evaluate(breaks)
+
+        try:
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "state": machine.state.value,
+                        "degraded_cycles": machine.degraded_cycles,
+                        "streaks": streaks,
+                    }
+                )
+            )
+        except Exception as exc:
+            logger.warning("Reconciliation state persist failed: %s", exc)
+
+        # --- Alert (observe = log/alert only, no gating) -------------------
+        if decision.alert:
+            log_fn = logger.error if decision.to_state.value in ("halt", "flatten") else logger.warning
+            log_fn("RECON [%s] %s", book_key, decision.alert.replace("\n", " | "))
+            notify = getattr(broker, "notify", None)
+            if callable(notify) and decision.transitioned:
+                try:
+                    notify(decision.alert)
+                except Exception as exc:  # never let alerting crash the run
+                    logger.warning("Reconciliation alert notify failed: %s", exc)
+
+        return {
+            "book_key": book_key,
+            "mode": decision.mode,
+            "enforced": decision.enforced,
+            "from_state": decision.from_state.value,
+            "to_state": decision.to_state.value,
+            "would_be_action": decision.would_be_action.value,
+            "transitioned": decision.transitioned,
+            "orders_allowed": decision.orders_allowed,
+            "reduce_only": decision.reduce_only,
+            "n_breaks": len(breaks),
+            "breaks": [
+                {
+                    "class": b.klass.value,
+                    "symbol": b.symbol,
+                    "severity": b.severity,
+                    "detail": b.detail,
+                    "recommended_action": b.recommended_action.value,
+                }
+                for b in breaks
+            ],
+            "ledger_path": str(ledger.path),
+        }
 
     # ==================================================================
     # Artifact payload builder (for publisher plugins)
