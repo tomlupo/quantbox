@@ -1718,8 +1718,18 @@ class TradingPipeline:
         pipeline. No-op unless a `reconciliation` config block is present.
 
         Authority rule: exchange = truth for holdings (drift/phantom are computed
-        against the broker's real positions); the ledger = truth for intent
-        (proves a submitted order that produced no fill).
+        against the broker's real positions); the ledger = the intent record
+        (surfaces a submitted order that produced no fill).
+
+        OBSERVE-V1 CAVEAT (honest scope): intent is RECONSTRUCTED here from the
+        executable ``orders_df`` post-execution, not captured at the broker
+        submission call. So (a) it is not authoritative if the run crashes between
+        submission and this stage, and (b) it reflects the intended order set, not
+        the exact submission path. True submission-time capture (write intent
+        inside ``_execute_orders``) lands with the real pre-execution enforcement
+        wiring — the tracked follow-up. For observe-mode shadow detection this
+        reconstruction is sufficient; it must NOT be treated as a crash-durable
+        audit ledger until that follow-up.
         """
         # Imported lazily so the reconciliation subpackage is only loaded when a
         # book opts in — keeps import cost off every backtest/paper run.
@@ -1866,14 +1876,24 @@ class TradingPipeline:
                 continue
             drifts[sym] = actual_wt.get(sym, 0.0) - float(final_weights.get(sym, 0.0))
 
-        # Phantom = an exchange holding with NO matching intent in the LEDGER
-        # (authority rule: internal ledger is truth for intent). A position we
-        # ever intended — including a legitimate carryover/residual from a prior
-        # cycle — has an intent record and is NOT phantom, even if it is absent
-        # from THIS cycle's final_weights. Using final_weights here (the old
-        # logic) misclassified every carryover as phantom. We read intents across
-        # all cycles; the current cycle's intents were just written above.
-        intended_symbols = {r.get("symbol") for r in ledger.read_all() if r.get("kind") == KIND_INTENT}
+        # Phantom = an exchange holding with no matching intent in the ledger over
+        # a RECENT window (authority rule: internal ledger is truth for intent).
+        # Scoping matters both ways: using final_weights (round-1 logic) reflags
+        # every legitimate carryover/residual as phantom; using ALL history
+        # (round-2 logic) means a name traded once can NEVER be phantom again,
+        # masking a genuine re-appearing phantom on a rotating book. So we count a
+        # holding as explained only if it was intended within the last
+        # `phantom_lookback` cycles (default 2) — recent carryover is explained, a
+        # stale reappearance is not. The current cycle's intents were just written.
+        recs = ledger.read_all()
+        cycle_order = sorted(
+            {r.get("cycle_id") for r in recs if r.get("cycle_id")},
+            key=lambda c: max((r.get("ts", "") for r in recs if r.get("cycle_id") == c), default=""),
+        )
+        recent_cycles = set(cycle_order[-max(1, tol.phantom_lookback) :])
+        intended_symbols = {
+            r.get("symbol") for r in recs if r.get("kind") == KIND_INTENT and r.get("cycle_id") in recent_cycles
+        }
         for sym in actual_wt:
             if sym == stable_coin:
                 continue

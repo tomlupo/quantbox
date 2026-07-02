@@ -107,6 +107,8 @@ class BookTolerances:
     halt_failed_streak: int = 3  # 3 consecutive → hard (order path broken)
     equity_eps: float = 0.02  # 2% equity reconciliation tolerance
     max_degraded_cycles: int = 3  # DEGRADED this many cycles → escalate to HALT
+    phantom_lookback: int = 2  # a holding intended within this many recent cycles
+    # is explained (carryover); older reappearances count as phantom.
 
     def __post_init__(self) -> None:
         # OBSERVE-ONLY by design (#87). ``enforce`` is deliberately REJECTED, not

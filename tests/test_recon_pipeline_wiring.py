@@ -343,3 +343,70 @@ def test_carryover_position_is_not_phantom_but_never_intended_is(tmp_path):
     phantom_syms = {b["symbol"] for b in notes["breaks"] if b["class"] == "phantom_position"}
     assert "ETH" not in phantom_syms  # carryover with a prior intent → NOT phantom
     assert "XRP" in phantom_syms  # never intended → phantom
+
+
+def _phantom_syms(notes) -> set[str]:
+    return {b["symbol"] for b in notes.get("breaks", []) if b["class"] == "phantom_position"}
+
+
+def test_phantom_uses_recent_intent_window_not_all_history(tmp_path):
+    """A holding intended only OUTSIDE the recent window is phantom; a holding
+    intended within it (carryover) is not. Round-1 used final_weights (reflagged
+    every carryover); round-2 used ALL history (a once-traded name could never be
+    phantom again). This pins the scoped fix (#88)."""
+    pipe = TradingPipeline()
+    dd = str(tmp_path)
+
+    def _cycle(cycle_id, lookback, held, target, order_asset):
+        return pipe._run_reconciliation(
+            params={
+                "reconciliation": {
+                    "book_key": "b",
+                    "data_dir": dd,
+                    "cycle_id": cycle_id,
+                    "mode": "observe",
+                    "tolerances": {"phantom_lookback": lookback},
+                }
+            },
+            broker=_FakeBroker([{"symbol": s, "qty": 10.0} for s in held]),
+            final_weights=target,
+            orders_df=pd.DataFrame(
+                [{"Asset": order_asset, "Action": "Buy", "Adjusted Quantity": 1.0, "Price": 1.0, "Executable": True}]
+            ),
+            execution_report={
+                "orders_details": [
+                    {"symbol": order_asset, "side": "buy", "status": "FILLED", "executed_quantity": 1.0, "executed_price": 1.0}
+                ],
+                "summary": {},
+            },
+            portfolio_value=100.0,
+            stable_coin="USDC",
+            asof="2026-01-01",
+            run_id=cycle_id,
+        )
+
+    # Cycle 'old': we intended DOGE (submitted an order). Not held yet.
+    _cycle("old", lookback=1, held=[], target={"DOGE": 0.5}, order_asset="DOGE")
+    # Cycle 'cur' (lookback=1 → recent window = {cur} only): DOGE is now HELD but
+    # was intended only in 'old', outside the window → PHANTOM.
+    cur = _cycle("cur", lookback=1, held=["DOGE"], target={"BTC": 0.5}, order_asset="BTC")
+    assert "DOGE" in _phantom_syms(cur)
+
+    # Fresh book: DOGE intended in the immediately-prior cycle, lookback=2 covers
+    # it → the same held DOGE is explained carryover, NOT phantom.
+    dd2 = str(tmp_path / "book2")
+    pipe2 = TradingPipeline()
+
+    def _cycle2(cycle_id, held, target, order_asset):
+        return pipe2._run_reconciliation(
+            params={"reconciliation": {"book_key": "b2", "data_dir": dd2, "cycle_id": cycle_id, "mode": "observe", "tolerances": {"phantom_lookback": 2}}},
+            broker=_FakeBroker([{"symbol": s, "qty": 10.0} for s in held]),
+            final_weights=target,
+            orders_df=pd.DataFrame([{"Asset": order_asset, "Action": "Buy", "Adjusted Quantity": 1.0, "Price": 1.0, "Executable": True}]),
+            execution_report={"orders_details": [{"symbol": order_asset, "side": "buy", "status": "FILLED", "executed_quantity": 1.0, "executed_price": 1.0}], "summary": {}},
+            portfolio_value=100.0, stable_coin="USDC", asof="2026-01-01", run_id=cycle_id,
+        )
+
+    _cycle2("prev", held=[], target={"DOGE": 0.5}, order_asset="DOGE")
+    cur2 = _cycle2("cur", held=["DOGE"], target={"BTC": 0.5}, order_asset="BTC")
+    assert "DOGE" not in _phantom_syms(cur2)  # recent carryover, not phantom
