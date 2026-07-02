@@ -224,3 +224,81 @@ def test_recon_never_crashes_the_run(tmp_path):
         run_id="r",
     )
     assert "error" in notes  # swallowed, run survives
+
+
+def test_enforce_mode_is_refused_no_false_safety(tmp_path):
+    """mode='enforce' must NOT be honored in this post-execution path — it is
+    forced back to observe and flagged, so no config can claim orders are gated
+    when they have already been sent (independent-review BLOCKER)."""
+    pipe = TradingPipeline()
+    params = {
+        "reconciliation": {
+            "book_key": "carver-HL",
+            "data_dir": str(tmp_path),
+            "mode": "enforce",  # requested — must be refused here
+        }
+    }
+    notes = pipe._run_reconciliation(
+        params=params,
+        broker=_FakeBroker([{"symbol": "DOGE", "qty": 1.0}, {"symbol": "ETH", "qty": 100.0}]),
+        final_weights={"DOGE": 0.5},
+        orders_df=_orders_df(),
+        execution_report=_exec_report("FAILED"),
+        portfolio_value=1000.0,
+        stable_coin="USDC",
+        asof="d1",
+        run_id="r",
+    )
+    assert notes["enforce_refused"] is True
+    assert notes["mode"] == "observe"
+    assert notes["enforced"] is False
+    # Even with hard breaks present, orders are never reported as gated.
+    assert notes["orders_allowed"] is True
+    assert notes["reduce_only"] is False
+
+
+def test_carryover_position_is_not_phantom_but_never_intended_is(tmp_path):
+    """Phantom must be defined by the LEDGER (intent), not final_weights.
+
+    A position intended in a PRIOR cycle (legitimate carryover) is not phantom
+    even when absent from this cycle's targets; a holding never intended is."""
+    pipe = TradingPipeline()
+    params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
+
+    # Cycle 1: we intend + trade ETH (records an ETH intent in the ledger).
+    eth_orders = pd.DataFrame(
+        [{"Asset": "ETH", "Action": "Buy", "Adjusted Quantity": 5.0, "Price": 1.0, "Executable": True}]
+    )
+    pipe._run_reconciliation(
+        params=params,
+        broker=_FakeBroker([]),
+        final_weights={"ETH": 0.5},
+        orders_df=eth_orders,
+        execution_report={
+            "orders_details": [
+                {"symbol": "ETH", "side": "buy", "status": "FILLED", "executed_quantity": 5.0, "executed_price": 1.0}
+            ],
+            "summary": {},
+        },
+        portfolio_value=1000.0,
+        stable_coin="USDC",
+        asof="d1",
+        run_id="r1",
+    )
+
+    # Cycle 2: target is only DOGE now; the book still holds ETH (carryover) and
+    # an unexpected XRP that was NEVER intended.
+    notes = pipe._run_reconciliation(
+        params=params,
+        broker=_FakeBroker([{"symbol": "ETH", "qty": 5.0}, {"symbol": "XRP", "qty": 50.0}]),
+        final_weights={"DOGE": 0.5},
+        orders_df=_orders_df(),
+        execution_report=_exec_report("FILLED"),
+        portfolio_value=1000.0,
+        stable_coin="USDC",
+        asof="d2",
+        run_id="r2",
+    )
+    phantom_syms = {b["symbol"] for b in notes["breaks"] if b["class"] == "phantom_position"}
+    assert "ETH" not in phantom_syms  # carryover with a prior intent → NOT phantom
+    assert "XRP" in phantom_syms  # never intended → phantom

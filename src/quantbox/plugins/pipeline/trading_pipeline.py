@@ -1727,6 +1727,7 @@ class TradingPipeline:
         from pathlib import Path
 
         from quantbox.reconciliation import (
+            KIND_INTENT,
             BookTolerances,
             OrderFillLedger,
             ReconciliationStateMachine,
@@ -1742,6 +1743,30 @@ class TradingPipeline:
         tol_cfg = dict(cfg.get("tolerances", {}))
         # `mode` may sit at the block top-level or inside tolerances; block wins.
         mode = str(cfg.get("mode", tol_cfg.pop("mode", "observe")))
+
+        # ENFORCE IS NOT HONORED IN THIS PATH — refuse it, do not fake it.
+        # This stage runs AFTER _execute_orders, so the state machine's gate
+        # (orders_allowed / reduce_only) is computed too late to stop anything
+        # this cycle. Letting mode="enforce" through would report enforced=True /
+        # "ENFORCE — action taken" while the orders have ALREADY been sent —
+        # false safety on a live book. We ship OBSERVE-ONLY; real gating (consume
+        # the gate pre-execution or gate the NEXT cycle) is a separate future
+        # issue. So a config that asks for enforce is forced back to observe with
+        # a loud error — no config can ever claim orders are gated when they are
+        # not. Enabling enforce is a deliberate, Tom-gated wiring change, not a
+        # flag flip.
+        enforce_refused = False
+        if mode == "enforce":
+            enforce_refused = True
+            logger.error(
+                "RECON [%s]: mode='enforce' requested but NOT honored — reconciliation "
+                "runs post-execution, so orders this cycle were already sent. Forcing "
+                "OBSERVE to avoid false safety. Real gating is a separate future issue "
+                "(consume the gate pre-execution / next cycle).",
+                book_key,
+            )
+            mode = "observe"
+
         tol = BookTolerances(mode=mode, **tol_cfg)
 
         cycle_id = str(cfg.get("cycle_id") or run_id or asof)
@@ -1835,11 +1860,19 @@ class TradingPipeline:
             if sym == stable_coin:
                 continue
             drifts[sym] = actual_wt.get(sym, 0.0) - float(final_weights.get(sym, 0.0))
+
+        # Phantom = an exchange holding with NO matching intent in the LEDGER
+        # (authority rule: internal ledger is truth for intent). A position we
+        # ever intended — including a legitimate carryover/residual from a prior
+        # cycle — has an intent record and is NOT phantom, even if it is absent
+        # from THIS cycle's final_weights. Using final_weights here (the old
+        # logic) misclassified every carryover as phantom. We read intents across
+        # all cycles; the current cycle's intents were just written above.
+        intended_symbols = {r.get("symbol") for r in ledger.read_all() if r.get("kind") == KIND_INTENT}
         for sym in actual_wt:
             if sym == stable_coin:
                 continue
-            no_intent = sym not in final_weights or abs(final_weights.get(sym, 0.0)) < 1e-9
-            if no_intent and abs(actual_wt.get(sym, 0.0)) > 1e-6:
+            if sym not in intended_symbols and abs(actual_wt.get(sym, 0.0)) > 1e-6:
                 phantom.append(sym)
 
         # --- Persistent per-book state (streaks + machine state) -----------
@@ -1905,6 +1938,9 @@ class TradingPipeline:
             "book_key": book_key,
             "mode": decision.mode,
             "enforced": decision.enforced,
+            # True iff a config asked for enforce and we refused it (post-exec path
+            # cannot gate). Surfaced so a monitor can flag a misconfigured book.
+            "enforce_refused": enforce_refused,
             "from_state": decision.from_state.value,
             "to_state": decision.to_state.value,
             "would_be_action": decision.would_be_action.value,
