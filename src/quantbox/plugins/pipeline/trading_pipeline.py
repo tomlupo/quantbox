@@ -1680,7 +1680,23 @@ class TradingPipeline:
     # ==================================================================
     # Stage 7b helper: reconciliation ledger + break enforcement (#87)
     # ==================================================================
-    def _run_reconciliation(
+    def _run_reconciliation(self, **kwargs: Any) -> dict[str, Any]:
+        """Guarded wrapper: reconciliation must NEVER crash the trading run.
+
+        This runs AFTER orders have already executed. A config typo, a bad
+        tolerance key, a permission/disk-full error on the ledger write, or any
+        other fault inside the reconciliation layer must not abort the run and
+        lose the run's artifacts. On any failure we log, surface an `error` note,
+        and return — observe mode changes no orders, so a recon crash is strictly
+        an observability loss, never a trading fault.
+        """
+        try:
+            return self._run_reconciliation_impl(**kwargs)
+        except Exception as exc:  # noqa: BLE001 - recon is never allowed to be fatal
+            logger.error("Reconciliation stage failed (non-fatal, observe-mode): %s", exc)
+            return {"error": str(exc)}
+
+    def _run_reconciliation_impl(
         self,
         *,
         params: dict[str, Any],
@@ -1741,20 +1757,19 @@ class TradingPipeline:
             else orders_df
         )
         # Failed/zero-fill counting for the consecutive-failure break class.
+        # `attempted_syms` = every symbol we submitted an intent for THIS cycle;
+        # only these keep/accrue a streak, so a symbol that is simply no longer
+        # traded cannot leave a stale streak that falsely escalates to HALT.
         this_cycle_failed: dict[str, int] = {}
         filled_syms: set[str] = set()
-        for d in details:
-            sym = str(d.get("symbol", ""))
-            status = str(d.get("status", "")).upper()
-            if status in ("FILLED", "PARTIAL"):
-                filled_syms.add(sym)
-            elif status in ("FAILED", "SKIPPED"):
-                this_cycle_failed[sym] = this_cycle_failed.get(sym, 0) + 1
+        attempted_syms: set[str] = set()
+        missed_fills: list[str] = []
 
         if isinstance(executable, pd.DataFrame) and not executable.empty:
             for i, (_, row) in enumerate(executable.iterrows()):
                 sym = str(row.get("Asset", ""))
                 side = str(row.get("Action", "")).lower()
+                attempted_syms.add(sym)
                 order_ref = f"{cycle_id}:{i}:{sym}:{side}"
                 ledger.record_intent(
                     cycle_id=cycle_id,
@@ -1774,13 +1789,27 @@ class TradingPipeline:
                     None,
                 )
                 if match is not None:
+                    status = str(match.get("status", "failed")).upper()
                     ledger.record_result(
                         order_ref=order_ref,
                         cycle_id=cycle_id,
-                        status=str(match.get("status", "failed")).lower(),
+                        status=status.lower(),
                         filled_qty=_safe_float(match.get("executed_quantity")),
                         avg_px=_safe_float(match.get("executed_price")),
                     )
+                    if status in ("FILLED", "PARTIAL"):
+                        filled_syms.add(sym)
+                    else:  # FAILED / SKIPPED / anything non-fill
+                        this_cycle_failed[sym] = this_cycle_failed.get(sym, 0) + 1
+                else:
+                    # Intent written but NO result observed back: the missed-fill
+                    # class the ledger exists to prove (exchange alone can't). We
+                    # record a timeout result so the ledger match is closed, and
+                    # count it toward the failure streak. Authority rule: the
+                    # internal ledger is the truth for intent.
+                    ledger.record_result(order_ref=order_ref, cycle_id=cycle_id, status="timeout")
+                    this_cycle_failed[sym] = this_cycle_failed.get(sym, 0) + 1
+                    missed_fills.append(sym)
 
         # --- Reconcile against external truth (holdings) -------------------
         actual_wt: dict[str, float] = {}
@@ -1821,7 +1850,11 @@ class TradingPipeline:
                 persisted = json.loads(state_path.read_text())
             except Exception:  # corrupt state → start fresh, fail safe to NORMAL
                 persisted = {}
-        streaks: dict[str, int] = dict(persisted.get("streaks", {}))
+        # Only carry a streak forward for a symbol we ATTEMPTED again this cycle;
+        # a symbol we stopped trading has, by definition, no *consecutive* failure
+        # to escalate on (prevents a stale streak from falsely reaching HALT).
+        prior_streaks: dict[str, int] = dict(persisted.get("streaks", {}))
+        streaks: dict[str, int] = {s: n for s, n in prior_streaks.items() if s in attempted_syms}
         for sym in filled_syms:
             streaks.pop(sym, None)  # a fill breaks the failure streak
         for sym, n in this_cycle_failed.items():
@@ -1889,6 +1922,7 @@ class TradingPipeline:
                 }
                 for b in breaks
             ],
+            "missed_fills": missed_fills,
             "ledger_path": str(ledger.path),
         }
 

@@ -136,3 +136,91 @@ def test_state_persists_across_cycles(tmp_path):
     # By cycle 3 the consecutive-failed streak is hard -> would HALT.
     assert notes["would_be_action"] == "halt"
     assert notes["orders_allowed"] is True  # still observe-only
+
+
+def test_missed_fill_is_detected_and_counted(tmp_path):
+    """Intent submitted but NO result observed = the missed-fill class the ledger
+    exists to prove; it must feed the failure streak and be flagged in notes."""
+    import json
+
+    pipe = TradingPipeline()
+    params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
+    notes = pipe._run_reconciliation(
+        params=params,
+        broker=_FakeBroker([]),
+        final_weights={"DOGE": 0.5},
+        orders_df=_orders_df(),
+        execution_report={"orders_details": [], "summary": {}},  # broker returned nothing
+        portfolio_value=1000.0,
+        stable_coin="USDC",
+        asof="2026-01-01",
+        run_id="run1",
+    )
+    assert notes["missed_fills"] == ["DOGE"]
+    # A timeout result was written to close the ledger match.
+    lines = [json.loads(x) for x in (tmp_path / "carver-HL" / "orders.jsonl").read_text().splitlines()]
+    assert any(r.get("kind") == "result" and r.get("status") == "timeout" for r in lines)
+
+
+def test_stale_streak_does_not_escalate_when_symbol_untraded(tmp_path):
+    """A symbol that fails once then is no longer traded must not keep a stale
+    streak that falsely escalates to HALT (codex finding #3)."""
+    pipe = TradingPipeline()
+    params = {
+        "reconciliation": {
+            "book_key": "carver-HL",
+            "data_dir": str(tmp_path),
+            "mode": "observe",
+            "tolerances": {"halt_failed_streak": 2},
+        }
+    }
+    # Cycle 1: DOGE fails once.
+    pipe._run_reconciliation(
+        params=params,
+        broker=_FakeBroker([]),
+        final_weights={"DOGE": 0.5},
+        orders_df=_orders_df(),
+        execution_report=_exec_report("FAILED"),
+        portfolio_value=1000.0,
+        stable_coin="USDC",
+        asof="d1",
+        run_id="r",
+    )
+    # Cycles 2 & 3: DOGE no longer traded (empty order set) -> streak must drop.
+    for _ in range(2):
+        notes = pipe._run_reconciliation(
+            params=params,
+            broker=_FakeBroker([]),
+            final_weights={},
+            orders_df=pd.DataFrame(columns=["Asset", "Action", "Adjusted Quantity", "Price", "Executable"]),
+            execution_report={"orders_details": [], "summary": {}},
+            portfolio_value=1000.0,
+            stable_coin="USDC",
+            asof="d",
+            run_id="r",
+        )
+    assert notes["would_be_action"] != "halt"
+
+
+def test_recon_never_crashes_the_run(tmp_path):
+    """A bad config must be caught by the guard, not propagate out of the run."""
+    pipe = TradingPipeline()
+    params = {
+        "reconciliation": {
+            "book_key": "carver-HL",
+            "data_dir": str(tmp_path),
+            "tolerances": {"not_a_real_key": 123},  # TypeError in BookTolerances
+        }
+    }
+    notes = pipe._run_reconciliation(
+        params=params,
+        broker=_FakeBroker([]),
+        final_weights={"DOGE": 0.5},
+        orders_df=_orders_df(),
+        execution_report=_exec_report("FAILED"),
+        portfolio_value=1000.0,
+        stable_coin="USDC",
+        asof="d1",
+        run_id="r",
+    )
+    assert "error" in notes  # swallowed, run survives
