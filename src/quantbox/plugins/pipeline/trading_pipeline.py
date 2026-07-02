@@ -10,6 +10,7 @@ can invoke via ``pipeline.run()``.
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import logging
 from collections.abc import Callable
@@ -56,6 +57,82 @@ def _safe_float(v: Any) -> float | None:
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+class ReconEnforcementError(RuntimeError):
+    """A CRITICAL enforce-mode reconciliation failure that must NOT be swallowed.
+
+    Raised when the enforcement authority itself is untrustworthy under acknowledged
+    enforce (e.g. the persisted state file cannot be written). Unlike ordinary recon
+    faults — which are observability losses and never fatal — this must escape the
+    guard and fail the run, so the book stops rather than silently trading the next
+    cycle from stale/absent enforcement state.
+    """
+
+
+def _atomic_write_text(path: Any, text: str) -> None:
+    """Durably replace ``path`` with ``text``: write a temp file in the same dir,
+    fsync it, then ``os.replace`` (atomic on POSIX). A crash can never leave the
+    target truncated/half-written — the reader sees either the old file or the new
+    one, never a corrupt one. Used for the recon state file, which IS the
+    enforcement authority (a corrupt state must never silently fail open).
+    """
+    import os
+    import tempfile
+    from pathlib import Path
+
+    path = Path(path)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        # fsync the parent directory so the rename itself is crash-durable on POSIX
+        # (a bare os.replace is not persisted until the dir entry is synced).
+        with contextlib.suppress(OSError, AttributeError):
+            dir_fd = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+# Ledger result status mapped from an execution ``orders_details`` row status.
+_EXEC_STATUS_TO_LEDGER = {
+    "FILLED": "filled",
+    "PARTIAL": "partial",
+    "FAILED": "failed",
+    "SKIPPED": "skipped",
+    "REJECTED": "rejected",
+}
+
+
+@dataclass
+class _ReconCtx:
+    """Per-cycle reconciliation context, built once and shared by the pre-execution
+    gate (preflight) and the post-execution evaluator so config is parsed once and
+    the SAME ledger + persisted state back both stages.
+
+    Types are intentionally ``Any`` so the (optional) ``quantbox.reconciliation``
+    subpackage is imported lazily, never at module load.
+    """
+
+    book_key: str
+    root: Any
+    tol: Any
+    cycle_id: str
+    mode: str
+    enforce_refused: bool
+    ledger: Any
+    machine: Any
+    state_path: Any
+    persisted: dict[str, Any]
 
 
 def _adjust_quantity(qty: float, step_size: float) -> float:
@@ -488,6 +565,44 @@ class TradingPipeline:
             except Exception as exc:
                 logger.warning("Risk check failed: %s", exc)
 
+        # --- Stage 7a: Reconciliation PRE-EXECUTION gate (issue #90) ---
+        # Load the per-cycle recon context (if a `reconciliation` block is set) and
+        # read the persisted prior-cycle state to derive the pre-execution gate. In
+        # enforce mode this gate can HALT (send nothing) or FLATTEN (reduce-only)
+        # THIS cycle's orders BEFORE they are executed — the real, crash-durable
+        # enforcement touchpoint. In observe mode the gate is computed but never
+        # applied. Guarded so a recon fault fails safe to no-gate (never fatal).
+        recon_ctx = None
+        recon_preflight: dict[str, Any] = {}
+        try:
+            recon_ctx = self._recon_load(params, store.run_id, asof)
+            if recon_ctx is not None:
+                recon_preflight = self._recon_preflight(recon_ctx, broker)
+        except Exception as exc:  # noqa: BLE001 - recon must never be fatal
+            recon_ctx = None
+            if self._enforce_requested(params):
+                # FAIL CLOSED: under acknowledged enforce, an inability to load or
+                # compute the persisted gate must NOT let orders through — block
+                # this cycle. (Observe mode fails open to no-gate: no gating claimed.)
+                logger.error(
+                    "RECON ENFORCE: preflight failed under acknowledged enforce — failing CLOSED (HALT) "
+                    "this cycle; no orders will be sent. Error: %s",
+                    exc,
+                )
+                recon_preflight = {
+                    "applied": True,
+                    "orders_allowed": False,
+                    "reduce_only": False,
+                    "enforced": True,
+                    "gate_from_state": "unknown",
+                    "fail_closed": True,
+                }
+            else:
+                logger.error("Recon preflight failed (observe, non-fatal, fail-safe to no-gate): %s", exc)
+                recon_preflight = {}
+
+        gate_applied = bool(recon_preflight.get("applied"))
+
         # --- Stage 7: Execution ---
         trading_enabled = bool(params.get("trading_enabled", True))
         execution_report = self._execute_orders(
@@ -496,6 +611,16 @@ class TradingPipeline:
             stable_coin=stable_coin,
             trading_enabled=trading_enabled,
             mode=mode,
+            # Submission-time intent capture: thread the SAME ledger so intent is
+            # recorded at the broker call (crash-durable), and Stage 7b reads it back.
+            ledger=recon_ctx.ledger if recon_ctx is not None else None,
+            cycle_id=recon_ctx.cycle_id if recon_ctx is not None else None,
+            # Enforce-mode pre-execution gate (permissive defaults when not applied).
+            gate_orders_allowed=recon_preflight.get("orders_allowed", True) if gate_applied else True,
+            gate_reduce_only=recon_preflight.get("reduce_only", False) if gate_applied else False,
+            # Under enforce, a failed intent write drops the order (fail closed) —
+            # never trade live without the durable intent record.
+            capture_fail_closed=bool(recon_ctx is not None and recon_ctx.tol.is_enforce),
         )
 
         fills_data = []
@@ -559,14 +684,14 @@ class TradingPipeline:
         )
         a_port = store.put_parquet("portfolio_daily", portfolio_daily)
 
-        # --- Stage 7b: Reconciliation ledger + break enforcement (issue #87) ---
-        # OBSERVE mode by default: records intent/result to the append-only ledger
-        # and CLASSIFIES breaks + computes the NORMAL→DEGRADED→HALT/FLATTEN
-        # transition, but only LOGS/ALERTS — it does NOT gate/halt/flatten orders.
-        # Enforce is Tom-only and never touched here. No-op unless a
-        # `reconciliation` config block is present, so existing books are unchanged.
-        # Runs after the portfolio snapshot so drift/phantom are computed against
-        # the reconciled real book (authority rule: exchange = truth for holdings).
+        # --- Stage 7b: Reconciliation break evaluation + state persist (issue #87/#90) ---
+        # Classifies breaks + computes the NORMAL→DEGRADED→HALT/FLATTEN transition
+        # and PERSISTS the resulting state. Observe by default (logs/alerts only);
+        # in enforce mode the persisted state is what NEXT cycle's pre-execution
+        # gate (Stage 7a) reads back to actually halt/flatten. Reads the ledger
+        # captured at submission (Stage 7). No-op unless a `reconciliation` block is
+        # present. Runs after the portfolio snapshot so drift/phantom are computed
+        # against the reconciled real book (authority: exchange = truth for holdings).
         recon_notes = self._run_reconciliation(
             params=params,
             broker=broker,
@@ -577,7 +702,16 @@ class TradingPipeline:
             stable_coin=stable_coin,
             asof=asof,
             run_id=store.run_id,
+            # Intent was captured at submission (Stage 7) whenever recon is active,
+            # so Stage 7b reads the ledger back instead of reconstructing it.
+            intent_captured=recon_ctx is not None,
         )
+        # Attach this cycle's pre-execution gate outcome for observability.
+        if recon_preflight and isinstance(recon_notes, dict):
+            recon_notes["preflight_gate"] = recon_preflight
+            recon_notes["gate_applied"] = gate_applied
+            if execution_report.get("recon_gated"):
+                recon_notes["recon_gated"] = execution_report["recon_gated"]
 
         # Collect fee/funding metrics from broker
         cumulative_fees = 0.0
@@ -1332,10 +1466,33 @@ class TradingPipeline:
         stable_coin: str,
         trading_enabled: bool,
         mode: str,
+        ledger: Any = None,
+        cycle_id: str | None = None,
+        gate_orders_allowed: bool = True,
+        gate_reduce_only: bool = False,
+        capture_fail_closed: bool = False,
     ) -> dict[str, Any]:
         """Execute orders via broker with sell-before-buy ordering.
 
         Ported from quantlab ``orders.py:execute_orders()``.
+
+        Reconciliation (issue #90):
+
+        * If ``ledger`` is supplied, the order INTENT is captured at the broker
+          submission call — inside this method, immediately before
+          ``broker.place_orders`` — and each order's RESULT is recorded as fills
+          are processed. This makes the ledger a crash-durable audit trail: if the
+          run dies between submission and Stage 7b, the intent is already on disk.
+        * ``gate_orders_allowed`` / ``gate_reduce_only`` are the PRE-EXECUTION gate
+          the caller derived from the persisted prior-cycle recon state (enforce
+          mode only). ``gate_orders_allowed=False`` halts all orders this cycle;
+          ``gate_reduce_only=True`` keeps only exposure-reducing orders. In observe
+          mode the caller passes the permissive defaults, so behavior is unchanged.
+        * ``capture_fail_closed`` (enforce mode): if intent capture fails for an
+          order, that order is DROPPED (not submitted) — under enforcement we must
+          never trade live without the crash-durable intent record. In observe mode
+          (default) a capture failure is only an observability loss and the order
+          still sends.
         """
         report: dict[str, Any] = {
             "executed_orders": [],
@@ -1359,11 +1516,50 @@ class TradingPipeline:
             logger.info("trading_enabled=False, skipping execution")
             return report
 
+        # --- Pre-execution HALT gate (enforce mode, issue #90) -------------
+        # Derived by the caller from the persisted prior-cycle recon state. A HALT
+        # means the order path / books are not trustworthy: send nothing this cycle.
+        if not gate_orders_allowed:
+            report["recon_gated"] = "halt"
+            logger.error(
+                "RECON ENFORCE: %d order(s) HALTED pre-execution by the prior-cycle gate — nothing sent this cycle.",
+                len(orders_df),
+            )
+            notify = getattr(broker, "notify", None)
+            if callable(notify):
+                try:
+                    notify(
+                        f"🛑 <b>RECON ENFORCE — HALT</b>\n{len(orders_df)} order(s) NOT sent; "
+                        "book is in HALT from the prior cycle. Manual clear required."
+                    )
+                except Exception as exc:  # never let alerting crash the run
+                    logger.warning("Recon HALT notify failed: %s", exc)
+            return report
+
         executable = (
             orders_df[orders_df.get("Executable", pd.Series(dtype=bool))].copy()
             if "Executable" in orders_df.columns
             else orders_df
         )
+
+        # --- Pre-execution FLATTEN gate (enforce mode, issue #90) ----------
+        # Keep only exposure-reducing orders (clamped so they never cross zero).
+        if gate_reduce_only and isinstance(executable, pd.DataFrame) and not executable.empty:
+            before_n = len(executable)
+            executable = self._filter_reduce_only(executable, broker)
+            report["recon_gated"] = "flatten"
+            logger.warning(
+                "RECON ENFORCE: reduce-only gate — %d of %d order(s) retained (exposure-reducing only).",
+                len(executable),
+                before_n,
+            )
+            if executable.empty:
+                # All orders were opening/increasing — nothing to reduce. This is a
+                # clean gated no-op, NOT a freeze.
+                report["recon_reduce_only_noop"] = True
+                logger.warning("RECON ENFORCE reduce-only: no exposure-reducing orders to send.")
+                return report
+
         if executable.empty:
             reasons: dict[str, Any] = {}
             # Statuses that mean "the strategy WANTED to trade but the order was
@@ -1502,6 +1698,86 @@ class TradingPipeline:
         if broker_orders.empty:
             return report
 
+        # --- Submission-time INTENT capture (issue #90) --------------------
+        # Record every order's intent to the append-only ledger at the broker
+        # submission call, BEFORE place_orders. This is the crash-durable audit
+        # trail: an intent on disk before submission proves what the system meant
+        # to do even if the run dies mid-submission. `intent_refs` is a per-(symbol,
+        # side) FIFO of order_refs so results bind one-to-one to intents below.
+        from collections import defaultdict
+
+        intent_refs: dict[tuple[str, str], list[str]] = defaultdict(list)
+        if ledger is not None and cycle_id is not None:
+            dropped_idx: list[int] = []
+            for i, (_, brow) in enumerate(broker_orders.iterrows()):
+                sym = str(brow["symbol"])
+                side = str(brow["side"]).strip().lower()
+                order_ref = f"{cycle_id}:{i}:{sym}:{side}"
+                try:
+                    ledger.record_intent(
+                        cycle_id=cycle_id,
+                        symbol=sym,
+                        side=side,
+                        order_ref=order_ref,
+                        target_qty=_safe_float(brow.get("qty")),
+                        limit_px=_safe_float(brow.get("price")),
+                    )
+                except Exception as exc:
+                    if capture_fail_closed:
+                        # ENFORCE: never trade live without the durable intent
+                        # record — DROP the order (do not submit it).
+                        logger.error(
+                            "RECON ENFORCE: intent capture failed for %s %s — DROPPING order "
+                            "(fail closed; not sent): %s",
+                            side,
+                            sym,
+                            exc,
+                        )
+                        report["orders_details"].append(
+                            {
+                                "symbol": sym,
+                                "action": side,
+                                "status": "FAILED",
+                                "error": f"intent capture failed under enforce (order dropped): {exc}",
+                            }
+                        )
+                        report["summary"]["total_failed"] += 1
+                        report["recon_capture_dropped"] = report.get("recon_capture_dropped", 0) + 1
+                        dropped_idx.append(i)
+                        continue
+                    # OBSERVE: ledger must never block execution. Do NOT track this
+                    # ref (no RESULT against a never-written intent), but the order
+                    # still executes — an observability loss, not corruption.
+                    logger.warning("Intent capture failed for %s %s (order still sent): %s", side, sym, exc)
+                    continue
+                intent_refs[(sym, side)].append(order_ref)
+
+            # Under enforce, actually remove the dropped orders before submission.
+            if dropped_idx:
+                broker_orders = broker_orders.drop(broker_orders.index[dropped_idx]).reset_index(drop=True)
+                if broker_orders.empty:
+                    logger.error("RECON ENFORCE: all orders dropped (intent capture failed) — nothing sent.")
+                    return report
+
+        def _record_result(symbol: str, side: str, status: str, filled_qty: Any = None, avg_px: Any = None) -> None:
+            """Bind a broker result back to a captured intent (one-to-one, FIFO)."""
+            if ledger is None or cycle_id is None:
+                return
+            pool = intent_refs.get((str(symbol), str(side).strip().lower()))
+            if not pool:
+                return
+            ref = pool.pop(0)
+            try:
+                ledger.record_result(
+                    order_ref=ref,
+                    cycle_id=cycle_id,
+                    status=_EXEC_STATUS_TO_LEDGER.get(str(status).strip().upper(), str(status).strip().lower()),
+                    filled_qty=_safe_float(filled_qty),
+                    avg_px=_safe_float(avg_px),
+                )
+            except Exception as exc:  # never let the ledger crash the run
+                logger.warning("Result capture failed for %s %s: %s", side, symbol, exc)
+
         try:
             fills = broker.place_orders(broker_orders)
         except Exception as exc:
@@ -1517,6 +1793,9 @@ class TradingPipeline:
                     }
                 )
                 report["summary"]["total_failed"] += 1
+                # The whole batch failed at submission — record a failed result so
+                # the ledger closes each intent (no dangling missed-fill timeouts).
+                _record_result(row["symbol"], row["side"], "FAILED")
             return report
 
         # Process fills and failures
@@ -1543,6 +1822,7 @@ class TradingPipeline:
                         }
                     )
                     n_skipped += 1
+                    _record_result(fill_row.get("symbol", ""), side, "SKIPPED")
                     if side == "sell":
                         # A close-out/reduce the book WANTED to make but the broker
                         # could not place (sub-exchange-min). Tracked so an all-
@@ -1561,6 +1841,7 @@ class TradingPipeline:
                         }
                     )
                     report["summary"]["total_failed"] += 1
+                    _record_result(fill_row.get("symbol", ""), side, "FAILED")
                     continue
 
                 # FILLED or PARTIAL: a real (possibly partial) fill. Record the
@@ -1598,6 +1879,13 @@ class TradingPipeline:
 
                 report["orders_details"].append(detail)
                 report["summary"]["total_executed"] += 1
+                _record_result(
+                    detail["symbol"],
+                    side,
+                    "PARTIAL" if is_partial else "FILLED",
+                    filled_qty=detail["executed_quantity"],
+                    avg_px=detail["executed_price"],
+                )
                 if is_partial:
                     # A partial fill DID execute (so it counts as executed and keeps
                     # the freeze logic honest), but the unfilled remainder is real
@@ -1672,6 +1960,20 @@ class TradingPipeline:
                     "Check broker connectivity — portfolio NOT rebalanced."
                 )
 
+        # Close any INTENT with no observed result as a TIMEOUT (a missed fill:
+        # submitted but the broker returned nothing for it). Authority rule: the
+        # internal ledger is the truth for intent — this is the class the exchange
+        # alone cannot prove. Done after all fills are matched so only genuinely
+        # unresolved intents remain.
+        if ledger is not None and cycle_id is not None:
+            for (sym, side), refs in intent_refs.items():
+                for ref in refs:
+                    try:
+                        ledger.record_result(order_ref=ref, cycle_id=cycle_id, status="timeout")
+                    except Exception as exc:  # never let the ledger crash the run
+                        logger.warning("Timeout capture failed for %s %s: %s", side, sym, exc)
+            intent_refs.clear()
+
         report["summary"]["total_value"] = sum(
             d.get("executed_quantity", 0) * d.get("executed_price", 0)
             for d in report["orders_details"]
@@ -1681,7 +1983,253 @@ class TradingPipeline:
         return report
 
     # ==================================================================
-    # Stage 7b helper: reconciliation ledger + break enforcement (#87)
+    # Reconciliation context + PRE-EXECUTION gate (issue #90)
+    # ==================================================================
+    def _recon_load(self, params: dict[str, Any], run_id: str, asof: str) -> _ReconCtx | None:
+        """Parse the `reconciliation` config block ONCE and build the per-cycle
+        context (tolerances, ledger, persisted state, state machine).
+
+        Returns ``None`` when no `reconciliation` block is present (no-op default).
+        Raises on a bad config (bad tolerance key, unsafe book_key) — callers guard
+        it so a recon fault is never fatal to the trading run.
+
+        ENFORCE IS TOM-GATED. ``mode="enforce"`` is honored ONLY when the book
+        config also carries ``enforce_acknowledged: true`` — an explicit, auditable
+        opt-in that no casual config flip satisfies. Absent the acknowledgment,
+        enforce is refused and forced back to observe (``enforce_refused=True``), so
+        a book can never silently start gating live capital. Enabling enforce on a
+        live book remains a deliberate action (this ack + a deploy), never automatic.
+        """
+        import json
+        from pathlib import Path
+
+        from quantbox.reconciliation import (
+            BookTolerances,
+            OrderFillLedger,
+            ReconciliationStateMachine,
+            ReconState,
+        )
+
+        cfg = params.get("reconciliation")
+        if not cfg:
+            return None
+
+        book_key = str(cfg.get("book_key") or params.get("book_key") or "default")
+        root = Path(str(cfg.get("data_dir", "data")))
+        tol_cfg = dict(cfg.get("tolerances", {}))
+        # `mode` may sit at the block top-level or inside tolerances; block wins.
+        mode = str(cfg.get("mode", tol_cfg.pop("mode", "observe")))
+
+        enforce_refused = False
+        if mode == "enforce" and not bool(cfg.get("enforce_acknowledged", False)):
+            enforce_refused = True
+            logger.error(
+                "RECON [%s]: mode='enforce' requested WITHOUT enforce_acknowledged=true — "
+                "refusing to gate live capital on an unacknowledged config. Forcing OBSERVE. "
+                "Enabling enforce is a deliberate, Tom-gated action.",
+                book_key,
+            )
+            mode = "observe"
+
+        tol = BookTolerances(mode=mode, **tol_cfg)
+        # cycle_id namespaces order_refs in the ledger. A STATIC/reused cycle_id
+        # conflates old and new intents/results (ledger matching is by order_ref),
+        # which corrupts the failure/missed-fill signals the enforcement gate acts
+        # on. Under enforce we therefore IGNORE any config-supplied cycle_id and
+        # force the run-unique run_id (issue #90 review). Observe keeps the flexible
+        # config override for testing/backfills.
+        cfg_cycle = cfg.get("cycle_id")
+        if tol.is_enforce:
+            if cfg_cycle:
+                logger.warning(
+                    "RECON ENFORCE [%s]: ignoring config cycle_id %r — forcing run-unique run_id for live gating.",
+                    book_key,
+                    cfg_cycle,
+                )
+            if not run_id:
+                raise ReconEnforcementError("enforce mode requires a run-unique run_id for cycle_id; none was provided")
+            cycle_id = str(run_id)
+        else:
+            cycle_id = str(cfg_cycle or run_id or asof)
+        ledger = OrderFillLedger(book_key=book_key, root=root)
+        state_path = ledger.path.parent / "recon_state.json"
+
+        persisted: dict[str, Any] = {}
+        state_corrupt = False
+        if state_path.exists():
+            try:
+                persisted = json.loads(state_path.read_text())
+                if not isinstance(persisted, dict):
+                    raise ValueError("recon state is not a JSON object")
+            except Exception as exc:
+                state_corrupt = True
+                persisted = {}
+                logger.error("Reconciliation state at %s is unreadable/corrupt: %s", state_path, exc)
+
+        # FAIL CLOSED under enforce: the persisted state IS the enforcement
+        # authority, so a corrupt/unreadable state must NOT silently reset to
+        # NORMAL and let the next cycle trade freely. Force HALT so the book stops
+        # until Tom clears it. In observe mode a corrupt state is only an
+        # observability loss, so we fall back to a fresh NORMAL.
+        if state_corrupt and tol.is_enforce:
+            logger.error(
+                "RECON ENFORCE [%s]: corrupt persisted state — failing CLOSED to HALT until manually cleared.",
+                book_key,
+            )
+            persisted = {"state": "halt", "degraded_cycles": 0, "streaks": {}}
+
+        machine = ReconciliationStateMachine(book_key=book_key, tol=tol)
+        # Validate the persisted STATE VALUE (not just JSON well-formedness): a
+        # readable file with a bogus state like {"state": "bogus"} is just as
+        # dangerous as corrupt JSON — under enforce it must fail CLOSED to HALT,
+        # never silently fall back to the default NORMAL and permit trading.
+        raw_state = persisted.get("state", "normal")
+        try:
+            machine.state = ReconState(raw_state)
+        except (ValueError, KeyError):
+            if tol.is_enforce:
+                logger.error(
+                    "RECON ENFORCE [%s]: invalid persisted state value %r — failing CLOSED to HALT.",
+                    book_key,
+                    raw_state,
+                )
+                machine.state = ReconState.HALT
+            else:
+                logger.warning("Reconciliation state value %r invalid — resetting to NORMAL (observe).", raw_state)
+                machine.state = ReconState.NORMAL
+        try:
+            machine.degraded_cycles = int(persisted.get("degraded_cycles", 0))
+        except (TypeError, ValueError):
+            machine.degraded_cycles = 0
+
+        return _ReconCtx(
+            book_key=book_key,
+            root=root,
+            tol=tol,
+            cycle_id=cycle_id,
+            mode=mode,
+            enforce_refused=enforce_refused,
+            ledger=ledger,
+            machine=machine,
+            state_path=state_path,
+            persisted=persisted,
+        )
+
+    def _enforce_requested(self, params: dict[str, Any]) -> bool:
+        """True iff the config asks for acknowledged enforce, WITHOUT loading the
+        ledger. Used to decide fail-open vs fail-closed when `_recon_load` itself
+        raised (so we cannot trust its parsed mode)."""
+        cfg = params.get("reconciliation")
+        if not isinstance(cfg, dict):
+            return False
+        tol_cfg = cfg.get("tolerances")
+        tol_mode = tol_cfg.get("mode") if isinstance(tol_cfg, dict) else None
+        mode = str(cfg.get("mode", tol_mode or "observe"))
+        return mode == "enforce" and bool(cfg.get("enforce_acknowledged", False))
+
+    def _recon_preflight(self, ctx: _ReconCtx, broker: BrokerPlugin | None) -> dict[str, Any]:
+        """Compute the PRE-EXECUTION gate from the PERSISTED (prior-cycle) state.
+
+        This is the real enforcement touchpoint (issue #90): the state machine
+        persisted the outcome of the PREVIOUS cycle, and we read it back HERE,
+        before this cycle's orders are constructed/executed. A HALT persisted last
+        cycle blocks all orders now; a FLATTEN persisted last cycle makes this
+        cycle reduce-only. Because the decision is durable state consumed strictly
+        before execution, enforcing it is real safety, not the post-execution false
+        safety #87 rejected.
+
+        The gate is only APPLIED in enforce mode; observe mode computes it for the
+        record (``applied=False``) and changes no orders.
+        """
+        from quantbox.reconciliation import preflight_gate
+
+        orders_allowed, reduce_only = preflight_gate(ctx.machine.state)
+        enforced = ctx.tol.is_enforce
+        applied = bool(enforced and (not orders_allowed or reduce_only))
+        note = {
+            "gate_from_state": ctx.machine.state.value,
+            "orders_allowed": orders_allowed,
+            "reduce_only": reduce_only,
+            "enforced": enforced,
+            "applied": applied,
+        }
+        if applied:
+            action = "HALT (no new orders)" if not orders_allowed else "FLATTEN (reduce-only)"
+            msg = (
+                f"🛑 RECON ENFORCE [{ctx.book_key}] PRE-EXECUTION gate from prior state "
+                f"'{ctx.machine.state.value}': {action}. This cycle's orders are gated BEFORE execution."
+            )
+            logger.error(msg)
+            notify = getattr(broker, "notify", None)
+            if callable(notify):
+                try:
+                    notify(msg)
+                except Exception as exc:  # never let alerting crash the run
+                    logger.warning("Recon preflight notify failed: %s", exc)
+        elif enforced:
+            logger.info(
+                "RECON ENFORCE [%s] preflight: prior state '%s' permits normal trading.",
+                ctx.book_key,
+                ctx.machine.state.value,
+            )
+        return note
+
+    def _filter_reduce_only(self, executable: pd.DataFrame, broker: BrokerPlugin | None) -> pd.DataFrame:
+        """Keep only orders that REDUCE existing exposure, clamped so they never
+        flip a position past zero. Used by the FLATTEN gate.
+
+        An order reduces |position| iff its signed delta opposes the current
+        signed position. Opening/increasing legs are dropped; a reducing leg is
+        clamped to at most the current position magnitude. Fails SAFE: if we cannot
+        read positions, we drop everything (send nothing) rather than risk opening.
+        """
+        positions: dict[str, float] = {}
+        get_positions = getattr(broker, "get_positions", None)
+        if callable(get_positions):
+            try:
+                pos = get_positions()
+                if pos is not None and len(pos) > 0:
+                    for _, r in pos.iterrows():
+                        positions[str(r.get("symbol", ""))] = float(r.get("qty", 0) or 0)
+            except Exception as exc:  # fail safe: no positions → reduce nothing
+                logger.warning("Reduce-only gate could not read positions (dropping all orders): %s", exc)
+                return executable.iloc[0:0]
+        else:
+            logger.warning("Reduce-only gate: broker exposes no get_positions — dropping all orders (fail safe).")
+            return executable.iloc[0:0]
+
+        kept: list[Any] = []
+        for _, row in executable.iterrows():
+            sym = str(row.get("Asset", ""))
+            action = str(row.get("Action", "")).strip().lower()
+            qty = float(row.get("Adjusted Quantity", 0) or 0)
+            cur = positions.get(sym, 0.0)
+            if qty <= 0 or cur == 0:
+                continue
+            # FAIL CLOSED: only a recognised buy/sell can be judged reduce-or-not.
+            # An unknown action under a FLATTEN gate must be DROPPED, never assumed
+            # to be exposure-reducing (assuming sell could send an opening order).
+            if action not in ("buy", "sell"):
+                logger.warning(
+                    "Reduce-only gate: dropping order with unrecognised action %r for %s (fail closed).",
+                    action,
+                    sym,
+                )
+                continue
+            delta = qty if action == "buy" else -qty
+            # Reduces only if the order's signed delta opposes the current position.
+            if (delta > 0) == (cur > 0):
+                continue
+            new_qty = min(qty, abs(cur))  # clamp: never cross zero
+            if new_qty <= 0:
+                continue
+            r = row.copy()
+            r["Adjusted Quantity"] = new_qty
+            kept.append(r)
+        return pd.DataFrame(kept) if kept else executable.iloc[0:0]
+
+    # ==================================================================
+    # Stage 7b helper: reconciliation ledger + break enforcement (#87, #90)
     # ==================================================================
     def _run_reconciliation(self, **kwargs: Any) -> dict[str, Any]:
         """Guarded wrapper: reconciliation must NEVER crash the trading run.
@@ -1695,8 +2243,14 @@ class TradingPipeline:
         """
         try:
             return self._run_reconciliation_impl(**kwargs)
-        except Exception as exc:  # noqa: BLE001 - recon is never allowed to be fatal
-            logger.error("Reconciliation stage failed (non-fatal, observe-mode): %s", exc)
+        except ReconEnforcementError:
+            # CRITICAL under enforce (e.g. unwritable enforcement authority): must
+            # NOT be swallowed. Let it escape and fail the run so the book stops,
+            # rather than completing "successfully" while the next cycle trades from
+            # stale/absent enforcement state. The impl already alerted hard.
+            raise
+        except Exception as exc:  # noqa: BLE001 - ordinary recon faults are never fatal
+            logger.error("Reconciliation stage failed (non-fatal to the run): %s", exc)
             return {"error": str(exc)}
 
     def _run_reconciliation_impl(
@@ -1711,89 +2265,48 @@ class TradingPipeline:
         stable_coin: str,
         asof: str,
         run_id: str,
+        intent_captured: bool = False,
     ) -> dict[str, Any]:
-        """Record the order/fill ledger + evaluate the break state machine.
+        """Evaluate the break state machine against the order/fill ledger.
 
-        OBSERVE-mode by default (issue #87): classifies breaks and computes the
-        NORMAL→DEGRADED→HALT/FLATTEN transition, then only logs/alerts. It never
-        gates, halts or flattens orders here — enforce is Tom-only and the state
-        machine's `orders_allowed`/`reduce_only` gate is not consulted by this
-        pipeline. No-op unless a `reconciliation` config block is present.
+        Observe by default (default mode); ``enforce`` is Tom-gated (see
+        :meth:`_recon_load`). This stage classifies breaks and computes the
+        NORMAL→DEGRADED→HALT/FLATTEN transition, logs/alerts, and PERSISTS the
+        resulting state. The persisted state is what the NEXT cycle's
+        pre-execution gate (:meth:`_recon_preflight`) reads back — that
+        persist-then-read is the real enforcement path (issue #90). No-op unless a
+        `reconciliation` config block is present.
 
         Authority rule: exchange = truth for holdings (drift/phantom are computed
         against the broker's real positions); the ledger = the intent record
         (surfaces a submitted order that produced no fill).
 
-        OBSERVE-V1 CAVEAT (honest scope): intent is RECONSTRUCTED here from the
-        executable ``orders_df`` post-execution, not captured at the broker
-        submission call. So (a) it is not authoritative if the run crashes between
-        submission and this stage, and (b) it reflects the intended order set, not
-        the exact submission path. True submission-time capture (write intent
-        inside ``_execute_orders``) lands with the real pre-execution enforcement
-        wiring — the tracked follow-up. For observe-mode shadow detection this
-        reconstruction is sufficient; it must NOT be treated as a crash-durable
-        audit ledger until that follow-up.
+        LEDGER SOURCE (issue #90): when the execution stage captured intent at the
+        broker submission call (the crash-durable path — `ledger` was threaded into
+        ``_execute_orders``), this stage READS those records back rather than
+        reconstructing them, so the audit trail reflects the exact submission path.
+        When intent was NOT pre-captured (e.g. a direct unit-test call, or a run
+        where execution recorded nothing), it falls back to reconstructing intent +
+        result from ``orders_df`` / ``execution_report`` so observe-mode shadow
+        detection still works.
         """
-        # Imported lazily so the reconciliation subpackage is only loaded when a
-        # book opts in — keeps import cost off every backtest/paper run.
-        import json
-        from pathlib import Path
+        from collections import defaultdict
 
-        from quantbox.reconciliation import (
-            KIND_INTENT,
-            BookTolerances,
-            OrderFillLedger,
-            ReconciliationStateMachine,
-            classify_breaks,
-        )
+        from quantbox.reconciliation import KIND_INTENT, classify_breaks
 
-        cfg = params.get("reconciliation")
-        if not cfg:
+        ctx = self._recon_load(params, run_id, asof)
+        if ctx is None:
             return {}
 
-        book_key = str(cfg.get("book_key") or params.get("book_key") or "default")
-        root = Path(str(cfg.get("data_dir", "data")))
-        tol_cfg = dict(cfg.get("tolerances", {}))
-        # `mode` may sit at the block top-level or inside tolerances; block wins.
-        mode = str(cfg.get("mode", tol_cfg.pop("mode", "observe")))
+        book_key = ctx.book_key
+        tol = ctx.tol
+        cycle_id = ctx.cycle_id
+        ledger = ctx.ledger
+        machine = ctx.machine
+        state_path = ctx.state_path
+        persisted = ctx.persisted
+        enforce_refused = ctx.enforce_refused
 
-        # ENFORCE IS NOT HONORED IN THIS PATH — refuse it, do not fake it.
-        # This stage runs AFTER _execute_orders, so the state machine's gate
-        # (orders_allowed / reduce_only) is computed too late to stop anything
-        # this cycle. Letting mode="enforce" through would report enforced=True /
-        # "ENFORCE — action taken" while the orders have ALREADY been sent —
-        # false safety on a live book. We ship OBSERVE-ONLY; real gating (consume
-        # the gate pre-execution or gate the NEXT cycle) is a separate future
-        # issue. So a config that asks for enforce is forced back to observe with
-        # a loud error — no config can ever claim orders are gated when they are
-        # not. Enabling enforce is a deliberate, Tom-gated wiring change, not a
-        # flag flip.
-        enforce_refused = False
-        if mode == "enforce":
-            enforce_refused = True
-            logger.error(
-                "RECON [%s]: mode='enforce' requested but NOT honored — reconciliation "
-                "runs post-execution, so orders this cycle were already sent. Forcing "
-                "OBSERVE to avoid false safety. Real gating is a separate future issue "
-                "(consume the gate pre-execution / next cycle).",
-                book_key,
-            )
-            mode = "observe"
-
-        tol = BookTolerances(mode=mode, **tol_cfg)
-
-        cycle_id = str(cfg.get("cycle_id") or run_id or asof)
-
-        # --- Ledger: record intent (submitted) + result (observed) ---------
-        ledger = OrderFillLedger(book_key=book_key, root=root)
-        details = execution_report.get("orders_details", [])
-        # Match results back to intents by (symbol, side). Orders in this cycle
-        # get a deterministic order_ref so a result can reference its intent.
-        executable = (
-            orders_df[orders_df.get("Executable", pd.Series(dtype=bool))]
-            if isinstance(orders_df, pd.DataFrame) and "Executable" in orders_df.columns
-            else orders_df
-        )
         # Failed/zero-fill counting for the consecutive-failure break class.
         # `attempted_syms` = every symbol we submitted an intent for THIS cycle;
         # only these keep/accrue a streak, so a symbol that is simply no longer
@@ -1803,56 +2316,85 @@ class TradingPipeline:
         attempted_syms: set[str] = set()
         missed_fills: list[str] = []
 
-        # Match results to intents by (symbol, side) CONSUMING each result once, so
-        # N same-(symbol, side) orders in a cycle can't all bind to the first
-        # result (which would duplicate a fill or mask a missed one). An intent
-        # with no remaining result falls through to the timeout/missed path below.
-        from collections import defaultdict
+        # Did the execution stage already capture intent at submission for THIS
+        # cycle? The caller (run()) says so explicitly via `intent_captured` — we do
+        # NOT infer it from the presence of same-cycle_id intents, because a bare
+        # cycle_id can be reused across cycles. When capture was active we ALWAYS
+        # read the ledger back (never reconstruct), so a HALTED cycle that submitted
+        # nothing correctly reads as zero attempts rather than re-recording orders
+        # that were never sent.
+        already_captured = bool(intent_captured)
 
-        details_pool: dict[tuple[str, str], list[dict]] = defaultdict(list)
-        for d in details:
-            k = (str(d.get("symbol", "")), str(d.get("side", d.get("action", ""))).lower())
-            details_pool[k].append(d)
-
-        if isinstance(executable, pd.DataFrame) and not executable.empty:
-            for i, (_, row) in enumerate(executable.iterrows()):
-                sym = str(row.get("Asset", ""))
-                side = str(row.get("Action", "")).lower()
+        if already_captured:
+            # --- Read the submission-time-captured ledger (authoritative) ---
+            matched = ledger.match_intents_to_results()
+            for _ref, slot in matched.items():
+                intent = slot.get("intent")
+                if intent is None or str(intent.get("cycle_id")) != cycle_id:
+                    continue
+                sym = str(intent.get("symbol", ""))
                 attempted_syms.add(sym)
-                order_ref = f"{cycle_id}:{i}:{sym}:{side}"
-                ledger.record_intent(
-                    cycle_id=cycle_id,
-                    symbol=sym,
-                    side=side,
-                    order_ref=order_ref,
-                    target_qty=_safe_float(row.get("Adjusted Quantity")),
-                    target_wt=final_weights.get(sym),
-                    limit_px=_safe_float(row.get("Price")),
-                )
-                pool = details_pool.get((sym, side))
-                match = pool.pop(0) if pool else None
-                if match is not None:
-                    status = str(match.get("status", "failed")).upper()
-                    ledger.record_result(
-                        order_ref=order_ref,
-                        cycle_id=cycle_id,
-                        status=status.lower(),
-                        filled_qty=_safe_float(match.get("executed_quantity")),
-                        avg_px=_safe_float(match.get("executed_price")),
-                    )
-                    if status in ("FILLED", "PARTIAL"):
-                        filled_syms.add(sym)
-                    else:  # FAILED / SKIPPED / anything non-fill
-                        this_cycle_failed[sym] = this_cycle_failed.get(sym, 0) + 1
-                else:
-                    # Intent written but NO result observed back: the missed-fill
-                    # class the ledger exists to prove (exchange alone can't). We
-                    # record a timeout result so the ledger match is closed, and
-                    # count it toward the failure streak. Authority rule: the
-                    # internal ledger is the truth for intent.
-                    ledger.record_result(order_ref=order_ref, cycle_id=cycle_id, status="timeout")
+                result = slot.get("result")
+                status = str(result.get("status")).lower() if result else None
+                if status in ("filled", "partial"):
+                    filled_syms.add(sym)
+                elif status in ("timeout", None):
+                    # Submitted but no (real) result observed = missed fill.
                     this_cycle_failed[sym] = this_cycle_failed.get(sym, 0) + 1
                     missed_fills.append(sym)
+                else:  # failed / skipped / rejected / anything non-fill
+                    this_cycle_failed[sym] = this_cycle_failed.get(sym, 0) + 1
+        else:
+            # --- Reconstruction fallback: record intent + result here -------
+            details = execution_report.get("orders_details", [])
+            executable = (
+                orders_df[orders_df.get("Executable", pd.Series(dtype=bool))]
+                if isinstance(orders_df, pd.DataFrame) and "Executable" in orders_df.columns
+                else orders_df
+            )
+            # Match results to intents by (symbol, side) CONSUMING each result once,
+            # so N same-(symbol, side) orders in a cycle can't all bind to the first
+            # result (duplicating a fill or masking a missed one).
+            details_pool: dict[tuple[str, str], list[dict]] = defaultdict(list)
+            for d in details:
+                k = (str(d.get("symbol", "")), str(d.get("side", d.get("action", ""))).lower())
+                details_pool[k].append(d)
+
+            if isinstance(executable, pd.DataFrame) and not executable.empty:
+                for i, (_, row) in enumerate(executable.iterrows()):
+                    sym = str(row.get("Asset", ""))
+                    side = str(row.get("Action", "")).lower()
+                    attempted_syms.add(sym)
+                    order_ref = f"{cycle_id}:{i}:{sym}:{side}"
+                    ledger.record_intent(
+                        cycle_id=cycle_id,
+                        symbol=sym,
+                        side=side,
+                        order_ref=order_ref,
+                        target_qty=_safe_float(row.get("Adjusted Quantity")),
+                        target_wt=final_weights.get(sym),
+                        limit_px=_safe_float(row.get("Price")),
+                    )
+                    pool = details_pool.get((sym, side))
+                    match = pool.pop(0) if pool else None
+                    if match is not None:
+                        status = str(match.get("status", "failed")).upper()
+                        ledger.record_result(
+                            order_ref=order_ref,
+                            cycle_id=cycle_id,
+                            status=status.lower(),
+                            filled_qty=_safe_float(match.get("executed_quantity")),
+                            avg_px=_safe_float(match.get("executed_price")),
+                        )
+                        if status in ("FILLED", "PARTIAL"):
+                            filled_syms.add(sym)
+                        else:  # FAILED / SKIPPED / anything non-fill
+                            this_cycle_failed[sym] = this_cycle_failed.get(sym, 0) + 1
+                    else:
+                        # Intent written but NO result observed = missed fill.
+                        ledger.record_result(order_ref=order_ref, cycle_id=cycle_id, status="timeout")
+                        this_cycle_failed[sym] = this_cycle_failed.get(sym, 0) + 1
+                        missed_fills.append(sym)
 
         # --- Reconcile against external truth (holdings) -------------------
         actual_wt: dict[str, float] = {}
@@ -1904,18 +2446,12 @@ class TradingPipeline:
                 phantom.append(sym)
 
         # --- Persistent per-book state (streaks + machine state) -----------
-        # Sits next to the ledger, in the SAME dir the ledger already validated to
-        # be within root (book_key can't escape — see OrderFillLedger.__post_init__).
-        state_path = ledger.path.parent / "recon_state.json"
-        persisted = {}
-        if state_path.exists():
-            try:
-                persisted = json.loads(state_path.read_text())
-            except Exception:  # corrupt state → start fresh, fail safe to NORMAL
-                persisted = {}
-        # Only carry a streak forward for a symbol we ATTEMPTED again this cycle;
-        # a symbol we stopped trading has, by definition, no *consecutive* failure
-        # to escalate on (prevents a stale streak from falsely reaching HALT).
+        # `persisted` / `state_path` / `machine` (with prior state loaded) all come
+        # from the shared _ReconCtx so the preflight gate and this evaluator agree
+        # on the same prior state. Only carry a streak forward for a symbol we
+        # ATTEMPTED again this cycle; a symbol we stopped trading has, by
+        # definition, no *consecutive* failure to escalate on (prevents a stale
+        # streak from falsely reaching HALT).
         prior_streaks: dict[str, int] = dict(persisted.get("streaks", {}))
         streaks: dict[str, int] = {s: n for s, n in prior_streaks.items() if s in attempted_syms}
         for sym in filled_syms:
@@ -1930,28 +2466,51 @@ class TradingPipeline:
             phantom_symbols=phantom,
         )
 
-        machine = ReconciliationStateMachine(book_key=book_key, tol=tol)
-        try:
-            from quantbox.reconciliation import ReconState
-
-            machine.state = ReconState(persisted.get("state", "normal"))
-        except Exception:
-            pass
-        machine.degraded_cycles = int(persisted.get("degraded_cycles", 0))
         decision = machine.evaluate(breaks)
 
-        try:
-            state_path.write_text(
-                json.dumps(
-                    {
-                        "state": machine.state.value,
-                        "degraded_cycles": machine.degraded_cycles,
-                        "streaks": streaks,
-                    }
+        import json
+
+        state_payload = json.dumps(
+            {
+                "state": machine.state.value,
+                "degraded_cycles": machine.degraded_cycles,
+                "streaks": streaks,
+            }
+        )
+        # Atomic write (temp + fsync + os.replace): the state file is the
+        # enforcement authority, so a crash mid-persist must never leave it
+        # truncated/corrupt. Retry once on failure.
+        persist_err: Exception | None = None
+        for _attempt in range(2):
+            try:
+                _atomic_write_text(state_path, state_payload)
+                persist_err = None
+                break
+            except Exception as exc:  # noqa: BLE001
+                persist_err = exc
+        if persist_err is not None:
+            if tol.is_enforce:
+                # ENFORCE: the next cycle's gate reads this file. If we cannot
+                # persist a (possibly more severe) state, the enforcement authority
+                # is unwritable — do NOT continue silently. Alert hard and RAISE so
+                # the run surfaces as failed and the operator halts the book; a
+                # silent continue would let the next cycle trade from stale state.
+                logger.error(
+                    "RECON ENFORCE [%s]: could not persist recon state (%s) — enforcement "
+                    "authority unwritable. Raising to fail the run.",
+                    book_key,
+                    persist_err,
                 )
-            )
-        except Exception as exc:
-            logger.warning("Reconciliation state persist failed: %s", exc)
+                notify = getattr(broker, "notify", None)
+                if callable(notify):
+                    with contextlib.suppress(Exception):
+                        notify(
+                            f"🛑 <b>RECON ENFORCE [{book_key}] — state persist FAILED</b>\n"
+                            f"Could not write recon_state.json ({persist_err}). The next cycle's "
+                            "enforcement gate cannot be trusted — HALT the book and investigate disk."
+                        )
+                raise ReconEnforcementError(f"recon state persist failed under enforce: {persist_err}") from persist_err
+            logger.warning("Reconciliation state persist failed (observe): %s", persist_err)
 
         # --- Alert (observe = log/alert only, no gating) -------------------
         if decision.alert:
@@ -1968,9 +2527,13 @@ class TradingPipeline:
             "book_key": book_key,
             "mode": decision.mode,
             "enforced": decision.enforced,
-            # True iff a config asked for enforce and we refused it (post-exec path
-            # cannot gate). Surfaced so a monitor can flag a misconfigured book.
+            # True iff a config asked for enforce WITHOUT enforce_acknowledged=true
+            # and we forced it back to observe. Surfaced so a monitor can flag a
+            # misconfigured book that believes it is gating when it is not.
             "enforce_refused": enforce_refused,
+            # Whether the ledger for this cycle was captured at submission time
+            # (crash-durable) vs reconstructed post-execution (fallback).
+            "intent_captured_at_submission": already_captured,
             "from_state": decision.from_state.value,
             "to_state": decision.to_state.value,
             "would_be_action": decision.would_be_action.value,

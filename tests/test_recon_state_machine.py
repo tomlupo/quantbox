@@ -139,13 +139,34 @@ def test_observe_mode_never_gates_orders():
     assert "OBSERVE" in d.alert
 
 
-def test_enforce_mode_is_rejected_at_config():
-    """enforce is REJECTED, not defaulted-off: this stage is post-execution, so a
-    gate here would be false safety. No config can construct an enforcing book."""
+def test_enforce_mode_is_accepted_and_gates(the_state=None):
+    """enforce is now a REAL mode (#90): the gate is consumed pre-execution
+    (persist-then-read next cycle), so BookTolerances accepts it and an enforcing
+    machine's resulting HALT/FLATTEN state DOES set the gate. (Enabling it on a
+    live book stays Tom-gated at the pipeline layer via an explicit ack.)"""
+    from quantbox.reconciliation import preflight_gate
+
+    tol = BookTolerances(mode="enforce")
+    assert tol.is_enforce is True
+
+    m = _machine(mode="enforce")
+    d = m.evaluate(classify_breaks(tol=m.tol, failed_streaks={"SOL": 3}))
+    assert d.to_state == ReconState.HALT
+    assert d.enforced is True
+    # HALT → no new orders; the decision's gate reflects it under enforce.
+    assert d.orders_allowed is False
+    assert d.reduce_only is False
+    assert preflight_gate(ReconState.HALT) == (False, False)
+    assert preflight_gate(ReconState.FLATTEN) == (True, True)
+    assert preflight_gate(ReconState.NORMAL) == (True, False)
+
+
+def test_invalid_mode_is_rejected_at_config():
+    """A garbage mode is still rejected at config."""
     import pytest
 
-    with pytest.raises(ValueError, match="enforce"):
-        BookTolerances(mode="enforce")
+    with pytest.raises(ValueError, match="mode"):
+        BookTolerances(mode="bogus")
 
 
 def test_hard_break_computes_would_be_action_without_gating():
