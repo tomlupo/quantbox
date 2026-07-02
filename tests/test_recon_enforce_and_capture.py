@@ -456,6 +456,81 @@ def test_observe_state_persist_failure_is_non_fatal(tmp_path):
     assert not any("persist FAILED" in a for a in broker.alerts)
 
 
+def test_gated_cycle_writes_no_synthetic_ledger_records(tmp_path):
+    """POST-MERGE BLOCKER 1: when a cycle is gated pre-execution (nothing
+    submitted) and Stage 7b runs the reconstruction path (intent_captured=False),
+    it must NOT fabricate intents/timeouts from the original orders_df — that would
+    corrupt the ledger and escalate failure streaks off a SAFETY GATE."""
+    params = _enforce_params(tmp_path, ack=True)
+    pipe = TradingPipeline()
+    notes = pipe._run_reconciliation(
+        params=params,
+        broker=_FakeBroker(),
+        final_weights={"DOGE": 0.5},
+        orders_df=pd.DataFrame([_order("DOGE", "Buy"), _order("ETH", "Buy")]),
+        # HALT gate blocked execution; nothing was sent. recon_ctx was None in run(),
+        # so Stage 7b is called with intent_captured=False.
+        execution_report={"recon_gated": "halt", "orders_details": [], "summary": {}},
+        portfolio_value=1000.0,
+        stable_coin="USDC",
+        asof="d",
+        run_id="r1",
+        intent_captured=False,
+    )
+    # No synthetic ledger records for the never-submitted orders.
+    ledger_file = tmp_path / "carver-HL" / "orders.jsonl"
+    recs = _ledger_records(tmp_path) if ledger_file.exists() else []
+    assert recs == []
+    # And no failure streak / missed-fill accrued off the gate.
+    assert notes["missed_fills"] == []
+    assert all(b["class"] != "consecutive_failed" for b in notes["breaks"])
+
+
+def test_observe_dup_order_intent_failure_no_mis_binding(tmp_path):
+    """POST-MERGE BLOCKER 2: with two same-(symbol,side) orders where the FIRST
+    order's intent write fails (observe), the executed fills must still bind to the
+    CORRECT surviving intent — not mis-bind the wrong order's fill to it."""
+    params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
+    pipe = TradingPipeline()
+    ctx = pipe._recon_load(params, run_id="r1", asof="d")
+
+    real = ctx.ledger.record_intent
+    calls = {"n": 0}
+
+    def _flaky(**kw):
+        calls["n"] += 1
+        if calls["n"] == 1:  # first order's intent write fails
+            raise OSError("disk hiccup")
+        return real(**kw)
+
+    ctx.ledger.record_intent = _flaky
+
+    # Two DOGE buys with DISTINCT quantities so a mis-binding is detectable.
+    broker = _FakeBroker(fills_fn=_fills_all("FILLED"))
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=pd.DataFrame([_order("DOGE", "Buy", qty=5.0), _order("DOGE", "Buy", qty=7.0)]),
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+        ledger=ctx.ledger,
+        cycle_id=ctx.cycle_id,
+        capture_fail_closed=False,  # observe: both orders still execute
+    )
+    assert report["summary"]["total_executed"] == 2  # both filled
+
+    recs = _ledger_records(tmp_path)
+    intents = [r for r in recs if r.get("kind") == "intent"]
+    results = [r for r in recs if r.get("kind") == "result"]
+    # Only the second order got a durable intent; exactly one result, bound to it,
+    # carrying the SECOND order's qty (7.0) — not the first order's fill (5.0).
+    assert len(intents) == 1
+    assert len(results) == 1
+    assert results[0]["order_ref"] == intents[0]["order_ref"]
+    assert results[0]["status"] == "filled"
+    assert results[0]["filled_qty"] == 7.0
+
+
 def test_corrupt_state_fails_closed_to_halt_under_enforce(tmp_path):
     """The persisted state IS the enforcement authority: a corrupt state file must
     fail CLOSED to HALT under enforce, never silently reset to NORMAL (review

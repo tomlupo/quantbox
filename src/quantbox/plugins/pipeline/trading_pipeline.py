@@ -1706,7 +1706,11 @@ class TradingPipeline:
         # side) FIFO of order_refs so results bind one-to-one to intents below.
         from collections import defaultdict
 
-        intent_refs: dict[tuple[str, str], list[str]] = defaultdict(list)
+        # Per-(symbol, side) FIFO of order_refs. A None entry is a SENTINEL for an
+        # order that executed but whose intent write failed (observe) — it reserves
+        # the positional slot so results stay 1:1 without recording against a
+        # never-written intent.
+        intent_refs: dict[tuple[str, str], list[str | None]] = defaultdict(list)
         if ledger is not None and cycle_id is not None:
             dropped_idx: list[int] = []
             for i, (_, brow) in enumerate(broker_orders.iterrows()):
@@ -1745,10 +1749,16 @@ class TradingPipeline:
                         report["recon_capture_dropped"] = report.get("recon_capture_dropped", 0) + 1
                         dropped_idx.append(i)
                         continue
-                    # OBSERVE: ledger must never block execution. Do NOT track this
-                    # ref (no RESULT against a never-written intent), but the order
-                    # still executes — an observability loss, not corruption.
+                    # OBSERVE: ledger must never block execution — the order still
+                    # executes. But we MUST still reserve a positional slot so result
+                    # matching stays 1:1: append a None SENTINEL. Without it, a later
+                    # fill for another same-(symbol, side) order would pop THIS
+                    # order's would-be slot and bind to the WRONG intent. The sentinel
+                    # absorbs this order's own result (recording nothing, since its
+                    # intent was never durably written) and keeps every other order's
+                    # result bound to its own ref.
                     logger.warning("Intent capture failed for %s %s (order still sent): %s", side, sym, exc)
+                    intent_refs[(sym, side)].append(None)
                     continue
                 intent_refs[(sym, side)].append(order_ref)
 
@@ -1767,6 +1777,11 @@ class TradingPipeline:
             if not pool:
                 return
             ref = pool.pop(0)
+            if ref is None:
+                # Sentinel slot (intent write had failed): consume it to keep the
+                # FIFO aligned, but record nothing — there is no durable intent to
+                # bind this result to.
+                return
             try:
                 ledger.record_result(
                     order_ref=ref,
@@ -1968,6 +1983,8 @@ class TradingPipeline:
         if ledger is not None and cycle_id is not None:
             for (sym, side), refs in intent_refs.items():
                 for ref in refs:
+                    if ref is None:
+                        continue  # sentinel: no durable intent to close
                     try:
                         ledger.record_result(order_ref=ref, cycle_id=cycle_id, status="timeout")
                     except Exception as exc:  # never let the ledger crash the run
@@ -2344,6 +2361,23 @@ class TradingPipeline:
                     missed_fills.append(sym)
                 else:  # failed / skipped / rejected / anything non-fill
                     this_cycle_failed[sym] = this_cycle_failed.get(sym, 0) + 1
+        elif execution_report.get("recon_gated"):
+            # --- Cycle was GATED pre-execution: submit-set is NOT orders_df -----
+            # The pre-execution gate blocked orders (HALT) or filtered them
+            # (FLATTEN), so the broker never received orders_df. Reconstructing
+            # intents/results from orders_df here would fabricate ledger records for
+            # orders that were NEVER submitted — corrupting the audit trail and
+            # escalating failure/missed-fill streaks off a SAFETY GATE rather than
+            # real broker behavior. Record NOTHING; leave attempted_syms empty so no
+            # streak accrues. (This is the enforce fail-closed path where run() sets
+            # recon_ctx=None → intent_captured=False, so `already_captured` is False
+            # but nothing was actually sent.)
+            logger.info(
+                "RECON [%s]: cycle gated pre-execution (%s) — no orders submitted; "
+                "skipping ledger reconstruction (no synthetic intents/results).",
+                book_key,
+                execution_report.get("recon_gated"),
+            )
         else:
             # --- Reconstruction fallback: record intent + result here -------
             details = execution_report.get("orders_details", [])
