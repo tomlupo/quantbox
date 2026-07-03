@@ -57,6 +57,7 @@ from typing import Any
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+from quantbox.retry import with_retry
 
 from ._fills import resolve_fill
 
@@ -232,8 +233,10 @@ class HyperliquidBroker:
         if self.testnet:
             self._exchange.set_sandbox_mode(True)
 
-        # Load markets
-        self._markets = self._exchange.load_markets()
+        # Load markets. A transient 429 / DDoS-protection throttle here must not
+        # abort the daily run — retry with backoff. Genuine errors (auth, bad
+        # config) are non-transient and propagate immediately (fail closed).
+        self._markets = with_retry(self._exchange.load_markets, label="hyperliquid.load_markets")
         self._build_symbol_index()
         logger.info(
             f"Connected to Hyperliquid {'testnet' if self.testnet else 'mainnet'}, {len(self._markets)} markets loaded"

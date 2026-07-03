@@ -17,12 +17,11 @@ from pathlib import Path
 import duckdb
 import httpx
 import pandas as pd
-from tenacity import (
-    retry,
-    retry_if_exception,
-    stop_after_attempt,
-    wait_exponential,
-)
+
+# Transient-error retry lives in the central quantbox.retry module now; keep the
+# historical names importable here (is_transient / retry_transient) so the
+# data-source plugins that ``from ._utils import ...`` them are unchanged.
+from quantbox.retry import is_transient, retry_transient, with_retry  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -163,39 +162,13 @@ def normalize_data_frequency(frequency: str) -> str:
 
 
 # ============================================================================
-# Transient Error Classification (used by tenacity)
+# Transient Error Classification + retry decorator
 # ============================================================================
-
-
-def is_transient(exc: BaseException) -> bool:
-    """Check if an exception is transient and worth retrying.
-
-    Used as ``retry=retry_if_exception(is_transient)`` with tenacity.
-    """
-    if isinstance(exc, (ConnectionError, TimeoutError, OSError, httpx.TransportError)):
-        return True
-    # ccxt rate-limit / exchange-not-available errors
-    exc_name = type(exc).__name__
-    if exc_name in (
-        "RateLimitExceeded",
-        "ExchangeNotAvailable",
-        "RequestTimeout",
-        "NetworkError",
-        "DDoSProtection",
-    ):
-        return True
-    # Binance API transient codes (-1003 rate limit, -1001 disconnected)
-    code = getattr(exc, "code", None)
-    return code in (-1003, -1001, -1000, 503, 504)
-
-
-# Pre-built tenacity retry decorator for data-fetching functions.
-retry_transient = retry(
-    stop=stop_after_attempt(4),
-    wait=wait_exponential(multiplier=1, max=30),
-    retry=retry_if_exception(is_transient),
-    reraise=True,
-)
+#
+# ``is_transient`` and the ``retry_transient`` decorator now live in
+# ``quantbox.retry`` (re-imported at the top of this module for back-compat).
+# They are the same 4-attempt, exponential-backoff, transient-only contract as
+# before, shared with the broker plugins.
 
 
 # ============================================================================
