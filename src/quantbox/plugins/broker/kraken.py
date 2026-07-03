@@ -39,6 +39,7 @@ from typing import Any
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+from quantbox.retry import with_retry
 
 from ..datasources.kraken_data import KRAKEN_BALANCE_SUFFIXES, normalize_kraken_asset
 from ._fills import resolve_fill
@@ -184,7 +185,9 @@ class KrakenBroker:
 
     def _load_markets(self) -> None:
         try:
-            self._markets = self._exchange.load_markets() or {}
+            # Retry a transient 429 / DDoS-protection throttle with backoff so a
+            # momentary rate limit doesn't blank the market map on startup.
+            self._markets = with_retry(self._exchange.load_markets, label="kraken.load_markets") or {}
             logger.info("Connected to Kraken spot, %d markets loaded", len(self._markets))
         except Exception as e:  # pragma: no cover - network
             logger.error("Failed to load Kraken markets: %s", e)

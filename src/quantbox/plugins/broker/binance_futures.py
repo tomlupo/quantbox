@@ -54,6 +54,7 @@ from typing import Any
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+from quantbox.retry import with_retry
 
 try:
     import ccxt
@@ -232,8 +233,10 @@ class BinanceFuturesBroker:
             }
         )
 
-        # Load markets
-        self._markets = self._exchange.load_markets()
+        # Load markets. Retry a transient 429 / DDoS-protection throttle with
+        # backoff so a momentary rate limit doesn't abort the daily run; genuine
+        # errors (auth, bad config) are non-transient and propagate (fail closed).
+        self._markets = with_retry(self._exchange.load_markets, label="binance_futures.load_markets")
         logger.info(f"Connected to Binance Futures, {len(self._markets)} markets loaded")
 
         # Record starting balance for daily PnL tracking
