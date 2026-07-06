@@ -93,8 +93,9 @@ def test_small_deltas_clear_perpair_min_not_flat_ten():
     """The frozen case: a $278 book already near target, $4-8 rebalance deltas.
 
     BTC/ETH/SOL/XRP legs clear their true per-pair floor (~$4-5) and are
-    executable, even though each is below the flat $10 config min_notional that
-    previously froze the whole book.
+    executable, even though each is below the flat $10 *default* that previously
+    froze the whole book. This mirrors the live kraken book, whose rebalancer
+    config does NOT set min_notional (unset → the per-pair floor governs).
     """
     total = 278.0
     # Six equal-weight names -> ~$46.33 target each.
@@ -118,7 +119,7 @@ def test_small_deltas_clear_perpair_min_not_flat_ten():
             "capital_at_risk": 1.0,
             "stable_coin_symbol": "USD",
             "min_trade_size": 0.0,  # isolate the min-notional gate
-            "min_notional": 10.0,  # the flat floor that froze the book
+            # min_notional UNSET (as in the live kraken config) → per-pair governs.
         },
     )
     orders = result["orders"]
@@ -196,3 +197,31 @@ def test_backstop_used_when_snapshot_has_no_perpair_floor():
     assert not btc["Executable"]
     assert btc["Order Status"] == "Below min notional"
     assert "10.00" in btc["Reason"]  # flat backstop applied
+
+
+def test_explicit_config_floor_honored_over_lower_exchange_min():
+    """Regression (codex review of #106): an EXPLICITLY configured min_notional is
+    an operator churn/risk floor and must NEVER be silently bypassed by a lower
+    per-pair exchange minimum. A $30 BTC order clears Kraken's own ~$4 floor but is
+    below a deliberately-set $50 config floor → it must be SUPPRESSED, not sent.
+    (The old logic used the exchange floor as a replacement and would have let it
+    through.)"""
+    broker = _FakeBroker(cash=278.0, holdings={})
+    reb = FuturesRebalancer()
+    # ~$30 BTC target: above Kraken's per-pair floor (~$4) but below the $50 config.
+    result = reb.generate_orders(
+        weights={"BTC": 30.0 / 278.0, "ETH": 0.5},
+        broker=broker,
+        params={
+            "capital_at_risk": 1.0,
+            "stable_coin_symbol": "USD",
+            "min_trade_size": 0.0,
+            "min_notional": 50.0,  # explicit operator floor
+        },
+    )
+    orders = result["orders"]
+    btc = orders[orders["Asset"] == "BTC"].iloc[0]
+    assert 0 < btc["Notional Value"] < 50.0  # clears exchange min, below config floor
+    assert not btc["Executable"], btc["Order Status"]
+    assert btc["Order Status"] == "Below min notional"
+    assert "50.00" in btc["Reason"]  # the explicit $50 floor, not the ~$4 exchange min

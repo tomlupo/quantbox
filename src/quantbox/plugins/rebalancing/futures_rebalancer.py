@@ -156,7 +156,14 @@ class FuturesRebalancer:
     ) -> dict[str, Any]:
         """Generate rebalancing DataFrame and executable orders."""
         min_trade_size = float(params.get("min_trade_size", 0.01))
-        min_notional = float(params.get("min_notional", 10.0))
+        # Distinguish an EXPLICIT operator floor from the unset default. When the
+        # operator set `min_notional` it is a deliberate churn/risk floor that must
+        # never be silently bypassed (even below an exchange minimum); when unset,
+        # the venue's per-pair floor governs. `min_notional` (numeric) is the
+        # default-backstop used only when no per-pair snapshot is available.
+        _mn_cfg = params.get("min_notional")
+        min_notional_configured = float(_mn_cfg) if _mn_cfg is not None else None
+        min_notional = float(_mn_cfg) if _mn_cfg is not None else 10.0
         exclusions = list(params.get("exclusions", [])) + [stable_coin]
         exclusions = list(set(exclusions))
 
@@ -238,6 +245,7 @@ class FuturesRebalancer:
             rebalancing_df=rebalancing_df,
             min_trade_size=min_trade_size,
             min_notional=min_notional,
+            min_notional_configured=min_notional_configured,
             min_notional_map=min_notional_map,
             min_qty_map=min_qty_map,
         )
@@ -308,6 +316,7 @@ class FuturesRebalancer:
         rebalancing_df: pd.DataFrame,
         min_trade_size: float,
         min_notional: float = 10.0,
+        min_notional_configured: float | None = None,
         min_notional_map: dict[str, float] | None = None,
         min_qty_map: dict[str, float] | None = None,
     ) -> pd.DataFrame:
@@ -317,19 +326,25 @@ class FuturesRebalancer:
         exchange-specific formatting. Symbols are base asset names.
 
         Per-pair minimums (``min_notional_map`` / ``min_qty_map``, from the broker
-        snapshot) take precedence over the flat ``min_notional`` config value. The
-        true binding floor for a pair is ``max(costmin, ordermin * price)``:
+        snapshot) give the venue's true binding floor ``max(costmin, ordermin*price)``:
 
           * ``costmin`` = the venue's quote-notional minimum (Kraken limits.cost.min,
             ~$0.50 for USD pairs),
           * ``ordermin`` = the venue's base-unit minimum (Kraken limits.amount.min);
             ``ordermin * price`` is its notional equivalent.
 
-        The flat ``min_notional`` config value is kept only as a SAFETY BACKSTOP:
-        it applies when no per-pair floor is available (empty snapshot / offline
-        broker), never as an additional floor on top of a known per-pair minimum.
-        This is what unfreezes a small book whose $4-8 deltas clear the real
-        per-pair floors but were suppressed by the flat $10 default.
+        How that combines with the config ``min_notional`` (additive, never a silent
+        bypass — codex review of #106):
+
+          * ``min_notional_configured is not None`` — the operator EXPLICITLY set a
+            churn/risk floor. It is honored as an ADDITIONAL floor:
+            ``effective = max(configured, per_pair_min)``. A deliberate $50 floor is
+            never bypassed just because Kraken's own minimum is lower.
+          * ``min_notional_configured is None`` (unset) — the venue's per-pair floor
+            GOVERNS. This is what unfreezes a small book whose $4-8 deltas clear the
+            real per-pair floors but were suppressed by the flat $10 *default*.
+          * No per-pair floor available (empty snapshot / offline) AND no explicit
+            config — fall back to the flat ``min_notional`` default backstop.
         """
         min_notional_map = min_notional_map or {}
         min_qty_map = min_qty_map or {}
@@ -369,7 +384,15 @@ class FuturesRebalancer:
             ordermin = float(min_qty_map.get(asset, 0.0) or 0.0)
             ordermin_notional = ordermin * price if (price and ordermin > 0) else 0.0
             per_pair_min = max(costmin, ordermin_notional)
-            effective_min_notional = per_pair_min if per_pair_min > 0 else min_notional
+            if min_notional_configured is not None:
+                # Explicit operator floor — an ADDITIONAL floor, never bypassed.
+                effective_min_notional = max(min_notional_configured, per_pair_min)
+            elif per_pair_min > 0:
+                # No explicit floor: the venue's real per-pair minimum governs.
+                effective_min_notional = per_pair_min
+            else:
+                # No explicit floor and no per-pair snapshot: default backstop.
+                effective_min_notional = min_notional
 
             # A position-flattening order: the target is flat (weight 0) but we
             # still hold the asset. Exits must ALWAYS pass — a no-trade band
