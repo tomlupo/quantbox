@@ -73,8 +73,14 @@ class TokenPolicy:
         self._seen_tokens = self._load_seen_tokens()
 
     @classmethod
-    def from_config(cls, config_path: str) -> TokenPolicy:
-        """Load token policy from YAML config file."""
+    def from_config(cls, config_path: str, book_key: str | None = None) -> TokenPolicy:
+        """Load token policy from YAML config file.
+
+        ``book_key`` (threaded from the pipeline's run params) is authoritative
+        when supplied; otherwise it is derived from the config's ``notify.books``
+        (mirrors quantbox-live#32/#38). A standalone token-policy file usually has
+        no ``notify.books``, so the explicit arg is what namespaces that path.
+        """
         with open(config_path) as f:
             config = yaml.safe_load(f)
         policy_config = config.get("token_policy", {})
@@ -82,10 +88,17 @@ class TokenPolicy:
         legacy_state_file = data_dir / "seen_tokens.json"
         # Namespace seen-token state per book so a new listing in one book's
         # universe is not silently suppressed by another book that already saw
-        # it (obsidian issue quantbox#86). Falls back to the shared path for
-        # configs with no book declared (backtest/research).
-        book_key = _book_key_from_config(config)
-        state_file = data_dir / "seen_tokens" / f"{book_key}.json" if book_key else legacy_state_file
+        # it (issue quantbox#86). Falls back to the shared path for configs with
+        # no book declared and no explicit key (backtest/research).
+        resolved_key = book_key if book_key and book_key != "default" else _book_key_from_config(config)
+        if resolved_key:
+            from quantbox.reconciliation import safe_book_key
+
+            seen_dir = data_dir / "seen_tokens"
+            safe = safe_book_key(resolved_key, seen_dir)
+            state_file = seen_dir / f"{safe}.json"
+        else:
+            state_file = legacy_state_file
         return cls(
             mode=policy_config.get("mode", "allowlist"),
             allowed=policy_config.get("allowed", []),
@@ -97,15 +110,43 @@ class TokenPolicy:
         )
 
     @classmethod
-    def from_dict(cls, config: dict[str, Any]) -> TokenPolicy:
-        """Load token policy from config dictionary."""
+    def from_dict(
+        cls,
+        config: dict[str, Any],
+        book_key: str | None = None,
+        data_dir: Path | str | None = None,
+    ) -> TokenPolicy:
+        """Load token policy from config dictionary.
+
+        The inline-config path (used by the trading pipeline) has no YAML file to
+        anchor its seen-token store, so without ``book_key`` it previously fell
+        through to a single cwd-relative ``data/seen_tokens.json`` shared across
+        every book (issue #86, the worse of the two entry points). Passing
+        ``book_key`` namespaces the store per book: ``<data_dir>/seen_tokens/
+        <book_key>.json``. ``book_key`` is validated as a single safe path segment
+        (reusing the reconciliation ledger's ``safe_book_key`` — reject, not
+        silently sanitize) because it is config-controlled and names a path.
+        """
         policy_config = config.get("token_policy", {})
+        base_dir = Path(data_dir) if data_dir is not None else Path("data")
+        legacy_state_file = base_dir / "seen_tokens.json"
+        state_file: Path | None = None
+        legacy_for_migration: Path | None = None
+        if book_key:
+            from quantbox.reconciliation import safe_book_key
+
+            seen_dir = base_dir / "seen_tokens"
+            safe = safe_book_key(book_key, seen_dir)
+            state_file = seen_dir / f"{safe}.json"
+            legacy_for_migration = legacy_state_file if state_file != legacy_state_file else None
         return cls(
             mode=policy_config.get("mode", "allowlist"),
             allowed=policy_config.get("allowed", []),
             denied=policy_config.get("denied", []),
             alert_on_new=policy_config.get("alert_on_new", True),
             top_n_monitor=policy_config.get("top_n_monitor", 100),
+            state_file=state_file,
+            legacy_state_file=legacy_for_migration,
         )
 
     def _load_seen_tokens(self) -> set[str]:

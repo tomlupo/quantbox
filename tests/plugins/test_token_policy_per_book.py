@@ -7,6 +7,7 @@ universe is not silently suppressed by another book that already saw it.
 import json
 from pathlib import Path
 
+import pytest
 import yaml
 
 from quantbox.plugins.trading.token_policy import TokenPolicy, _book_key_from_config
@@ -67,3 +68,45 @@ def test_migration_seeds_from_legacy_shared_file(tmp_path):
     p = TokenPolicy.from_config(str(cfg))
     # First per-book run seeds from the legacy union → no whole-universe re-alert.
     assert p._seen_tokens == {"BTC", "ETH"}
+
+
+# --- from_dict path (the inline pipeline path; issue #86 "worse" entry point) ---
+
+
+def test_from_dict_namespaced_per_book(tmp_path):
+    cfg = {"token_policy": {"mode": "allowlist", "allowed": ["BTC"]}}
+    pa = TokenPolicy.from_dict(cfg, book_key="carver-HL", data_dir=tmp_path)
+    pb = TokenPolicy.from_dict(cfg, book_key="crypto-trend-kraken", data_dir=tmp_path)
+    assert pa.state_file != pb.state_file
+    assert pa.state_file.name == "carver-HL.json"
+    assert pb.state_file.name == "crypto-trend-kraken.json"
+
+
+def test_from_dict_two_books_do_not_share_seen_state(tmp_path):
+    cfg = {"token_policy": {"mode": "allowlist", "allowed": ["BTC"]}}
+    pa = TokenPolicy.from_dict(cfg, book_key="carver-HL", data_dir=tmp_path)
+    pa._seen_tokens = {"SOL"}
+    pa._save_seen_tokens()
+    # A token seen by book A must NOT suppress book B's alert for it.
+    pb = TokenPolicy.from_dict(cfg, book_key="crypto-trend-kraken", data_dir=tmp_path)
+    assert "SOL" not in pb._seen_tokens
+
+
+def test_from_dict_migration_seeds_from_legacy(tmp_path):
+    (tmp_path / "seen_tokens.json").write_text(json.dumps({"seen_tokens": ["BTC", "ETH"]}))
+    cfg = {"token_policy": {"mode": "allowlist", "allowed": ["BTC"]}}
+    p = TokenPolicy.from_dict(cfg, book_key="carver-HL", data_dir=tmp_path)
+    assert p._seen_tokens == {"BTC", "ETH"}
+
+
+@pytest.mark.parametrize("bad_key", ["../x", "a/b", "..", "a\\b"])
+def test_from_dict_rejects_unsafe_book_key(tmp_path, bad_key):
+    cfg = {"token_policy": {"mode": "allowlist", "allowed": ["BTC"]}}
+    with pytest.raises(ValueError):
+        TokenPolicy.from_dict(cfg, book_key=bad_key, data_dir=tmp_path)
+
+
+def test_from_config_rejects_unsafe_explicit_book_key(tmp_path):
+    cfg = _write_config(tmp_path, None)
+    with pytest.raises(ValueError):
+        TokenPolicy.from_config(str(cfg), book_key="../escape")
