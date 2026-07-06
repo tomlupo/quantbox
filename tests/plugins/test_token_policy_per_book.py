@@ -92,6 +92,15 @@ def test_from_dict_two_books_do_not_share_seen_state(tmp_path):
     assert "SOL" not in pb._seen_tokens
 
 
+def test_from_dict_default_sentinel_uses_shared_legacy_path(tmp_path):
+    # "default" is the pipeline's no-book fallback: it must behave like from_config
+    # (shared legacy path), NOT mint a spurious seen_tokens/default.json.
+    cfg = {"token_policy": {"mode": "allowlist", "allowed": ["BTC"]}}
+    p = TokenPolicy.from_dict(cfg, book_key="default", data_dir=tmp_path)
+    assert p.state_file == tmp_path / "seen_tokens.json"
+    assert p.legacy_state_file is None
+
+
 def test_from_dict_migration_seeds_from_legacy(tmp_path):
     (tmp_path / "seen_tokens.json").write_text(json.dumps({"seen_tokens": ["BTC", "ETH"]}))
     cfg = {"token_policy": {"mode": "allowlist", "allowed": ["BTC"]}}

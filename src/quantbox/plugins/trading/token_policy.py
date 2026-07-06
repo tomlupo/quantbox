@@ -125,14 +125,20 @@ class TokenPolicy:
         ``book_key`` namespaces the store per book: ``<data_dir>/seen_tokens/
         <book_key>.json``. ``book_key`` is validated as a single safe path segment
         (reusing the reconciliation ledger's ``safe_book_key`` — reject, not
-        silently sanitize) because it is config-controlled and names a path.
+        silently sanitize) because it is config-controlled and names a path. The
+        ``"default"`` sentinel (the pipeline's fallback when no ``book_key`` is
+        configured) is treated as *no book* — falling back to the shared legacy
+        path — so it matches ``from_config``'s handling instead of minting a
+        spurious ``seen_tokens/default.json`` (codex review, PR #99).
         """
         policy_config = config.get("token_policy", {})
         base_dir = Path(data_dir) if data_dir is not None else Path("data")
         legacy_state_file = base_dir / "seen_tokens.json"
-        state_file: Path | None = None
+        # Default: shared legacy path (anchored to data_dir, matching from_config's
+        # sentinel handling). A real book overrides it with a per-book path below.
+        state_file: Path = legacy_state_file
         legacy_for_migration: Path | None = None
-        if book_key:
+        if book_key and book_key != "default":
             from quantbox.reconciliation import safe_book_key
 
             seen_dir = base_dir / "seen_tokens"
