@@ -43,6 +43,31 @@ KIND_RESULT = "result"
 RESULT_STATUSES = frozenset({"filled", "partial", "rejected", "failed", "timeout", "skipped"})
 
 
+def safe_book_key(book_key: Any, root: str | os.PathLike[str]) -> str:
+    """Validate ``book_key`` as a single safe path segment under ``root``.
+
+    ``book_key`` is YAML/config-controlled and used as a directory/file-name
+    segment. It must NOT be able to escape ``root``. Reject anything that isn't a
+    single safe segment (path separators, ``".."``, or an absolute path) — fail
+    closed rather than silently writing outside ``root``. Returns the validated
+    key as a ``str``.
+    """
+    if not book_key:
+        raise ValueError("book_key is required")
+    bk = str(book_key)
+    if bk in (".", "..") or "/" in bk or "\\" in bk or os.sep in bk or (os.altsep and os.altsep in bk):
+        raise ValueError(
+            f"book_key must be a single safe path segment, got {bk!r} "
+            "(no path separators or '..' — it namespaces a path under root)"
+        )
+    # Defense in depth: the resolved dir must stay within root.
+    target = Path(root) / bk
+    root_resolved = Path(root).resolve()
+    if root_resolved not in target.resolve().parents and target.resolve() != root_resolved:
+        raise ValueError(f"book_key {bk!r} escapes the root {str(root)!r}")
+    return bk
+
+
 @dataclass
 class OrderFillLedger:
     """Append-only JSONL order/fill ledger for a single book.
@@ -70,20 +95,9 @@ class OrderFillLedger:
         if not self.book_key:
             raise ValueError("book_key is required for a per-book ledger")
         # book_key is YAML/config-controlled and used as a path segment, so it
-        # must NOT be able to escape ``root``. Reject anything that isn't a single
-        # safe segment (path separators, "..", or an absolute path) — fail closed
-        # rather than silently writing the ledger/state outside the recon root.
-        bk = str(self.book_key)
-        if bk in (".", "..") or "/" in bk or "\\" in bk or os.sep in bk or (os.altsep and os.altsep in bk):
-            raise ValueError(
-                f"book_key must be a single safe path segment, got {bk!r} "
-                "(no path separators or '..' — it namespaces a directory under root)"
-            )
+        # must NOT be able to escape ``root`` — validated by the shared helper.
+        bk = safe_book_key(self.book_key, self.root)
         book_dir = Path(self.root) / bk
-        # Defense in depth: the resolved dir must stay within root.
-        root_resolved = Path(self.root).resolve()
-        if root_resolved not in book_dir.resolve().parents and book_dir.resolve() != root_resolved:
-            raise ValueError(f"book_key {bk!r} escapes the reconciliation root {self.root!r}")
         book_dir.mkdir(parents=True, exist_ok=True)
         self.path = book_dir / "orders.jsonl"
         if self.clock is None:
