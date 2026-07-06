@@ -4,69 +4,6 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioned per [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-## [0.3.0] — 2026-06-02
-
-### Added
-- **`hyperliquid.data.cached.v1`** — incremental on-disk cache wrapping `hyperliquid.data.v1`. Stores prices/volume/funding as flat long-format parquet under `cache_dir` and fetches only the missing tail per coin (≤2 inner calls/run), cutting a warm Hyperliquid daily run from ~480 REST calls (~3 min, 429-prone) to ~100 (<1 min). Validated against the live API: ~6× fewer calls, exact value parity, no 429s. The stateless `hyperliquid.data.v1` is unchanged. Config: `data.name: hyperliquid.data.cached.v1` + `params_init: {cache_dir, overlap_days}`.
-
-## [0.2.5] — 2026-06-02
-
-### Fixed
-- **Hyperliquid broker — k-prefixed perps** (kPEPE, kBONK, kSHIB, kFLOKI, kLUNC, kNEIRO, kDOGS). ccxt uppercases the perp base, so Hyperliquid's `kPEPE` is keyed `KPEPE/USDC:USDC`, while the data layer uses the raw `info.name` (`kPEPE`). These markets previously failed price lookup (`Market not found`) and position reconciliation (`KPEPE` ≠ target `kPEPE`). The broker now indexes perps by canonical `info.name` at connect (`_coin_to_market` forward, `_base_to_coin` reverse) and resolves both directions. Normal symbols are unaffected.
-
-## [0.2.4] — 2026-06-02
-
-### Added
-- **`backtest.pipeline.v1` per-variant report layout** (version bumped to `0.2.0`). In variants flow, every variant now gets its own report section with metrics strip + framework charts (portfolio, monthly, contrib, weights, position_stack) instead of just the first ("primary") variant. New `variant_metrics: dict[str, dict]` key in `report_data.json`. Chart keys are namespaced as `<variant>__<chart_name>`. Single-strategy flow is unchanged.
-- **`DataPlugin` contract**: `"high"` and `"low"` (daily OHLC) and `"eligibility_mask"` (point-in-time universe gate) are now documented as recognised optional keys. The engine `setdefault`s them to empty DataFrames so strategies can `data.get(key)` safely. No change for plugins that don't emit them.
-
-### Changed
-- `_build_contrib_chart` and `_build_position_stack_chart` now return `None` for single-asset strategies (avoids 1-bar / 1-line charts that carry no information).
-- `_build_monthly_chart` row-height heuristic reduced from `80*rows + 120` to `32*rows + 120` (10-year heatmap is ~440px tall instead of 920px).
-
-### Packaging
-- Aligned version metadata: `pyproject.toml`, `src/quantbox/__init__.py` `__version__`, and the git tag now move together. Previously the tag advanced (v0.2.1–v0.2.3) while the in-code version stayed frozen at `0.2.0` / `0.1.0`, so installed package metadata always reported a stale version. The v0.2.1–v0.2.3 tags were release-only (no changelog) and are consolidated into this entry.
-- Adopted [commitizen](https://commitizen-tools.github.io/commitizen/) for releases (via `/ship`): future bumps rewrite every version string, update this changelog, and create the tag from Conventional Commits. **Do not `git tag` by hand anymore** — that is what caused the drift.
-
-## [0.2.0] — 2026-05-08
-
-### Added
-- **Plugin types**: `FeaturePlugin`, `ValidationPlugin`, `MonitorPlugin`, `DatasetPlugin` protocols; corresponding registry slots and entry-point groups (`quantbox.datasets`, `quantbox.capabilities`)
-- **Strategy**: `strategy.carry.v1` — funding-rate carry (Mode A)
-- **Features**: `features.technical.v1`, `features.cross_sectional.v1`
-- **Validation**: `validation.walk_forward.v1`, `validation.statistical.v1`, `validation.turnover.v1`, `validation.regime.v1`, `validation.benchmark.v1`
-- **Monitors**: `monitor.drawdown.v1`, `monitor.signal_decay.v1`
-- **Risk**: `risk.factor_exposure.v1`, `risk.drawdown_control.v1`
-- Capability checker registry with built-in checkers; `_dataset_block` and `_run_capability_checks` run helpers
-- `quantbox approve` CLI subcommand for the human approval gate
-- `quantbox warehouse` CLI subcommand (init, tables, query, describe, ingest, register-dataset)
-- `quantbox plugins doctor` health check for schemas, entry points, and config refs
-- Artifact schemas bundled as package data at `src/quantbox/artifact_schemas/` (accessed via `importlib.resources`)
-- Plugin manifest bundled at `src/quantbox/plugins/manifest.yaml` with `QUANTBOX_MANIFEST` env override
-- Custom exception hierarchy (`quantbox.exceptions`): `QuantboxError`, `ConfigValidationError`, `PluginNotFoundError`, `PluginLoadError`, `DataLoadError`, `BrokerExecutionError`
-- Ruff linting config + GitHub Actions CI (`ci.yml`)
-- `cookbook/` with `configs/` and `scripts/` (replaces separate `config/` and `examples/`)
-- `.env.example` template for environment variables
-- `binance.futures_data.v1` and `hyperliquid.data.v1` registered in manifest builtins (were implemented but unregistered)
-
-### Changed
-- Run manifest: `data.source_identity` replaced by typed `dataset` block
-- Flat `src/` layout replaces `packages/quantbox-core/` workspace structure
-- `runner.py` raises `ConfigValidationError` and `PluginNotFoundError` instead of bare `ValueError`/`KeyError`
-- `cli.py` raises `PluginNotFoundError` instead of `SystemExit` for missing plugins
-- Docs restructured: `guides/` merged into `playbooks/`, `adr/` renamed to `decisions/` (DEC-NNNN prefix), copy-paste templates moved to root `templates/`
-
-### Deprecated
-- `dataset_root` and `dataset` config params — use `dataset_id` instead
-
-### Fixed
-- `strategy.beglobal`: crash when prices index is non-unique
-- `local_file_data`: DuckDB timestamps normalized to UTC midnight
-- Configs: `data_dir` param replaced with explicit `*_path` params
-
-## [0.1.0] — 2026-02-07
 
 First tagged release. Core framework with full plugin architecture.
 
@@ -91,3 +28,214 @@ First tagged release. Core framework with full plugin architecture.
 [Unreleased]: https://github.com/tomlupo/quantbox/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
+
+## v0.3.13 (2026-07-06)
+
+## v0.3.12 (2026-07-03)
+
+### Feat
+
+- **safety**: shared with_retry helper; wrap broker load_markets on transient throttle (#95) (#96)
+- **safety**: submission-time intent capture + real Tom-gated recon enforcement (#90) (#92)
+
+### Fix
+
+- **safety**: no synthetic ledger on gated cycle; unique result-binding on failed intent (#90 follow-up) (#94)
+
+## v0.3.11 (2026-07-02)
+
+### Feat
+
+- **safety**: recon-break state machine + append-only order/fill ledger (observe-mode) (#87) (#88)
+
+### Fix
+
+- **safety**: close residual gaps in fill-status + freeze detection (#68 #81) (#91)
+
+## v0.3.10 (2026-07-01)
+
+### Fix
+
+- **safety**: broker fill-confirmation + freeze/quiet-day fail-safe + notify exception inputs (#68 #62 #81 #82) (#85)
+
+## v0.3.9 (2026-06-30)
+
+### Fix
+
+- **kraken**: dust liquidation + quiet-day classification + freeze-invariant hardening (#80)
+
+## v0.3.8 (2026-06-29)
+
+### Feat
+
+- **kraken**: opt-in fail-closed on degraded CMC mcap (require_genuine_mcap) (#79)
+- **kraken**: opt-in venue-liquidity Stage-2 screen (screen_volume_source) (#77)
+
+## v0.3.7 (2026-06-25)
+
+### Feat
+
+- **kraken**: spot DataPlugin + BrokerPlugin (ccxt) (#67)
+
+## v0.3.6 (2026-06-20)
+
+### Fix
+
+- **crypto_trend**: DuckDB universe NaN-mask leaked mcap-excluded coins into the book (#60)
+
+## v0.3.5 (2026-06-20)
+
+### Fix
+
+- **binance**: not_tradable opt-out at CMC candidate stage (quantlab parity) (#57)
+
+## v0.3.4 (2026-06-20)
+
+### Fix
+
+- **binance/crypto_trend**: CMC-mcap candidate universe + NaN-weight robustness (#56)
+
+## v0.3.3 (2026-06-20)
+
+### Fix
+
+- **binance**: rank tradable universe by volume not alphabetically (majors silently dropped) (#55)
+
+## v0.3.2 (2026-06-19)
+
+### Fix
+
+- **datasources**: mcap estimator never fabricates (drop uncovered) + complete stablecoin set (#54)
+- **broker**: reject non-finite persisted state on load (#53)
+
+## v0.3.1 (2026-06-19)
+
+### Feat
+
+- **datasources**: add CoinMarketCap market-cap rankings source (#52)
+- deploy quant subagent roster to .claude/agents/ (#50)
+- **claude**: agent-side git-workflow guard (rule + PreToolUse hook) (#48)
+- **crypto_trend**: allow regime_ticker=None to disable the donchian-overlay diagnostic (#46)
+- **carver**: carver_trend_proper.v1 sizing chain + fine-lot universe guard (default-off) (#40)
+- market-wide universe screen + mode-aware point-in-time sourcing (#37)
+- rebase integrations/rb onto main (tradfi features)
+
+### Fix
+
+- **rebalancer**: unfreeze stale-position exits + dead-man on suppressed rebalances (#51)
+- **rsims**: default margin to 0.0 — stop spurious liquidation breaking vol-invariance (#43)
+- **lint**: resolve ruff F401/F841/B007/B023 errors blocking main (#38)
+
+## v0.3.0 (2026-06-02)
+
+### Feat
+
+- **data**: add hyperliquid.data.cached.v1 incremental on-disk cache
+- **data**: register hyperliquid.data.cached.v1 in builtins
+- **data**: implement incremental load_market_data for cached HL plugin
+- **data**: scaffold hyperliquid.data.cached.v1 plugin + cache helpers
+
+## v0.2.5 (2026-06-02)
+
+### Fix
+
+- **broker**: resolve k-prefixed Hyperliquid perps via canonical symbol index
+
+## v0.2.4 (2026-06-02)
+
+## v0.2.3 (2026-05-21)
+
+### Feat
+
+- **report**: retrofit crypto_regime_trend diagnostics + generic primary-variant picker (#30)
+- **report**: reusable block registry + 3 generic blocks + cookbook (#28)
+
+### Fix
+
+- **orders**: round up to min_qty on full close-out positions
+- **broker**: propagate order failures to pipeline + add min_qty guard
+
+## v0.2.1 (2026-05-19)
+
+### Feat
+
+- **crypto_trend**: SSRN paper parity — strategy fixes + editorial report (#26)
+- **strategies**: inject _pipeline_annualize into 4 hardcoded-sqrt strategies (closes #23) (#25)
+- **frequency**: Frequency value object + pandas-market-calendars + pipeline injection (closes #20) (#21)
+- **strategies**: add frozen_weights plugin + flip cross_asset_momentum annualize default to 252 (#19)
+- **canonical**: end-to-end reproductions on bundled synthetic fixture (#17)
+- **strategies**: promote 3 lab-side strategies to quantbox core
+- **trend_catcher_simple**: close_on_regime_flip param
+- **strategies**: trend_catcher_simple plugin (Robuxio PDF rules)
+- **runner**: capture installed-package git SHAs in run_manifest.json
+- **cli**: quantbox sweep -c <yaml> command
+- **analysis**: run_grid orchestrator + parquet loader
+- **analysis**: parameter_grid sweep + heatmap helper
+- **strategies**: vol-matched buy-and-hold benchmark plugin
+- TrendCatcher v2 strategy support + universe-construction fixes
+- per-variant report layout + variants runtime support
+- template+JSON report architecture with vbt native figures
+- add weight heatmap and per-ticker contribution chart to HTML report
+- add summary.md + report.html output to every backtest run
+- add data frequency param and backtest warmup auto-derive
+- **datasources**: add normalize_data_frequency() utility to _utils
+- **skills**: add quantbox-core skill for v0.2.0
+- **core**: deprecate dataset_root/dataset params in favor of dataset_id
+- **core**: replace data.source_identity with typed dataset block in run_manifest.json
+- **core**: add _dataset_block and _run_capability_checks helpers
+- **core**: register quantbox.datasets and quantbox.capabilities entry-point groups
+- **core**: add built-in capability checkers
+- **core**: add capability checker registry
+- **core**: add DatasetPlugin protocol and DatasetManifest/CoverageReport dataclasses
+- enrich run manifest evidence
+
+### Fix
+
+- **ci**: lint + agnostic-quantbox test consequences
+- resolve ruff lint errors for CI
+- **strategy**: make beglobal robust to non-unique prices index
+- **configs**: replace nonexistent data_dir param with explicit *_path params
+
+### Refactor
+
+- drop hardcoded ticker fallback in _universe.py — quantbox stays agnostic
+- binance_data / binance_futures_data consume canonical DEFAULT_STABLECOINS
+- trend_catcher into core + DEFAULT_STABLECOINS from quantbox-datasets YAML
+- merge guides/ into playbooks/, drop guides/ folder
+- move doc templates to root templates/, delete methodology/datasets/runbooks from docs/
+- flatten packages/quantbox-core/ to standard src/ layout
+- dissolve scripts/ — promote approve, move live scripts out, delete dead code
+- consolidate config/ and examples/ into cookbook/
+- merge recipes/ into docs/playbooks/
+- replace contracts/ with schemas/README.md
+- rename configs/ → config/, remove stale account config dir
+- remove legacy quantlab subtree and clarify adapter policy
+
+## v0.2.0 (2026-02-13)
+
+### Feat
+
+- **carry**: complete strategy.carry.v1 — params_schema, tests, builtins registration
+- **carry**: add strategy.carry.v1 — funding-rate carry Mode A
+- add validation and monitor plugin support to runner
+- register feature plugins in builtins
+- register new risk plugins and update manifest
+- add risk.drawdown_control.v1 plugin
+- add risk.factor_exposure.v1 plugin
+- register monitor plugins in builtins registry
+- add monitor.signal_decay.v1 plugin
+- add monitor.drawdown.v1 plugin
+- add features.cross_sectional.v1 plugin
+- add features.technical.v1 plugin
+- extend PluginRegistry with feature, validation, monitor types
+- add FeaturePlugin, ValidationPlugin, MonitorPlugin protocols
+
+### Fix
+
+- **silent-failures**: surface execution failures through Telegram and logs
+- **broker/futures_paper**: reject NaN prices in place_orders
+- **local_file_data**: normalize DuckDB timestamps to UTC midnight
+
+## v0.1.1 (2026-02-13)
+
+## v0.1.0 (2026-02-07)
