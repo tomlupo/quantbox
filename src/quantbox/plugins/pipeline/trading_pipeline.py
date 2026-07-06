@@ -356,8 +356,11 @@ class TradingPipeline:
         prices_params = {**params.get("prices", {"lookback_days": 365}), "mode": mode}
         universe = data.load_universe(universe_params)
 
-        # Token policy filtering (universe scope)
-        token_policy = self._load_token_policy(universe_params)
+        # Token policy filtering (universe scope). Derive book_key the same way
+        # the reconciliation block does (line ~2034) so the seen-token store is
+        # namespaced per book (issue #86).
+        book_key = str(params.get("book_key") or "default")
+        token_policy = self._load_token_policy(universe_params, book_key)
         token_policy_notes: dict[str, Any] = {}
         if token_policy:
             all_symbols = universe["symbol"].tolist()
@@ -2692,11 +2695,14 @@ class TradingPipeline:
     # ==================================================================
     # Token policy helpers
     # ==================================================================
-    def _load_token_policy(self, universe_params: dict[str, Any]):
+    def _load_token_policy(self, universe_params: dict[str, Any], book_key: str = "default"):
         """Create TokenPolicy from universe params or config file.
 
-        Returns ``None`` when no token-policy configuration is present
-        (backward-compatible).
+        ``book_key`` namespaces the seen-token store per book (issue #86). The
+        inline (``from_dict``) path has no YAML anchor, so passing ``book_key``
+        here is what keeps its seen-token set per-book instead of a shared
+        cwd-relative default. Returns ``None`` when no token-policy configuration
+        is present (backward-compatible).
         """
         from quantbox.plugins.trading.token_policy import TokenPolicy
 
@@ -2704,9 +2710,9 @@ class TradingPipeline:
         tp_file = universe_params.get("token_policy_file")
 
         if tp_cfg:
-            return TokenPolicy.from_dict({"token_policy": tp_cfg})
+            return TokenPolicy.from_dict({"token_policy": tp_cfg}, book_key=book_key)
         elif tp_file:
-            return TokenPolicy.from_config(tp_file)
+            return TokenPolicy.from_config(tp_file, book_key=book_key)
         return None
 
     def _detect_new_tokens(self, policy, universe: pd.DataFrame) -> list:

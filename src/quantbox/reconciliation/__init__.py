@@ -22,6 +22,7 @@ from quantbox.reconciliation.ledger import (
     KIND_RESULT,
     RESULT_STATUSES,
     OrderFillLedger,
+    safe_book_key,
 )
 from quantbox.reconciliation.state_machine import (
     BookTolerances,
@@ -47,4 +48,5 @@ __all__ = [
     "ReconciliationStateMachine",
     "classify_breaks",
     "preflight_gate",
+    "safe_book_key",
 ]

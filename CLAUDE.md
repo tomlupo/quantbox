@@ -189,6 +189,17 @@ Quantbox uses custom exceptions (see `quantbox.exceptions`):
 |---|---|---|
 | quantbox (this) | Library | `dev` for development, `main` for releases |
 | quantbox-live | Production trading | Pins to tags on `main` (e.g. `@v0.1.0`) |
-| quantbox-lab | Research/backtesting | Tracks `@dev` branch |
+| quantbox-lab | Research/backtesting | Pins `quantbox@main` (no `dev` branch) |
 
-Develop on `dev` → merge to `main` → tag → bump quantbox-live.
+### Shipping cycle (two-stage PR, mirrors dm-evo)
+
+1. **Feature work → PR to `dev`** (`gh pr create --base dev`). CI tests + the
+   independent-reviewer gate run on `dev` PRs (both wired in `.github/workflows`).
+   Merge feature PRs into `dev`, never straight to `main`.
+2. **Release → PR `dev` → `main`** (`--base main --head dev`), then cut an
+   annotated tag `vX.Y.Z` on `main`, then bump the `quantbox @ …@vX.Y.Z` pin in
+   `quantbox-live/pyproject.toml` and redeploy (the `sudo -u prod` step).
+
+`main` is release-only; `dev` is the integration branch. Do NOT PR features to
+`main` (the drift we corrected 2026-07-06 — dev had gone stale while everything
+landed on main). `quantbox-lab` pins `quantbox@main`; `quantbox-live` pins a `main` tag.
