@@ -10,13 +10,23 @@ it is positioned when it is not.
 This module centralises the classification used by the Kraken and Hyperliquid
 brokers. The philosophy mirrors the rebalancer dead-man: only report a fill we
 can affirmatively see; never assume ``requested == filled``; and when a result
-is ambiguous, do one follow-up fetch and otherwise **fail safe to not-filled**
-(a false FAILED triggers an alert and a re-attempt next cycle — the safe
-direction — whereas a false FILLED is a silent loss).
+is non-terminal — ambiguous OR accepted-but-still-settling — do a bounded
+confirmation re-poll and otherwise **fail safe to not-filled** (a false FAILED
+triggers an alert and a re-attempt next cycle — the safe direction — whereas a
+false FILLED is a silent loss).
+
+Kraken spot settles a marketable order *asynchronously*: ``create_order``
+returns ``status='open', filled=0`` and the fill lands milliseconds later.
+Classifying that first snapshot as a terminal miss (the pre-#97 behaviour)
+mis-reported real fills as FAILED, poisoning fill accounting and firing false
+alerts. So an ``open``/zero-fill order is FILL_PENDING (re-polled with a short
+wait), distinct from a terminal FILL_UNFILLED (a dead/rejected order, reported
+FAILED with no wait).
 """
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -25,8 +35,16 @@ from typing import Any
 # ---------------------------------------------------------------------------
 FILL_FILLED = "FILLED"
 FILL_PARTIAL = "PARTIAL"
-FILL_UNFILLED = "UNFILLED"
+FILL_UNFILLED = "UNFILLED"  # terminal not-filled (dead/closed-with-zero) — a real miss
+FILL_PENDING = "PENDING"  # accepted + still working (open, filled=0) — async-settling, re-poll
 FILL_UNKNOWN = "UNKNOWN"  # no evidence either way — caller should re-fetch
+
+# Bounded confirmation wait for an async-settling order (Kraken spot settles a
+# marketable order milliseconds after create_order returns status='open',
+# filled=0 — issue #97). resolve_fill re-polls up to this many times, sleeping
+# between polls, before falling back to a fail-safe FAILED.
+_CONFIRM_ATTEMPTS = 3
+_CONFIRM_DELAY_S = 0.5
 
 # ccxt unified order statuses.
 _CLOSED = "closed"  # fully filled / no longer working
@@ -113,10 +131,19 @@ def classify_fill(order: dict | None, requested_qty: float) -> tuple[str, float,
         return FILL_UNFILLED, 0.0, price
 
     if status in _DEAD:
+        # Terminal reject/cancel/expiry. A dead order will NEVER fill — it stays
+        # FILL_UNFILLED so resolve_fill reports FAILED with no re-poll wait. This
+        # is the guard that keeps a genuine reject reporting failed.
         return (FILL_PARTIAL, filled, price) if has_fill else (FILL_UNFILLED, 0.0, price)
 
     if status == _OPEN:
-        return (FILL_PARTIAL, filled, price) if has_fill else (FILL_UNFILLED, 0.0, price)
+        # An accepted order still working the book. With a fill it's a PARTIAL;
+        # with ZERO fill it is NOT a failure — Kraken spot returns status='open',
+        # filled=0 for a marketable order that settles async milliseconds later
+        # (issue #97). Report FILL_PENDING so resolve_fill does a bounded
+        # confirmation re-poll before declaring FAILED, instead of the old
+        # zero-wait FILL_UNFILLED that mis-reported real fills as failures.
+        return (FILL_PARTIAL, filled, price) if has_fill else (FILL_PENDING, 0.0, price)
 
     # Status missing / unrecognised: decide on the numeric fill evidence.
     if filled is not None:
@@ -141,26 +168,43 @@ def resolve_fill(
     requested_qty: float,
     *,
     refetch: Callable[[], dict | None] | None = None,
+    confirm_attempts: int = _CONFIRM_ATTEMPTS,
+    confirm_delay: float = _CONFIRM_DELAY_S,
 ) -> tuple[str, float, float, str]:
     """Resolve an order into an *emitted* ``(status, qty, price, reason)`` row.
 
     ``status`` is one of ``"FILLED"`` / ``"PARTIAL"`` / ``"FAILED"`` — the
     vocabulary the pipeline understands. When the first classification is
-    ambiguous (FILL_UNKNOWN) and a ``refetch`` callable is supplied, the order
-    is re-read once; if it is *still* unconfirmable, the result fails safe to
-    ``"FAILED"`` (never an unconfirmed FILLED).
+    non-terminal — either ambiguous (FILL_UNKNOWN) or accepted-but-still-settling
+    (FILL_PENDING) — and a ``refetch`` callable is supplied, the order is re-read
+    (bounded ``confirm_attempts`` re-polls, sleeping ``confirm_delay`` s between
+    polls for a PENDING order so Kraken's async settlement can land — issue #97).
+    A terminal reject classifies as FILL_UNFILLED, never FILL_PENDING, so it is
+    NOT re-polled and reports FAILED immediately. If the order is *still*
+    unconfirmed after the wait, the result fails safe to ``"FAILED"`` (never an
+    unconfirmed FILLED).
     """
     verdict, filled_qty, price = classify_fill(order, requested_qty)
 
-    if verdict == FILL_UNKNOWN and refetch is not None:
-        try:
-            refetched = refetch()
-        except Exception:  # noqa: BLE001 - never let confirmation crash execution
-            refetched = None
-        if refetched:
-            v2, q2, p2 = classify_fill(refetched, requested_qty)
-            if v2 != FILL_UNKNOWN:
-                verdict, filled_qty, price = v2, q2, p2
+    # Non-terminal (unknown or async-settling) + we can re-read the venue:
+    # bounded confirmation poll. Re-classification is driven purely by the
+    # venue's actual reported state, so a real reject can never be masked into a
+    # fill — it simply re-reads as dead/unfilled and still reports FAILED.
+    if verdict in (FILL_UNKNOWN, FILL_PENDING) and refetch is not None:
+        for _ in range(max(1, confirm_attempts)):
+            # Give async settlement time BEFORE re-reading a still-working order.
+            # (UNKNOWN is a parse-ambiguity, not a settlement delay — don't sleep.)
+            if verdict == FILL_PENDING and confirm_delay > 0:
+                time.sleep(confirm_delay)
+            try:
+                refetched = refetch()
+            except Exception:  # noqa: BLE001 - never let confirmation crash execution
+                refetched = None
+            if not refetched:
+                break  # can't confirm — keep current verdict, fail safe below
+            verdict, filled_qty, price = classify_fill(refetched, requested_qty)
+            if verdict not in (FILL_UNKNOWN, FILL_PENDING):
+                break  # reached a terminal state (filled / partial / dead)
 
     if verdict == FILL_FILLED:
         return "FILLED", filled_qty, price, ""
