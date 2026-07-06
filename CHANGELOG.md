@@ -29,6 +29,12 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.3.15 (2026-07-06)
+
+### Fix
+
+- **rebalancing**: per-pair Kraken min-notional (`max(costmin, ordermin*price)`) so a small live book whose $4-8 rebalance deltas clear the venue's real per-pair floors is no longer frozen by the flat $10 default; an explicitly-configured `min_notional` is honored as an ADDITIONAL floor, never bypassed (#105) (#106)
+
 ## v0.3.14 (2026-07-06)
 
 ### Fix
