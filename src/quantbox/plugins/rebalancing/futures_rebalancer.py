@@ -180,8 +180,15 @@ class FuturesRebalancer:
         all_symbols = sorted(set(list(weights.keys()) + list(current_holdings.keys())))
         all_symbols = [s for s in all_symbols if s not in exclusions]
 
-        # Fetch prices
+        # Fetch prices + per-pair exchange minimums. The broker snapshot carries
+        # the venue's REAL per-symbol floors (Kraken: costmin via limits.cost.min,
+        # base-unit ordermin via limits.amount.min). Capturing them here is what
+        # lets a small book (e.g. the $278 Kraken-USD book) trade $4-8 deltas that
+        # a flat $10 min_notional would freeze — while still respecting each
+        # pair's true ordermin so ADA/DOGE-style sub-base-unit orders stay gated.
         price_map: dict[str, float | None] = {}
+        min_notional_map: dict[str, float] = {}
+        min_qty_map: dict[str, float] = {}
         if all_symbols:
             try:
                 snap = broker.get_market_snapshot(all_symbols)
@@ -191,6 +198,12 @@ class FuturesRebalancer:
                         mid = row.get("mid")
                         if mid is not None and not (isinstance(mid, float) and np.isnan(mid)):
                             price_map[sym] = float(mid)
+                        mn = row.get("min_notional")
+                        if mn is not None and not _is_nan(float(mn)) and float(mn) > 0:
+                            min_notional_map[sym] = float(mn)
+                        mq = row.get("min_qty")
+                        if mq is not None and not _is_nan(float(mq)) and float(mq) > 0:
+                            min_qty_map[sym] = float(mq)
             except Exception:
                 pass
 
@@ -225,6 +238,8 @@ class FuturesRebalancer:
             rebalancing_df=rebalancing_df,
             min_trade_size=min_trade_size,
             min_notional=min_notional,
+            min_notional_map=min_notional_map,
+            min_qty_map=min_qty_map,
         )
 
         return {
@@ -293,12 +308,31 @@ class FuturesRebalancer:
         rebalancing_df: pd.DataFrame,
         min_trade_size: float,
         min_notional: float = 10.0,
+        min_notional_map: dict[str, float] | None = None,
+        min_qty_map: dict[str, float] | None = None,
     ) -> pd.DataFrame:
         """Convert rebalancing to executable orders.
 
         For futures, no lot-size or step-size adjustments — the broker handles
         exchange-specific formatting. Symbols are base asset names.
+
+        Per-pair minimums (``min_notional_map`` / ``min_qty_map``, from the broker
+        snapshot) take precedence over the flat ``min_notional`` config value. The
+        true binding floor for a pair is ``max(costmin, ordermin * price)``:
+
+          * ``costmin`` = the venue's quote-notional minimum (Kraken limits.cost.min,
+            ~$0.50 for USD pairs),
+          * ``ordermin`` = the venue's base-unit minimum (Kraken limits.amount.min);
+            ``ordermin * price`` is its notional equivalent.
+
+        The flat ``min_notional`` config value is kept only as a SAFETY BACKSTOP:
+        it applies when no per-pair floor is available (empty snapshot / offline
+        broker), never as an additional floor on top of a known per-pair minimum.
+        This is what unfreezes a small book whose $4-8 deltas clear the real
+        per-pair floors but were suppressed by the flat $10 default.
         """
+        min_notional_map = min_notional_map or {}
+        min_qty_map = min_qty_map or {}
         if rebalancing_df.empty:
             return pd.DataFrame(
                 columns=[
@@ -327,6 +361,15 @@ class FuturesRebalancer:
             reason = None
             adjusted_qty = abs(delta_qty)
             notional_value = adjusted_qty * price if price else 0.0
+
+            # Resolve the binding per-pair minimums. Prefer the venue's real
+            # floors from the snapshot; fall back to the flat config min_notional
+            # only when no per-pair floor is known for this symbol.
+            costmin = float(min_notional_map.get(asset, 0.0) or 0.0)
+            ordermin = float(min_qty_map.get(asset, 0.0) or 0.0)
+            ordermin_notional = ordermin * price if (price and ordermin > 0) else 0.0
+            per_pair_min = max(costmin, ordermin_notional)
+            effective_min_notional = per_pair_min if per_pair_min > 0 else min_notional
 
             # A position-flattening order: the target is flat (weight 0) but we
             # still hold the asset. Exits must ALWAYS pass — a no-trade band
@@ -365,14 +408,28 @@ class FuturesRebalancer:
                 status = "Zero price"
                 reason = "No price available"
                 adjusted_qty = 0.0
-            elif notional_value < min_notional and not is_closing:
+            elif notional_value < effective_min_notional and not is_closing:
                 status = "Below min notional"
-                reason = f"Notional {notional_value:.2f} < {min_notional:.2f}"
+                reason = f"Notional {notional_value:.2f} < {effective_min_notional:.2f}"
                 adjusted_qty = 0.0
-                logger.debug("Skipping %s %s: notional $%.2f < $%.2f", action, asset, notional_value, min_notional)
+                logger.debug(
+                    "Skipping %s %s: notional $%.2f < $%.2f (per-pair min)",
+                    action,
+                    asset,
+                    notional_value,
+                    effective_min_notional,
+                )
+            elif ordermin > 0 and adjusted_qty < ordermin and not is_closing:
+                # Base-unit floor: even if the notional clears, an order below the
+                # venue's ordermin (e.g. ADA/DOGE sub-base-unit size) is rejected
+                # by the exchange. Suppress it cleanly rather than send-and-reject.
+                status = "Below min qty"
+                reason = f"Qty {adjusted_qty:.8f} < min_qty {ordermin:.8f}"
+                logger.debug("Skipping %s %s: qty %.8f < ordermin %.8f", action, asset, adjusted_qty, ordermin)
+                adjusted_qty = 0.0
             else:
                 status = "To be placed"
-                if is_closing and notional_value < min_notional:
+                if is_closing and notional_value < effective_min_notional:
                     reason = "Closing position (min-notional exempt)"
                 else:
                     reason = ""
