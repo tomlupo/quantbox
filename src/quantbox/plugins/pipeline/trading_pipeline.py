@@ -104,12 +104,24 @@ def _atomic_write_text(path: Any, text: str) -> None:
 
 
 # Ledger result status mapped from an execution ``orders_details`` row status.
+# The map normalises each broker's fill-status vocabulary to the ledger's
+# canonical set (see ``reconciliation.ledger.RESULT_STATUSES``). CANCELED /
+# CANCELLED / EXPIRED / TIMEOUT are terminal NON-fills that a live venue can
+# emit (ccxt unified statuses); they are mapped explicitly so an unexpected
+# status is classified as a non-fill for the failure/missed-fill streak
+# (trading_pipeline streak else-branch) rather than passed through as an
+# "unknown status" the ledger warns on. Anything still unmapped falls through
+# to a lowercased passthrough, which the streak logic also treats as a non-fill.
 _EXEC_STATUS_TO_LEDGER = {
     "FILLED": "filled",
     "PARTIAL": "partial",
     "FAILED": "failed",
     "SKIPPED": "skipped",
     "REJECTED": "rejected",
+    "CANCELED": "failed",
+    "CANCELLED": "failed",
+    "EXPIRED": "failed",
+    "TIMEOUT": "timeout",
 }
 
 
