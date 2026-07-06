@@ -29,6 +29,16 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.3.14 (2026-07-06)
+
+### Fix
+
+- **token_policy**: namespace seen_tokens state per book so a new listing in one book's universe is not silently suppressed by another book (alert-only; no trade impact) (#86) (#99)
+
+### Chore
+
+- **ci**: gate dev PRs + document the two-stage dev→main shipping cycle (#100) (#101)
+
 ## v0.3.13 (2026-07-06)
 
 ## v0.3.12 (2026-07-03)
