@@ -1,0 +1,50 @@
+name: version-guard
+
+# Fails a release tag whose declared version strings don't match the tag.
+#
+# Root cause this guards against (quantbox #62 fallout, 2026-07): releases were
+# cut by hand (`git tag vX.Y.Z` on a feature commit) instead of via the `ship`
+# / `cz bump` flow, so `pyproject.toml:version` and `src/quantbox/__init__.py`
+# were never advanced. Result: tag v0.3.12 shipped a package that self-reported
+# 0.3.11 / 0.3.9 — `pip show quantbox` no longer told you what was deployed.
+#
+# This job runs on every pushed `v*` tag and asserts the two version_files
+# (the same ones commitizen owns) equal the tag. A hand-tag mistake now turns
+# into a red check instead of silent provenance drift.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  version-matches-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Assert declared versions match the tag
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          echo "Release tag version: $tag"
+
+          fail=0
+          check() {
+            local label="$1" got="$2"
+            if [ "$got" != "$tag" ]; then
+              echo "::error::$label is '$got' but the tag is 'v$tag' — release via 'cz bump' (the ship skill), never a hand 'git tag'."
+              fail=1
+            else
+              echo "OK: $label = $got"
+            fi
+          }
+
+          pyproject_v=$(grep -m1 -E '^version = ' pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          cz_v=$(awk '/^\[tool\.commitizen\]/{f=1} f&&/^version = /{split($0,a,"\"");print a[2];exit}' pyproject.toml)
+          init_v=$(grep -m1 -E '^__version__' src/quantbox/__init__.py | sed -E 's/.*"([^"]+)".*/\1/')
+
+          check "pyproject [project].version" "$pyproject_v"
+          check "pyproject [tool.commitizen].version" "$cz_v"
+          check "src/quantbox/__init__.py __version__" "$init_v"
+
+          exit $fail
