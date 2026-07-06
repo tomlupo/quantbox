@@ -66,9 +66,22 @@ def test_open_with_partial_fill_is_partial():
     assert qty == 0.4
 
 
-def test_open_with_zero_fill_is_unfilled():
+def test_open_with_zero_fill_is_pending_not_unfilled():
+    # Issue #97: Kraken spot returns status='open', filled=0 for a marketable
+    # order that settles async. That is NOT a terminal miss — it is PENDING, so
+    # resolve_fill re-polls before declaring FAILED (see resolve_fill tests).
     verdict, qty, _ = classify_fill({"status": "open", "filled": 0.0}, 1.0)
-    assert verdict == _fills.FILL_UNFILLED
+    assert verdict == _fills.FILL_PENDING
+    assert qty == 0.0
+
+
+def test_dead_zero_fill_is_terminal_unfilled_not_pending():
+    # The guard that keeps a genuine reject reporting FAILED: a dead order is
+    # NEVER pending — no re-poll wait, straight to terminal UNFILLED.
+    for status in ("rejected", "canceled", "cancelled", "expired"):
+        verdict, qty, _ = classify_fill({"status": status, "filled": 0.0}, 1.0)
+        assert verdict == _fills.FILL_UNFILLED, status
+        assert qty == 0.0
 
 
 def test_rejected_and_canceled_are_unfilled():
@@ -148,6 +161,113 @@ def test_resolve_partial_reports_real_qty():
     assert status == "PARTIAL"
     assert qty == 0.3
     assert "partial" in reason.lower()
+
+
+# ---------------------------------------------------------------------------
+# Issue #97: async-settling re-poll — an accepted 'open'/filled=0 order must be
+# re-polled (bounded wait) and NOT declared FAILED at zero confirmation.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_pending_settles_to_filled_via_repoll():
+    # The exact live landmine: create_order returns open/filled=0, the fill lands
+    # a moment later. The bounded re-poll must confirm it FILLED, not FAILED.
+    settled = {"status": "closed", "filled": 1.0, "average": 100.0}
+    status, qty, price, reason = resolve_fill(
+        {"id": "x", "status": "open", "filled": 0.0},
+        1.0,
+        refetch=lambda: settled,
+        confirm_delay=0,
+    )
+    assert status == "FILLED"
+    assert qty == 1.0
+    assert price == 100.0
+    assert reason == ""
+
+
+def test_resolve_pending_settles_to_partial_via_repoll():
+    partial = {"status": "closed", "filled": 0.4, "average": 100.0}
+    status, qty, _, reason = resolve_fill(
+        {"id": "x", "status": "open", "filled": 0.0},
+        1.0,
+        refetch=lambda: partial,
+        confirm_delay=0,
+    )
+    assert status == "PARTIAL"
+    assert qty == 0.4
+    assert "partial" in reason.lower()
+
+
+def test_resolve_pending_that_never_fills_fails_safe():
+    # Re-polled but the venue keeps reporting open/filled=0: after the bounded
+    # wait it must fail safe to FAILED (never an unconfirmed FILLED). This is the
+    # reconciliation-safe direction — next cycle re-attempts if truly missed.
+    status, qty, _, reason = resolve_fill(
+        {"id": "x", "status": "open", "filled": 0.0},
+        1.0,
+        refetch=lambda: {"id": "x", "status": "open", "filled": 0.0},
+        confirm_delay=0,
+    )
+    assert status == "FAILED"
+    assert qty == 0.0
+    assert "not confirmed" in reason
+
+
+def test_resolve_reject_still_reports_failed_no_repoll():
+    # A genuine reject must STILL report FAILED. A dead order classifies as
+    # terminal FILL_UNFILLED (not PENDING), so refetch is never even called — the
+    # reclassification path can't mask a real reject into a fill.
+    calls = {"n": 0}
+
+    def _refetch():
+        calls["n"] += 1
+        return {"status": "closed", "filled": 1.0}  # would be a fill IF polled
+
+    status, qty, _, _ = resolve_fill(
+        {"id": "x", "status": "rejected"},
+        1.0,
+        refetch=_refetch,
+        confirm_delay=0,
+    )
+    assert status == "FAILED"
+    assert qty == 0.0
+    assert calls["n"] == 0  # a terminal reject is not re-polled
+
+
+def test_resolve_pending_repoll_to_dead_reports_failed():
+    # Order accepted open/filled=0, then the venue cancels/rejects it. The re-poll
+    # reads the real dead state and correctly reports FAILED — reclassification
+    # tracks the venue, so a fill that later dies is not falsely reported filled.
+    status, qty, _, _ = resolve_fill(
+        {"id": "x", "status": "open", "filled": 0.0},
+        1.0,
+        refetch=lambda: {"id": "x", "status": "canceled", "filled": 0.0},
+        confirm_delay=0,
+    )
+    assert status == "FAILED"
+    assert qty == 0.0
+
+
+def test_resolve_fully_filled_first_snapshot_is_executed_no_repoll():
+    # A first snapshot that already shows a full fill is FILLED immediately — no
+    # re-poll needed (regression guard that the happy path is untouched).
+    calls = {"n": 0}
+
+    def _refetch():
+        calls["n"] += 1
+        return None
+
+    status, qty, price, reason = resolve_fill(
+        {"id": "x", "status": "closed", "filled": 1.0, "average": 100.0},
+        1.0,
+        refetch=_refetch,
+        confirm_delay=0,
+    )
+    assert status == "FILLED"
+    assert qty == 1.0
+    assert price == 100.0
+    assert reason == ""
+    assert calls["n"] == 0
 
 
 # ---------------------------------------------------------------------------
