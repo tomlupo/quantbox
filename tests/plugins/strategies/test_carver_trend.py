@@ -188,6 +188,23 @@ def test_sizing_normalizes_by_active_count_not_full_universe():
     assert gross_fixed / gross_full == pytest.approx(40.0 / 8.0, rel=1e-6)
 
 
+def test_sizing_zero_active_dates_are_flat_not_nan():
+    """Dates with zero active instruments size to flat (0), not NaN (#114 review)."""
+    prices = _synthetic_prices(n_periods=400, n_assets=10, seed=5)
+    forecasts = pd.DataFrame(10.0, index=prices.index, columns=prices.columns)
+    vol = calculate_instrument_risk(prices, vol_lookback=36, annualize=365.0)
+    active = pd.Series(4.0, index=prices.index)
+    active.iloc[:50] = 0.0  # early window: nothing eligible
+
+    pos = calculate_position_sizes(forecasts, vol, target_vol=0.5, idm=1.0, active_count=active)
+    # Zero-active rows are exactly flat (no NaN leaking through the mask multiply).
+    zero_block = pos.iloc[:50]
+    assert (zero_block.fillna(0.0) == 0.0).all().all()
+    assert not zero_block.isna().any().any()
+    # Active rows still deploy.
+    assert pos.iloc[-1].abs().sum() > 0
+
+
 def test_universe_selection_deploys_expected_gross():
     """End-to-end: with use_universe_selection the book is NOT diluted by the full universe.
 

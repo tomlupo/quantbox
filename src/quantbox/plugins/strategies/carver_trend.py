@@ -405,8 +405,14 @@ def calculate_position_sizes(
     # Position = forecast × vol_scalar × IDM / N_active. Divide by the per-date
     # active universe count so masked positions aren't diluted by the full universe.
     if active_count is not None:
-        denom = active_count.reindex(forecasts.index).replace(0, np.nan)
-        positions = normalized_forecast.mul(vol_scalar).mul(idm).div(denom, axis=0)
+        denom = active_count.reindex(forecasts.index)
+        positions = normalized_forecast.mul(vol_scalar).mul(idm).div(denom.replace(0, np.nan), axis=0)
+        # Zero-active-universe dates (nothing eligible to hold) → flat, not NaN.
+        # Without this, dividing by NaN yields NaN weights and the later mask
+        # multiply (NaN × 0) keeps them NaN instead of collapsing to 0.
+        zero_rows = denom.fillna(0.0) <= 0
+        if zero_rows.any():
+            positions.loc[zero_rows] = 0.0
     else:
         positions = normalized_forecast * vol_scalar * idm / n_instruments
 
