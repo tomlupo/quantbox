@@ -45,7 +45,10 @@ plugins:
       - strategy.altcoin_crash_bounce.v62
       - strategy.beglobal.v1
       - strategy.crypto_trend.v1
-      - strategy.carver_trend.v1
+      # strategy.carver_trend.v1 — DEPRECATED 2026-07-09 (obsidian-vaults#114:
+      # ~12x under-deployment); superseded by strategy.carver_trend.v2. Still
+      # registered in builtins.py for historical reproducibility, but removed
+      # from the active manifest so new profiles don't select it.
       - strategy.carver_trend.v2
       - strategy.momentum_long_short.v1
       - strategy.cross_asset_momentum.v1
