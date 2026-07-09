@@ -10,6 +10,8 @@ from quantbox.plugins.strategies.carver_trend import (
     BOLLINGER_WINDOWS,
     CarverTrendStrategy,
     bollinger_forecast,
+    calculate_instrument_risk,
+    calculate_position_sizes,
     generate_carver_forecast,
 )
 
@@ -159,3 +161,59 @@ def test_strategy_default_bollinger_windows():
     """Bollinger windows default to module BOLLINGER_WINDOWS constant."""
     strat = CarverTrendStrategy()
     assert strat.bollinger_windows == BOLLINGER_WINDOWS
+
+
+# --- Issue #114: active-universe sizing denominator ---
+
+
+def test_sizing_normalizes_by_active_count_not_full_universe():
+    """calculate_position_sizes divides by the active count, not the full column count.
+
+    Regression for #114: with a wide universe masked to a small active subset,
+    dividing by the full N under-deploys by full_N / active_N. Passing
+    active_count restores the intended gross.
+    """
+    prices = _synthetic_prices(n_periods=400, n_assets=40, seed=1)
+    forecasts = pd.DataFrame(10.0, index=prices.index, columns=prices.columns)  # constant, mature
+    vol = calculate_instrument_risk(prices, vol_lookback=36, annualize=365.0)
+
+    full = calculate_position_sizes(forecasts, vol, target_vol=0.5, idm=1.0)
+    active = pd.Series(8.0, index=prices.index)  # only 8 held per date
+    fixed = calculate_position_sizes(forecasts, vol, target_vol=0.5, idm=1.0, active_count=active)
+
+    last = -1
+    gross_full = full.iloc[last].abs().sum()
+    gross_fixed = fixed.iloc[last].abs().sum()
+    # 40/8 = 5x more deployed per instrument once normalized by the active count.
+    assert gross_fixed / gross_full == pytest.approx(40.0 / 8.0, rel=1e-6)
+
+
+def test_universe_selection_deploys_expected_gross():
+    """End-to-end: with use_universe_selection the book is NOT diluted by the full universe.
+
+    A 30-asset universe masked to top-8 by volume should deploy gross on the order
+    of the active book, not ~30/8x smaller (the #114 bug).
+    """
+    prices = _synthetic_prices(n_periods=400, n_assets=30, seed=3)
+    volume = pd.DataFrame(1e9, index=prices.index, columns=prices.columns)
+    # Give a deterministic volume ranking so the top-8 screen is well-defined.
+    for i, col in enumerate(prices.columns):
+        volume[col] = 1e9 * (len(prices.columns) - i)
+    data = {"prices": prices, "volume": volume, "market_cap": pd.DataFrame()}
+
+    strat = CarverTrendStrategy(
+        target_vol=0.5,
+        use_universe_selection=True,
+        top_by_volume=8,
+        top_by_mcap=30,
+        max_gross=5.0,  # loose cap so the sizing (not the clamp) drives gross
+        idm=1.0,
+    )
+    result = strat.run(data)
+    weights = result["weights"]
+    active_cols = (weights.iloc[-1].abs() > 1e-9).sum()
+    # Only the active subset is held...
+    assert active_cols <= 8
+    # ...and the realized gross is meaningfully above the diluted (÷30) level.
+    gross = weights.iloc[-1].abs().sum()
+    assert gross > 0.10

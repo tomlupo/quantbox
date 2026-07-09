@@ -351,11 +351,22 @@ def calculate_position_sizes(
     target_vol: float = 0.25,
     forecast_cap: float = 20.0,
     idm: float | None = None,
+    active_count: pd.Series | None = None,
 ) -> pd.DataFrame:
     """
     Calculate position sizes using Carver's formula.
 
     Position = (forecast / forecast_cap) × (target_vol / instrument_vol) × IDM / N
+
+    ``N`` is the number of instruments the capital is spread across. When a
+    time-varying universe mask is in play (``use_universe_selection``), only a
+    subset is actually held on any given date, so ``N`` must be the per-date
+    **active** count — not the full column count. Dividing by the full universe
+    while masking to the active subset after sizing under-deploys capital by
+    ``full_N / active_N`` (issue #114: ~12× on a 96-coin universe masked to 8),
+    so the book never approaches its vol target. Pass ``active_count`` (a per-date
+    Series) to normalise by the active universe; omit it to fall back to the full
+    column count (correct when every instrument is traded).
 
     Args:
         forecasts: Forecast DataFrame (each column = instrument)
@@ -363,6 +374,8 @@ def calculate_position_sizes(
         target_vol: Target portfolio volatility
         forecast_cap: Maximum forecast (for scaling)
         idm: Instrument Diversification Multiplier (default: auto-calculate)
+        active_count: Optional per-date count of active (in-universe) instruments
+            used as the sizing denominator. Falls back to the full column count.
 
     Returns:
         Position sizes as portfolio weights
@@ -370,9 +383,18 @@ def calculate_position_sizes(
     n_instruments = len(forecasts.columns)
 
     # Auto-calculate IDM if not provided
-    # Carver's rule of thumb: IDM ≈ sqrt(N) for uncorrelated, ~1.5 for correlated
+    # Carver's rule of thumb: IDM ≈ sqrt(N) for uncorrelated, ~1.5 for correlated.
+    # Use the active count when available so IDM reflects the held book, not the
+    # full (mostly-masked-out) universe.
     if idm is None:
-        idm = min(np.sqrt(n_instruments), 2.5)
+        n_for_idm = (
+            float(active_count.replace(0, np.nan).mean())
+            if active_count is not None and active_count.notna().any()
+            else n_instruments
+        )
+        if not np.isfinite(n_for_idm) or n_for_idm < 1:
+            n_for_idm = n_instruments
+        idm = min(np.sqrt(n_for_idm), 2.5)
 
     # Normalize forecast to [-1, +1] scale
     normalized_forecast = forecasts / forecast_cap
@@ -380,8 +402,13 @@ def calculate_position_sizes(
     # Volatility scalar per instrument
     vol_scalar = target_vol / volatilities.replace(0, np.nan)
 
-    # Position = forecast × vol_scalar × IDM / N
-    positions = normalized_forecast * vol_scalar * idm / n_instruments
+    # Position = forecast × vol_scalar × IDM / N_active. Divide by the per-date
+    # active universe count so masked positions aren't diluted by the full universe.
+    if active_count is not None:
+        denom = active_count.reindex(forecasts.index).replace(0, np.nan)
+        positions = normalized_forecast.mul(vol_scalar).mul(idm).div(denom, axis=0)
+    else:
+        positions = normalized_forecast * vol_scalar * idm / n_instruments
 
     return positions
 
@@ -653,30 +680,44 @@ class CarverTrendStrategy:
         # 2. Calculate instrument volatilities
         volatilities = calculate_instrument_risk(prices, self.vol_lookback, effective_annualize)
 
+        # 2b. Per-date active universe count — the sizing denominator. When a
+        #     universe mask is active, capital is spread only across the masked-in
+        #     instruments, so N must be the active count (not the full universe);
+        #     otherwise weights are diluted by full_N / active_N (issue #114).
+        active_count: pd.Series | None = None
+        if universe_mask_ts is not None:
+            mask_ts = universe_mask_ts.reindex(index=forecasts_df.index, columns=forecasts_df.columns).fillna(0.0)
+            active_count = mask_ts.sum(axis=1)
+
         # 3. Calculate position sizes
         positions = calculate_position_sizes(
             forecasts_df,
             volatilities,
             target_vol=self.target_vol,
             idm=self.idm,
+            active_count=active_count,
         )
 
         # 4. Apply shorts restriction if needed
         if not self.allow_shorts:
             positions = positions.clip(lower=0)
 
-        # 5. Apply position limits
+        # 4b. Apply the time-varying universe mask BEFORE the gross cap: zero
+        #     positions for coins that are not in the top-N at each date (no
+        #     look-ahead bias). Masking first ensures the gross-exposure cap in
+        #     step 5 budgets only the held book — otherwise out-of-universe names
+        #     consume gross that later disappears when zeroed, under-scaling the
+        #     positions actually traded (matches carver_trend.v2 ordering; #114).
+        if universe_mask_ts is not None:
+            mask = universe_mask_ts.reindex(index=positions.index, columns=positions.columns).fillna(0.0)
+            positions = positions * mask
+
+        # 5. Apply position limits (per-instrument clip + gross cap on the held book)
         positions = apply_position_limits(
             positions,
             max_position=self.max_position,
             max_gross=self.max_gross,
         )
-
-        # 5b. Apply time-varying universe mask: zero positions for coins that
-        #     are not in the top-N at each date (no look-ahead bias).
-        if universe_mask_ts is not None:
-            mask = universe_mask_ts.reindex(index=positions.index, columns=positions.columns).fillna(0.0)
-            positions = positions * mask
 
         # 6. Calculate exposure
         latest = positions.iloc[-1].dropna()
