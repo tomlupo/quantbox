@@ -1,8 +1,15 @@
-"""Statistical validation plugin.
+"""Bootstrap Sharpe significance validation plugin.
 
-Applies deflated Sharpe ratio analysis, bootstrap confidence intervals, and
-multiple-testing haircut to assess whether observed performance is statistically
-significant or likely a false positive.
+Tests whether an observed Sharpe ratio is distinguishable from a zero-mean null
+via Monte-Carlo simulation, reports a bootstrap confidence interval, and applies
+a linear multiple-testing haircut.
+
+This is **not** the Bailey & Lopez de Prado (2014) analytic Deflated Sharpe
+Ratio (DSR) — it does not use the skewness/kurtosis-adjusted probabilistic
+Sharpe ratio formula, and its multiple-testing adjustment is a flat 2%-per-
+trial haircut rather than the expected-maximum-Sharpe-under-N-trials
+correction. For the literal BLP DSR, see `validation.deflated_sharpe_blp.v1`
+(`quantbox.plugins.validation.deflated_sharpe_blp.DeflatedSharpeBLPValidation`).
 """
 
 from __future__ import annotations
@@ -31,13 +38,15 @@ class StatisticalValidation:
     meta = PluginMeta(
         name="validation.statistical.v1",
         kind="validation",
-        version="0.1.0",
+        version="0.2.0",
         core_compat=">=0.1,<0.2",
         description=(
-            "Statistical validation: deflated Sharpe ratio, bootstrap confidence "
-            "intervals, and multiple-testing haircut for observed Sharpe."
+            "Bootstrap Sharpe significance test: Monte-Carlo null-distribution test for "
+            "Sharpe > 0, bootstrap confidence intervals, and a flat multiple-testing "
+            "haircut. NOT the Bailey-Lopez de Prado analytic Deflated Sharpe Ratio -- "
+            "see validation.deflated_sharpe_blp.v1 for that."
         ),
-        tags=("validation", "statistics", "sharpe"),
+        tags=("validation", "statistics", "sharpe", "bootstrap"),
     )
 
     def validate(
@@ -59,18 +68,21 @@ class StatisticalValidation:
 
         observed_sharpe = _annualized_sharpe(rets, trading_days)
 
-        # Deflated Sharpe: simulate null distribution of Sharpe ratios
+        # Bootstrap null-distribution test: simulate n_trials zero-mean series at the
+        # observed series' own volatility, and see how often their Sharpe reaches the
+        # observed Sharpe by chance alone.
         rng = np.random.default_rng(42)
         null_sharpes = np.array(
             [_annualized_sharpe(rng.normal(0, np.std(rets, ddof=1), size=n), trading_days) for _ in range(n_trials)]
         )
         pct_exceeding = float(np.mean(null_sharpes >= observed_sharpe))
-        # Deflated Sharpe: observed if it passes the significance test,
-        # otherwise scaled by how far it is into the null distribution
+        # Sharpe adjusted for null-test significance: observed if it clears the
+        # confidence threshold, otherwise scaled down by how deep into the null
+        # distribution it falls. This is a heuristic scaling, not an analytic deflation.
         if pct_exceeding <= (1 - confidence):
-            deflated_sharpe = observed_sharpe
+            bootstrap_adjusted_sharpe = observed_sharpe
         else:
-            deflated_sharpe = observed_sharpe * (1 - pct_exceeding)
+            bootstrap_adjusted_sharpe = observed_sharpe * (1 - pct_exceeding)
 
         # Bootstrap CI
         bootstrap_sharpes = np.empty(n_bootstrap)
@@ -82,19 +94,21 @@ class StatisticalValidation:
         ci_lower = float(np.percentile(bootstrap_sharpes, alpha / 2 * 100))
         ci_upper = float(np.percentile(bootstrap_sharpes, (1 - alpha / 2) * 100))
 
-        # Haircut Sharpe for multiple testing
+        # Flat multiple-testing haircut: 2% of observed Sharpe per strategy tested.
+        # This is a crude linear heuristic, not the BLP expected-max-Sharpe-under-N
+        # correction (see validation.deflated_sharpe_blp.v1 for that).
         penalty = n_strategies_tested * 0.02
         haircut_sharpe = observed_sharpe * max(0.0, 1.0 - penalty)
 
         findings: list[dict[str, Any]] = []
 
-        if deflated_sharpe <= 0:
+        if bootstrap_adjusted_sharpe <= 0:
             findings.append(
                 {
                     "level": "warn",
-                    "rule": "deflated_sharpe_not_significant",
+                    "rule": "bootstrap_adjusted_sharpe_not_significant",
                     "detail": (
-                        f"Deflated Sharpe ({deflated_sharpe:.4f}) is not positive, "
+                        f"Bootstrap-adjusted Sharpe ({bootstrap_adjusted_sharpe:.4f}) is not positive, "
                         f"suggesting observed Sharpe ({observed_sharpe:.4f}) may be a false positive."
                     ),
                 }
@@ -115,7 +129,7 @@ class StatisticalValidation:
             "findings": findings,
             "metrics": {
                 "observed_sharpe": observed_sharpe,
-                "deflated_sharpe": deflated_sharpe,
+                "bootstrap_adjusted_sharpe": bootstrap_adjusted_sharpe,
                 "sharpe_ci_lower": ci_lower,
                 "sharpe_ci_upper": ci_upper,
                 "haircut_sharpe": haircut_sharpe,

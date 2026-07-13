@@ -1,6 +1,6 @@
 """Tests for validation plugin discovery.
 
-Verifies all 5 validation plugins are registered and discoverable
+Verifies all 6 validation plugins are registered and discoverable
 through the PluginRegistry.
 """
 
@@ -11,6 +11,7 @@ from quantbox.registry import PluginRegistry
 EXPECTED_VALIDATION_PLUGINS = [
     "validation.walk_forward.v1",
     "validation.statistical.v1",
+    "validation.deflated_sharpe_blp.v1",
     "validation.turnover.v1",
     "validation.regime.v1",
     "validation.benchmark.v1",

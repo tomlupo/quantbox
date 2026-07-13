@@ -59,6 +59,7 @@ from .strategies import (
 from .strategies.weighted_avg_aggregator import WeightedAverageAggregator
 from .validation import (
     BenchmarkValidation,
+    DeflatedSharpeBLPValidation,
     RegimeValidation,
     StatisticalValidation,
     TurnoverValidation,
@@ -126,6 +127,7 @@ def builtins() -> dict[str, dict[str, type]]:
         "validation": _map(
             WalkForwardValidation,
             StatisticalValidation,
+            DeflatedSharpeBLPValidation,
             TurnoverValidation,
             RegimeValidation,
             BenchmarkValidation,
