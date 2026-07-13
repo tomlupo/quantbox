@@ -174,6 +174,59 @@ def _get_lot_size_and_min_notional(
     return min_qty, step_size, min_notional
 
 
+def _expand_price_fetch_universe(
+    universe: pd.DataFrame,
+    broker: Any,
+    mode: str,
+    log: logging.Logger | None = None,
+) -> pd.DataFrame:
+    """Union today's screened ``universe`` with current broker holdings.
+
+    ``universe`` is only the NEW, freshly-screened universe for this run. A
+    symbol the book still HOLDS can rotate out of it on any given day. If the
+    strategy/rebalance price-fetch (``DataPlugin.load_market_data``) only
+    covers the screened universe, that held symbol never gets a price: the
+    paper/live broker's market snapshot built from that data comes back with
+    no quote for it, the rebalancer reads the missing quote as NaN, and the
+    (correct) exit order for that symbol is skipped. If enough held symbols
+    rotate out this way, EVERY order gets suppressed and the book freezes on
+    stale positions (quantbox#120). This mirrors the holdings ∪ universe
+    pattern already used by quantbox-live's ``dump_kraken_prices.py``.
+
+    Returns a new DataFrame (or ``universe`` unchanged if there is nothing to
+    add) — never mutates the input. Callers should keep using the ORIGINAL
+    ``universe`` for eligibility/weights/store, so this cannot change strategy
+    sizing or signal logic — it only widens what gets a price fetched.
+    """
+    if broker is None or mode not in ("paper", "live") or not hasattr(broker, "get_positions"):
+        return universe
+    try:
+        positions_df = broker.get_positions()
+    except Exception:
+        return universe
+    if positions_df is None or positions_df.empty or "symbol" not in positions_df.columns:
+        return universe
+
+    held_symbols = {str(s) for s in positions_df["symbol"].tolist() if s}
+    existing = set(universe["symbol"].astype(str)) if not universe.empty and "symbol" in universe.columns else set()
+    missing = held_symbols - existing
+    if not missing:
+        return universe
+
+    extra_rows = pd.DataFrame({"symbol": sorted(missing)})
+    for col in universe.columns:
+        if col != "symbol":
+            extra_rows[col] = pd.NA
+    expanded = pd.concat([universe, extra_rows[universe.columns]], ignore_index=True)
+    if log is not None:
+        log.info(
+            "Price-fetch universe expanded with %d held-but-rotated-out symbol(s) so exit orders get a real price: %s",
+            len(missing),
+            sorted(missing),
+        )
+    return expanded
+
+
 def _compute_data_age(prices: pd.DataFrame, asof: str) -> tuple[float | None, float | None]:
     """Return ``(data_age_seconds, bar_interval_seconds)`` for a wide price frame.
 
@@ -406,7 +459,14 @@ class TradingPipeline:
                 token_policy.mode,
             )
 
-        market_data_dict = data.load_market_data(universe, asof, prices_params)
+        # Widen the PRICE-FETCH universe (not the strategy-facing `universe`) to
+        # also cover current broker holdings — see `_expand_price_fetch_universe`
+        # for why (quantbox#120). Only `fetch_universe` is widened; `universe`
+        # (used for eligibility/weights/store below) is untouched, so this
+        # cannot change strategy sizing or signal logic.
+        fetch_universe = _expand_price_fetch_universe(universe, broker, mode, logger)
+
+        market_data_dict = data.load_market_data(fetch_universe, asof, prices_params)
         store.put_parquet("universe", universe)
         # Store prices as wide-format parquet
         prices_wide = market_data_dict.get("prices", pd.DataFrame())
