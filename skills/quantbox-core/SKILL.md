@@ -336,12 +336,12 @@ Profiles are presets — set `profile: research` and only override what differs.
 | Brokers | 8 | `binance.futures.v1`, `binance.live.v1`, `binance.paper.stub.v1`, `hyperliquid.perps.v1`, `ibkr.live.v1`, `ibkr.paper.stub.v1`, `sim.futures_paper.v1`, `sim.paper.v1` |
 | Risk | 4 | `risk.drawdown_control.v1`, `risk.factor_exposure.v1`, `risk.stress_test.v1`, `risk.trading_basic.v1` |
 | Features | 2 | `features.cross_sectional.v1`, `features.technical.v1` |
-| Validation | 5 | `validation.benchmark.v1`, `validation.regime.v1`, `validation.statistical.v1`, `validation.turnover.v1`, `validation.walk_forward.v1` |
+| Validation | 6 | `validation.benchmark.v1`, `validation.deflated_sharpe_blp.v1`, `validation.regime.v1`, `validation.statistical.v1`, `validation.turnover.v1`, `validation.walk_forward.v1` |
 | Monitors | 2 | `monitor.drawdown.v1`, `monitor.signal_decay.v1` |
 | Rebalancing | 2 | `rebalancing.futures.v1`, `rebalancing.standard.v1` |
 | Publishers | 1 | `telegram.publisher.v1` |
 
-**Total: 43 built-in plugins.**
+**Total: 44 built-in plugins.**
 
 ---
 

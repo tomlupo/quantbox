@@ -1,7 +1,7 @@
 """Tests for StatisticalValidation plugin (validation.statistical.v1).
 
-Covers deflated Sharpe, bootstrap CI, haircut Sharpe, and plugin metadata.
-Self-contained -- no conftest.py required.
+Covers the bootstrap-adjusted Sharpe significance test, bootstrap CI, haircut
+Sharpe, and plugin metadata. Self-contained -- no conftest.py required.
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ class TestStatisticalValidation:
         result = plugin.validate(returns, self._empty_weights(), None, {})
 
         metrics = result["metrics"]
-        assert "deflated_sharpe" in metrics
+        assert "bootstrap_adjusted_sharpe" in metrics
         assert "sharpe_ci_lower" in metrics
         assert "sharpe_ci_upper" in metrics
         assert "haircut_sharpe" in metrics
@@ -120,5 +120,5 @@ class TestStatisticalValidation:
 
         assert meta.name == "validation.statistical.v1"
         assert meta.kind == "validation"
-        assert meta.version == "0.1.0"
+        assert meta.version == "0.2.0"
         assert "validation" in meta.tags
