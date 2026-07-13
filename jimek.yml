@@ -1,0 +1,145 @@
+# jimek.yml — dispatch + workflow-policy contract for THIS repo (quantbox).
+#
+# Per-repo instantiation of the JimekContract schema (Jimek Wave 1c fan-out,
+# epic tomlupo/obsidian-vaults#155), modeled verbatim on the APPROVED reference
+# template merged to dispatcher master (dispatcher repo-root jimek.yml, PR #76).
+#
+# It codifies quantbox's CURRENT workflow policy — ADDITIVE, describing today's
+# behavior, NOT a behavior change. quantbox is a LIVE-CAPITAL repo: the library
+# feeds quantbox-live production trading, so the rigor engine already forces
+# complex + a Tom gate on live-capital changes; this file only records
+# base/rigor/PR-flow so the dispatch + workflow-policy engine reads them from a
+# committed contract instead of inferring.
+#
+# Schema + field reference: dispatcher docs/jimek-contract.md. Loaded and
+# fail-closed validated by dispatcher.jimek.load_contract; every model is
+# extra="forbid" + strict=True, so an unknown key / wrong type is a hard
+# JimekError and the repo then has NO contract in effect (dispatch refuses
+# rather than defaulting).
+
+version: 1
+
+# ── Board state machine ──────────────────────────────────────────────────────
+# quantbox tracks tasks in GitHub Issues (## Task source: github — Never
+# Paperclip). Generic dispatchable vs. terminal Status values.
+board_states:
+  active:   [Todo, In Progress, Human Review, Merging]
+  terminal: [Done, Blocked]
+
+# ── Concurrency caps ─────────────────────────────────────────────────────────
+# Runs on core (4-core box) — keep the global session cap low. One merge in
+# flight at a time so ff-only / dev-integration refreshes never race.
+concurrency:
+  max_concurrent: 3
+  by_state:
+    Merging: 1              # key must be declared in board_states.active above
+
+# ── Rigor tiers ──────────────────────────────────────────────────────────────
+# Tier names are the convention the rigor classifier + enforcement engine
+# expect (trivial / standard / complex). quantbox's live policy: ALL feature
+# work goes through a PR to `dev` (never straight to a branch, never to main),
+# so EVERY change uses path: pr — even the trivial tier (it just skips the
+# mandatory review gate), matching the reference template.
+rigor:
+  trivial:                  # tiny docs/config nudge — PR, but no required review
+    path: pr
+    review: []
+    reviewers_min: 0
+  standard:                 # the DEFAULT quantbox flow: coder-pr → codex → independent reviewer
+    path: pr
+    review: [codex]
+    reviewers_min: 1
+  complex:                  # risky/architectural or live-capital — adds an independent Claude session review
+    path: pr
+    review: [codex, independent-session]
+    reviewers_min: 1
+
+# ── Worktree mechanism (REFERENCE only) ──────────────────────────────────────
+# Jimek does not reimplement worktrees; qute-essentials owns the mechanics.
+# This block only records which mechanism writers isolate with.
+worktree:
+  mechanism: qute-essentials
+  skill: qute-essentials:worktrees
+
+# ── Run limits ───────────────────────────────────────────────────────────────
+turns:
+  max: 20                   # max agent turns per run
+  stall_timeout_ms: 600000  # 10 min with no telemetry → stalled
+
+# ── Auto-classification signals (consumed by the rigor classifier) ───────────
+# Shape-validated here; the classifier reads these to bucket a change into a
+# rigor tier. quantbox's risky surfaces are the money-touching plugin
+# families — broker (paper + live execution), risk (pre-trade validation),
+# rebalancing (weights → orders) — plus the runner/registry core and the
+# artifact store.
+classify:
+  trivial_globs: ["**/*.md", "docs/**", "**/CHANGELOG*"]
+  complex_globs:
+    - "src/quantbox/plugins/broker/**"
+    - "src/quantbox/plugins/risk/**"
+    - "src/quantbox/plugins/rebalancing/**"
+    - "src/quantbox/runner.py"
+    - "src/quantbox/registry.py"
+    - "src/quantbox/store.py"
+  trivial_max_lines: 15
+
+# ── Wave 1a workflow-policy fields (obsidian-vaults#162) ─────────────────────
+# All ADDITIVE + OPTIONAL; every value below reproduces today's quantbox
+# behavior. camelCase names per the frozen #155 manifest.
+
+baseBranch: dev             # single PR base + worktree fork point — feature work
+                            # PRs to `dev`; `main` is release-only (two-stage cycle).
+
+# Bot-app identity — author != reviewer holds BY CONSTRUCTION, so the
+# require-independent-reviewer gate passes without any human step. Live App ids.
+prIdentity:
+  coderAppId: 4172326       # qute-coder[bot]  — opens PRs via ~/bin/coder-pr
+  reviewAppId: 4172333      # qute-review[bot] — posts the independent verdict (must differ)
+  ghAppsDir: "$GHAPPS"
+
+# Shape of the open → review → assign chain. quantbox: agents NEVER self-merge
+# — the PR is assigned to Tom, who approves and merges. Independent review is
+# required and enforced by the review-gate CI on `dev` PRs.
+prFlow:
+  assignTo: tomlupo
+  reviewRequestFrom: tomlupo
+  allowAgentSelfMerge: false
+  independentReview: true
+  enforce: true
+
+# Cross-model review TUNING (the *how*). The review GATE — whether a tier needs
+# review at all — stays in rigor.<tier>.review above; this only tunes the
+# reviewer. mode: auto resolves to the dispatcher /review path on core and the
+# local gh-apps path elsewhere. riskyPaths mirror complex_globs so the reviewer
+# leans harder on the money-touching broker/risk/rebalancing surfaces.
+reviewEngine:
+  engine: codex
+  confidenceThreshold: 0.0
+  multiRun: 1
+  riskyPaths:
+    - "src/quantbox/plugins/broker/**"
+    - "src/quantbox/plugins/risk/**"
+    - "src/quantbox/plugins/rebalancing/**"
+  mode: auto
+  dispatcherUrl: ""
+  verdictPrefix: ""
+
+# Enumerated Blocked / ask-Tom triggers. live_capital is LIVE here — quantbox
+# feeds quantbox-live production trading, so a change touching the execution
+# path escalates to Tom. irreversible_op (destructive ops) and design_fork
+# (an architecture decision needing Tom) complete the canonical set.
+escalation:
+  block_on: [live_capital, irreversible_op, design_fork]
+
+taskThreshold: 12           # TASKS.md → GitHub Issues graduation threshold
+
+# Ship-verb release namespace. quantbox cuts annotated vX.Y.Z tags on `main`
+# (release-only branch); forbiddenPaths guards against committing skill
+# artifacts (none tracked here today).
+release:
+  branch: main
+  tagPattern: "v*"
+  forbiddenPaths: []
+
+adrDir: docs/decisions       # decision-verb ADRs land here (DEC-NNNN-*.md)
+adrTemplate: ""              # '' = built-in template

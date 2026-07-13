@@ -43,6 +43,7 @@ print(result['simple_weights'])
 from __future__ import annotations
 
 import logging
+import warnings
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -423,6 +424,17 @@ class CarverTrendStrategy:
     """
     Carver-Style Trend Following Strategy.
 
+    .. deprecated::
+        ``strategy.carver_trend.v1`` is DEPRECATED as of 2026-07-09 and is
+        removed from the active plugin manifest. It sizes positions by the full
+        universe column count rather than the per-date active count, causing a
+        ~12x under-deployment (obsidian-vaults#114). Do NOT use it for new
+        research or any paper/live book. The canonical successor is
+        **``strategy.carver_trend.v2``** (:class:`CarverTrendV2Strategy`), which
+        the live carver-HL book already runs. The code is retained only for
+        historical backtest reproducibility and still emits a
+        ``DeprecationWarning`` on instantiation.
+
     Systematic trend-following with:
     - Multiple EWMAC (moving average crossover) rules
     - Breakout rules
@@ -444,7 +456,7 @@ class CarverTrendStrategy:
         version="0.2.0",
         core_compat=">=0.1,<0.2",
         status="research",  # v0.2 methodology in DRAFT; flip via /promote-lock once validated
-        description="Carver-style trend following with EWMAC, breakout, and optional Bollinger rules.",
+        description="DEPRECATED (use strategy.carver_trend.v2) — Carver-style trend following with EWMAC, breakout, and optional Bollinger rules.",
         tags=("crypto", "trend", "carver"),
         capabilities=("backtest", "paper", "live"),
         outputs=("strategy_weights",),
@@ -521,6 +533,16 @@ class CarverTrendStrategy:
     # Output
     output_periods: int = 30
     exclude_tickers: list[str] = field(default_factory=lambda: DEFAULT_STABLECOINS.copy())
+
+    def __post_init__(self) -> None:
+        warnings.warn(
+            "strategy.carver_trend.v1 is DEPRECATED (obsidian-vaults#114: "
+            "~12x under-deployment from full-universe sizing) and removed from "
+            "the active manifest. Use strategy.carver_trend.v2 instead. This "
+            "plugin is retained only for historical backtest reproducibility.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     def describe(self) -> dict[str, Any]:
         """Describe strategy for LLM introspection."""

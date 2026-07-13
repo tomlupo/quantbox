@@ -343,11 +343,13 @@ class KrakenBroker:
     # ------------------------------------------------------------------
 
     def _refetch_order(self, order: dict, symbol: str) -> dict | None:
-        """Re-read an order from Kraken to confirm its fill (issue #68).
+        """Re-read an order from Kraken to confirm its fill (issues #68, #97).
 
-        Called only when the initial order result is too ambiguous to classify
-        (no status and no ``filled`` field). Read-only; any failure returns None
-        so the caller fails safe to not-filled.
+        Called by ``resolve_fill`` when the initial result is non-terminal —
+        either too ambiguous to classify (no status and no ``filled`` field) or
+        accepted-but-still-settling (``status='open', filled=0``, Kraken's async
+        settlement). Read-only; any failure returns None so the caller fails safe
+        to not-filled.
         """
         order_id = order.get("id")
         ms = self._market_symbol(symbol)
