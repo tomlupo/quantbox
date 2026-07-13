@@ -327,6 +327,20 @@ def run(
     print("PIPELINE:", result.pipeline_name)
     print("METRICS:", result.metrics)
 
+    # Dead-man detection (quantbox#120): a rebalancer freeze (every intended
+    # order suppressed, book stuck on stale positions) previously exited 0 --
+    # the run "succeeded" while silently not trading. `rebalance_frozen` is
+    # already computed by trading_pipeline.py; the missing piece was the CLI
+    # never acting on it. Fail the job so cron/CI surfaces it instead of
+    # swallowing it.
+    if result.metrics.get("rebalance_frozen"):
+        print(
+            "REBALANCER FROZEN: all intended orders were suppressed this run "
+            "-- portfolio not rebalanced, holding stale positions. "
+            "See run notes['freeze_reasons'] for detail."
+        )
+        raise SystemExit(1)
+
 
 @app.command()
 def sweep(
