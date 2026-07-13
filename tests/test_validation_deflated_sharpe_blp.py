@@ -74,9 +74,7 @@ class TestDeflatedSharpeBLPValidation:
 
     def test_trial_sharpes_mode_used_when_supplied(self, plugin: DeflatedSharpeBLPValidation) -> None:
         returns = self._make_returns()
-        result = plugin.validate(
-            returns, self._empty_weights(), None, {"trial_sharpes": [0.3, 0.5, 0.6, 0.55, 0.58]}
-        )
+        result = plugin.validate(returns, self._empty_weights(), None, {"trial_sharpes": [0.3, 0.5, 0.6, 0.55, 0.58]})
         assert result["metrics"]["sigma_sr_source"] == "trial_sharpes"
         assert result["metrics"]["n_trials"] == 5
 
@@ -121,7 +119,13 @@ class TestDeflatedSharpeBLPValidation:
         rets = rets * (target_sharpe / actual_sr)
         returns = pd.DataFrame({"returns": rets}, index=pd.date_range("2017-08-17", periods=n, freq="D"))
 
-        trial_sharpes = [0.6919138246717664, 0.7070977107825139, 0.7220134158888037, 0.7214006140958918, 0.7210332073938897]
+        trial_sharpes = [
+            0.6919138246717664,
+            0.7070977107825139,
+            0.7220134158888037,
+            0.7214006140958918,
+            0.7210332073938897,
+        ]
         result = plugin.validate(returns, self._empty_weights(), None, {"trial_sharpes": trial_sharpes})
         metrics = result["metrics"]
         assert metrics["sigma_sr_source"] == "trial_sharpes"
