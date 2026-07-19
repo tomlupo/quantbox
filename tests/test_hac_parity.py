@@ -140,9 +140,7 @@ def test_correction_delta_equals_sqrt_n_over_n_minus_k_mean():
     r, _, _ = _make_data()
     n = r.size
     lags = newey_west_auto_lags(n)
-    corrected = sm.OLS(r, np.ones((n, 1))).fit(
-        cov_type="HAC", cov_kwds={"maxlags": lags, "use_correction": True}
-    )
+    corrected = sm.OLS(r, np.ones((n, 1))).fit(cov_type="HAC", cov_kwds={"maxlags": lags, "use_correction": True})
     fw = newey_west_tstat(r, lags=lags)
     se_ratio = float(corrected.bse[0]) / fw["nw_se"]
     assert se_ratio == pytest.approx(math.sqrt(n / (n - 1)), rel=1e-9)
