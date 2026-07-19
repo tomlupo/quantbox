@@ -17,6 +17,7 @@ dependencies = [
   "vectorbt>=1.0.0",
   "numba>=0.66.0",
   "pandas-market-calendars>=5.4.0",
+  "statsmodels>=0.14",
 ]
 
 [project.optional-dependencies]
