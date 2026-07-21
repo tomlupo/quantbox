@@ -137,7 +137,7 @@ cookbook/
 docs/
   architecture/         # principles, api-layers, adapters, skills, lifecycle
   playbooks/            # how-tos: add-a-plugin, add-a-skill, promote-a-methodology, …
-  decisions/            # DEC-NNNN architecture decision records
+  adr/                  # NNNN-*.md architecture decision records
 
 skills/                 # LLM-facing API skills (this directory)
 templates/              # copy-paste scaffolds for downstream projects

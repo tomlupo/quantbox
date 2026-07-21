@@ -42,7 +42,7 @@ The loop is **autonomous within budget** and **human-gated for promotion**. It w
 | Research memory | `EXPERIMENTS.jsonl` (machine) + `EXPERIMENTS.md` (human) + `findings.md` (LLM summary) | jsonl is new |
 | Loop driver | `AutoResearchDriver` (L4 driver, not in runner) | new |
 
-The driver is **L4** — it sits *alongside* `run_from_config`, not above it. Each iteration is a normal pipeline run; the driver decides what runs next. See [ADR-0003](../decisions/DEC-0003-autoresearch-as-driver-not-runtime.md) for why.
+The driver is **L4** — it sits *alongside* `run_from_config`, not above it. Each iteration is a normal pipeline run; the driver decides what runs next. See [ADR-0003](../adr/0003-autoresearch-as-driver-not-runtime.md) for why.
 
 ---
 
@@ -353,7 +353,7 @@ This integrates without violating any principle:
 
 ## See also
 
-- [ADR-0003](../decisions/DEC-0003-autoresearch-as-driver-not-runtime.md) — design decision for L4 driver placement.
+- [ADR-0003](../adr/0003-autoresearch-as-driver-not-runtime.md) — design decision for L4 driver placement.
 - [api-layers.md](api-layers.md) — driver lives at L4, not embedded in runner.
 - [plugin-authoring.md](plugin-authoring.md) — `VariantProposerPlugin` is a new plugin type.
 - [lifecycle.md](lifecycle.md) — autoresearch produces candidates; promotion path is normal.

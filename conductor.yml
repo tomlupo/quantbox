@@ -1,8 +1,8 @@
-# jimek.yml — dispatch + workflow-policy contract for THIS repo (quantbox).
+# conductor.yml — dispatch + workflow-policy contract for THIS repo (quantbox).
 #
 # Per-repo instantiation of the JimekContract schema (Jimek Wave 1c fan-out,
 # epic tomlupo/obsidian-vaults#155), modeled verbatim on the APPROVED reference
-# template merged to dispatcher master (dispatcher repo-root jimek.yml, PR #76).
+# template merged to dispatcher master (dispatcher repo-root conductor.yml, PR #76).
 #
 # It codifies quantbox's CURRENT workflow policy — ADDITIVE, describing today's
 # behavior, NOT a behavior change. quantbox is a LIVE-CAPITAL repo: the library
@@ -141,5 +141,5 @@ release:
   tagPattern: "v*"
   forbiddenPaths: []
 
-adrDir: docs/decisions       # decision-verb ADRs land here (DEC-NNNN-*.md)
+adrDir: docs/adr             # decision-verb ADRs land here (NNNN-*.md)
 adrTemplate: ""              # '' = built-in template

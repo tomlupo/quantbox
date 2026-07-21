@@ -6,4 +6,4 @@
 |--------|-------------|
 | [architecture/](architecture/) | **Read first when modifying.** Principles, API layers, plugin/adapter/skill conventions, lifecycle, and autoresearch. |
 | [playbooks/](playbooks/) | Step-by-step how-tos for extending and using the library. |
-| [decisions/](decisions/) | Architecture Decision Records — *why* the design is the way it is. |
+| [adr/](adr/) | Architecture Decision Records — *why* the design is the way it is. |
