@@ -1,6 +1,6 @@
 [project]
 name = "quantbox"
-version = "0.3.15"
+version = "0.3.16"
 description = "Quant research & trading core with plugin marketplace (entry points)."
 requires-python = ">=3.10"
 dependencies = [
@@ -81,7 +81,7 @@ markers = [
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.3.15"
+version = "0.3.16"
 version_files = [
     "pyproject.toml:version",
     "src/quantbox/__init__.py:__version__",

@@ -29,6 +29,18 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.3.16 (2026-07-22)
+
+### Fix
+
+- **live**: fail closed on unknown equity and report every failure exit (#132) (#133)
+- **live**: stop silent order failures in the live trading loop (#87) (#131)
+- **analysis**: validate factor_regression inputs up front (#130)
+- **rebalancing**: union broker holdings into price-fetch universe (quantbox#120) (#124)
+- **broker/kraken**: re-poll async-settling orders instead of mis-reporting FAILED (#97) (#108)
+- **rebalancing**: per-pair Kraken min-notional to unfreeze small live book (#105) (#106)
+- **validation**: rename bootstrap Sharpe gate honestly + add true BLP DSR (#121)
+
 ## v0.3.15 (2026-07-06)
 
 ### Fix
