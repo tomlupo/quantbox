@@ -300,26 +300,38 @@ class HyperliquidBroker:
 
     def get_balance(self) -> dict[str, float]:
         """
-        Get account balance.
+        Get account balance — the SUM of both pots, not the larger one.
 
-        Always checks both swap (perps) and spot balances for
-        Hyperliquid unified accounts where USDC collateral sits
-        on the spot side while the perps side shows only a small
-        residual amount.
+        A Hyperliquid account holds USDC in two SEPARATE places: the perps side
+        (``accountValue`` = perps collateral + unrealized PnL) and the spot side.
+        Moving between them takes an explicit transfer, so true account value is
+        ``spot + perps``.
+
+        This previously returned ``max(perps, spot)``, silently discarding the
+        smaller pot — normally the perps side, i.e. the posted margin. Measured
+        live 2026-07-22: spot $85.40 + perps $5.51 = $90.91 true NAV against
+        $85.40 reported — **NAV understated by 6.25%**.
+
+        Not a cosmetic reporting bug: ``get_equity()`` feeds position sizing, and
+        performance is ``ΔNAV - flows``, so an error that MOVES injects phantom
+        PnL. This one moves — the missing amount is posted margin, which tracks
+        gross exposure ($0.10–$8.20 across carver-HL's history), so every leverage
+        change wrote a fake profit or loss into the equity curve
+        (quantbox#87 / quantbox-live#93).
 
         Returns:
-            Dict with 'total', 'free', 'used' in USDC
+            Dict with 'total', 'free', 'used' in USDC.
         """
         try:
             balance = self._exchange.fetch_balance()
             usdc = balance.get(QUOTE_CURRENCY, balance.get("USDC", {}))
-            total = float(usdc.get("total", 0) or 0)
-            free = float(usdc.get("free", 0) or 0)
-            used = float(usdc.get("used", 0) or 0)
+            perps_total = float(usdc.get("total", 0) or 0)
+            perps_free = float(usdc.get("free", 0) or 0)
+            perps_used = float(usdc.get("used", 0) or 0)
+            total, free, used = perps_total, perps_free, perps_used
 
-            # Unified accounts: always check spot side — the real USDC
-            # collateral lives there even when perps shows a small non-zero
-            # residual balance.
+            # The spot side is a SEPARATE pot, not an alternative reading of the
+            # same one — both are required for a correct NAV.
             try:
                 spot_balance = self._exchange.fetch_balance({"type": "spot"})
                 spot_usdc = spot_balance.get(QUOTE_CURRENCY, spot_balance.get("USDC", {}))
@@ -327,10 +339,10 @@ class HyperliquidBroker:
                 spot_free = float(spot_usdc.get("free", 0) or 0)
                 spot_used = float(spot_usdc.get("used", 0) or 0)
 
-                if spot_total > total:
-                    total = spot_total
-                    free = spot_free
-                    used = spot_used
+                total = perps_total + spot_total
+                free = perps_free + spot_free
+                used = perps_used + spot_used
+                logger.info("NAV: spot $%.4f + perps $%.4f = $%.4f", spot_total, perps_total, total)
             except Exception as exc:
                 # FAIL CLOSED. On a unified account the REAL collateral lives on
                 # the spot side, so falling back to the perps-side residual is not
@@ -340,15 +352,15 @@ class HyperliquidBroker:
                 # transient spot-API blip. An unread side means the equity is
                 # UNKNOWN, and unknown equity must not size anything (quantbox#87).
                 logger.error(
-                    "Spot balance probe failed for a unified account — equity is UNKNOWN "
-                    "(the perps-side balance $%.2f is only a residual): %s",
-                    total,
+                    "Spot balance probe failed — NAV is UNKNOWN. The perps pot alone ($%.2f) "
+                    "is only one half of account value; the spot pot is unread: %s",
+                    perps_total,
                     exc,
                 )
                 raise BrokerExecutionError(
                     "hyperliquid.perps.v1",
-                    "spot-side balance probe failed on a unified account; refusing to size "
-                    f"positions on an unknown equity (perps residual was ${total:.2f}): {exc}",
+                    "spot-side balance probe failed; refusing to size positions on an unknown "
+                    f"NAV (only the perps pot ${perps_total:.2f} could be read): {exc}",
                 ) from exc
 
             return {"total": total, "free": free, "used": used}

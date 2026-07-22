@@ -331,7 +331,7 @@ def test_spot_probe_failure_refuses_to_size_on_perps_residual():
 
     broker._exchange = _SpotDown()
 
-    with pytest.raises(BrokerExecutionError, match="unknown equity"):
+    with pytest.raises(BrokerExecutionError, match="unknown NAV"):
         broker.get_balance()
 
 
