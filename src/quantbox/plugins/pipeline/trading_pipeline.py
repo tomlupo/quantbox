@@ -875,6 +875,13 @@ class TradingPipeline:
             # (staying in cash). This is INFO-level, NOT a freeze — monitors must
             # NOT alarm on it.
             "quiet_day": 1.0 if execution_report.get("quiet_day") else 0.0,
+            # Un-closable exposure: a flat-target holding whose close-out is below
+            # the venue minimum. Alarm on this — the loop cannot clear it (#87).
+            "trapped_residuals": float(
+                len(str(execution_report.get("trapped_residuals", "")).split(", "))
+                if execution_report.get("trapped_residuals")
+                else 0
+            ),
             # Tier-2 exception inputs (#62).
             "data_stale": 1.0 if data_stale else 0.0,
             "data_age_seconds": float(data_age_seconds) if data_age_seconds is not None else -1.0,
@@ -905,6 +912,11 @@ class TradingPipeline:
                 "freeze_reasons": execution_report.get("freeze_reasons", {}),
                 "quiet_day": bool(execution_report.get("quiet_day", False)),
                 "quiet_reasons": execution_report.get("quiet_reasons", {}),
+                # Un-closable residuals + this cycle's order failures (#87). Both
+                # are first-class exception inputs the notifier must alert on.
+                "trapped_residuals": execution_report.get("trapped_residuals", ""),
+                "order_failures": int(execution_report.get("order_failures", 0)),
+                "order_failure_detail": execution_report.get("order_failure_detail", ""),
                 # Tier-2 exception inputs the notifier threads into BookContext (#62).
                 "exceptions": exception_signals,
                 # Reconciliation-break enforcement (issue #87). Observe-mode by
@@ -1534,6 +1546,47 @@ class TradingPipeline:
     # ==================================================================
     # Stage 7: Execution
     # ==================================================================
+    def _report_order_failures(self, report: dict[str, Any], broker: BrokerPlugin | None) -> None:
+        """Record + alert this cycle's order failures. Idempotent; no-op at zero.
+
+        The two freeze guards are both CONJUNCTIONS requiring a total standstill:
+        one needs ``total_executed == 0`` AND a skipped close-out SELL, the other
+        needs the broker to return an EMPTY frame. Neither fires on the commonest
+        real failure — "some orders filled, some were rejected" — which is how
+        carver-HL emitted the same rejected ETH/SOL close-outs for 33 consecutive
+        days while every run was recorded as healthy (quantbox#87).
+
+        Called from BOTH exits of :meth:`_execute_orders`: the normal path and the
+        ``place_orders`` exception path. The exception path is the worst case —
+        the whole batch failed at submission and nothing traded — so it must alert
+        too, rather than returning early past the report.
+        """
+        n_failed = int(report["summary"]["total_failed"])
+        if not n_failed:
+            return
+        failed_list = ", ".join(
+            f"{str(d.get('action', '')).upper()} {d.get('symbol', '')} ({d.get('error', 'unknown')})"
+            for d in report["orders_details"]
+            if d.get("status") == "FAILED"
+        )
+        report["order_failures"] = n_failed
+        report["order_failure_detail"] = failed_list
+        logger.error(
+            "ORDER FAILURES: %d of %d submitted order(s) failed — %s",
+            n_failed,
+            n_failed + int(report["summary"]["total_executed"]),
+            failed_list,
+        )
+        notify = getattr(broker, "notify", None)
+        if callable(notify):
+            try:
+                notify(
+                    f"❌ <b>{n_failed} ORDER(S) FAILED</b>\n{failed_list}\n"
+                    "Targets NOT reached for these symbols; exposure is unchanged."
+                )
+            except Exception as exc:  # never let alerting crash the run
+                logger.warning("Order-failure notify failed: %s", exc)
+
     def _execute_orders(
         self,
         broker: BrokerPlugin,
@@ -1617,6 +1670,37 @@ class TradingPipeline:
             else orders_df
         )
 
+        # --- Trapped-residual report (quantbox#87) -------------------------
+        # A holding with a flat target whose close-out is below the VENUE's own
+        # minimum cannot be closed by an ordinary order. The rebalancer now
+        # suppresses those instead of re-sending them daily, so this is the only
+        # place they surface. Report unconditionally — a trapped residual is real
+        # unwanted exposure whether or not the rest of the batch traded, and the
+        # existing freeze guards only fire on a TOTAL standstill.
+        if "Order Status" in orders_df.columns:
+            trapped = orders_df[orders_df["Order Status"] == "Trapped residual"]
+            if len(trapped) > 0:
+                trapped_list = ", ".join(
+                    f"{r.get('Asset', '')} (${float(r.get('Notional Value', 0) or 0):.2f})"
+                    for _, r in trapped.iterrows()
+                )
+                report["trapped_residuals"] = trapped_list
+                logger.error(
+                    "TRAPPED RESIDUALS (%d): %s — un-closable below the venue minimum; manual intervention required.",
+                    len(trapped),
+                    trapped_list,
+                )
+                notify = getattr(broker, "notify", None)
+                if callable(notify):
+                    try:
+                        notify(
+                            f"🪤 <b>{len(trapped)} TRAPPED RESIDUAL(S)</b>\n{trapped_list}\n"
+                            "Flat target, but the close-out is below the venue minimum. "
+                            "Clear manually — the loop cannot."
+                        )
+                    except Exception as exc:  # never let alerting crash the run
+                        logger.warning("Trapped-residual notify failed: %s", exc)
+
         # --- Pre-execution FLATTEN gate (enforce mode, issue #90) ----------
         # Keep only exposure-reducing orders (clamped so they never cross zero).
         if gate_reduce_only and isinstance(executable, pd.DataFrame) and not executable.empty:
@@ -1646,6 +1730,7 @@ class TradingPipeline:
                 "Zero quantity",
                 "Zero price",
                 "Invalid (NaN)",
+                "Trapped residual",
             }
             suppressed = pd.DataFrame()
             if "Order Status" in orders_df.columns:
@@ -1886,6 +1971,10 @@ class TradingPipeline:
                 # The whole batch failed at submission — record a failed result so
                 # the ledger closes each intent (no dangling missed-fill timeouts).
                 _record_result(row["symbol"], row["side"], "FAILED")
+            # A batch-level submission failure is the WORST case (nothing traded
+            # at all), so it must alert on the same path as a per-order rejection.
+            # This early return previously skipped the failure report entirely.
+            self._report_order_failures(report, broker)
             return report
 
         # Process fills and failures
@@ -2072,6 +2161,7 @@ class TradingPipeline:
             if d.get("status") in ("FILLED", "PARTIAL")
         )
 
+        self._report_order_failures(report, broker)
         return report
 
     # ==================================================================
@@ -2524,11 +2614,33 @@ class TradingPipeline:
             except Exception as exc:  # never let recon crash the run
                 logger.warning("Reconciliation position read failed: %s", exc)
 
+        # Drift must be FRACTIONAL (|actual - target| / |target|), because that is
+        # what BookTolerances documents and what `max_drift=0.10` / `drift_halt=0.25`
+        # mean. The previous absolute weight delta made both tolerances wrong in
+        # opposite directions: on a book whose largest target is ~5% of equity an
+        # absolute delta can never reach 0.25 (the halt was dead), while a 30%
+        # holding against a zero target tripped FLATTEN instantly.
+        #
+        # `drift_notional_floor` keeps dust out of the signal: a $2 residual against
+        # a zero target is fractionally infinite but economically irrelevant, and a
+        # book that halts on dust is a book whose halt gets switched off.
+        drift_floor = float(getattr(tol, "drift_notional_floor", 10.0))
         drifts: dict[str, float] = {}
         for sym in set(final_weights) | set(actual_wt):
             if sym == stable_coin:
                 continue
-            drifts[sym] = actual_wt.get(sym, 0.0) - float(final_weights.get(sym, 0.0))
+            actual = actual_wt.get(sym, 0.0)
+            target = float(final_weights.get(sym, 0.0))
+            # Ignore positions too small to matter (both legs sub-floor in notional).
+            if pv > 0 and max(abs(actual), abs(target)) * pv < drift_floor:
+                continue
+            denom = abs(target)
+            if denom < 1e-9:
+                # No target at all: any real holding is a 100% drift (fully
+                # un-intended exposure), which is the honest fractional reading.
+                drifts[sym] = 1.0 if abs(actual) > 1e-9 else 0.0
+            else:
+                drifts[sym] = (actual - target) / denom
 
         # Phantom = an exchange holding with no matching intent in the ledger over
         # a RECENT window (authority rule: internal ledger is truth for intent).
@@ -2550,6 +2662,11 @@ class TradingPipeline:
         }
         for sym in actual_wt:
             if sym == stable_coin:
+                continue
+            # Same dust guard as drift: a sub-floor residual is not a phantom worth
+            # flattening the book over. Every phantom is a HARD break, so without
+            # this one stray $0.30 dust position sends the book to FLATTEN.
+            if pv > 0 and abs(actual_wt.get(sym, 0.0)) * pv < drift_floor:
                 continue
             if sym not in intended_symbols and abs(actual_wt.get(sym, 0.0)) > 1e-6:
                 phantom.append(sym)
