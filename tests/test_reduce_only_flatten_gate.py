@@ -88,6 +88,15 @@ def test_kraken_sell_reduces_long_and_is_kept():
     assert out.iloc[0]["Adjusted Quantity"] == 0.3
 
 
+def test_flatten_gate_marks_kept_orders_reduce_only():
+    """A FLATTEN-gated exit MUST carry reduce_only, or the broker sends it as an
+    ordinary order and a sub-min close is rejected / can flip through zero
+    (quantbox#87 / #138 review)."""
+    b = _kraken({"total": {"ZUSD": 1000.0, "XXBT": 0.5}})
+    out = _clamp([_order("BTC", "Sell", 0.3)], b)
+    assert bool(out.iloc[0]["reduce_only"]) is True
+
+
 def test_kraken_sell_is_clamped_to_holding():
     b = _kraken({"total": {"ZUSD": 1000.0, "XXBT": 0.5}})
     out = _clamp([_order("BTC", "Sell", 2.0)], b)  # oversized sell

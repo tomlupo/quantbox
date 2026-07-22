@@ -2380,6 +2380,12 @@ class TradingPipeline:
                 continue
             r = row.copy()
             r["Adjusted Quantity"] = new_qty
+            # Exposure-reducing under a FLATTEN gate, i.e. an emergency exit. Mark
+            # reduce_only so the broker sends reduceOnly: the venue exempts a
+            # sub-min close from its min-notional floor and it can never flip
+            # through zero. Without this the gate's own exits could be rejected as
+            # ordinary sub-min orders (quantbox#87 / #138 review).
+            r["reduce_only"] = True
             kept.append(r)
         return pd.DataFrame(kept) if kept else executable.iloc[0:0]
 
