@@ -20,8 +20,10 @@
 version: 1
 
 # ── Board state machine ──────────────────────────────────────────────────────
-# quantbox tracks tasks in GitHub Issues (## Task source: github — Never
-# Paperclip). Generic dispatchable vs. terminal Status values.
+# quantbox tracks tasks in LINEAR (team TOM, project quantbox) per qute-code-kit
+# ADR-0004 — see docs/agents/issue-tracker.md and CLAUDE.md `## Task source`.
+# GitHub Issues on this repo are issue RECORDS only, not the task source.
+# Generic dispatchable vs. terminal Status values.
 board_states:
   active:   [Todo, In Progress, Human Review, Merging]
   terminal: [Done, Blocked]
@@ -131,7 +133,7 @@ reviewEngine:
 escalation:
   block_on: [live_capital, irreversible_op, design_fork]
 
-taskThreshold: 12           # TASKS.md → GitHub Issues graduation threshold
+taskThreshold: 12           # TASKS.md → Linear (team TOM) graduation threshold
 
 # Ship-verb release namespace. quantbox cuts annotated vX.Y.Z tags on `main`
 # (release-only branch); forbiddenPaths guards against committing skill
