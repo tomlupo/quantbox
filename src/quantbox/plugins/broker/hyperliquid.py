@@ -57,6 +57,7 @@ from typing import Any
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+from quantbox.exceptions import BrokerExecutionError
 from quantbox.retry import with_retry
 
 from ._fills import resolve_fill
@@ -330,10 +331,32 @@ class HyperliquidBroker:
                     total = spot_total
                     free = spot_free
                     used = spot_used
-            except Exception:
-                pass
+            except Exception as exc:
+                # FAIL CLOSED. On a unified account the REAL collateral lives on
+                # the spot side, so falling back to the perps-side residual is not
+                # a conservative estimate — it is a WRONG one, typically far too
+                # small, and `get_equity()` feeds live position sizing. Logging and
+                # continuing would silently downsize or flatten the whole book on a
+                # transient spot-API blip. An unread side means the equity is
+                # UNKNOWN, and unknown equity must not size anything (quantbox#87).
+                logger.error(
+                    "Spot balance probe failed for a unified account — equity is UNKNOWN "
+                    "(the perps-side balance $%.2f is only a residual): %s",
+                    total,
+                    exc,
+                )
+                raise BrokerExecutionError(
+                    "hyperliquid.perps.v1",
+                    "spot-side balance probe failed on a unified account; refusing to size "
+                    f"positions on an unknown equity (perps residual was ${total:.2f}): {exc}",
+                ) from exc
 
             return {"total": total, "free": free, "used": used}
+        except BrokerExecutionError:
+            # Already a fail-closed decision with a precise message (e.g. the spot
+            # probe above) — re-raise as-is rather than re-wrapping it in the
+            # generic handler below, which would bury the actual cause.
+            raise
         except Exception as e:
             logger.error("Balance fetch failed: %s", e)
             send_telegram(
@@ -341,7 +364,15 @@ class HyperliquidBroker:
                 self.telegram_chat_id,
                 f"⚠️ <b>BALANCE FETCH FAILED</b>\nCannot read account balance: {e}\nNo orders will execute this run.",
             )
-            return {"total": 0, "free": 0, "used": 0}
+            # FAIL CLOSED. Returning zeros here is a fabricated value in a POSITION
+            # SIZING context: `get_equity()` -> total_value == 0 previously made the
+            # run look like a legitimately empty book and no-op with exit 0. An
+            # unreadable balance is not a zero balance — it is an unknown one, and
+            # the only safe response is to abort the cycle (quantbox#87).
+            raise BrokerExecutionError(
+                "hyperliquid.perps.v1",
+                f"balance fetch failed; refusing to size positions on an unknown equity: {e}",
+            ) from e
 
     def _get_positions_dict(self) -> dict[str, dict[str, Any]]:
         """Get current positions as a dict (internal)."""
@@ -458,6 +489,41 @@ class HyperliquidBroker:
             logger.warning("Fill confirmation fetch_order failed for %s: %s", symbol, exc)
             return None
 
+    def _notify_order_outcome(
+        self,
+        symbol: str,
+        side: str,
+        status: str,
+        filled_qty: float,
+        fill_price: float,
+        reason: str = "",
+    ) -> bool:
+        """Notify the CONFIRMED outcome of one order.
+
+        Called only after :func:`resolve_fill` has classified the order, so the
+        message can never claim a fill that did not happen (quantbox#87). A FAILED
+        order is notified too — previously a rejection produced no message at all
+        while an acceptance produced a false "filled" one, which is exactly
+        backwards.
+        """
+        st = str(status).strip().upper()
+        if st == "FILLED":
+            head = f"🟢 <b>{side.upper()}</b>" if side == "buy" else f"🔴 <b>{side.upper()}</b>"
+            msg = (
+                f"{head} {filled_qty:.4f} {symbol}\n"
+                f"Price: ${fill_price:,.6f}\n"
+                f"Notional: ${filled_qty * fill_price:,.2f}"
+            )
+        elif st == "PARTIAL":
+            msg = (
+                f"🟡 <b>PARTIAL {side.upper()}</b> {symbol}\n"
+                f"Filled: {filled_qty:.4f} @ ${fill_price:,.6f}\n"
+                f"Unfilled remainder is live exposure. {reason}"
+            )
+        else:
+            msg = f"❌ <b>ORDER FAILED</b> {side.upper()} {symbol}\nReason: {reason or 'unknown'}"
+        return send_telegram(self.telegram_token, self.telegram_chat_id, msg)
+
     def place_orders(self, orders: pd.DataFrame) -> pd.DataFrame:
         """BrokerPlugin-compliant order execution.
 
@@ -493,6 +559,10 @@ class HyperliquidBroker:
                     n_failed += 1
                 elif status == "PARTIAL":
                     logger.warning("Order partially filled: %s %s — %s", side, sym, reason)
+                else:
+                    logger.info("Order FILLED: %s %s %s @ $%.6f", side.upper(), filled_qty, sym, fill_price)
+                # Notify only AFTER resolve_fill has decided — never on acceptance.
+                self._notify_order_outcome(sym, side, status, filled_qty, fill_price, reason)
             else:
                 rows.append(
                     {
@@ -506,6 +576,7 @@ class HyperliquidBroker:
                     }
                 )
                 n_failed += 1
+                self._notify_order_outcome(sym, side, "FAILED", 0.0, 0.0, "placement failed")
 
         if n_failed:
             failed_rows = [r for r in rows if r["status"] == "FAILED"]
@@ -680,17 +751,21 @@ class HyperliquidBroker:
                     params=params,
                 )
 
-                fill_price = float(order.get("average", order.get("price", price)) or price)
-                filled_qty = float(order.get("filled", quantity) or quantity)
-
-                logger.info(f"Order filled: {side.upper()} {filled_qty} {symbol} @ ${fill_price:.4f}")
-
-                # Send Telegram notification
-                emoji = "🟢" if side == "buy" else "🔴"
-                msg = f"{emoji} <b>{side.upper()}</b> {filled_qty:.4f} {symbol}\n"
-                msg += f"Price: ${fill_price:,.2f}\n"
-                msg += f"Notional: ${filled_qty * fill_price:,.2f}"
-                send_telegram(self.telegram_token, self.telegram_chat_id, msg)
+                # ACCEPTANCE IS NOT A FILL. The venue has taken the order; whether
+                # anything actually executed is decided by ``resolve_fill`` (see
+                # ``_fills.py``), which is the single authority on fill status.
+                # Reporting a fill here — and defaulting ``filled`` to the REQUESTED
+                # quantity — is what let 33 consecutive days of rejected ETH/SOL
+                # close-outs read as successful fills in the log and on Telegram
+                # while the pipeline correctly recorded them FAILED (quantbox#87).
+                # Log submission only; the caller notifies once the truth is known.
+                logger.info(
+                    "Order accepted by venue (fill NOT yet confirmed): %s %s %s id=%s",
+                    side.upper(),
+                    quantity,
+                    symbol,
+                    order.get("id"),
+                )
 
                 return order
 

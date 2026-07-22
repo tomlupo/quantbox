@@ -139,6 +139,11 @@ class BookTolerances:
     halt_failed_streak: int = 3  # 3 consecutive → hard (order path broken)
     equity_eps: float = 0.02  # 2% equity reconciliation tolerance
     max_degraded_cycles: int = 3  # DEGRADED this many cycles → escalate to HALT
+    # Dust guard, in quote currency. Drift and phantom detection ignore positions
+    # worth less than this. Without it a $2 residual against a zero target reads as
+    # a 100% drift and a hard phantom every single cycle — and a book that halts on
+    # dust is a book whose halt gets switched off (quantbox#87).
+    drift_notional_floor: float = 10.0
     phantom_lookback: int = 2  # a holding intended within this many recent cycles
     # is explained (carryover); older reappearances count as phantom.
 
