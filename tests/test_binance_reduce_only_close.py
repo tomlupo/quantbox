@@ -53,6 +53,16 @@ def test_sub_min_open_is_still_gated():
     assert not b._exchange.calls, "the open must never reach the venue"
 
 
+def test_close_position_is_reduce_only():
+    """A direct close_position() must be reduce-only, else a sub-min close hits
+    the min-notional guard and leaves the residual trapped (#138 review)."""
+    b = _broker()
+    b._get_positions_dict = lambda: {"ARB": {"side": "long", "size": 0.02}}  # $2, sub-min
+    result = b.close_position("ARB")
+    assert result is not None, "close_position must send the exit even sub-min"
+    assert b._exchange.calls[-1]["params"] == {"reduceOnly": True}
+
+
 def test_place_orders_threads_reduce_only_nan_safe():
     """A mixed-column order frame fills a missing reduce_only with NaN; bool(NaN)
     is True, which would send OPENS reduce-only. Must be NaN-safe."""

@@ -565,11 +565,12 @@ class BinanceFuturesBroker:
             logger.info(f"No position to close for {symbol}")
             return None
 
-        # Opposite side to close
+        # Opposite side to close. reduce_only so a full close is exempt from the
+        # min-notional floor and can't flip through zero (matches Hyperliquid).
         side = "sell" if pos["side"] == "long" else "buy"
         quantity = abs(pos["size"])
 
-        return self.place_order(symbol, side, quantity)
+        return self.place_order(symbol, side, quantity, reduce_only=True)
 
     # ========================================================================
     # Rebalancing
