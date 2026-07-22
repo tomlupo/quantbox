@@ -332,18 +332,31 @@ class HyperliquidBroker:
                     free = spot_free
                     used = spot_used
             except Exception as exc:
-                # On a unified account the REAL collateral lives on the spot side.
-                # Silently swallowing this probe drops us back to the small perps
-                # residual — i.e. a massively understated equity that would silently
-                # downsize every position. Never silent: log it loudly.
+                # FAIL CLOSED. On a unified account the REAL collateral lives on
+                # the spot side, so falling back to the perps-side residual is not
+                # a conservative estimate — it is a WRONG one, typically far too
+                # small, and `get_equity()` feeds live position sizing. Logging and
+                # continuing would silently downsize or flatten the whole book on a
+                # transient spot-API blip. An unread side means the equity is
+                # UNKNOWN, and unknown equity must not size anything (quantbox#87).
                 logger.error(
-                    "Spot balance probe failed for a unified account — equity may be "
-                    "UNDERSTATED (falling back to the perps-side balance $%.2f): %s",
+                    "Spot balance probe failed for a unified account — equity is UNKNOWN "
+                    "(the perps-side balance $%.2f is only a residual): %s",
                     total,
                     exc,
                 )
+                raise BrokerExecutionError(
+                    "hyperliquid.perps.v1",
+                    "spot-side balance probe failed on a unified account; refusing to size "
+                    f"positions on an unknown equity (perps residual was ${total:.2f}): {exc}",
+                ) from exc
 
             return {"total": total, "free": free, "used": used}
+        except BrokerExecutionError:
+            # Already a fail-closed decision with a precise message (e.g. the spot
+            # probe above) — re-raise as-is rather than re-wrapping it in the
+            # generic handler below, which would bury the actual cause.
+            raise
         except Exception as e:
             logger.error("Balance fetch failed: %s", e)
             send_telegram(
