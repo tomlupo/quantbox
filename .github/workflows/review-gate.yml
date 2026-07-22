@@ -25,6 +25,16 @@ concurrency:
 jobs:
   require-independent-reviewer:
     name: require-independent-reviewer
+    # Skip while the PR is a draft. This is safe for one reason above all: a draft
+    # PR CANNOT BE MERGED. That matters because GitHub counts an `if:`-skipped job
+    # as SUCCESS for required checks — so the guard would be a real bypass on any
+    # mergeable PR. It isn't here, and the gate re-fires on `ready_for_review`, the
+    # moment the PR first becomes mergeable.
+    # (Secondary: on `opened` no independent review can exist yet, so the gate could
+    # only ever report "unfinished" dressed up as "unreviewed".)
+    # Note `null == false` is true under Actions' loose equality, so an absent
+    # `draft` field fails OPEN — the gate runs — rather than silently disabling.
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - name: Check for an independent (non-author) reviewer verdict
