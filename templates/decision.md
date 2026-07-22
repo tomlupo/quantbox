@@ -7,10 +7,10 @@ Rules:
 - Never edit an accepted decision — supersede with a new one.
 - Never reuse a number — even rejected drafts burn the number.
 - LLMs draft only — humans accept.
-- File name: DEC-NNNN-short-slug.md (next number = highest existing + 1).
+- File name: NNNN-short-slug.md (next number = highest existing + 1).
 -->
 ---
-decision: DEC-NNNN                                    # next available number
+adr: NNNN                                             # next available number
 title: Short, decision-shaped title          # imperative voice, names the choice
 status: proposed                              # proposed | accepted | superseded | deprecated
 date: YYYY-MM-DD
@@ -20,7 +20,7 @@ status_changes:                              # add a row each time status change
   # - YYYY-MM-DD: <change description>
 ---
 
-# DEC-NNNN: Short, decision-shaped title
+# ADR-NNNN: Short, decision-shaped title
 
 ## Context
 
