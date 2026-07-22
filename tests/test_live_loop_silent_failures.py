@@ -1,21 +1,28 @@
 """Regression tests for the carver-HL silent-failure incident (quantbox#87).
 
 Live symptom: from 2026-06-20 to 2026-07-22 the carver-HL book emitted the SAME
-sub-$10 ETH/SOL/ARB close-out orders every single cycle. Hyperliquid rejected
-every one of them ($10 venue minimum), yet each run was recorded as healthy
-(``rebalance_frozen=0.0``) and Telegram reported the orders as FILLED. 33
-consecutive days, ~71 failed orders, zero escalation.
+sub-$10 ETH/SOL/ARB close-out orders every single cycle, all recorded as
+"placement failed", yet each run was logged as healthy (``rebalance_frozen=0.0``)
+and Telegram reported the orders as FILLED. 33 consecutive days, ~71 failures.
 
-Four distinct defects made that possible; each has a test below.
+Root cause, VERIFIED LIVE 2026-07-22: the failures were NOT the venue's doing.
+Hyperliquid ACCEPTS a full reduce-only close below its $10 minimum (SOL 0.03,
+$2.33, filled at 77.773). The orders were rejected by OUR OWN client-side
+min-notional guard (``hyperliquid.py:641``) before submission, and the
+"placement failed" error string made it look like Hyperliquid's. The exit was
+available the whole time — the incident was entirely self-inflicted.
+
+Defects with tests below:
 
 1. ``place_order`` claimed a fill on ACCEPTANCE, defaulting ``filled`` to the
-   REQUESTED quantity — so a rejected order logged "Order filled" and sent a
+   REQUESTED quantity — so an unfilled order logged "Order filled" and sent a
    green Telegram fill message.
-2. The 2026-06-20 "closing positions are min-notional exempt" fix exempted exits
-   from the VENUE's floor as well as our own, converting a silent client-side
-   suppression into a doomed order re-sent forever.
+2. A flat-target close must be sent REDUCE-ONLY (venue-exempt from the $10
+   minimum, can't flip through zero), not suppressed. The earlier "trapped
+   residual" suppression was built on the false premise that the venue rejected
+   these; it is removed.
 3. Both freeze guards are conjunctions requiring a TOTAL standstill, so
-   "some filled, some rejected" — the commonest real failure — alerted nobody.
+   "some filled, some failed" — the commonest real failure — alerted nobody.
 4. ``get_balance`` returned ``{"total": 0}`` on an API exception: a fabricated
    value in a position-sizing context, which made an unreadable balance
    indistinguishable from an empty book.
