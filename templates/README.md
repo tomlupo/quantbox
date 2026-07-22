@@ -8,7 +8,7 @@ starting point — copy what you need into your own repo and own it there.
 | [`methodology.md`](methodology.md) | `docs/methodology/{slug}-v{N}.md` | Strategy spec required for promotion to LOCKED |
 | [`dataset.md`](dataset.md) | `docs/datasets/{artifact}.md` | Prose semantics layer for an artifact type |
 | [`runbook.md`](runbook.md) | `docs/runbooks/{operation}.md` | Operational procedure for a scheduled or manual task |
-| [`decision.md`](decision.md) | `docs/decisions/DEC-NNNN-{slug}.md` | Architecture Decision Record (hard-to-reverse choices) |
+| [`decision.md`](decision.md) | `docs/adr/NNNN-{slug}.md` | Architecture Decision Record (hard-to-reverse choices) |
 
 ## When to use each
 

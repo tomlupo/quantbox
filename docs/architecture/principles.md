@@ -12,7 +12,7 @@ A **composing framework** — owned, opinionated, layered. Three things, in orde
 2. **Adapters** — thin wrappers around best-of-breed libraries (vectorbt, riskfolio, lightgbm, ...). The wheel does the wheel's work. An adapter lives in core only when ≥2 consumers need the same bridge; single-consumer libraries are imported directly in the consuming repo.
 3. **Skills + templates** — the LLM-facing interface and the project bootstrap shape. Coupled to the SDK in this repo so they never drift.
 
-By the strict IoC sense (the runtime calls *your* code at L4/L5), it is a framework. By the colloquial sense ("my framework for X"), it's also a framework. The question isn't whether to call it one — it's *what kind*. See [ADR-0001](../decisions/DEC-0001-library-not-framework.md).
+By the strict IoC sense (the runtime calls *your* code at L4/L5), it is a framework. By the colloquial sense ("my framework for X"), it's also a framework. The question isn't whether to call it one — it's *what kind*. See [ADR-0001](../adr/0001-library-not-framework.md).
 
 ## What QuantBox composes — and what it doesn't reinvent
 

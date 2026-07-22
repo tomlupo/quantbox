@@ -1,0 +1,7 @@
+{
+  "base_path": "$HOME/workspace/projects/.worktrees/{project}-{slug}",
+  "branch_pattern": "{type}/{slug}",
+  "default_type": "feat",
+  "venv_setup": "uv",
+  "base_branch": "dev"
+}

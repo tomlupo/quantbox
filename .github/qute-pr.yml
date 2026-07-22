@@ -1,0 +1,16 @@
+# qute PR-flow policy for quantbox — consumed by the CLIENT-SIDE qute-essentials
+# hooks + /qute-coder skill ONLY.
+#
+# NOT read by CI: .github/workflows/review-gate.yml resolves reviews straight from
+# the GitHub API and never opens this file. Do not treat this as the CI policy.
+#
+# PRECEDENCE: conductor.yml `prFlow` is authoritative for dispatch/agent behaviour
+# (it sets independentReview: true, enforce: true, allowAgentSelfMerge: false).
+# The `enforce: false` below is the onboarding-template default and is deliberately
+# left as-is (TOM-184); it relaxes only the client-side hook, and cannot weaken the
+# review-gate, which fails any PR lacking an independent review regardless. Agents author PRs as qute-coder[bot];
+# the independent-reviewer gate is satisfied by qute-review[bot] (author != reviewer).
+assignTo: tomlupo
+independentReview: true
+allowAgentSelfMerge: false
+enforce: false
