@@ -1546,6 +1546,47 @@ class TradingPipeline:
     # ==================================================================
     # Stage 7: Execution
     # ==================================================================
+    def _report_order_failures(self, report: dict[str, Any], broker: BrokerPlugin | None) -> None:
+        """Record + alert this cycle's order failures. Idempotent; no-op at zero.
+
+        The two freeze guards are both CONJUNCTIONS requiring a total standstill:
+        one needs ``total_executed == 0`` AND a skipped close-out SELL, the other
+        needs the broker to return an EMPTY frame. Neither fires on the commonest
+        real failure — "some orders filled, some were rejected" — which is how
+        carver-HL emitted the same rejected ETH/SOL close-outs for 33 consecutive
+        days while every run was recorded as healthy (quantbox#87).
+
+        Called from BOTH exits of :meth:`_execute_orders`: the normal path and the
+        ``place_orders`` exception path. The exception path is the worst case —
+        the whole batch failed at submission and nothing traded — so it must alert
+        too, rather than returning early past the report.
+        """
+        n_failed = int(report["summary"]["total_failed"])
+        if not n_failed:
+            return
+        failed_list = ", ".join(
+            f"{str(d.get('action', '')).upper()} {d.get('symbol', '')} ({d.get('error', 'unknown')})"
+            for d in report["orders_details"]
+            if d.get("status") == "FAILED"
+        )
+        report["order_failures"] = n_failed
+        report["order_failure_detail"] = failed_list
+        logger.error(
+            "ORDER FAILURES: %d of %d submitted order(s) failed — %s",
+            n_failed,
+            n_failed + int(report["summary"]["total_executed"]),
+            failed_list,
+        )
+        notify = getattr(broker, "notify", None)
+        if callable(notify):
+            try:
+                notify(
+                    f"❌ <b>{n_failed} ORDER(S) FAILED</b>\n{failed_list}\n"
+                    "Targets NOT reached for these symbols; exposure is unchanged."
+                )
+            except Exception as exc:  # never let alerting crash the run
+                logger.warning("Order-failure notify failed: %s", exc)
+
     def _execute_orders(
         self,
         broker: BrokerPlugin,
@@ -1930,6 +1971,10 @@ class TradingPipeline:
                 # The whole batch failed at submission — record a failed result so
                 # the ledger closes each intent (no dangling missed-fill timeouts).
                 _record_result(row["symbol"], row["side"], "FAILED")
+            # A batch-level submission failure is the WORST case (nothing traded
+            # at all), so it must alert on the same path as a per-order rejection.
+            # This early return previously skipped the failure report entirely.
+            self._report_order_failures(report, broker)
             return report
 
         # Process fills and failures
@@ -2116,40 +2161,7 @@ class TradingPipeline:
             if d.get("status") in ("FILLED", "PARTIAL")
         )
 
-        # --- Order-failure alert (quantbox#87) -----------------------------
-        # The two freeze guards above are both CONJUNCTIONS that require a total
-        # standstill: the `:2000` guard needs `total_executed == 0` AND a skipped
-        # close-out SELL, and the zero-rows branch needs the broker to return an
-        # EMPTY frame. Neither can fire on the commonest real failure — "some
-        # orders filled, some were rejected" — which is how carver-HL emitted the
-        # same rejected ETH/SOL close-outs for 33 consecutive days while every run
-        # was recorded as healthy. A failed order is ALWAYS worth a human's
-        # attention; report it unconditionally.
-        n_failed = int(report["summary"]["total_failed"])
-        if n_failed:
-            failed_list = ", ".join(
-                f"{str(d.get('action', '')).upper()} {d.get('symbol', '')} ({d.get('error', 'unknown')})"
-                for d in report["orders_details"]
-                if d.get("status") == "FAILED"
-            )
-            report["order_failures"] = n_failed
-            report["order_failure_detail"] = failed_list
-            logger.error(
-                "ORDER FAILURES: %d of %d submitted order(s) failed — %s",
-                n_failed,
-                n_failed + int(report["summary"]["total_executed"]),
-                failed_list,
-            )
-            notify = getattr(broker, "notify", None)
-            if callable(notify):
-                try:
-                    notify(
-                        f"❌ <b>{n_failed} ORDER(S) FAILED</b>\n{failed_list}\n"
-                        "Targets NOT reached for these symbols; exposure is unchanged."
-                    )
-                except Exception as exc:  # never let alerting crash the run
-                    logger.warning("Order-failure notify failed: %s", exc)
-
+        self._report_order_failures(report, broker)
         return report
 
     # ==================================================================

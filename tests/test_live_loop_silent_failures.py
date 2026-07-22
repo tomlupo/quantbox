@@ -207,6 +207,36 @@ def test_partial_order_failure_alerts():
     )
 
 
+def test_batch_submission_exception_still_alerts():
+    """A broker-level exception from place_orders is the WORST case — nothing
+    traded at all — so it must alert on the same path as a per-order rejection.
+
+    Caught in review of #131: the exception handler returned early, past the new
+    failure report, so a whole-batch failure counted total_failed and told nobody.
+    """
+
+    class _Exploding(_Broker):
+        def place_orders(self, orders: pd.DataFrame) -> pd.DataFrame:
+            raise ConnectionError("venue unreachable")
+
+    pipe = TradingPipeline()
+    broker = _Exploding()
+    orders = pd.DataFrame([_executable("PEPE", "Buy", 100.0, 1.0), _executable("ETH", "Sell", 0.0022, 1930.0)])
+
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=orders,
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+    )
+
+    assert report["summary"]["total_failed"] == 2
+    assert report.get("order_failures") == 2
+    assert "venue unreachable" in report.get("order_failure_detail", "")
+    assert any("ORDER(S) FAILED" in m for m in broker.notices), "a whole-batch submission failure must reach a human"
+
+
 def test_trapped_residual_alerts_even_when_other_orders_trade():
     """A trapped residual is real unwanted exposure regardless of the rest of the
     batch, so it must alert on its own."""

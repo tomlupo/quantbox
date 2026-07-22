@@ -197,6 +197,29 @@ class _FakeBroker:
         self.messages.append(message)
         return True
 
+    def place_orders(self, orders: pd.DataFrame) -> pd.DataFrame:
+        """Fill everything submitted.
+
+        These tests are about the freeze / quiet-day CLASSIFICATION, which happens
+        before submission, so most never reach here. The boundary test does, and it
+        asserts a normal, silent trade — so this must actually succeed. Without it
+        the call raised AttributeError, which the old code swallowed with no alert:
+        the test passed only *because* whole-batch submission failures were silent
+        (quantbox#87, caught in review of #131).
+        """
+        return pd.DataFrame(
+            [
+                {
+                    "symbol": o["symbol"],
+                    "side": o["side"],
+                    "qty": o["qty"],
+                    "price": o["price"],
+                    "status": "FILLED",
+                }
+                for _, o in orders.iterrows()
+            ]
+        )
+
 
 def _frozen_orders_df() -> pd.DataFrame:
     """Mirror the live 2026-06-15 orders.parquet: every leg sub-$10, none
