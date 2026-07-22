@@ -359,7 +359,12 @@ class BinanceFuturesBroker:
             sym = str(o["symbol"])
             side = str(o["side"]).lower()
             qty = float(o["qty"])
-            result = self.place_order(sym, side, qty)
+            # A closing order is sent reduce-only so the venue exempts it from the
+            # min-notional floor and it can't flip through zero. Optional column,
+            # NaN-safe (a mixed-column frame fills it NaN; bool(NaN) is True).
+            _ro = o.get("reduce_only", False)
+            reduce_only = bool(_ro) if pd.notna(_ro) else False
+            result = self.place_order(sym, side, qty, reduce_only=reduce_only)
             if result:
                 fill_price = float(result.get("average", result.get("price", 0)) or 0)
                 filled_qty = float(result.get("filled", qty) or qty)
@@ -456,6 +461,7 @@ class BinanceFuturesBroker:
         side: str,  # 'buy' or 'sell'
         quantity: float,
         order_type: str = "market",
+        reduce_only: bool = False,
     ) -> dict | None:
         """
         Place an order.
@@ -488,10 +494,23 @@ class BinanceFuturesBroker:
         if not price:
             return None
 
+        # A reduce-only close is exempt from the min-notional floor — the venue
+        # accepts it (it cannot open/increase exposure), and blocking it here is
+        # what traps a sub-min residual (quantbox#87). Only OPENS are gated.
         notional = adj_qty * price
         if notional < info["min_notional"]:
-            logger.warning(f"Order notional ${notional:.2f} below minimum ${info['min_notional']}")
-            return None
+            if reduce_only:
+                logger.info(
+                    "Reduce-only %s %s: notional $%.2f below $%.2f floor — sending anyway "
+                    "(exits are never blocked by a minimum-size filter).",
+                    side,
+                    symbol,
+                    notional,
+                    info["min_notional"],
+                )
+            else:
+                logger.warning(f"Order notional ${notional:.2f} below minimum ${info['min_notional']}")
+                return None
 
         # Set leverage
         self.set_leverage(symbol, self.target_leverage)
@@ -504,6 +523,7 @@ class BinanceFuturesBroker:
                     type=order_type,
                     side=side,
                     amount=adj_qty,
+                    params={"reduceOnly": True} if reduce_only else {},
                 )
 
                 fill_price = float(order.get("average", order.get("price", price)))
@@ -545,11 +565,12 @@ class BinanceFuturesBroker:
             logger.info(f"No position to close for {symbol}")
             return None
 
-        # Opposite side to close
+        # Opposite side to close. reduce_only so a full close is exempt from the
+        # min-notional floor and can't flip through zero (matches Hyperliquid).
         side = "sell" if pos["side"] == "long" else "buy"
         quantity = abs(pos["size"])
 
-        return self.place_order(symbol, side, quantity)
+        return self.place_order(symbol, side, quantity, reduce_only=True)
 
     # ========================================================================
     # Rebalancing

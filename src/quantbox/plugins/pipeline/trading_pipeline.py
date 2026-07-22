@@ -875,13 +875,6 @@ class TradingPipeline:
             # (staying in cash). This is INFO-level, NOT a freeze — monitors must
             # NOT alarm on it.
             "quiet_day": 1.0 if execution_report.get("quiet_day") else 0.0,
-            # Un-closable exposure: a flat-target holding whose close-out is below
-            # the venue minimum. Alarm on this — the loop cannot clear it (#87).
-            "trapped_residuals": float(
-                len(str(execution_report.get("trapped_residuals", "")).split(", "))
-                if execution_report.get("trapped_residuals")
-                else 0
-            ),
             # Tier-2 exception inputs (#62).
             "data_stale": 1.0 if data_stale else 0.0,
             "data_age_seconds": float(data_age_seconds) if data_age_seconds is not None else -1.0,
@@ -912,9 +905,8 @@ class TradingPipeline:
                 "freeze_reasons": execution_report.get("freeze_reasons", {}),
                 "quiet_day": bool(execution_report.get("quiet_day", False)),
                 "quiet_reasons": execution_report.get("quiet_reasons", {}),
-                # Un-closable residuals + this cycle's order failures (#87). Both
-                # are first-class exception inputs the notifier must alert on.
-                "trapped_residuals": execution_report.get("trapped_residuals", ""),
+                # This cycle's order failures (#87) — a first-class exception input
+                # the notifier must alert on, from every exit of _execute_orders.
                 "order_failures": int(execution_report.get("order_failures", 0)),
                 "order_failure_detail": execution_report.get("order_failure_detail", ""),
                 # Tier-2 exception inputs the notifier threads into BookContext (#62).
@@ -1670,37 +1662,6 @@ class TradingPipeline:
             else orders_df
         )
 
-        # --- Trapped-residual report (quantbox#87) -------------------------
-        # A holding with a flat target whose close-out is below the VENUE's own
-        # minimum cannot be closed by an ordinary order. The rebalancer now
-        # suppresses those instead of re-sending them daily, so this is the only
-        # place they surface. Report unconditionally — a trapped residual is real
-        # unwanted exposure whether or not the rest of the batch traded, and the
-        # existing freeze guards only fire on a TOTAL standstill.
-        if "Order Status" in orders_df.columns:
-            trapped = orders_df[orders_df["Order Status"] == "Trapped residual"]
-            if len(trapped) > 0:
-                trapped_list = ", ".join(
-                    f"{r.get('Asset', '')} (${float(r.get('Notional Value', 0) or 0):.2f})"
-                    for _, r in trapped.iterrows()
-                )
-                report["trapped_residuals"] = trapped_list
-                logger.error(
-                    "TRAPPED RESIDUALS (%d): %s — un-closable below the venue minimum; manual intervention required.",
-                    len(trapped),
-                    trapped_list,
-                )
-                notify = getattr(broker, "notify", None)
-                if callable(notify):
-                    try:
-                        notify(
-                            f"🪤 <b>{len(trapped)} TRAPPED RESIDUAL(S)</b>\n{trapped_list}\n"
-                            "Flat target, but the close-out is below the venue minimum. "
-                            "Clear manually — the loop cannot."
-                        )
-                    except Exception as exc:  # never let alerting crash the run
-                        logger.warning("Trapped-residual notify failed: %s", exc)
-
         # --- Pre-execution FLATTEN gate (enforce mode, issue #90) ----------
         # Keep only exposure-reducing orders (clamped so they never cross zero).
         if gate_reduce_only and isinstance(executable, pd.DataFrame) and not executable.empty:
@@ -1730,7 +1691,6 @@ class TradingPipeline:
                 "Zero quantity",
                 "Zero price",
                 "Invalid (NaN)",
-                "Trapped residual",
             }
             suppressed = pd.DataFrame()
             if "Order Status" in orders_df.columns:
@@ -1845,12 +1805,20 @@ class TradingPipeline:
         for _, row in executable.iterrows():
             action = str(row.get("Action", "")).lower()
             side = "sell" if action == "sell" else "buy"
+            # NaN-safe: a mixed-column DataFrame fills a missing reduce_only with
+            # NaN, and bool(NaN) is True — which would send OPENS reduce-only.
+            _ro = row.get("reduce_only", False)
+            reduce_only = bool(_ro) if pd.notna(_ro) else False
             broker_orders_data.append(
                 {
                     "symbol": str(row.get("Asset", "")),
                     "side": side,
                     "qty": float(row.get("Adjusted Quantity", 0)),
                     "price": float(row.get("Price", 0)),
+                    # Thread the rebalancer's close flag through so the broker sends
+                    # a flat-target exit reduce-only (venue exempts it from the $10
+                    # minimum; can't flip through zero). Defaults False for opens.
+                    "reduce_only": reduce_only,
                 }
             )
 
@@ -2412,6 +2380,12 @@ class TradingPipeline:
                 continue
             r = row.copy()
             r["Adjusted Quantity"] = new_qty
+            # Exposure-reducing under a FLATTEN gate, i.e. an emergency exit. Mark
+            # reduce_only so the broker sends reduceOnly: the venue exempts a
+            # sub-min close from its min-notional floor and it can never flip
+            # through zero. Without this the gate's own exits could be rejected as
+            # ordinary sub-min orders (quantbox#87 / #138 review).
+            r["reduce_only"] = True
             kept.append(r)
         return pd.DataFrame(kept) if kept else executable.iloc[0:0]
 
