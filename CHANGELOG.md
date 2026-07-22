@@ -29,6 +29,12 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.3.17 (2026-07-22)
+
+### Fix
+
+- **live**: send flat-target closes reduce-only; correct the #87 root cause (#137)
+
 ## v0.3.16 (2026-07-22)
 
 ### Fix
