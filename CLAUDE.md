@@ -12,11 +12,30 @@ A **template-driven SDK with adapters** for quant research and production. Three
 
 The plugin runtime (`run_from_config`, CLI) is *one* of multiple entry points — see the [layered API](docs/architecture/api-layers.md) (L0–L5). Casual use defaults to L0/L1 (re-exports + convenience helpers). YAML pipelines are L4. Production is L5 with `--strict`.
 
-QuantBox is a **composing framework** — owned and opinionated, but composing external libraries (vectorbt, MLflow, riskfolio, optionally Qlib) rather than competing with them on their turf. See [ADR-0001](docs/decisions/DEC-0001-library-not-framework.md).
+QuantBox is a **composing framework** — owned and opinionated, but composing external libraries (vectorbt, MLflow, riskfolio, optionally Qlib) rather than competing with them on their turf. See [ADR-0001](docs/adr/0001-library-not-framework.md).
 
-## Task source: github (repo: tomlupo/quantbox)
+## Task source: Linear (team TOM, project quantbox)
 
-Tasks and issues live in **GitHub Issues** on `tomlupo/quantbox`. Create with `gh issue create`, list with `gh issue list` (or the qute-essentials `/task` and `/board` skills, which honor this `## Task source: github` declaration and route to GitHub). **Never Paperclip** — the fleet's Paperclip orchestrator is retired.
+**Linear is the task source** (qute-code-kit ADR-0004). Tasks, planning, and agent
+assignment live in Linear — see [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md)
+for the binding (machine marker `qute-tracker: linear team=TOM`). qute `/task` and
+`/repo-status` route there automatically. **GitHub Issues on `tomlupo/quantbox` are issue
+*records* only** — bugs/defects/tech-debt attached to the code; an issue becomes work only
+when a Linear task references it. Never pull work from the Issues list directly. **Never
+Paperclip** — the fleet's Paperclip orchestrator is retired.
+
+## qute runtime
+
+This repo runs the standard qute regime (qute-code-kit ADR-0001..0004). Key skills:
+
+- `/task` + `/repo-status` — honor [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md) (Linear).
+- `/decision` — records ADRs to [`docs/adr/`](docs/adr/) (`NNNN-title.md`).
+- `/handoff` + `/pickup` — the continuity pair for pausing/resuming work.
+- `/ship` — the release boundary (commitizen, annotated `vX.Y.Z` tags on `main`).
+- Guards (secrets, audit, destructive-command, lakera/langfuse) stay active under all workflows.
+
+Jimek dispatch + workflow policy is declared in [`conductor.yml`](conductor.yml).
+Which skill when: qute-code-kit `docs/playbooks/skill-router.md`.
 
 ## Authoritative docs (read in order)
 
@@ -30,7 +49,7 @@ Tasks and issues live in **GitHub Issues** on `tomlupo/quantbox`. Create with `g
 | 6 | [`docs/architecture/lifecycle.md`](docs/architecture/lifecycle.md) | `meta.status` state machine, reproducibility, promotion. |
 | 7 | [`templates/README.md`](templates/README.md) | Copy-paste scaffolds for methodology, dataset, runbook, and decision-record docs. Used by `quantbox new` and consumed by `/promote-lock`. |
 
-For step-by-step modifications, see [`docs/playbooks/`](docs/playbooks/). For historical decisions, see [`docs/decisions/`](docs/decisions/).
+For step-by-step modifications, see [`docs/playbooks/`](docs/playbooks/). For historical decisions, see [`docs/adr/`](docs/adr/).
 
 ## Project layout
 
