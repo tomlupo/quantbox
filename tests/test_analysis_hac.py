@@ -179,6 +179,14 @@ def test_factor_regression_nonfinite_factors_raises():
         factor_regression(y, F, ["a", "b"])
 
 
+def test_factor_regression_y_length_mismatch_raises():
+    rng = np.random.default_rng(14)
+    F = rng.normal(0, 0.01, (200, 2))
+    y = rng.normal(0, 0.01, 199)  # one short of the factor panel's row count
+    with pytest.raises(ValueError, match="y has"):
+        factor_regression(y, F, ["a", "b"])
+
+
 def test_factor_regression_one_sided_pvalue_consistent_with_tstat():
     from scipy.stats import norm
 

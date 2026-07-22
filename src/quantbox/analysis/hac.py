@@ -165,6 +165,8 @@ def factor_regression(y, factors, factor_names: list[str], lags: int | None = No
             f"factor_names has {len(factor_names)} entries but the factor panel has {k_f} "
             "columns — these must match 1:1."
         )
+    if y.size != n:
+        raise ValueError(f"y has {y.size} observations but the factor panel has {n} rows — these must match 1:1.")
 
     y_bad = int((~np.isfinite(y)).sum())
     if y_bad:
