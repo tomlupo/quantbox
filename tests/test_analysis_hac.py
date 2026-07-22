@@ -150,6 +150,43 @@ def test_factor_regression_collinear_factors_return_none_alpha():
     assert reg["alpha_tstat"] is None
 
 
+def test_factor_regression_factor_names_length_mismatch_raises():
+    rng = np.random.default_rng(11)
+    n = 200
+    F = rng.normal(0, 0.01, (n, 3))
+    y = rng.normal(0, 0.01, n)
+    with pytest.raises(ValueError, match="factor_names has"):
+        factor_regression(y, F, ["mkt", "mom"])  # 2 names, 3 factor columns
+
+
+def test_factor_regression_nonfinite_y_raises():
+    rng = np.random.default_rng(12)
+    n = 200
+    F = rng.normal(0, 0.01, (n, 2))
+    y = rng.normal(0, 0.01, n)
+    y[5] = np.nan
+    with pytest.raises(ValueError, match="NaN/Inf"):
+        factor_regression(y, F, ["a", "b"])
+
+
+def test_factor_regression_nonfinite_factors_raises():
+    rng = np.random.default_rng(13)
+    n = 200
+    F = rng.normal(0, 0.01, (n, 2))
+    F[9, 1] = np.inf
+    y = rng.normal(0, 0.01, n)
+    with pytest.raises(ValueError, match="NaN/Inf"):
+        factor_regression(y, F, ["a", "b"])
+
+
+def test_factor_regression_y_length_mismatch_raises():
+    rng = np.random.default_rng(14)
+    F = rng.normal(0, 0.01, (200, 2))
+    y = rng.normal(0, 0.01, 199)  # one short of the factor panel's row count
+    with pytest.raises(ValueError, match="y has"):
+        factor_regression(y, F, ["a", "b"])
+
+
 def test_factor_regression_one_sided_pvalue_consistent_with_tstat():
     from scipy.stats import norm
 
