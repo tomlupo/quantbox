@@ -160,6 +160,25 @@ def factor_regression(y, factors, factor_names: list[str], lags: int | None = No
     n, k_f = F.shape
     if k_f == 0:
         raise ValueError("factor panel has zero columns — cannot run a factor decomposition")
+    if len(factor_names) != k_f:
+        raise ValueError(
+            f"factor_names has {len(factor_names)} entries but the factor panel has {k_f} "
+            "columns — these must match 1:1."
+        )
+
+    y_bad = int((~np.isfinite(y)).sum())
+    if y_bad:
+        raise ValueError(
+            f"{y_bad} of {y.size} y observations are NaN/Inf — refusing to silently drop them "
+            "(a corrupt file must not pass on the surviving subset)."
+        )
+    f_bad = int((~np.isfinite(F)).sum())
+    if f_bad:
+        raise ValueError(
+            f"{f_bad} of {F.size} factor panel entries are NaN/Inf — refusing to silently drop "
+            "them (a corrupt file must not pass on the surviving subset)."
+        )
+
     k = k_f + 1  # +1 for the intercept
 
     base = {
