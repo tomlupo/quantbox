@@ -272,6 +272,55 @@ def test_trapped_residual_alerts_even_when_other_orders_trade():
 # ---------------------------------------------------------------------------
 # 4. An unreadable balance is unknown, not zero
 # ---------------------------------------------------------------------------
+def test_enforce_dropping_every_order_still_alerts():
+    """Enforce-mode intent capture dropping the whole batch is a total trading
+    standstill — the exact case a human must hear about.
+
+    Caught in review of #132: that early return also skipped the failure report.
+    """
+    pipe = TradingPipeline()
+    broker = _Broker()
+    report = {
+        "executed_orders": [],
+        "failed_orders": [],
+        "summary": {"total_executed": 0, "total_partial": 0, "total_failed": 2, "total_value": 0.0, "total_cost": 0.0},
+        "orders_details": [
+            {"symbol": "ETH", "action": "sell", "status": "FAILED", "error": "intent capture failed"},
+            {"symbol": "SOL", "action": "sell", "status": "FAILED", "error": "intent capture failed"},
+        ],
+        "api_errors": [],
+    }
+
+    pipe._report_order_failures(report, broker)
+
+    assert report["order_failures"] == 2
+    assert "intent capture failed" in report["order_failure_detail"]
+    assert any("ORDER(S) FAILED" in m for m in broker.notices)
+
+
+def test_spot_probe_failure_refuses_to_size_on_perps_residual():
+    """A unified account holds its real collateral on the SPOT side. If that probe
+    fails, the perps-side number is a residual, not a conservative estimate —
+    sizing on it would silently downsize or flatten the book."""
+    from quantbox.plugins.broker.hyperliquid import HyperliquidBroker
+
+    broker = HyperliquidBroker.__new__(HyperliquidBroker)
+    broker.telegram_token = ""
+    broker.telegram_chat_id = ""
+
+    class _SpotDown:
+        def fetch_balance(self, params=None):
+            if params and params.get("type") == "spot":
+                raise RuntimeError("spot endpoint 503")
+            # Perps side reports only a tiny residual.
+            return {"USDC": {"total": 2.14, "free": 2.14, "used": 0.0}}
+
+    broker._exchange = _SpotDown()
+
+    with pytest.raises(BrokerExecutionError, match="unknown equity"):
+        broker.get_balance()
+
+
 def test_get_balance_raises_instead_of_fabricating_zero():
     from quantbox.plugins.broker.hyperliquid import HyperliquidBroker
 

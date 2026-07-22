@@ -1927,6 +1927,11 @@ class TradingPipeline:
                 broker_orders = broker_orders.drop(broker_orders.index[dropped_idx]).reset_index(drop=True)
                 if broker_orders.empty:
                     logger.error("RECON ENFORCE: all orders dropped (intent capture failed) — nothing sent.")
+                    # Same rule as the batch-exception path: every exit from this
+                    # method that leaves failures on the report must report them.
+                    # Dropping the entire batch under enforce IS a total trading
+                    # standstill — precisely when a human must be told.
+                    self._report_order_failures(report, broker)
                     return report
 
         def _record_result(symbol: str, side: str, status: str, filled_qty: Any = None, avg_px: Any = None) -> None:
