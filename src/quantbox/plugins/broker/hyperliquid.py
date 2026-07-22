@@ -537,7 +537,12 @@ class HyperliquidBroker:
             sym = str(o["symbol"])
             side = str(o["side"]).lower()
             qty = float(o["qty"])
-            result = self.place_order(sym, side, qty)
+            # A closing order carries reduce_only so the venue exempts it from the
+            # $10 minimum and it can never flip the position through zero. Optional
+            # column, NaN-safe (a mixed-column frame fills it NaN; bool(NaN) is True).
+            _ro = o.get("reduce_only", False)
+            reduce_only = bool(_ro) if pd.notna(_ro) else False
+            result = self.place_order(sym, side, qty, reduce_only=reduce_only)
             if result:
                 status, filled_qty, fill_price, reason = resolve_fill(
                     result,
@@ -709,9 +714,33 @@ class HyperliquidBroker:
         if not price:
             return None
 
-        # Check minimum notional
+        # Check minimum notional — but NEVER on a reduce-only order.
+        #
+        # This guard is a churn/economics filter for orders that OPEN or INCREASE
+        # exposure. Applying it to a position-closing reduce-only order is the
+        # bug behind quantbox#87: carver-HL's sub-$10 ETH/SOL/ARB exits were
+        # rejected HERE, never sent, and reported as "placement failed" — 71
+        # times over 33 days. The error string made it look like the venue was
+        # refusing them. It was not: verified live on 2026-07-22, Hyperliquid
+        # ACCEPTS a full reduce-only close below its own minimum (SOL 0.03,
+        # $2.33, filled at 77.773). The exit was available the whole time.
+        #
+        # A reduce-only order cannot increase exposure by construction, so there
+        # is nothing for a minimum-size filter to protect against — and refusing
+        # to let a book out of a position is strictly more dangerous than letting
+        # it place a small order.
         notional = quantity * price
-        if notional < self.risk.min_order_notional:
+        if reduce_only:
+            if notional < self.risk.min_order_notional:
+                logger.info(
+                    "Reduce-only %s %s: notional $%.2f is below the $%.2f floor — sending anyway "
+                    "(exits are never blocked by a minimum-size filter).",
+                    side,
+                    symbol,
+                    notional,
+                    self.risk.min_order_notional,
+                )
+        elif notional < self.risk.min_order_notional:
             logger.warning(f"Order notional ${notional:.2f} below minimum ${self.risk.min_order_notional}")
             return None
 
@@ -729,9 +758,13 @@ class HyperliquidBroker:
             logger.warning(f"Quantity rounds to zero for {symbol} (precision={precision})")
             return None
 
-        # Check exchange minimum quantity
+        # Check exchange minimum quantity — again, never on a reduce-only close.
+        # (On Hyperliquid amount.min is unset, so this is inert here; kept
+        # consistent with the notional guard for any venue that does set it, and
+        # so the exit path has a single rule: a position-closing order is never
+        # blocked by a minimum-size filter.)
         min_qty = market.get("limits", {}).get("amount", {}).get("min") or 0
-        if min_qty and quantity < min_qty:
+        if min_qty and quantity < min_qty and not reduce_only:
             logger.warning(f"Quantity {quantity} below exchange minimum {min_qty} for {symbol}")
             return None
 

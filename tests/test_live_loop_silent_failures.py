@@ -47,13 +47,16 @@ def _rebal_row(asset, *, action, delta_qty, price, weight_delta, target_weight, 
 
 
 # ---------------------------------------------------------------------------
-# 2. A close-out below the VENUE minimum is trapped, not re-sent forever
+# 2. A sub-$10 close-out is SENT reduce-only, not suppressed
 # ---------------------------------------------------------------------------
-def test_close_out_below_venue_minimum_is_trapped_not_emitted():
+def test_close_out_below_venue_minimum_is_sent_reduce_only():
     """The live ETH case: 0.0022 ETH @ $1930 = $4.25, flat target, HL min $10.
 
-    Emitting this produces "placement failed" every cycle forever. It must be
-    classified as a trapped residual and NOT sent.
+    Verified live 2026-07-22: Hyperliquid ACCEPTS a full reduce-only close below
+    its $10 minimum. The sub-$10 close must therefore be executable and flagged
+    reduce_only, NOT suppressed. (The earlier "trapped residual" behaviour was
+    built on the false premise that the venue rejected these — it was our own
+    client-side guard, hyperliquid.py:641.)
     """
     reb = FuturesRebalancer()
     df = pd.DataFrame(
@@ -73,12 +76,12 @@ def test_close_out_below_venue_minimum_is_trapped_not_emitted():
         df,
         min_trade_size=MIN_TRADE,
         min_notional=MIN_NOTIONAL,
-        # The venue's real floor — this is what the old code ignored for closes.
-        min_notional_map={"ETH": 10.0},
+        min_notional_map={"ETH": 10.0},  # venue floor; closes are exempt reduce-only
     )
     row = orders.iloc[0]
-    assert row["Order Status"] == "Trapped residual"
-    assert not bool(row["Executable"]), "a venue-rejectable close-out must not be sent"
+    assert row["Order Status"] == "To be placed"
+    assert bool(row["Executable"]), "a sub-$10 close must still be sent (reduce-only)"
+    assert bool(row["reduce_only"]), "a flat-target close must carry the reduce_only flag"
 
 
 def test_close_out_above_venue_minimum_still_exits():
@@ -237,36 +240,40 @@ def test_batch_submission_exception_still_alerts():
     assert any("ORDER(S) FAILED" in m for m in broker.notices), "a whole-batch submission failure must reach a human"
 
 
-def test_trapped_residual_alerts_even_when_other_orders_trade():
-    """A trapped residual is real unwanted exposure regardless of the rest of the
-    batch, so it must alert on its own."""
-    pipe = TradingPipeline()
-    broker = _Broker()
-    orders = pd.DataFrame(
-        [
-            _executable("PEPE", "Buy", 100.0, 1.0),
-            {
-                "Asset": "ETH",
-                "Action": "Sell",
-                "Adjusted Quantity": 0.0,
-                "Price": 1930.0,
-                "Notional Value": 4.25,
-                "Order Status": "Trapped residual",
-                "Executable": False,
-            },
-        ]
-    )
+def test_reduce_only_flag_threads_to_broker():
+    """A closing order's reduce_only flag must reach the broker so the venue
+    exempts it from the $10 minimum."""
 
+    class _CaptureBroker(_Broker):
+        def __init__(self):
+            super().__init__()
+            self.seen: list[dict] = []
+
+        def place_orders(self, orders: pd.DataFrame) -> pd.DataFrame:
+            self.seen = orders.to_dict("records")
+            return pd.DataFrame(
+                [
+                    {"symbol": o["symbol"], "side": o["side"], "qty": o["qty"], "price": o["price"], "status": "FILLED"}
+                    for _, o in orders.iterrows()
+                ]
+            )
+
+    pipe = TradingPipeline()
+    broker = _CaptureBroker()
+    close = _executable("ETH", "Sell", 0.0022, 1930.0)
+    close["reduce_only"] = True
+    open_ = _executable("PEPE", "Buy", 100.0, 1.0)  # reduce_only absent -> False
     report = pipe._execute_orders(
         broker=broker,
-        orders_df=orders,
+        orders_df=pd.DataFrame([open_, close]),
         stable_coin="USDC",
         trading_enabled=True,
         mode="live",
     )
-
-    assert "ETH" in report.get("trapped_residuals", "")
-    assert any("TRAPPED RESIDUAL" in m for m in broker.notices)
+    assert report["summary"]["total_failed"] == 0
+    by_sym = {o["symbol"]: o for o in broker.seen}
+    assert by_sym["ETH"]["reduce_only"] is True, "the close must be sent reduce-only"
+    assert not by_sym["PEPE"].get("reduce_only", False), "an open must not be reduce-only"
 
 
 # ---------------------------------------------------------------------------

@@ -395,26 +395,20 @@ class FuturesRebalancer:
                 effective_min_notional = min_notional
 
             # A position-flattening order: the target is flat (weight 0) but we
-            # still hold the asset. Exits are exempt from OUR no-trade bands
-            # (min_trade_size, and an operator-configured min_notional) — a churn
-            # filter must never trap an open position we want to close. This is
-            # what stranded the live ETH/SOL longs (2026-05-26).
-            is_closing = row.get("Target Weight", 0) == 0 and row.get("Current Quantity", 0) != 0
-
-            # …but an exit is NOT exempt from the VENUE's own floor, because the
-            # venue will simply reject it. Exempting closes from `per_pair_min` as
-            # well turned a silent client-side suppression into a doomed order
-            # re-sent every single cycle: carver-HL emitted the identical sub-$10
-            # ETH/SOL/ARB close-outs for 33 consecutive days, all rejected
-            # ("placement failed"), with no escalation (quantbox#87).
+            # still hold the asset. On a futures/perps venue a closing order is
+            # sent REDUCE-ONLY, which the venue exempts from its min-notional
+            # floor and which can never flip the position through zero. So a close
+            # is ALWAYS sendable — exempt from our churn bands AND the venue floor.
             #
-            # A close-out below the venue floor is UN-CLOSABLE by an ordinary
-            # order. Emitting it anyway does not free the position — it only
-            # manufactures a daily failure that drowns out real signal. Classify
-            # it as a first-class TRAPPED residual instead: do not send it, and
-            # surface it so a human can clear it (scale the position above the
-            # venue minimum and close, or close on the venue UI).
-            trapped_residual = is_closing and 0 < notional_value < per_pair_min
+            # This corrects the quantbox#87 story: carver-HL's sub-$10 ETH/SOL/ARB
+            # closes were NOT rejected by Hyperliquid. They were rejected by our
+            # own client-side min-notional guard before submission, and the
+            # "placement failed" error string made it look like the venue's doing.
+            # Verified live 2026-07-22: HL accepts a full reduce-only close below
+            # its $10 minimum (SOL 0.03, $2.33, filled). The exit was available
+            # the whole time — the earlier "trapped residual" suppression was built
+            # on that false premise and is removed.
+            is_closing = row.get("Target Weight", 0) == 0 and row.get("Current Quantity", 0) != 0
 
             # Guard against NaN / missing-data targets. A NaN price or quantity
             # (e.g. a Hyperliquid missing-candle glitch) otherwise slips through
@@ -437,23 +431,6 @@ class FuturesRebalancer:
                 status = "Zero delta"
                 reason = "No trade needed"
                 adjusted_qty = 0.0
-            elif trapped_residual:
-                status = "Trapped residual"
-                reason = (
-                    f"Close-out ${notional_value:.2f} is below the venue minimum "
-                    f"${per_pair_min:.2f} — un-closable by an ordinary order; NOT sent"
-                )
-                adjusted_qty = 0.0
-                logger.error(
-                    "TRAPPED RESIDUAL %s: holding %.8f ($%.2f) with a flat target, but the "
-                    "close-out is below the venue minimum $%.2f. The position CANNOT be closed "
-                    "by this loop — clear it manually (scale above the minimum then close, or "
-                    "close on the venue UI). Suppressing the order so it stops failing daily.",
-                    asset,
-                    row.get("Current Quantity", 0.0),
-                    notional_value,
-                    per_pair_min,
-                )
             elif abs(row["Weight Delta"]) < min_trade_size and not is_closing:
                 status = "Below threshold"
                 reason = f"abs(weight delta) < {min_trade_size}"
@@ -499,6 +476,9 @@ class FuturesRebalancer:
                     "Notional Value": notional_value,
                     "Order Status": status,
                     "Reason": reason,
+                    # A flat-target close is sent reduce-only: the venue exempts it
+                    # from the min-notional floor and it can't flip through zero.
+                    "reduce_only": bool(is_closing),
                 }
             )
 
