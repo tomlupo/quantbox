@@ -9,7 +9,7 @@ name: review-gate
 # can't hard-block; an agent-side guard + the GH pull-tick back it up.)
 on:
   pull_request:
-    types: [opened, reopened, synchronize, ready_for_review]
+    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
     branches: [dev, main]
   pull_request_review:
     types: [submitted, dismissed]
@@ -43,7 +43,22 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           AUTHOR: ${{ github.event.pull_request.user.login }}
+          # Tier stamped by the jimek conductor. Read from the event payload —
+          # on labeled/unlabeled the payload carries the post-change label set.
+          TIER_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: |
+          # ── tier awareness (Jimek rigor doctrine, ADR-0005 §4) ──
+          # `jimek-tier:trivial` requires NO independent review by doctrine
+          # (auto-merge on green CI). The label is stamped by the jimek
+          # conductor — a trusted writer, not PR-head content — so a PR cannot
+          # stamp itself down a tier. standard/complex, and NO label at all
+          # (a standalone or interactive PR), still require a review.
+          case ",$TIER_LABELS," in
+            *",jimek-tier:trivial,"*)
+              echo "jimek-tier:trivial — no independent review required by doctrine. Gate passes."
+              exit 0
+              ;;
+          esac
           COUNT=$(gh api "repos/$REPO/pulls/$PR/reviews" \
             | jq --arg a "$AUTHOR" '[.[] | select((.state=="COMMENTED" or .state=="APPROVED" or .state=="CHANGES_REQUESTED") and .user.login != $a)] | length')
           echo "Independent (non-author) review objects on PR #$PR: $COUNT"
