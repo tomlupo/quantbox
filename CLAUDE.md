@@ -221,8 +221,8 @@ Quantbox uses custom exceptions (see `quantbox.exceptions`):
 
    a. On `dev`, run **`/ship`**. It bumps `pyproject.toml` + `CHANGELOG.md` and
       cuts the annotated `vX.Y.Z` tag. Never hand-roll `cz bump` — `/ship` is the
-      single writer of a version or a tag, and a raw bump makes a LIGHTWEIGHT tag
-      that `git push --follow-tags` silently declines to push, so it stays local
+      single writer of a version or a tag, and without `annotated_tag` a raw bump
+      makes a LIGHTWEIGHT tag that `git push --follow-tags` silently declines to push, so it stays local
       until something downstream cannot resolve it. (`annotated_tag = true` in
       `[tool.commitizen]` is the second line of defence.)
    b. Push `dev` **and the tag**: `git push origin dev && git push origin vX.Y.Z`.

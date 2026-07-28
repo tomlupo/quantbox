@@ -95,8 +95,8 @@ version_files = [
     # tmp/finish-20260728.sh, step `release`.
 ]
 update_changelog_on_bump = true
-# ANNOTATED, always. cz creates a LIGHTWEIGHT tag by default, and
-# `git push --follow-tags` pushes only annotated tags. A lightweight tag therefore never leaves the machine while the
+# ANNOTATED, always. WITHOUT this setting cz creates a LIGHTWEIGHT tag, and
+# `git push --follow-tags` pushes only annotated ones. A lightweight tag therefore never leaves the machine while the
 # push reports success; on 2026-07-28 that surfaced three steps later as
 # `uv lock` failing with "couldn't find remote ref refs/tags/v0.4.1".
 #
