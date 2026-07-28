@@ -100,5 +100,5 @@ A pipeline plugin that, in its `run()`, invokes a proposer + nested pipeline N t
 - Encoded in [`docs/architecture/autoresearch.md`](../architecture/autoresearch.md) — the full design.
 - Operationalized in [`docs/playbooks/run-an-autoresearch-loop.md`](../playbooks/run-an-autoresearch-loop.md) — step-by-step.
 - Skill at `quantbox/skills/quantbox-autoresearch/` — currently a stub, blocked on driver implementation.
-- Design flows from [ADR-0001](DEC-0001-library-not-framework.md) (composing framework — proposers and search are adapters) and [ADR-0002](0002-layered-api.md) (driver placement at L4 follows the layered API rule).
+- Design flows from [ADR-0001](0001-library-not-framework.md) (composing framework — proposers and search are adapters) and [ADR-0002](0002-layered-api.md) (driver placement at L4 follows the layered API rule).
 - Inspired by patterns from LLM-driven autonomous research loops (Karpathy and others); QuantBox's contribution is the convention layer (memory format, lifecycle integration, budget primitives, statistical gates) — the heavy lifting is delegated to existing libraries.
