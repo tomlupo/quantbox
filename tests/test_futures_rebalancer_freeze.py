@@ -295,6 +295,32 @@ def test_broker_side_freeze_recovers_notional_from_intent():
     assert "ADA" in broker.messages[0]
 
 
+def test_broker_side_freeze_keeps_duplicate_same_side_intents_distinct():
+    """Regression for the #144 review blocker.
+
+    The intent map was keyed only by (symbol, side), so two SELLs of the same
+    symbol collapsed to the last one: a $12 trapped residual was reported as
+    $1.20 (and its shortfall line vanished). Each frozen row must carry its OWN
+    submitted notional.
+    """
+    pipe = TradingPipeline()
+    broker = _SkippingBroker()
+    orders = pd.concat([_executable_sell_df(), _executable_sell_df()], ignore_index=True)
+    orders.loc[1, ["Adjusted Quantity", "Notional Value"]] = [10.0, 1.2]
+
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=orders,
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+    )
+
+    assert report.get("frozen") is True
+    notionals = [r["notional_usd"] for r in report["frozen_orders"] if r["symbol"] == "ADA"]
+    assert sorted(notionals) == [1.2, 12.0], f"duplicate (symbol, side) intents collapsed: {notionals}"
+
+
 def _frozen_orders_df() -> pd.DataFrame:
     """Mirror the live 2026-06-15 orders.parquet: every leg sub-$10, none
     executable."""

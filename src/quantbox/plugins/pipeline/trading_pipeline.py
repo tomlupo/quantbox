@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import importlib
 import logging
+from collections import defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1860,7 +1861,13 @@ class TradingPipeline:
         # Deliberately a SIDE MAP rather than extra columns on broker_orders:
         # that frame is handed to third-party adapters, and widening it risks a
         # broker treating an unexpected column as an order field.
-        order_intent: dict[tuple[str, str], dict[str, float]] = {}
+        #
+        # A per-key FIFO, not a single dict entry: two orders can share
+        # (symbol, side) — the intent/result matching below already carries a FIFO
+        # for exactly that shape. With last-wins, both frozen rows would report the
+        # LAST order's notional, so a $12 trapped residual reads as $1.20 (caught in
+        # review of #144).
+        order_intent: dict[tuple[str, str], deque[dict[str, float]]] = defaultdict(deque)
         for _, row in executable.iterrows():
             action = str(row.get("Action", "")).lower()
             side = "sell" if action == "sell" else "buy"
@@ -1881,10 +1888,12 @@ class TradingPipeline:
                     "reduce_only": reduce_only,
                 }
             )
-            order_intent[(symbol, side)] = {
-                "notional": float(row.get("Notional Value", 0) or 0),
-                "min_notional": float(row.get("Min Notional", 0) or 0),
-            }
+            order_intent[(symbol, side)].append(
+                {
+                    "notional": float(row.get("Notional Value", 0) or 0),
+                    "min_notional": float(row.get("Min Notional", 0) or 0),
+                }
+            )
 
         broker_orders = pd.DataFrame(broker_orders_data)
         if broker_orders.empty:
@@ -1896,8 +1905,7 @@ class TradingPipeline:
         # trail: an intent on disk before submission proves what the system meant
         # to do even if the run dies mid-submission. `intent_refs` is a per-(symbol,
         # side) FIFO of order_refs so results bind one-to-one to intents below.
-        from collections import defaultdict
-
+        #
         # Per-(symbol, side) FIFO of order_refs. A None entry is a SENTINEL for an
         # order that executed but whose intent write failed (observe) — it reserves
         # the positional slot so results stay 1:1 without recording against a
@@ -2143,7 +2151,10 @@ class TradingPipeline:
                 def _frozen_record(d: dict[str, Any]) -> dict[str, Any]:
                     symbol = str(d.get("symbol", ""))
                     action = str(d.get("action", ""))
-                    intent = order_intent.get((symbol, action.lower()), {})
+                    # Consume the FIFO so duplicate (symbol, side) orders each get
+                    # their OWN intent rather than all reading the last one.
+                    pending = order_intent.get((symbol, action.lower()))
+                    intent = pending.popleft() if pending else {}
                     notional = d.get("notional") or d.get("target_value") or intent.get("notional") or 0
                     min_notional = d.get("min_notional") or intent.get("min_notional") or 0
                     return {
