@@ -215,19 +215,27 @@ Quantbox uses custom exceptions (see `quantbox.exceptions`):
 1. **Feature work → PR to `dev`** (`gh pr create --base dev`). CI tests + the
    independent-reviewer gate run on `dev` PRs (both wired in `.github/workflows`).
    Merge feature PRs into `dev`, never straight to `main`.
-2. **Release → run `/ship`.** It bumps the version + CHANGELOG via commitizen
-   and cuts the annotated `vX.Y.Z` tag; you then PR `dev` → `main`
-   (`--base main --head dev`), bump the `quantbox @ …@vX.Y.Z` pin in
-   `quantbox-live/pyproject.toml`, and redeploy (the `sudo -u prod` step).
+2. **Release.** In order, because the order is what keeps the tag honest:
 
-   **Do not hand-roll `cz bump`.** `/ship` is the single writer of a version or
-   a tag (see the qute runtime section above), and the steps are coupled in
-   non-obvious ways: a raw `cz bump` produces a LIGHTWEIGHT tag, which
-   `git push --follow-tags` silently declines to push — the push succeeds, the
-   tag stays local, and nothing surfaces until a downstream `uv lock` cannot
-   resolve it. That is how v0.4.1 shipped untagged on 2026-07-28. `annotated_tag`
-   is now pinned in `[tool.commitizen]` as a second line of defence, but the rule
-   stands: release through `/ship`.
+   a. On `dev`, run **`/ship`** — it bumps `pyproject.toml` + `CHANGELOG.md` via
+      commitizen. Never hand-roll `cz bump`: `/ship` is the single writer of a
+      version or a tag, and a raw bump produces a LIGHTWEIGHT tag that
+      `git push --follow-tags` silently declines to push, so the tag stays local
+      until something downstream cannot resolve it. (`annotated_tag = true` is
+      pinned in `[tool.commitizen]` as a second line of defence.)
+   b. PR `dev` → `main` (`--base main --head dev`) and merge it.
+   c. **Cut the annotated `vX.Y.Z` tag on `main`, after the merge**, and push it.
+
+   **Why (c) comes last:** the `dev` → `main` PR is SQUASH-merged, so the dev
+   commit `/ship` bumped is never an ancestor of `main`. A tag cut on `dev`
+   therefore points at a commit `main` does not contain — and `quantbox-live`
+   pins a TAG, so it would resolve to code that never shipped. That is exactly
+   how `v0.4.0` was cut on 2026-07-28 without the fix that had landed in the
+   meantime, and had to be re-cut as `v0.4.1` against `main`.
+
+   Then bump the `quantbox @ …@vX.Y.Z` pin in `quantbox-live/pyproject.toml` and
+   redeploy (the `sudo -u prod` step). Verify the tag contains what you expect
+   before pinning to it.
 
 `main` is release-only; `dev` is the integration branch. Do NOT PR features to
 `main` (the drift we corrected 2026-07-06 — dev had gone stale while everything
