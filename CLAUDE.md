@@ -215,27 +215,31 @@ Quantbox uses custom exceptions (see `quantbox.exceptions`):
 1. **Feature work → PR to `dev`** (`gh pr create --base dev`). CI tests + the
    independent-reviewer gate run on `dev` PRs (both wired in `.github/workflows`).
    Merge feature PRs into `dev`, never straight to `main`.
-2. **Release.** In order, because the order is what keeps the tag honest:
+2. **Release → `/ship` on `dev`, then merge the PR with a MERGE COMMIT.**
 
-   a. On `dev`, run **`/ship`** — it bumps `pyproject.toml` + `CHANGELOG.md` via
-      commitizen. Never hand-roll `cz bump`: `/ship` is the single writer of a
-      version or a tag, and a raw bump produces a LIGHTWEIGHT tag that
-      `git push --follow-tags` silently declines to push, so the tag stays local
-      until something downstream cannot resolve it. (`annotated_tag = true` is
-      pinned in `[tool.commitizen]` as a second line of defence.)
-   b. PR `dev` → `main` (`--base main --head dev`) and merge it.
-   c. **Cut the annotated `vX.Y.Z` tag on `main`, after the merge**, and push it.
+   a. On `dev`, run **`/ship`**. It bumps `pyproject.toml` + `CHANGELOG.md` and
+      cuts the annotated `vX.Y.Z` tag. Never hand-roll `cz bump` — `/ship` is the
+      single writer of a version or a tag, and a raw bump makes a LIGHTWEIGHT tag
+      that `git push --follow-tags` silently declines to push, so it stays local
+      until something downstream cannot resolve it. (`annotated_tag = true` in
+      `[tool.commitizen]` is the second line of defence.)
+   b. Push `dev` **and the tag**: `git push origin dev && git push origin vX.Y.Z`.
+      Verify it landed — `git ls-remote --tags origin vX.Y.Z` — because a missing
+      tag does not surface until a consumer's `uv lock` fails to resolve it.
+   c. PR `dev` → `main` and merge it with a **merge commit**
+      (`gh pr merge --merge`), **not** `--squash`.
 
-   **Why (c) comes last:** the `dev` → `main` PR is SQUASH-merged, so the dev
-   commit `/ship` bumped is never an ancestor of `main`. A tag cut on `dev`
-   therefore points at a commit `main` does not contain — and `quantbox-live`
-   pins a TAG, so it would resolve to code that never shipped. That is exactly
-   how `v0.4.0` was cut on 2026-07-28 without the fix that had landed in the
-   meantime, and had to be re-cut as `v0.4.1` against `main`.
+   **Why (c) must not squash:** squashing rewrites the bump into a new commit, so
+   the commit `/ship` tagged is never an ancestor of `main` — the tag then points
+   at code `main` does not contain, while `quantbox-live` pins that TAG. That is
+   exactly how `v0.4.0` was cut on 2026-07-28 missing a fix that had landed in
+   between, and had to be re-cut as `v0.4.1` against `main`. A merge commit keeps
+   the tagged commit reachable from `main`, so tag and branch agree by
+   construction rather than by remembering to re-tag.
 
    Then bump the `quantbox @ …@vX.Y.Z` pin in `quantbox-live/pyproject.toml` and
    redeploy (the `sudo -u prod` step). Verify the tag contains what you expect
-   before pinning to it.
+   before pinning to it — `git show vX.Y.Z:<file>`.
 
 `main` is release-only; `dev` is the integration branch. Do NOT PR features to
 `main` (the drift we corrected 2026-07-06 — dev had gone stale while everything
