@@ -85,6 +85,11 @@ version = "0.4.1"
 version_files = [
     "pyproject.toml:version",
     "src/quantbox/__init__.py:__version__",
+    # uv.lock records this package's own version too. Omitting it left the lock
+    # at the PREVIOUS version after every bump — caught in review of #147, where
+    # pyproject said 0.4.1 and uv.lock still said 0.4.0. cz rewrites the literal,
+    # so the lock stays consistent without a follow-up `uv lock`.
+    "uv.lock:version",
 ]
 update_changelog_on_bump = true
 tag_format = "v$version"
