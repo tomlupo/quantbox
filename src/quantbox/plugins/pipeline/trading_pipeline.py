@@ -158,6 +158,50 @@ def _adjust_quantity(qty: float, step_size: float) -> float:
     return float(Decimal(qty).quantize(Decimal("1." + "0" * precision)))
 
 
+def _suppressed_order_records(suppressed: pd.DataFrame) -> list[dict[str, Any]]:
+    """Per-order detail for a freeze, as structured records.
+
+    A freeze alert used to carry only a status HISTOGRAM ("Below min notional=2,
+    Below threshold=1"). That says how many orders died and nothing about which,
+    how big, or how far under the bar they were — so the first question a human
+    asks on being paged ("what could not trade, and by how much?") required
+    opening the run log every time. Everything needed is already on the row; it
+    just never left the pipeline.
+
+    ``shortfall_usd`` is what makes it actionable: it is the gap between the
+    order and the venue minimum, i.e. exactly how much the book would have to
+    grow for this leg to become executable.
+    """
+    records: list[dict[str, Any]] = []
+    for _, row in suppressed.iterrows():
+        notional = float(row.get("Notional Value", 0) or 0)
+        min_notional = float(row.get("Min Notional", 0) or 0)
+        record = {
+            "symbol": str(row.get("Asset", "") or row.get("Symbol", "")),
+            "action": str(row.get("Action", "")).upper(),
+            "notional_usd": notional,
+            "min_notional_usd": min_notional,
+            "status": str(row.get("Order Status", "")),
+            "reason": str(row.get("Reason", "")),
+        }
+        if min_notional > 0 and 0 < notional < min_notional:
+            record["shortfall_usd"] = min_notional - notional
+        records.append(record)
+    return records
+
+
+def _format_suppressed_line(rec: dict[str, Any]) -> str:
+    """One human-readable line per suppressed order, for chat alerts."""
+    line = f"{rec['action']} {rec['symbol']} ${rec['notional_usd']:,.2f}"
+    shortfall = rec.get("shortfall_usd")
+    if shortfall:
+        line += f" (min ${rec['min_notional_usd']:,.2f}, short ${shortfall:,.2f})"
+    detail = rec.get("reason") or rec.get("status")
+    if detail:
+        line += f" — {detail}"
+    return line
+
+
 def _get_lot_size_and_min_notional(
     symbol_info: dict | None,
 ) -> tuple[float, float, float]:
@@ -910,6 +954,10 @@ class TradingPipeline:
                 "artifact_payload": artifact_payload,
                 "rebalance_frozen": bool(execution_report.get("frozen", False)),
                 "freeze_reasons": execution_report.get("freeze_reasons", {}),
+                # Per-order freeze detail (symbol/side/notional/min/shortfall).
+                # freeze_reasons alone is a histogram — it says three orders died,
+                # never which or by how much, so every page started with a log dig.
+                "frozen_orders": execution_report.get("frozen_orders", []),
                 "quiet_day": bool(execution_report.get("quiet_day", False)),
                 "quiet_reasons": execution_report.get("quiet_reasons", {}),
                 # Un-closable residuals + this cycle's order failures (#87). Both
@@ -1809,11 +1857,11 @@ class TradingPipeline:
                 # on stale positions. Do not exit quietly: flag the run and alert.
                 report["frozen"] = True
                 report["freeze_reasons"] = reasons
-                order_list = ", ".join(
-                    f"{str(r.get('Action', '')).upper()} {r.get('Asset', '')} "
-                    f"(${float(r.get('Notional Value', 0) or 0):.2f}, {r.get('Order Status', '')})"
-                    for _, r in suppressed.iterrows()
-                )
+                # Structured per-order detail so the notifier can explain WHICH
+                # orders died and by how much, without re-reading the run log.
+                report["frozen_orders"] = _suppressed_order_records(suppressed)
+                order_lines = [_format_suppressed_line(r) for r in report["frozen_orders"]]
+                order_list = "; ".join(order_lines)
                 logger.error(
                     "REBALANCER FROZEN: all %d intended orders suppressed %s. "
                     "Portfolio NOT rebalanced — holding stale positions. Orders: %s",
@@ -1827,7 +1875,7 @@ class TradingPipeline:
                         notify(
                             f"🧊 <b>REBALANCER FROZEN — 0 of {len(orders_df)} orders executable</b>\n"
                             f"Reasons: {reasons}\n"
-                            f"Suppressed: {order_list}\n"
+                            "Suppressed:\n" + "\n".join(f"• {line}" for line in order_lines) + "\n"
                             "Portfolio NOT rebalanced; holding stale positions. "
                             "Likely min_notional too high for account size (or stale/NaN data)."
                         )
@@ -2099,11 +2147,30 @@ class TradingPipeline:
                     "failed": int(report["summary"]["total_failed"]),
                 }
                 report["freeze_reasons"] = reasons
-                skipped_list = ", ".join(
-                    f"{str(d.get('action', '')).upper()} {d.get('symbol', '')}"
+                # Same explainability contract as the upstream freeze: name each
+                # order and why it could not go through, not just a count. These
+                # rows come from the BROKER (post-submission), so the fields are
+                # the order_details shape rather than the rebalancer's columns.
+                report["frozen_orders"] = [
+                    {
+                        "symbol": str(d.get("symbol", "")),
+                        "action": str(d.get("action", "")).upper(),
+                        "notional_usd": float(d.get("notional") or d.get("target_value") or 0),
+                        "min_notional_usd": float(d.get("min_notional") or 0),
+                        "status": str(d.get("status", "")),
+                        "reason": str(d.get("reason") or d.get("error") or ""),
+                    }
                     for d in report["orders_details"]
-                    if d.get("status") == "SKIPPED"
-                )
+                    if d.get("status") in {"SKIPPED", "FAILED"}
+                ]
+                for rec in report["frozen_orders"]:
+                    mn, n = rec["min_notional_usd"], rec["notional_usd"]
+                    if mn > 0 and 0 < n < mn:
+                        rec["shortfall_usd"] = mn - n
+                skipped_lines = [
+                    _format_suppressed_line(r) for r in report["frozen_orders"] if r["status"] == "SKIPPED"
+                ]
+                skipped_list = "; ".join(skipped_lines)
                 failed_n = int(report["summary"]["total_failed"])
                 failed_note = f"; {failed_n} order(s) also hard-failed" if failed_n else ""
                 logger.error(

@@ -264,6 +264,79 @@ def test_pipeline_flags_freeze_and_alerts():
     assert "Below min notional" in str(report.get("freeze_reasons"))
 
 
+def test_freeze_report_carries_per_order_detail():
+    """The freeze must be EXPLAINABLE, not just counted.
+
+    freeze_reasons is a status histogram ("Below min notional=4"). It says how
+    many orders died and nothing about which, how large, or how far under the
+    venue floor — so the first question on being paged ("what could not trade,
+    and by how much?") always required opening the run log.
+    """
+    pipe = TradingPipeline()
+    orders = _frozen_orders_df()
+    orders["Min Notional"] = MIN_NOTIONAL
+    report = pipe._execute_orders(
+        broker=_FakeBroker(),
+        orders_df=orders,
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+    )
+
+    detail = report.get("frozen_orders")
+    assert detail, "freeze produced no per-order detail"
+    assert {r["symbol"] for r in detail} == {"ADA", "DOGE", "ETH", "kPEPE"}
+
+    ada = next(r for r in detail if r["symbol"] == "ADA")
+    assert ada["action"] == "SELL"
+    assert ada["notional_usd"] == 2.90
+    assert ada["min_notional_usd"] == MIN_NOTIONAL
+    # The actionable number: how much the leg is short of being placeable.
+    assert ada["shortfall_usd"] == MIN_NOTIONAL - 2.90
+
+
+def test_freeze_alert_message_names_each_order():
+    """The chat alert itself must carry the detail — the whole point is that a
+    human reading the page does not have to go find the log."""
+    pipe = TradingPipeline()
+    broker = _FakeBroker()
+    orders = _frozen_orders_df()
+    orders["Min Notional"] = MIN_NOTIONAL
+    pipe._execute_orders(
+        broker=broker,
+        orders_df=orders,
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+    )
+
+    assert len(broker.messages) == 1
+    msg = broker.messages[0]
+    for symbol in ("ADA", "DOGE", "ETH", "kPEPE"):
+        assert symbol in msg, f"{symbol} missing from freeze alert"
+    assert "short $" in msg, "alert does not state the shortfall vs the venue minimum"
+
+
+def test_freeze_detail_omits_shortfall_when_not_a_minimum_breach():
+    """Not every suppression is a sub-minimum one (stale/NaN data also freezes).
+
+    Reporting a shortfall for those would invent a number, so it must be absent
+    rather than zero — 'no shortfall recorded' and 'short $0.00' read very
+    differently at 6am.
+    """
+    pipe = TradingPipeline()
+    orders = _frozen_orders_df()
+    orders["Min Notional"] = 0.0  # venue minimum unknown
+    report = pipe._execute_orders(
+        broker=_FakeBroker(),
+        orders_df=orders,
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+    )
+    assert all("shortfall_usd" not in r for r in report["frozen_orders"])
+
+
 def test_pipeline_quiet_day_not_flagged():
     """A genuinely quiet day (only zero-delta rows) is NOT a freeze and must
     not alert."""
