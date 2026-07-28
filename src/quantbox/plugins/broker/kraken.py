@@ -563,7 +563,6 @@ class KrakenBroker:
     def fetch_ledger_entries(
         self,
         since: str | None = None,
-        page_size: int = LEDGER_PAGE_SIZE,
         max_pages: int = LEDGER_MAX_PAGES,
     ) -> list[dict[str, Any]]:
         """Raw ccxt ledger entries for this account, fully paginated.
@@ -591,7 +590,7 @@ class KrakenBroker:
         entries: list[dict[str, Any]] = []
         seen: set[str] = set()
         for page in range(max_pages):
-            ofs = page * page_size
+            ofs = page * LEDGER_PAGE_SIZE
             batch = with_retry(
                 lambda o=ofs: self._exchange.fetch_ledger(code=None, since=since_ts, params={"ofs": o}),
                 label="kraken.fetch_ledger",
@@ -604,7 +603,7 @@ class KrakenBroker:
             # A short page means we reached the end. An empty page, or a page that
             # is entirely duplicates (Kraken can re-serve rows when the ledger
             # grows under us), also terminates — otherwise we would loop forever.
-            if len(batch) < page_size or not new:
+            if len(batch) < LEDGER_PAGE_SIZE or not new:
                 break
         else:
             raise RuntimeError(

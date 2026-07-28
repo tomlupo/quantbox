@@ -1850,16 +1850,28 @@ class TradingPipeline:
 
         # Convert to broker-compatible format
         broker_orders_data: list[dict[str, Any]] = []
+        # Submission INTENT, keyed by (symbol, side). Brokers hand back skipped and
+        # failed rows carrying only symbol/side/qty/price/status/error — the
+        # notional and the venue minimum are dropped at that boundary. Without this
+        # map the broker-side freeze alert reports "SELL ADA $0.00" with no
+        # shortfall, in precisely the trapped-residual case the alert exists to
+        # explain (caught in review of #143).
+        #
+        # Deliberately a SIDE MAP rather than extra columns on broker_orders:
+        # that frame is handed to third-party adapters, and widening it risks a
+        # broker treating an unexpected column as an order field.
+        order_intent: dict[tuple[str, str], dict[str, float]] = {}
         for _, row in executable.iterrows():
             action = str(row.get("Action", "")).lower()
             side = "sell" if action == "sell" else "buy"
+            symbol = str(row.get("Asset", ""))
             # NaN-safe: a mixed-column DataFrame fills a missing reduce_only with
             # NaN, and bool(NaN) is True — which would send OPENS reduce-only.
             _ro = row.get("reduce_only", False)
             reduce_only = bool(_ro) if pd.notna(_ro) else False
             broker_orders_data.append(
                 {
-                    "symbol": str(row.get("Asset", "")),
+                    "symbol": symbol,
                     "side": side,
                     "qty": float(row.get("Adjusted Quantity", 0)),
                     "price": float(row.get("Price", 0)),
@@ -1869,6 +1881,10 @@ class TradingPipeline:
                     "reduce_only": reduce_only,
                 }
             )
+            order_intent[(symbol, side)] = {
+                "notional": float(row.get("Notional Value", 0) or 0),
+                "min_notional": float(row.get("Min Notional", 0) or 0),
+            }
 
         broker_orders = pd.DataFrame(broker_orders_data)
         if broker_orders.empty:
@@ -2115,21 +2131,32 @@ class TradingPipeline:
                     "failed": int(report["summary"]["total_failed"]),
                 }
                 report["freeze_reasons"] = reasons
+
                 # Same explainability contract as the upstream freeze: name each
                 # order and why it could not go through, not just a count. These
                 # rows come from the BROKER (post-submission), so the fields are
                 # the order_details shape rather than the rebalancer's columns.
-                report["frozen_orders"] = [
-                    {
-                        "symbol": str(d.get("symbol", "")),
-                        "action": str(d.get("action", "")).upper(),
-                        "notional_usd": float(d.get("notional") or d.get("target_value") or 0),
-                        "min_notional_usd": float(d.get("min_notional") or 0),
+                # Recover notional + venue minimum from the submission intent: the
+                # broker's own rows do not carry them (see order_intent above), so
+                # reading only `d` yields $0.00 and no shortfall — useless in exactly
+                # the trapped-residual case this alert exists for.
+                def _frozen_record(d: dict[str, Any]) -> dict[str, Any]:
+                    symbol = str(d.get("symbol", ""))
+                    action = str(d.get("action", ""))
+                    intent = order_intent.get((symbol, action.lower()), {})
+                    notional = d.get("notional") or d.get("target_value") or intent.get("notional") or 0
+                    min_notional = d.get("min_notional") or intent.get("min_notional") or 0
+                    return {
+                        "symbol": symbol,
+                        "action": action.upper(),
+                        "notional_usd": float(notional),
+                        "min_notional_usd": float(min_notional),
                         "status": str(d.get("status", "")),
                         "reason": str(d.get("reason") or d.get("error") or ""),
                     }
-                    for d in report["orders_details"]
-                    if d.get("status") in {"SKIPPED", "FAILED"}
+
+                report["frozen_orders"] = [
+                    _frozen_record(d) for d in report["orders_details"] if d.get("status") in {"SKIPPED", "FAILED"}
                 ]
                 for rec in report["frozen_orders"]:
                     mn, n = rec["min_notional_usd"], rec["notional_usd"]

@@ -221,6 +221,80 @@ class _FakeBroker:
         )
 
 
+class _SkippingBroker(_FakeBroker):
+    """Accepts every order, then SKIPS it — the live Kraken trapped-residual shape.
+
+    Critically, the returned rows carry ONLY what a real broker returns
+    (symbol/side/qty/price/status/error). No notional, no venue minimum: those
+    are dropped at the submission boundary, which is the whole reason the
+    broker-side freeze record has to recover them from the submitted intent.
+    """
+
+    def place_orders(self, orders: pd.DataFrame) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {
+                    "symbol": o["symbol"],
+                    "side": o["side"],
+                    "qty": o["qty"],
+                    "price": o["price"],
+                    "status": "SKIPPED",
+                    "error": "below venue minimum",
+                }
+                for _, o in orders.iterrows()
+            ]
+        )
+
+
+def _executable_sell_df() -> pd.DataFrame:
+    """Orders that PASS the pre-submission filter and reach the broker."""
+    return pd.DataFrame(
+        [
+            {
+                "Asset": "ADA",
+                "Action": "Sell",
+                "Adjusted Quantity": 100.0,
+                "Price": 0.12,
+                "Notional Value": 12.0,
+                "Min Notional": MIN_NOTIONAL,
+                "Order Status": "To be placed",
+                "Executable": True,
+            }
+        ]
+    )
+
+
+def test_broker_side_freeze_recovers_notional_from_intent():
+    """Regression for the #143 review blocker.
+
+    The broker-side freeze built its records from `orders_details`, which for a
+    SKIPPED row carries only symbol/action/quantity/status. So it reported
+    "SELL ADA $0.00" with no shortfall — in exactly the trapped-residual case the
+    alert exists to explain. The original tests only covered the PRE-submission
+    freeze site, so the gap shipped.
+    """
+    pipe = TradingPipeline()
+    broker = _SkippingBroker()
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=_executable_sell_df(),
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+    )
+
+    assert report.get("frozen") is True, "0 fills + a skipped close-out SELL must freeze"
+    detail = report.get("frozen_orders")
+    assert detail, "broker-side freeze produced no per-order detail"
+
+    ada = next(r for r in detail if r["symbol"] == "ADA")
+    assert ada["notional_usd"] == 12.0, f"notional lost at the broker boundary: {ada}"
+    assert ada["min_notional_usd"] == MIN_NOTIONAL
+    # The alert text must not read "$0.00" — that was the shipped bug.
+    assert "$0.00" not in broker.messages[0]
+    assert "ADA" in broker.messages[0]
+
+
 def _frozen_orders_df() -> pd.DataFrame:
     """Mirror the live 2026-06-15 orders.parquet: every leg sub-$10, none
     executable."""
