@@ -204,6 +204,33 @@ Quantbox uses custom exceptions (see `quantbox.exceptions`):
 
 **For any architectural change, the rules in [`docs/architecture/principles.md`](docs/architecture/principles.md) take precedence over this file.** Anti-patterns to refuse, decision rules for new features, and the layer-choice doctrine all live there.
 
+## Git workflow
+
+| Branch | Purpose | Merge target |
+|---|---|---|
+| `main` | Release-only — **protected** | — (the tag + deploy target) |
+| `dev` | Integration branch | `main`, at release time |
+| `feat/{slug}` | One change | `dev` via PR |
+
+Branch a `feat/{slug}` off `dev`, commit there, and open the PR to **`dev`**
+(`gh pr create --base dev`) — never a feature straight to `main`. Release flow is
+[Shipping cycle](#shipping-cycle-two-stage-pr-mirrors-dm-evo) below.
+
+**Never commit or push directly to `main`.** It is the protected branch; every
+change reaches it through a PR. This is enforced agent-side by the
+`git-workflow-guard.py` `PreToolUse` hook (configured in `.claude/git-guard.json`,
+registered in `.claude/settings.json`) — the deterministic stand-in for GitHub
+branch protection, which this repo's plan does not offer. For a deliberate
+exception on your own machine, `export GIT_GUARD_DISABLE=1` for that shell.
+
+**`dev` is the integration branch, but land work on it via PR too** — not by
+committing to it directly, so the review gate sees every change. Trivial fixes
+still get a short-lived branch.
+
+Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`, `test:`) —
+the prefixes drive the semver bump. Never `--no-verify`, never force-push `main`,
+and commit only when asked.
+
 ## Multi-repo setup
 
 | Repo | Purpose | Branch/tag |
