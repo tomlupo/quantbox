@@ -147,7 +147,11 @@ Tag format: `prod-{subsystem}-vMAJOR.MINOR.PATCH-YYYYMMDD`.
 meta = PluginMeta(..., status="production", ...)
 ```
 
-Commit on a small `chore({slug}): mark production status` branch and merge directly to `main` (it's a single-line change post-tag).
+Commit on a small `chore({slug}): mark production status` branch and PR it to
+`dev` like any other change — **not** directly to `main`. Being one line does
+not make it exempt: `main` is release-only, and the review gate is what makes
+the independent-reviewer contract meaningful. It rides to `main` with the next
+release (see `CLAUDE.md::Shipping cycle`).
 
 ### 6. Schedule revalidation
 

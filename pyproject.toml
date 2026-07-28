@@ -95,6 +95,14 @@ version_files = [
     # tmp/finish-20260728.sh, step `release`.
 ]
 update_changelog_on_bump = true
+# ANNOTATED, always. WITHOUT this setting cz creates a LIGHTWEIGHT tag, and
+# `git push --follow-tags` pushes only annotated ones. A lightweight tag therefore never leaves the machine while the
+# push reports success; on 2026-07-28 that surfaced three steps later as
+# `uv lock` failing with "couldn't find remote ref refs/tags/v0.4.1".
+#
+# Set HERE rather than relying on the caller passing --annotated-tag, so the
+# safe behaviour does not depend on anyone remembering a flag.
+annotated_tag = true
 tag_format = "v$version"
 ignored_tag_formats = ["rb-$version", "rb-*"]
 major_version_zero = true
