@@ -215,9 +215,19 @@ Quantbox uses custom exceptions (see `quantbox.exceptions`):
 1. **Feature work → PR to `dev`** (`gh pr create --base dev`). CI tests + the
    independent-reviewer gate run on `dev` PRs (both wired in `.github/workflows`).
    Merge feature PRs into `dev`, never straight to `main`.
-2. **Release → PR `dev` → `main`** (`--base main --head dev`), then cut an
-   annotated tag `vX.Y.Z` on `main`, then bump the `quantbox @ …@vX.Y.Z` pin in
-   `quantbox-live/pyproject.toml` and redeploy (the `sudo -u prod` step).
+2. **Release → run `/ship`.** It bumps the version + CHANGELOG via commitizen
+   and cuts the annotated `vX.Y.Z` tag; you then PR `dev` → `main`
+   (`--base main --head dev`), bump the `quantbox @ …@vX.Y.Z` pin in
+   `quantbox-live/pyproject.toml`, and redeploy (the `sudo -u prod` step).
+
+   **Do not hand-roll `cz bump`.** `/ship` is the single writer of a version or
+   a tag (see the qute runtime section above), and the steps are coupled in
+   non-obvious ways: a raw `cz bump` produces a LIGHTWEIGHT tag, which
+   `git push --follow-tags` silently declines to push — the push succeeds, the
+   tag stays local, and nothing surfaces until a downstream `uv lock` cannot
+   resolve it. That is how v0.4.1 shipped untagged on 2026-07-28. `annotated_tag`
+   is now pinned in `[tool.commitizen]` as a second line of defence, but the rule
+   stands: release through `/ship`.
 
 `main` is release-only; `dev` is the integration branch. Do NOT PR features to
 `main` (the drift we corrected 2026-07-06 — dev had gone stale while everything
