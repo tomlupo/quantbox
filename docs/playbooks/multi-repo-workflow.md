@@ -52,7 +52,8 @@ main (production-ready)  ← merge dev when ready
 
 - **`dev`** — all active development happens here
 - **`main`** — only receives merges from `dev` when code is tested and ready
-- **Tags** — created on `main` after each merge, following semver
+- **Tags** — cut by `/ship` on `dev` (annotated, semver), and reachable from
+  `main` because the release PR is merged with a MERGE COMMIT, not squashed
 
 ## Promoting code to production
 
@@ -60,10 +61,21 @@ main (production-ready)  ← merge dev when ready
 
 ```bash
 cd ~/workspace/projects/quantbox
-git checkout main
-git merge dev
-git tag v0.x.y
-git push origin main --tags
+# /ship bumps version + CHANGELOG and cuts the ANNOTATED tag. Do not hand-roll
+# `cz bump`: a raw bump makes a LIGHTWEIGHT tag, and `git push --follow-tags`
+# silently declines to push those — the tag stays local until a consumer's
+# `uv lock` cannot resolve it (2026-07-28).
+/ship                                    # on dev
+
+git push origin dev
+git push origin v0.x.y                   # explicitly — do not rely on --tags
+git ls-remote --tags origin v0.x.y       # VERIFY it landed
+
+# Merge with a MERGE COMMIT, never --squash: squashing rewrites the bump so the
+# tagged commit is not an ancestor of main, and the tag then names code main does
+# not contain — while quantbox-live pins that tag.
+gh pr create --base main --head dev --title "release: v0.x.y"
+gh pr merge --merge
 git checkout dev
 ```
 
