@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import importlib
 import logging
+from collections import defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1850,16 +1851,34 @@ class TradingPipeline:
 
         # Convert to broker-compatible format
         broker_orders_data: list[dict[str, Any]] = []
+        # Submission INTENT, keyed by (symbol, side). Brokers hand back skipped and
+        # failed rows carrying only symbol/side/qty/price/status/error — the
+        # notional and the venue minimum are dropped at that boundary. Without this
+        # map the broker-side freeze alert reports "SELL ADA $0.00" with no
+        # shortfall, in precisely the trapped-residual case the alert exists to
+        # explain (caught in review of #143).
+        #
+        # Deliberately a SIDE MAP rather than extra columns on broker_orders:
+        # that frame is handed to third-party adapters, and widening it risks a
+        # broker treating an unexpected column as an order field.
+        #
+        # A per-key FIFO, not a single dict entry: two orders can share
+        # (symbol, side) — the intent/result matching below already carries a FIFO
+        # for exactly that shape. With last-wins, both frozen rows would report the
+        # LAST order's notional, so a $12 trapped residual reads as $1.20 (caught in
+        # review of #144).
+        order_intent: dict[tuple[str, str], deque[dict[str, float]]] = defaultdict(deque)
         for _, row in executable.iterrows():
             action = str(row.get("Action", "")).lower()
             side = "sell" if action == "sell" else "buy"
+            symbol = str(row.get("Asset", ""))
             # NaN-safe: a mixed-column DataFrame fills a missing reduce_only with
             # NaN, and bool(NaN) is True — which would send OPENS reduce-only.
             _ro = row.get("reduce_only", False)
             reduce_only = bool(_ro) if pd.notna(_ro) else False
             broker_orders_data.append(
                 {
-                    "symbol": str(row.get("Asset", "")),
+                    "symbol": symbol,
                     "side": side,
                     "qty": float(row.get("Adjusted Quantity", 0)),
                     "price": float(row.get("Price", 0)),
@@ -1867,6 +1886,12 @@ class TradingPipeline:
                     # a flat-target exit reduce-only (venue exempts it from the $10
                     # minimum; can't flip through zero). Defaults False for opens.
                     "reduce_only": reduce_only,
+                }
+            )
+            order_intent[(symbol, side)].append(
+                {
+                    "notional": float(row.get("Notional Value", 0) or 0),
+                    "min_notional": float(row.get("Min Notional", 0) or 0),
                 }
             )
 
@@ -1880,8 +1905,7 @@ class TradingPipeline:
         # trail: an intent on disk before submission proves what the system meant
         # to do even if the run dies mid-submission. `intent_refs` is a per-(symbol,
         # side) FIFO of order_refs so results bind one-to-one to intents below.
-        from collections import defaultdict
-
+        #
         # Per-(symbol, side) FIFO of order_refs. A None entry is a SENTINEL for an
         # order that executed but whose intent write failed (observe) — it reserves
         # the positional slot so results stay 1:1 without recording against a
@@ -2115,21 +2139,39 @@ class TradingPipeline:
                     "failed": int(report["summary"]["total_failed"]),
                 }
                 report["freeze_reasons"] = reasons
+
                 # Same explainability contract as the upstream freeze: name each
                 # order and why it could not go through, not just a count. These
                 # rows come from the BROKER (post-submission), so the fields are
                 # the order_details shape rather than the rebalancer's columns.
-                report["frozen_orders"] = [
-                    {
-                        "symbol": str(d.get("symbol", "")),
-                        "action": str(d.get("action", "")).upper(),
-                        "notional_usd": float(d.get("notional") or d.get("target_value") or 0),
-                        "min_notional_usd": float(d.get("min_notional") or 0),
+                # Recover notional + venue minimum from the submission intent: the
+                # broker's own rows do not carry them (see order_intent above), so
+                # reading only `d` yields $0.00 and no shortfall — useless in exactly
+                # the trapped-residual case this alert exists for.
+                def _frozen_record(d: dict[str, Any]) -> dict[str, Any]:
+                    # Strip before matching: `orders_details` carries the broker's
+                    # RAW side, and a padded " SELL " (#81's shape) misses the
+                    # intent key — reinstating the "$0.00" bug in the very case
+                    # the recovery exists for (caught in review of #144).
+                    symbol = str(d.get("symbol", "")).strip()
+                    action = str(d.get("action", "")).strip()
+                    # Consume the FIFO so duplicate (symbol, side) orders each get
+                    # their OWN intent rather than all reading the last one.
+                    pending = order_intent.get((symbol, action.lower()))
+                    intent = pending.popleft() if pending else {}
+                    notional = d.get("notional") or d.get("target_value") or intent.get("notional") or 0
+                    min_notional = d.get("min_notional") or intent.get("min_notional") or 0
+                    return {
+                        "symbol": symbol,
+                        "action": action.upper(),
+                        "notional_usd": float(notional),
+                        "min_notional_usd": float(min_notional),
                         "status": str(d.get("status", "")),
                         "reason": str(d.get("reason") or d.get("error") or ""),
                     }
-                    for d in report["orders_details"]
-                    if d.get("status") in {"SKIPPED", "FAILED"}
+
+                report["frozen_orders"] = [
+                    _frozen_record(d) for d in report["orders_details"] if d.get("status") in {"SKIPPED", "FAILED"}
                 ]
                 for rec in report["frozen_orders"]:
                     mn, n = rec["min_notional_usd"], rec["notional_usd"]
