@@ -29,6 +29,12 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.4.1 (2026-07-28)
+
+### Fix
+
+- **pipeline**: enforce-dropped order stole a submitted order's notional (#145 review) (#146)
+
 ## v0.4.0 (2026-07-28)
 
 ### Feat
