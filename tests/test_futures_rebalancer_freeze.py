@@ -895,3 +895,98 @@ def test_skipped_close_out_sell_freezes_even_with_a_concurrent_failure():
     assert report["freeze_reasons"]["skipped_sell"] >= 1
     assert report["freeze_reasons"]["failed"] == 1
     assert any("FROZEN" in m for m in broker.messages)
+
+
+# ---------------------------------------------------------------------------
+# Intent/FIFO alignment across an enforce-drop (review of #145)
+# ---------------------------------------------------------------------------
+
+
+class _FailSecondIntentLedger:
+    """Ledger whose intent capture fails for the SECOND order only.
+
+    Under enforce that DROPS the second order — the shape that desynchronised
+    the intent FIFO.
+    """
+
+    def __init__(self):
+        self.calls = 0
+
+    def record_intent(self, **kw):
+        self.calls += 1
+        if self.calls == 2:
+            raise RuntimeError("simulated ledger write failure")
+        return f"ref-{self.calls}"
+
+    def record_result(self, **kw):
+        return None
+
+
+def _two_ada_sells() -> pd.DataFrame:
+    """Two executable ADA SELLs with DIFFERENT notionals.
+
+    Same (symbol, side), which is what makes the per-key FIFO load-bearing.
+    """
+    return pd.DataFrame(
+        [
+            {
+                "Asset": "ADA",
+                "Action": "Sell",
+                "Adjusted Quantity": 100.0,
+                "Price": 0.12,
+                "Notional Value": 12.0,
+                "Min Notional": MIN_NOTIONAL,
+                "Order Status": "To be placed",
+                "Executable": True,
+            },
+            {
+                "Asset": "ADA",
+                "Action": "Sell",
+                "Adjusted Quantity": 10.0,
+                "Price": 0.12,
+                "Notional Value": 1.20,
+                "Min Notional": MIN_NOTIONAL,
+                "Order Status": "To be placed",
+                "Executable": True,
+            },
+        ]
+    )
+
+
+def test_enforce_drop_does_not_misalign_freeze_notionals():
+    """An order dropped under enforce must not steal another order's notional.
+
+    A dropped order still gets an `orders_details` row, so the freeze builder
+    processes it — but it never consumed its own intent, leaving the per-(symbol,
+    side) FIFO one ahead so every later order read the WRONG one. Reproduced in
+    review of #145: a submitted-then-skipped ADA SELL of $12.00 was reported as
+    $1.20, the notional of the dropped order.
+
+    A residual figure that is confidently wrong is worse than none — it is the
+    number a human would act on.
+    """
+    pipe = TradingPipeline()
+    broker = _SkippingBroker()
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=_two_ada_sells(),
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+        ledger=_FailSecondIntentLedger(),
+        cycle_id="cyc-1",
+        capture_fail_closed=True,  # ENFORCE: the failing one is dropped
+    )
+
+    detail = report.get("frozen_orders") or []
+    assert detail, "no per-order freeze detail"
+
+    submitted = [r for r in detail if r["status"] == "SKIPPED"]
+    dropped = [r for r in detail if r["status"] == "FAILED"]
+    assert submitted, "the surviving order should have been submitted and skipped"
+    assert dropped, "the enforce-dropped order should appear as FAILED"
+
+    # The order that actually reached the broker is the FIRST one, $12.00.
+    assert submitted[0]["notional_usd"] == 12.0, f"submitted order took the wrong intent: {submitted[0]}"
+    # And the dropped one carries its own $1.20, not a neighbour's.
+    assert dropped[0]["notional_usd"] == 1.20, f"dropped order took the wrong intent: {dropped[0]}"

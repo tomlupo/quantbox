@@ -1913,9 +1913,26 @@ class TradingPipeline:
         intent_refs: dict[tuple[str, str], list[str | None]] = defaultdict(list)
         if ledger is not None and cycle_id is not None:
             dropped_idx: list[int] = []
+            # Intents of the orders that SURVIVE to submission, rebuilt as we go.
+            #
+            # An order dropped under enforce still gets an `orders_details` row
+            # (status FAILED), so the freeze builder processes it — but it never
+            # consumed its own intent, which left the FIFO one ahead and handed
+            # every later order the WRONG notional. Reproduced in review of #145:
+            # a submitted-then-skipped ADA SELL of $12.00 was reported as $1.20,
+            # the notional of a different, dropped order. A residual figure that
+            # is confidently wrong is worse than none — it is the number a human
+            # would act on.
+            #
+            # popleft-per-visit is positionally exact: this loop walks
+            # broker_orders in submission order, which is the order the intents
+            # were appended in, so the k-th visit to a (symbol, side) pops that
+            # key's k-th intent.
+            surviving_intent: dict[tuple[str, str], deque[dict[str, float]]] = defaultdict(deque)
             for i, (_, brow) in enumerate(broker_orders.iterrows()):
                 sym = str(brow["symbol"])
                 side = str(brow["side"]).strip().lower()
+                this_intent: dict[str, float] = order_intent[(sym, side)].popleft() if order_intent[(sym, side)] else {}
                 order_ref = f"{cycle_id}:{i}:{sym}:{side}"
                 try:
                     ledger.record_intent(
@@ -1943,6 +1960,11 @@ class TradingPipeline:
                                 "action": side,
                                 "status": "FAILED",
                                 "error": f"intent capture failed under enforce (order dropped): {exc}",
+                                # Its OWN intent, popped above — so the freeze
+                                # alert reports this order's notional and not a
+                                # neighbour's.
+                                "notional": this_intent.get("notional", 0.0),
+                                "min_notional": this_intent.get("min_notional", 0.0),
                             }
                         )
                         report["summary"]["total_failed"] += 1
@@ -1959,8 +1981,15 @@ class TradingPipeline:
                     # result bound to its own ref.
                     logger.warning("Intent capture failed for %s %s (order still sent): %s", side, sym, exc)
                     intent_refs[(sym, side)].append(None)
+                    surviving_intent[(sym, side)].append(this_intent)
                     continue
                 intent_refs[(sym, side)].append(order_ref)
+                surviving_intent[(sym, side)].append(this_intent)
+
+            # The freeze builder must consume only the intents of orders that were
+            # actually submitted; the dropped ones now travel on their own
+            # orders_details rows instead.
+            order_intent = surviving_intent
 
             # Under enforce, actually remove the dropped orders before submission.
             if dropped_idx:
@@ -2157,10 +2186,22 @@ class TradingPipeline:
                     action = str(d.get("action", "")).strip()
                     # Consume the FIFO so duplicate (symbol, side) orders each get
                     # their OWN intent rather than all reading the last one.
-                    pending = order_intent.get((symbol, action.lower()))
-                    intent = pending.popleft() if pending else {}
-                    notional = d.get("notional") or d.get("target_value") or intent.get("notional") or 0
-                    min_notional = d.get("min_notional") or intent.get("min_notional") or 0
+                    #
+                    # ONLY when this row does not already carry its own numbers.
+                    # An enforce-DROPPED order brings its intent along on its own
+                    # details row and was never added to the surviving FIFO, so
+                    # popping for it would consume a SUBMITTED order's intent and
+                    # leave that order reading $0.00 — the same misalignment one
+                    # step removed.
+                    own_notional = d.get("notional") or d.get("target_value")
+                    own_min = d.get("min_notional")
+                    if own_notional is None or own_min is None:
+                        pending = order_intent.get((symbol, action.lower()))
+                        intent = pending.popleft() if pending else {}
+                    else:
+                        intent = {}
+                    notional = own_notional or intent.get("notional") or 0
+                    min_notional = own_min or intent.get("min_notional") or 0
                     return {
                         "symbol": symbol,
                         "action": action.upper(),
