@@ -135,11 +135,18 @@ escalation:
 
 taskThreshold: 12           # TASKS.md → Linear (team TOM) graduation threshold
 
-# Ship-verb release namespace. quantbox cuts annotated vX.Y.Z tags on `main`
-# (release-only branch); forbiddenPaths guards against committing skill
-# artifacts (none tracked here today).
+# Ship-verb release namespace. /ship RUNS ON `dev`: it bumps the version +
+# CHANGELOG and cuts the annotated vX.Y.Z tag there. The tag becomes reachable
+# from `main` when the release PR is merged with a MERGE COMMIT — squashing it
+# would rewrite the bump and leave the tag naming a commit `main` does not
+# contain (the v0.4.0 incident, 2026-07-28). `main` stays release-only; it is
+# where the tag ends up, not where the bump happens.
+#
+# This field is the MACHINE-READABLE contract, so it must agree with
+# CLAUDE.md::Shipping cycle. It said `main` while the docs said `dev`, which is
+# how a tool and a human end up doing different things.
 release:
-  branch: main
+  branch: dev
   tagPattern: "v*"
   forbiddenPaths: []
 
