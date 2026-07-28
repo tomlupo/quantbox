@@ -2149,8 +2149,12 @@ class TradingPipeline:
                 # reading only `d` yields $0.00 and no shortfall — useless in exactly
                 # the trapped-residual case this alert exists for.
                 def _frozen_record(d: dict[str, Any]) -> dict[str, Any]:
-                    symbol = str(d.get("symbol", ""))
-                    action = str(d.get("action", ""))
+                    # Strip before matching: `orders_details` carries the broker's
+                    # RAW side, and a padded " SELL " (#81's shape) misses the
+                    # intent key — reinstating the "$0.00" bug in the very case
+                    # the recovery exists for (caught in review of #144).
+                    symbol = str(d.get("symbol", "")).strip()
+                    action = str(d.get("action", "")).strip()
                     # Consume the FIFO so duplicate (symbol, side) orders each get
                     # their OWN intent rather than all reading the last one.
                     pending = order_intent.get((symbol, action.lower()))

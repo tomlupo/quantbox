@@ -295,6 +295,47 @@ def test_broker_side_freeze_recovers_notional_from_intent():
     assert "ADA" in broker.messages[0]
 
 
+def test_broker_side_freeze_recovers_notional_from_padded_broker_side():
+    """Regression for the #144 review blocker (round 2).
+
+    `orders_details` stores the broker's RAW side, so a whitespace-padded " SELL "
+    (the #81 shape, already covered for freeze COUNTING) missed the intent key and
+    put "$0.00" back in the alert — the exact bug the recovery exists to prevent.
+    """
+
+    class _PaddedSkippingBroker(_FakeBroker):
+        def place_orders(self, orders: pd.DataFrame) -> pd.DataFrame:
+            return pd.DataFrame(
+                [
+                    {
+                        "symbol": str(o["symbol"]),
+                        "side": f" {str(o['side']).upper()} ",
+                        "qty": float(o["qty"]),
+                        "price": 0.0,
+                        "status": " SKIPPED ",
+                        "error": "below venue minimum",
+                    }
+                    for _, o in orders.iterrows()
+                ]
+            )
+
+    pipe = TradingPipeline()
+    broker = _PaddedSkippingBroker()
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=_executable_sell_df(),
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+    )
+
+    assert report.get("frozen") is True
+    ada = next(r for r in report["frozen_orders"] if r["symbol"] == "ADA")
+    assert ada["notional_usd"] == 12.0, f"padded broker side lost the intent: {ada}"
+    assert ada["min_notional_usd"] == MIN_NOTIONAL
+    assert "$0.00" not in broker.messages[0]
+
+
 def test_broker_side_freeze_keeps_duplicate_same_side_intents_distinct():
     """Regression for the #144 review blocker.
 
