@@ -31,7 +31,9 @@ This repo runs the standard qute regime (qute-code-kit ADR-0001..0004). Key skil
 - `/task` + `/repo-status` — honor [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md) (Linear).
 - `/decision` — records ADRs to [`docs/adr/`](docs/adr/) (`NNNN-title.md`).
 - `/handoff` + `/pickup` — the continuity pair for pausing/resuming work.
-- `/ship` — the release boundary (commitizen, annotated `vX.Y.Z` tags on `main`).
+- `/ship` — the release boundary (commitizen). Run it on `dev`; it cuts the
+  annotated `vX.Y.Z` tag there, which becomes reachable from `main` once the
+  release PR is merged with a **merge commit**. See `## Shipping cycle`.
 - Guards (secrets, audit, destructive-command, lakera/langfuse) stay active under all workflows.
 
 Jimek dispatch + workflow policy is declared in [`conductor.yml`](conductor.yml).
