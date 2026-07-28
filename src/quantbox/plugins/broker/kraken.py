@@ -54,6 +54,19 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 2
 
+# Kraken's Ledgers endpoint pages 50 rows at a time via an `ofs` offset. ccxt
+# does NOT paginate — see KrakenBroker.fetch_ledger_entries.
+LEDGER_PAGE_SIZE = 50
+# ~10k entries. A ledger longer than this is real, but so is a pagination bug;
+# we refuse to silently return a truncated history either way.
+LEDGER_MAX_PAGES = 200
+
+# Raw Kraken ledger types that represent a movement of value in/out of the
+# trading account (as opposed to `trade`, `margin`, `rollover`, `staking`, ...).
+# `transfer` is included because Kraken books some genuinely external movements
+# under it — but it is NOT assumed external; the caller must classify it.
+CASHFLOW_LEDGER_TYPES = frozenset({"deposit", "withdrawal", "transfer"})
+
 # Quote-equivalent stablecoins, grouped BY PEG. A balance in a stablecoin pegged
 # to the book's configured quote currency is cash-equivalent *dust*, NOT a trading
 # position to liquidate. Treating e.g. a 0.0014 USDC residue on a USD book as a
@@ -542,6 +555,127 @@ class KrakenBroker:
                     logger.error("Order failed after %d attempts: %s", MAX_RETRIES, e)
                     return None
         return None
+
+    # ------------------------------------------------------------------
+    # Cashflows (ledger)
+    # ------------------------------------------------------------------
+
+    def fetch_ledger_entries(
+        self,
+        since: str | None = None,
+        max_pages: int = LEDGER_MAX_PAGES,
+    ) -> list[dict[str, Any]]:
+        """Raw ccxt ledger entries for this account, fully paginated.
+
+        Kraken's ``Ledgers`` endpoint returns at most 50 rows per call and
+        paginates with an ``ofs`` offset; **ccxt does not paginate for you**
+        (``kraken.fetch_ledger`` issues exactly one ``privatePostLedgers`` and
+        applies ``since``/``limit`` client-side after parsing). So we drive
+        ``ofs`` ourselves and stop on a short/empty page.
+
+        FAILS LOUD. Unlike :meth:`_fetch_balances` — where an empty dict is a
+        recoverable "no positions" reading — a truncated ledger silently *omits
+        deposits*, which would understate the cost basis of every downstream
+        performance figure. Any upstream error (after :func:`with_retry` has
+        exhausted its transient budget) propagates, and a run that hits
+        ``max_pages`` raises rather than returning a partial history.
+        """
+        since_ts: int | None = None
+        if since is not None:
+            try:
+                since_ts = int(pd.Timestamp(since).timestamp() * 1000)
+            except Exception as exc:
+                raise ValueError(f"Unparseable 'since' for Kraken ledger: {since!r}") from exc
+
+        entries: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for page in range(max_pages):
+            ofs = page * LEDGER_PAGE_SIZE
+            batch = with_retry(
+                lambda o=ofs: self._exchange.fetch_ledger(code=None, since=since_ts, params={"ofs": o}),
+                label="kraken.fetch_ledger",
+            )
+            batch = list(batch or [])
+            new = [e for e in batch if str(e.get("id")) not in seen]
+            for e in new:
+                seen.add(str(e.get("id")))
+            entries.extend(new)
+            # A short page means we reached the end. An empty page, or a page that
+            # is entirely duplicates (Kraken can re-serve rows when the ledger
+            # grows under us), also terminates — otherwise we would loop forever.
+            if len(batch) < LEDGER_PAGE_SIZE or not new:
+                break
+        else:
+            raise RuntimeError(
+                f"Kraken ledger pagination hit max_pages={max_pages} "
+                f"({len(entries)} entries) without reaching the end. Refusing to "
+                "return a truncated ledger — raise max_pages or narrow 'since'."
+            )
+        return entries
+
+    def fetch_cashflows(self, since: str | None = None) -> pd.DataFrame:
+        """External cash movements (deposits / withdrawals / transfers) from the
+        Kraken ledger, normalised for performance accounting.
+
+        Columns: ``date`` (UTC ``YYYY-MM-DD``), ``timestamp`` (ISO-8601),
+        ``type`` (raw Kraken type: ``deposit`` / ``withdrawal`` / ``transfer``),
+        ``currency`` (canonical asset code), ``amount`` (signed, in *that asset's*
+        units — positive in, negative out), ``fee``, ``amount_net``
+        (``amount - fee``, i.e. the actual balance delta), ``refid``, ``id``.
+
+        Two deliberate non-conversions, because guessing either would fabricate
+        the baseline the whole report is measured against:
+
+        * **Amounts stay in their native asset.** A BTC deposit is not a USD
+          cashflow; valuing it needs a historical price the broker has no
+          business inventing. Callers must reject or explicitly price non-quote
+          rows (see ``quantbox-live/scripts/sync_kraken_flows.py``).
+        * **``transfer`` rows are returned, not classified.** Kraken uses
+          ``transfer`` for both genuinely external movements and internal ones
+          (spot↔futures wallet, staking migrations). Only the account's owner
+          knows which; the caller decides.
+
+        ``amount`` is taken from the RAW Kraken payload (``info.amount``), which
+        is signed. ccxt's parsed ``amount`` is unsigned with the sign moved into
+        ``direction`` — using it directly would turn every withdrawal into a
+        deposit.
+        """
+        cols = ["date", "timestamp", "type", "currency", "amount", "fee", "amount_net", "refid", "id"]
+        entries = self.fetch_ledger_entries(since=since)
+
+        rows = []
+        for e in entries:
+            info = e.get("info", {}) or {}
+            raw_type = str(info.get("type") or "").lower()
+            if raw_type not in CASHFLOW_LEDGER_TYPES:
+                continue
+            ts = e.get("timestamp")
+            if ts is None:
+                raise ValueError(f"Kraken ledger entry {e.get('id')!r} has no timestamp: {e!r}")
+            when = pd.Timestamp(int(ts), unit="ms", tz="UTC")
+            amount = float(info.get("amount") or 0.0)
+            fee = float(info.get("fee") or 0.0)
+            rows.append(
+                {
+                    "date": when.strftime("%Y-%m-%d"),
+                    "timestamp": when.isoformat(),
+                    "type": raw_type,
+                    "currency": normalize_kraken_asset(str(info.get("asset") or e.get("currency") or "")),
+                    "amount": amount,
+                    "fee": fee,
+                    # Kraken books the fee separately from the amount, so the real
+                    # balance delta is amount - fee for both directions (deposit
+                    # credits amount then debits fee; withdrawal debits both).
+                    "amount_net": amount - fee,
+                    "refid": info.get("refid") or e.get("referenceId"),
+                    "id": e.get("id"),
+                }
+            )
+
+        if not rows:
+            return pd.DataFrame(columns=cols)
+        df = pd.DataFrame(rows, columns=cols).sort_values("timestamp").reset_index(drop=True)
+        return df
 
     def fetch_fills(self, since: str) -> pd.DataFrame:
         """Trade history since ``since`` (ISO timestamp) via Kraken TradesHistory."""

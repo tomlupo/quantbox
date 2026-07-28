@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import importlib
 import logging
+from collections import defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -156,6 +157,50 @@ def _adjust_quantity(qty: float, step_size: float) -> float:
     precision = len(decimal_places)
     getcontext().rounding = ROUND_DOWN
     return float(Decimal(qty).quantize(Decimal("1." + "0" * precision)))
+
+
+def _suppressed_order_records(suppressed: pd.DataFrame) -> list[dict[str, Any]]:
+    """Per-order detail for a freeze, as structured records.
+
+    A freeze alert used to carry only a status HISTOGRAM ("Below min notional=2,
+    Below threshold=1"). That says how many orders died and nothing about which,
+    how big, or how far under the bar they were — so the first question a human
+    asks on being paged ("what could not trade, and by how much?") required
+    opening the run log every time. Everything needed is already on the row; it
+    just never left the pipeline.
+
+    ``shortfall_usd`` is what makes it actionable: it is the gap between the
+    order and the venue minimum, i.e. exactly how much the book would have to
+    grow for this leg to become executable.
+    """
+    records: list[dict[str, Any]] = []
+    for _, row in suppressed.iterrows():
+        notional = float(row.get("Notional Value", 0) or 0)
+        min_notional = float(row.get("Min Notional", 0) or 0)
+        record = {
+            "symbol": str(row.get("Asset", "") or row.get("Symbol", "")),
+            "action": str(row.get("Action", "")).upper(),
+            "notional_usd": notional,
+            "min_notional_usd": min_notional,
+            "status": str(row.get("Order Status", "")),
+            "reason": str(row.get("Reason", "")),
+        }
+        if min_notional > 0 and 0 < notional < min_notional:
+            record["shortfall_usd"] = min_notional - notional
+        records.append(record)
+    return records
+
+
+def _format_suppressed_line(rec: dict[str, Any]) -> str:
+    """One human-readable line per suppressed order, for chat alerts."""
+    line = f"{rec['action']} {rec['symbol']} ${rec['notional_usd']:,.2f}"
+    shortfall = rec.get("shortfall_usd")
+    if shortfall:
+        line += f" (min ${rec['min_notional_usd']:,.2f}, short ${shortfall:,.2f})"
+    detail = rec.get("reason") or rec.get("status")
+    if detail:
+        line += f" — {detail}"
+    return line
 
 
 def _get_lot_size_and_min_notional(
@@ -903,6 +948,10 @@ class TradingPipeline:
                 "artifact_payload": artifact_payload,
                 "rebalance_frozen": bool(execution_report.get("frozen", False)),
                 "freeze_reasons": execution_report.get("freeze_reasons", {}),
+                # Per-order freeze detail (symbol/side/notional/min/shortfall).
+                # freeze_reasons alone is a histogram — it says three orders died,
+                # never which or by how much, so every page started with a log dig.
+                "frozen_orders": execution_report.get("frozen_orders", []),
                 "quiet_day": bool(execution_report.get("quiet_day", False)),
                 "quiet_reasons": execution_report.get("quiet_reasons", {}),
                 # This cycle's order failures (#87) — a first-class exception input
@@ -1769,11 +1818,11 @@ class TradingPipeline:
                 # on stale positions. Do not exit quietly: flag the run and alert.
                 report["frozen"] = True
                 report["freeze_reasons"] = reasons
-                order_list = ", ".join(
-                    f"{str(r.get('Action', '')).upper()} {r.get('Asset', '')} "
-                    f"(${float(r.get('Notional Value', 0) or 0):.2f}, {r.get('Order Status', '')})"
-                    for _, r in suppressed.iterrows()
-                )
+                # Structured per-order detail so the notifier can explain WHICH
+                # orders died and by how much, without re-reading the run log.
+                report["frozen_orders"] = _suppressed_order_records(suppressed)
+                order_lines = [_format_suppressed_line(r) for r in report["frozen_orders"]]
+                order_list = "; ".join(order_lines)
                 logger.error(
                     "REBALANCER FROZEN: all %d intended orders suppressed %s. "
                     "Portfolio NOT rebalanced — holding stale positions. Orders: %s",
@@ -1787,7 +1836,7 @@ class TradingPipeline:
                         notify(
                             f"🧊 <b>REBALANCER FROZEN — 0 of {len(orders_df)} orders executable</b>\n"
                             f"Reasons: {reasons}\n"
-                            f"Suppressed: {order_list}\n"
+                            "Suppressed:\n" + "\n".join(f"• {line}" for line in order_lines) + "\n"
                             "Portfolio NOT rebalanced; holding stale positions. "
                             "Likely min_notional too high for account size (or stale/NaN data)."
                         )
@@ -1802,16 +1851,34 @@ class TradingPipeline:
 
         # Convert to broker-compatible format
         broker_orders_data: list[dict[str, Any]] = []
+        # Submission INTENT, keyed by (symbol, side). Brokers hand back skipped and
+        # failed rows carrying only symbol/side/qty/price/status/error — the
+        # notional and the venue minimum are dropped at that boundary. Without this
+        # map the broker-side freeze alert reports "SELL ADA $0.00" with no
+        # shortfall, in precisely the trapped-residual case the alert exists to
+        # explain (caught in review of #143).
+        #
+        # Deliberately a SIDE MAP rather than extra columns on broker_orders:
+        # that frame is handed to third-party adapters, and widening it risks a
+        # broker treating an unexpected column as an order field.
+        #
+        # A per-key FIFO, not a single dict entry: two orders can share
+        # (symbol, side) — the intent/result matching below already carries a FIFO
+        # for exactly that shape. With last-wins, both frozen rows would report the
+        # LAST order's notional, so a $12 trapped residual reads as $1.20 (caught in
+        # review of #144).
+        order_intent: dict[tuple[str, str], deque[dict[str, float]]] = defaultdict(deque)
         for _, row in executable.iterrows():
             action = str(row.get("Action", "")).lower()
             side = "sell" if action == "sell" else "buy"
+            symbol = str(row.get("Asset", ""))
             # NaN-safe: a mixed-column DataFrame fills a missing reduce_only with
             # NaN, and bool(NaN) is True — which would send OPENS reduce-only.
             _ro = row.get("reduce_only", False)
             reduce_only = bool(_ro) if pd.notna(_ro) else False
             broker_orders_data.append(
                 {
-                    "symbol": str(row.get("Asset", "")),
+                    "symbol": symbol,
                     "side": side,
                     "qty": float(row.get("Adjusted Quantity", 0)),
                     "price": float(row.get("Price", 0)),
@@ -1819,6 +1886,12 @@ class TradingPipeline:
                     # a flat-target exit reduce-only (venue exempts it from the $10
                     # minimum; can't flip through zero). Defaults False for opens.
                     "reduce_only": reduce_only,
+                }
+            )
+            order_intent[(symbol, side)].append(
+                {
+                    "notional": float(row.get("Notional Value", 0) or 0),
+                    "min_notional": float(row.get("Min Notional", 0) or 0),
                 }
             )
 
@@ -1832,8 +1905,7 @@ class TradingPipeline:
         # trail: an intent on disk before submission proves what the system meant
         # to do even if the run dies mid-submission. `intent_refs` is a per-(symbol,
         # side) FIFO of order_refs so results bind one-to-one to intents below.
-        from collections import defaultdict
-
+        #
         # Per-(symbol, side) FIFO of order_refs. A None entry is a SENTINEL for an
         # order that executed but whose intent write failed (observe) — it reserves
         # the positional slot so results stay 1:1 without recording against a
@@ -1841,9 +1913,26 @@ class TradingPipeline:
         intent_refs: dict[tuple[str, str], list[str | None]] = defaultdict(list)
         if ledger is not None and cycle_id is not None:
             dropped_idx: list[int] = []
+            # Intents of the orders that SURVIVE to submission, rebuilt as we go.
+            #
+            # An order dropped under enforce still gets an `orders_details` row
+            # (status FAILED), so the freeze builder processes it — but it never
+            # consumed its own intent, which left the FIFO one ahead and handed
+            # every later order the WRONG notional. Reproduced in review of #145:
+            # a submitted-then-skipped ADA SELL of $12.00 was reported as $1.20,
+            # the notional of a different, dropped order. A residual figure that
+            # is confidently wrong is worse than none — it is the number a human
+            # would act on.
+            #
+            # popleft-per-visit is positionally exact: this loop walks
+            # broker_orders in submission order, which is the order the intents
+            # were appended in, so the k-th visit to a (symbol, side) pops that
+            # key's k-th intent.
+            surviving_intent: dict[tuple[str, str], deque[dict[str, float]]] = defaultdict(deque)
             for i, (_, brow) in enumerate(broker_orders.iterrows()):
                 sym = str(brow["symbol"])
                 side = str(brow["side"]).strip().lower()
+                this_intent: dict[str, float] = order_intent[(sym, side)].popleft() if order_intent[(sym, side)] else {}
                 order_ref = f"{cycle_id}:{i}:{sym}:{side}"
                 try:
                     ledger.record_intent(
@@ -1871,6 +1960,11 @@ class TradingPipeline:
                                 "action": side,
                                 "status": "FAILED",
                                 "error": f"intent capture failed under enforce (order dropped): {exc}",
+                                # Its OWN intent, popped above — so the freeze
+                                # alert reports this order's notional and not a
+                                # neighbour's.
+                                "notional": this_intent.get("notional", 0.0),
+                                "min_notional": this_intent.get("min_notional", 0.0),
                             }
                         )
                         report["summary"]["total_failed"] += 1
@@ -1887,8 +1981,15 @@ class TradingPipeline:
                     # result bound to its own ref.
                     logger.warning("Intent capture failed for %s %s (order still sent): %s", side, sym, exc)
                     intent_refs[(sym, side)].append(None)
+                    surviving_intent[(sym, side)].append(this_intent)
                     continue
                 intent_refs[(sym, side)].append(order_ref)
+                surviving_intent[(sym, side)].append(this_intent)
+
+            # The freeze builder must consume only the intents of orders that were
+            # actually submitted; the dropped ones now travel on their own
+            # orders_details rows instead.
+            order_intent = surviving_intent
 
             # Under enforce, actually remove the dropped orders before submission.
             if dropped_idx:
@@ -2067,11 +2168,60 @@ class TradingPipeline:
                     "failed": int(report["summary"]["total_failed"]),
                 }
                 report["freeze_reasons"] = reasons
-                skipped_list = ", ".join(
-                    f"{str(d.get('action', '')).upper()} {d.get('symbol', '')}"
-                    for d in report["orders_details"]
-                    if d.get("status") == "SKIPPED"
-                )
+
+                # Same explainability contract as the upstream freeze: name each
+                # order and why it could not go through, not just a count. These
+                # rows come from the BROKER (post-submission), so the fields are
+                # the order_details shape rather than the rebalancer's columns.
+                # Recover notional + venue minimum from the submission intent: the
+                # broker's own rows do not carry them (see order_intent above), so
+                # reading only `d` yields $0.00 and no shortfall — useless in exactly
+                # the trapped-residual case this alert exists for.
+                def _frozen_record(d: dict[str, Any]) -> dict[str, Any]:
+                    # Strip before matching: `orders_details` carries the broker's
+                    # RAW side, and a padded " SELL " (#81's shape) misses the
+                    # intent key — reinstating the "$0.00" bug in the very case
+                    # the recovery exists for (caught in review of #144).
+                    symbol = str(d.get("symbol", "")).strip()
+                    action = str(d.get("action", "")).strip()
+                    # Consume the FIFO so duplicate (symbol, side) orders each get
+                    # their OWN intent rather than all reading the last one.
+                    #
+                    # ONLY when this row does not already carry its own numbers.
+                    # An enforce-DROPPED order brings its intent along on its own
+                    # details row and was never added to the surviving FIFO, so
+                    # popping for it would consume a SUBMITTED order's intent and
+                    # leave that order reading $0.00 — the same misalignment one
+                    # step removed.
+                    own_notional = d.get("notional") or d.get("target_value")
+                    own_min = d.get("min_notional")
+                    if own_notional is None or own_min is None:
+                        pending = order_intent.get((symbol, action.lower()))
+                        intent = pending.popleft() if pending else {}
+                    else:
+                        intent = {}
+                    notional = own_notional or intent.get("notional") or 0
+                    min_notional = own_min or intent.get("min_notional") or 0
+                    return {
+                        "symbol": symbol,
+                        "action": action.upper(),
+                        "notional_usd": float(notional),
+                        "min_notional_usd": float(min_notional),
+                        "status": str(d.get("status", "")),
+                        "reason": str(d.get("reason") or d.get("error") or ""),
+                    }
+
+                report["frozen_orders"] = [
+                    _frozen_record(d) for d in report["orders_details"] if d.get("status") in {"SKIPPED", "FAILED"}
+                ]
+                for rec in report["frozen_orders"]:
+                    mn, n = rec["min_notional_usd"], rec["notional_usd"]
+                    if mn > 0 and 0 < n < mn:
+                        rec["shortfall_usd"] = mn - n
+                skipped_lines = [
+                    _format_suppressed_line(r) for r in report["frozen_orders"] if r["status"] == "SKIPPED"
+                ]
+                skipped_list = "; ".join(skipped_lines)
                 failed_n = int(report["summary"]["total_failed"])
                 failed_note = f"; {failed_n} order(s) also hard-failed" if failed_n else ""
                 logger.error(

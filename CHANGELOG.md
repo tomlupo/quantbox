@@ -29,6 +29,16 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.4.0 (2026-07-28)
+
+### Feat
+
+- explainable freeze alerts + Kraken ledger cashflows (#143)
+
+### Fix
+
+- **pipeline,kraken**: recover freeze detail at the broker boundary (#143 review) (#144)
+
 ## v0.3.17 (2026-07-22)
 
 ### Fix
