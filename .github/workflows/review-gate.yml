@@ -10,7 +10,11 @@ name: review-gate
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
-    branches: [dev, main]
+    # ADR-0020: the BASE BRANCH decides. The expensive independent review
+    # gates `main` only; PRs into `dev` get `ci.yml` (tests, lint) and
+    # nothing else. A gate that fires on every feature PR trains people to
+    # ignore it, at which point it protects nothing.
+    branches: [main]
   pull_request_review:
     types: [submitted, dismissed]
 
