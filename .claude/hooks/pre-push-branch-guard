@@ -32,7 +32,18 @@ this hook rather than complementing it.
 Deliberately, this hook does NOT consult `/guard git-workflow on|off`
 (`~/.claude/qute-guards.json`). That toggle governs an agent-side Claude hook.
 This one fires for a human at a terminal too, and a Claude-session preference
-must not silently disarm a git hook for a human. `--no-verify` is the override.
+must not silently disarm a git hook for a human. A PERSISTED preference is the
+thing being refused here: it disarms every future push, invisibly, including
+ones nobody was thinking about when they set it.
+
+`CLAUDE_GUARD_BRANCH_PUSH=0` is the per-invocation override and is honoured. It
+is not a weaker `--no-verify`, it is a NARROWER one: `--no-verify` drops every
+pre-push hook in the repo — tests, lint, secret scanning — so someone who only
+wanted past the branch check has been silently disabling the secret scan too.
+An override that costs more than it should does not stop people overriding; it
+makes them override too much. This one names exactly what it skips, and skips
+only that. Both are per-push, both leave every later push guarded, and the
+refusal message advertises this one first for that reason.
 
 OPT-IN AND CONFIG
 -----------------
@@ -97,6 +108,7 @@ import sys
 from pathlib import Path
 
 MARKER = "QUTE_PRE_PUSH_GUARD"
+ENV_OVERRIDE = "CLAUDE_GUARD_BRANCH_PUSH"
 DEFAULT_PROTECTED = "main"
 DEFAULT_INTEGRATION = "dev"
 BRANCH_PREFIX = "refs/heads/"
@@ -113,6 +125,24 @@ def _is_zero(sha: str) -> bool:
 def _trace(msg: str) -> None:
     if os.environ.get("QUTE_PRE_PUSH_GUARD_TRACE"):
         print(f"{MARKER}: {msg}", file=sys.stderr)
+
+
+def _overridden(env=None) -> bool:
+    """True when this push carries the explicit per-invocation override.
+
+    Strict `== "0"`, matching `scripts/guard_config.py:guard_enabled()` — the
+    house convention for `CLAUDE_GUARD_<NAME>`. A typo (`=false`, `=off`) is
+    therefore NOT an override and the guard still fires, which is the right way
+    round: the cost of a misspelling is a refused push you can retry, not a
+    silently unguarded one.
+
+    `CLAUDE_SKIP_GUARDS=1` is deliberately NOT honoured. It is a blanket
+    Claude-session setting, and this hook fires for humans and scripts too;
+    letting a session-wide agent preference disarm a git hook is exactly what
+    the module docstring refuses. Only the specifically-named variable counts.
+    """
+    env = os.environ if env is None else env
+    return env.get(ENV_OVERRIDE) == "0"
 
 
 def _git(cwd: Path, *args: str):
@@ -523,7 +553,11 @@ def refusal_message(branch, kind, remote_name, cfg, source) -> str:
         "",
         "  This is a local hook, so it yields to intent. To override on purpose:",
         "",
-        "    git push --no-verify …",
+        f"    {ENV_OVERRIDE}=0 git push …    # skips THIS check only",
+        "    git push --no-verify …               # skips every pre-push hook",
+        "",
+        "  Prefer the first. --no-verify also drops the secret scan, the tests and",
+        "  the lint hook, which is more than you meant if you only wanted this one.",
         "",
     ]
     if source == "pre-commit-env":
@@ -543,6 +577,22 @@ def main(argv, stdin_text: str) -> int:
         _trace("allow: not a git repo")
         return 0
 
+    # Checked BEFORE load_config, so the override also releases a push wedged by
+    # an unusable config. That path fails closed on purpose (see ConfigError),
+    # and the escape from it should not have to be `--no-verify` — which would
+    # drop the secret scan as the price of a JSON typo.
+    if _overridden():
+        _trace("allow: overridden via " + ENV_OVERRIDE)
+        # Loud, unconditionally. This file's stated rule is that a guard which
+        # does not run must SAY so; an override is that case, chosen rather than
+        # stumbled into, and the line is what makes it visible in a CI log.
+        print(
+            f"{MARKER}: branch guard SKIPPED for this push "
+            f"({ENV_OVERRIDE}=0). Other pre-push hooks still ran.",
+            file=sys.stderr,
+        )
+        return 0
+
     try:
         cfg = load_config(repo_root)
     except ConfigError as exc:
@@ -553,7 +603,8 @@ def main(argv, stdin_text: str) -> int:
             f"\npre-push: REFUSED — this repo's branch-guard config is unusable, "
             f"so the guard cannot tell which branches to protect.\n\n  {exc}\n"
             "  Fix the file and push again. To override deliberately:\n\n"
-            "    git push --no-verify …\n",
+            f"    {ENV_OVERRIDE}=0 git push …    # skips THIS check only\n"
+            "    git push --no-verify …               # skips every pre-push hook\n",
             file=sys.stderr,
         )
         return 1

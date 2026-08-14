@@ -101,7 +101,8 @@ prIdentity:
 
 # Shape of the open → review → assign chain. quantbox: agents NEVER self-merge
 # — the PR is assigned to Tom, who approves and merges. Independent review is
-# required and enforced by the review-gate CI on `dev` PRs.
+# required, and enforced by the review-gate CI on `main` PRs (the merge gate);
+# `dev` PRs get ci.yml only.
 prFlow:
   assignTo: tomlupo
   reviewRequestFrom: tomlupo

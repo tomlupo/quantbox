@@ -217,21 +217,26 @@ Branch a `feat/{slug}` off `dev`, commit there, and open the PR to **`dev`**
 (`gh pr create --base dev`) — never a feature straight to `main`. Release flow is
 [Shipping cycle](#shipping-cycle-two-stage-pr-mirrors-dm-evo) below.
 
-**Never commit or push directly to `main` or `dev`.** Every change reaches them
-through a PR — `dev` included, so the review gate sees it; trivial fixes still
-get a short-lived branch. This is the deterministic stand-in for GitHub branch
-protection, which this repo's plan does not offer.
+**Never commit or push directly to `main`.** Every change reaches it through a
+PR; trivial fixes still get a short-lived branch. This is the deterministic
+stand-in for GitHub branch protection, which this repo's plan does not offer.
+**Land work on `dev` through a PR too** — that is the convention, not a guard
+refusal: `dev` is deliberately unguarded locally (`integration_branch: null`),
+so the cost of a direct push is a convention broken, not a hook fired.
 
-Two guard layers enforce it, both shipped by the **qute-essentials plugin** —
-neither is a file this repo maintains. `.claude/git-guard.json` is the opt-in:
-its *presence* arms both, and it carries only what differs from the house
-defaults (`main` protected, `dev` detected as the integration branch — hence the
-file names just `release_tool`).
+Two guard layers enforce the `main` rule, both shipped by the **qute-essentials
+plugin** — neither is a file this repo maintains. `.claude/git-guard.json` is the
+opt-in: its *presence* arms both, and it carries only what differs from the house
+defaults. `main` protected is the default, so the file names just
+`integration_branch: null` (the deliberate deviation — house default would detect
+`dev` and guard it) and `release_tool`.
 
 - **`pre-push`** is the layer that holds. Git hands it the resolved refs, so it
   covers humans, scripts and agents alike. Install/verify it with
   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/install_pre_push_guard.py" --repo . --check`.
-  It yields to **`git push --no-verify`** and to nothing else.
+  Override one push with **`CLAUDE_GUARD_BRANCH_PUSH=0 git push …`**, which skips
+  this check only; `git push --no-verify` also works but drops every other
+  pre-push hook with it.
 - **The `git-workflow` `PreToolUse` hook** is the speed bump in front of it: it
   sees Claude tool calls only, but it catches `git commit` (which never reaches
   `pre-push`) and explains the route before the command runs. Turn it off with
@@ -262,9 +267,10 @@ policy drifts, and this one did (three flows across seven files, TOM-354). The
 machine-readable half lives in [`conductor.yml`](conductor.yml) (`release.branch`,
 `baseBranch`) and must agree with what follows.
 
-1. **Feature work → PR to `dev`** (`gh pr create --base dev`). CI tests + the
-   independent-reviewer gate run on `dev` PRs (both wired in `.github/workflows`).
-   Merge feature PRs into `dev`, never straight to `main`.
+1. **Feature work → PR to `dev`** (`gh pr create --base dev`). `ci.yml` runs on
+   `dev` PRs; the independent-reviewer gate runs on **`main`** PRs only — the
+   expensive pass belongs at the merge gate, so a `dev` PR gets CI and nothing
+   else. Merge feature PRs into `dev`, never straight to `main`.
 2. **Release → `/ship` on `dev` (bump), then `/ship --tag` on `main` (tag).**
 
    a. On `dev`, run **`/ship`**. It bumps `pyproject.toml` + `CHANGELOG.md`,

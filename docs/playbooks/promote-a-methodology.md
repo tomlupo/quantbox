@@ -159,8 +159,8 @@ meta = PluginMeta(..., status="production", ...)
 
 Commit on a small `chore({slug}): mark production status` branch and PR it to
 `dev` like any other change — **not** directly to `main`. Being one line does
-not make it exempt: `main` is release-only, and the review gate is what makes
-the independent-reviewer contract meaningful. It rides to `main` with the next
+not make it exempt: `main` is release-only, and the release PR into it is where
+the review gate makes the independent-reviewer contract meaningful. It rides to `main` with the next
 release (see `CLAUDE.md::Shipping cycle`).
 
 ### 6. Schedule revalidation
