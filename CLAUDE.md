@@ -31,9 +31,10 @@ This repo runs the standard qute regime (qute-code-kit ADR-0001..0004). Key skil
 - `/task` + `/repo-status` — honor [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md) (Linear).
 - `/decision` — records ADRs to [`docs/adr/`](docs/adr/) (`NNNN-title.md`).
 - `/handoff` + `/pickup` — the continuity pair for pausing/resuming work.
-- `/ship` — the release boundary (commitizen). Run it on `dev`; it cuts the
-  annotated `vX.Y.Z` tag there, which becomes reachable from `main` once the
-  release PR is merged with a **merge commit**. See `## Shipping cycle`.
+- `/ship` — the release boundary (commitizen). Two stages: `/ship` bumps on
+  `dev`, `/ship --tag` cuts the annotated `vX.Y.Z` tag on `main` after the
+  release PR merges. See [`## Shipping cycle`](#shipping-cycle-two-stage-pr-mirrors-dm-evo)
+  — the one place this repo states its release policy.
 - Guards (secrets, audit, destructive-command, lakera/langfuse) stay active under all workflows.
 
 Jimek dispatch + workflow policy is declared in [`conductor.yml`](conductor.yml).
@@ -216,16 +217,35 @@ Branch a `feat/{slug}` off `dev`, commit there, and open the PR to **`dev`**
 (`gh pr create --base dev`) — never a feature straight to `main`. Release flow is
 [Shipping cycle](#shipping-cycle-two-stage-pr-mirrors-dm-evo) below.
 
-**Never commit or push directly to `main`.** It is the protected branch; every
-change reaches it through a PR. This is enforced agent-side by the
-`git-workflow-guard.py` `PreToolUse` hook (configured in `.claude/git-guard.json`,
-registered in `.claude/settings.json`) — the deterministic stand-in for GitHub
-branch protection, which this repo's plan does not offer. For a deliberate
-exception on your own machine, `export GIT_GUARD_DISABLE=1` for that shell.
+**Never commit or push directly to `main`.** Every change reaches it through a
+PR; trivial fixes still get a short-lived branch. This is the deterministic
+stand-in for GitHub branch protection, which this repo's plan does not offer.
+**Land work on `dev` through a PR too** — that is the convention, not a guard
+refusal: `dev` is deliberately unguarded locally (`integration_branch: null`),
+so the cost of a direct push is a convention broken, not a hook fired.
 
-**`dev` is the integration branch, but land work on it via PR too** — not by
-committing to it directly, so the review gate sees every change. Trivial fixes
-still get a short-lived branch.
+Two guard layers enforce the `main` rule, both shipped by the **qute-essentials
+plugin** — neither is a file this repo maintains. `.claude/git-guard.json` is the
+opt-in: its *presence* arms both, and it carries only what differs from the house
+defaults. `main` protected is the default, so the file names just
+`integration_branch: null` (the deliberate deviation — house default would detect
+`dev` and guard it) and `release_tool`.
+
+- **`pre-push`** is the layer that holds. Git hands it the resolved refs, so it
+  covers humans, scripts and agents alike. Install/verify it with
+  `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/install_pre_push_guard.py" --repo . --check`.
+  Override one push with **`CLAUDE_GUARD_BRANCH_PUSH=0 git push …`**, which skips
+  this check only; `git push --no-verify` also works but drops every other
+  pre-push hook with it.
+- **The `git-workflow` `PreToolUse` hook** is the speed bump in front of it: it
+  sees Claude tool calls only, but it catches `git commit` (which never reaches
+  `pre-push`) and explains the route before the command runs. Turn it off with
+  **`/guard git-workflow off`**; that disarms only this layer.
+
+A `.claude/hooks/git-workflow-guard.py` checked into this repo is a stale fork of
+the plugin's guard — deleted in TOM-354, and it belongs deleted, not maintained.
+(`GIT_GUARD_DISABLE=1`, which older revisions of this file advertised, was only
+ever read by that fork and does nothing now.)
 
 Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`, `test:`) —
 the prefixes drive the semver bump. Never `--no-verify`, never force-push `main`,
@@ -241,30 +261,43 @@ and commit only when asked.
 
 ### Shipping cycle (two-stage PR, mirrors dm-evo)
 
-1. **Feature work → PR to `dev`** (`gh pr create --base dev`). CI tests + the
-   independent-reviewer gate run on `dev` PRs (both wired in `.github/workflows`).
-   Merge feature PRs into `dev`, never straight to `main`.
-2. **Release → `/ship` on `dev`, then merge the PR with a MERGE COMMIT.**
+**This section is the single statement of the release policy for this repo.**
+Every other file that needs it links here rather than restating it — a restated
+policy drifts, and this one did (three flows across seven files, TOM-354). The
+machine-readable half lives in [`conductor.yml`](conductor.yml) (`release.branch`,
+`baseBranch`) and must agree with what follows.
 
-   a. On `dev`, run **`/ship`**. It bumps `pyproject.toml` + `CHANGELOG.md` and
-      cuts the annotated `vX.Y.Z` tag. Never hand-roll `cz bump` — `/ship` is the
-      single writer of a version or a tag, and without `annotated_tag` a raw bump
-      makes a LIGHTWEIGHT tag that `git push --follow-tags` silently declines to push, so it stays local
-      until something downstream cannot resolve it. (`annotated_tag = true` in
-      `[tool.commitizen]` is the second line of defence.)
-   b. Push `dev` **and the tag**: `git push origin dev && git push origin vX.Y.Z`.
-      Verify it landed — `git ls-remote --tags origin vX.Y.Z` — because a missing
-      tag does not surface until a consumer's `uv lock` fails to resolve it.
-   c. PR `dev` → `main` and merge it with a **merge commit**
-      (`gh pr merge --merge`), **not** `--squash`.
+1. **Feature work → PR to `dev`** (`gh pr create --base dev`). `ci.yml` runs on
+   `dev` PRs; the independent-reviewer gate runs on **`main`** PRs only — the
+   expensive pass belongs at the merge gate, so a `dev` PR gets CI and nothing
+   else. Merge feature PRs into `dev`, never straight to `main`.
+2. **Release → `/ship` on `dev` (bump), then `/ship --tag` on `main` (tag).**
 
-   **Why (c) must not squash:** squashing rewrites the bump into a new commit, so
-   the commit `/ship` tagged is never an ancestor of `main` — the tag then points
-   at code `main` does not contain, while `quantbox-live` pins that TAG. That is
-   exactly how `v0.4.0` was cut on 2026-07-28 missing a fix that had landed in
-   between, and had to be re-cut as `v0.4.1` against `main`. A merge commit keeps
-   the tagged commit reachable from `main`, so tag and branch agree by
-   construction rather than by remembering to re-tag.
+   a. On `dev`, run **`/ship`**. It bumps `pyproject.toml` + `CHANGELOG.md`,
+      refreshes `uv.lock` into the same commit, and stops there — **no tag**.
+      Never hand-roll `cz bump`: `/ship` is the single writer of a version or a
+      tag. (`annotated_tag = true` in `[tool.commitizen]` is the second line of
+      defence — a lightweight tag is one `git push --follow-tags` silently
+      declines to push, so it stays local until something downstream cannot
+      resolve it.)
+   b. Push `dev`, then PR `dev` → `main` and merge it. **Squash or merge commit,
+      either is fine** — see below.
+   c. On `main`, after the merge, run **`/ship --tag`**. It asserts the tree is
+      clean, the remote is reachable, the local branch matches its remote, and
+      the version at the tip is the one being tagged; then it creates the
+      annotated `vX.Y.Z` tag **and pushes it**.
+
+   **Why the merge method no longer matters.** It used to: the tag was cut on
+   `dev` *before* the merge, so a squash — which rewrites the bump into a new
+   commit on `main` — left the tagged commit outside `main`'s ancestry, naming
+   code `main` did not contain while `quantbox-live` pinned that tag. That is
+   how `v0.4.0` was cut on 2026-07-28 missing a fix and had to be re-cut as
+   `v0.4.1`. The old rule against `--squash` was the workaround. The fix
+   replaced it: the tag is now created on `main` *after* the merge (qute-essentials
+   v3.6.0, TOM-349), so it names a commit `main` contains **by construction**,
+   whichever way the PR landed. `.github/workflows/release-tag-guard.yml` asserts
+   exactly that on every pushed `v*` tag. **Do not reinstate a merge-commit
+   mandate** — it would be ceremony guarding a hole that is already closed.
 
    Then bump the `quantbox @ …@vX.Y.Z` pin in `quantbox-live/pyproject.toml` and
    redeploy (the `sudo -u prod` step). Verify the tag contains what you expect

@@ -52,30 +52,37 @@ main (production-ready)  ← merge dev when ready
 
 - **`dev`** — all active development happens here
 - **`main`** — only receives merges from `dev` when code is tested and ready
-- **Tags** — cut by `/ship` on `dev` (annotated, semver), and reachable from
-  `main` because the release PR is merged with a MERGE COMMIT, not squashed
+- **Tags** — annotated, semver, cut on `main` after the release PR merges
+
+The release policy — who bumps, who tags, on which branch, and why the merge
+method does not matter — is stated once, in
+[`CLAUDE.md` → Shipping cycle](../../CLAUDE.md#shipping-cycle-two-stage-pr-mirrors-dm-evo).
+This page covers the cross-repo half only: pinning and promotion.
 
 ## Promoting code to production
 
 ### 1. Tag a release in quantbox
 
+Two stages — bump on `dev`, tag on `main` after the merge. Rationale in
+`CLAUDE.md::Shipping cycle`; the commands are:
+
 ```bash
 cd ~/workspace/projects/quantbox
-# /ship bumps version + CHANGELOG and cuts the ANNOTATED tag. Do not hand-roll
-# `cz bump`: a raw bump makes a LIGHTWEIGHT tag, and `git push --follow-tags`
-# silently declines to push those — the tag stays local until a consumer's
-# `uv lock` cannot resolve it (2026-07-28).
-/ship                                    # on dev
+# 1. Bump on dev. /ship bumps version + CHANGELOG and refreshes uv.lock into the
+#    same commit. It does NOT tag here. Never hand-roll `cz bump`.
+git checkout dev
+/ship
 
 git push origin dev
-git push origin v0.x.y                   # explicitly — do not rely on --tags
-git ls-remote --tags origin v0.x.y       # VERIFY it landed
-
-# Merge with a MERGE COMMIT, never --squash: squashing rewrites the bump so the
-# tagged commit is not an ancestor of main, and the tag then names code main does
-# not contain — while quantbox-live pins that tag.
 gh pr create --base main --head dev --title "release: v0.x.y"
-gh pr merge --merge
+gh pr merge          # squash or merge commit — either is safe; see CLAUDE.md
+
+# 2. Tag on main, AFTER the merge. /ship --tag checks the tree, the remote and
+#    the version at the tip, then creates the ANNOTATED tag and pushes it.
+git checkout main && git pull
+/ship --tag
+
+git ls-remote --tags origin v0.x.y       # VERIFY it landed
 git checkout dev
 ```
 

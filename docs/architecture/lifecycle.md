@@ -114,7 +114,9 @@ seeds:
 
 1. Verify all reproducibility pins satisfied.
 2. Run `--strict` validation.
-3. Create tag `prod-{subsystem}-vX.Y.Z-YYYYMMDD` on the merge commit.
+3. Create tag `prod-{subsystem}-vX.Y.Z-YYYYMMDD` on `main`, at the commit the
+   promotion PR landed (a squash and a merge commit are both fine — see
+   [`docs/playbooks/promote-a-methodology.md`](../playbooks/promote-a-methodology.md)).
 4. Update STATUS.md (or registry) with the new prod version.
 5. Schedule the methodology for the monthly revalidation cron.
 

@@ -114,6 +114,9 @@ Run the gate checklist (mostly automated by `/promote {subsystem}`):
 
 ### 2. Open dev → main PR
 
+This is the ordinary release PR — see `CLAUDE.md::Shipping cycle` for the
+policy; nothing about promotion changes it.
+
 ```bash
 git checkout dev
 git pull
@@ -130,7 +133,13 @@ PR body should include:
 
 After human approval, merge to `main`.
 
-### 4. Tag the release
+### 4. Tag the promotion
+
+A **promotion** tag, not a release tag: it marks *this methodology* reaching
+production and lives in a separate namespace from the repo's `vX.Y.Z` release
+tags (commitizen ignores `prod-*` via `ignored_tag_formats`, and
+`release-tag-guard.yml` only fires on `v*`). Cut it by hand, on `main`, at the
+commit the PR landed:
 
 ```bash
 git checkout main && git pull
@@ -139,7 +148,8 @@ git tag -a "prod-{slug}-vX.Y.0-${TODAY}" -m "Promote {slug} to production"
 git push origin "prod-{slug}-vX.Y.0-${TODAY}"
 ```
 
-Tag format: `prod-{subsystem}-vMAJOR.MINOR.PATCH-YYYYMMDD`.
+Tag format: `prod-{subsystem}-vMAJOR.MINOR.PATCH-YYYYMMDD`. The repo's own
+release tag is a different act — `/ship --tag`, see `CLAUDE.md::Shipping cycle`.
 
 ### 5. Update `meta.status`
 
@@ -149,8 +159,8 @@ meta = PluginMeta(..., status="production", ...)
 
 Commit on a small `chore({slug}): mark production status` branch and PR it to
 `dev` like any other change — **not** directly to `main`. Being one line does
-not make it exempt: `main` is release-only, and the review gate is what makes
-the independent-reviewer contract meaningful. It rides to `main` with the next
+not make it exempt: `main` is release-only, and the release PR into it is where
+the review gate makes the independent-reviewer contract meaningful. It rides to `main` with the next
 release (see `CLAUDE.md::Shipping cycle`).
 
 ### 6. Schedule revalidation
