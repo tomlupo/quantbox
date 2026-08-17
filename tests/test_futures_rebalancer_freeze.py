@@ -19,6 +19,7 @@ Plus a NaN-target guard so a missing-candle glitch fails loudly.
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
 from quantbox.plugins.rebalancing.futures_rebalancer import FuturesRebalancer
@@ -233,6 +234,9 @@ def test_partial_reduce_clamped_at_zero_on_inconsistent_input():
     row = orders.iloc[0]
     assert bool(row["reduce_only"]) is True
     assert row["Adjusted Quantity"] == 1969.0  # clamped to |current|, never past zero
+    # The reported notional must describe the order actually sent, not the
+    # unclamped delta — reporting and the dead-man freeze detector read it.
+    assert row["Notional Value"] == pytest.approx(1969.0 * 0.004)
 
 
 def test_partial_reduce_still_subject_to_churn_band():

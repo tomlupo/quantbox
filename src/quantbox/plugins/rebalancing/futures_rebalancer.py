@@ -515,7 +515,21 @@ class FuturesRebalancer:
                     # this method accepts those columns independently and nothing
                     # else here checks them for mutual consistency. Mirrors the
                     # gate-path clamp in trading_pipeline.py:2528.
-                    adjusted_qty = min(adjusted_qty, abs(cur_qty))
+                    clamped_qty = min(adjusted_qty, abs(cur_qty))
+                    if clamped_qty != adjusted_qty:
+                        # Keep the reported notional describing the order we
+                        # actually send — it is computed from the unclamped delta
+                        # at line 378 and is read downstream by reporting and the
+                        # dead-man freeze detector.
+                        logger.warning(
+                            "Clamping partial reduce for %s: delta %.8f exceeds position %.8f — "
+                            "inconsistent rebalancing frame, check the target/current columns.",
+                            asset,
+                            adjusted_qty,
+                            abs(cur_qty),
+                        )
+                        adjusted_qty = clamped_qty
+                        notional_value = adjusted_qty * price if price else 0.0
 
             order_records.append(
                 {
