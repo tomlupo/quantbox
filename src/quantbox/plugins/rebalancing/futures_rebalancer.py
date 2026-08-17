@@ -374,8 +374,10 @@ class FuturesRebalancer:
             price = row["Price"]
             status = None
             reason = None
-            adjusted_qty = abs(delta_qty)
-            notional_value = adjusted_qty * price if price else 0.0
+            # NOTE: `adjusted_qty` / `notional_value` are derived AFTER the
+            # reduce classification below, because a partial reduce is clamped to
+            # the position size first. Every floor check and every reported column
+            # must see the same quantity — the one actually sent.
 
             # Resolve the binding per-pair minimums. Prefer the venue's real
             # floors from the snapshot; fall back to the flat config min_notional
@@ -454,6 +456,29 @@ class FuturesRebalancer:
             # Exempt from the churn band and the base-unit floor — closes only.
             is_closing = bool(is_flat_target)
 
+            adjusted_qty = abs(delta_qty)
+            if is_partial_reduce:
+                # Enforce, do not merely assert, the no-zero-crossing invariant,
+                # and do it HERE — above the gate chain — so the churn band, the
+                # min-notional floor, the base-unit floor and the reported
+                # `Notional Value` all judge the quantity we actually send. The
+                # invariant holds arithmetically today because delta is
+                # `target - current` from the same two columns (line 285), but
+                # this method accepts those columns independently and nothing else
+                # checks them for mutual consistency. Mirrors the gate-path clamp
+                # in trading_pipeline.py:2528.
+                clamped_qty = min(adjusted_qty, abs(cur_qty))
+                if clamped_qty != adjusted_qty:
+                    logger.warning(
+                        "Clamping partial reduce for %s: delta %.8f exceeds position %.8f — "
+                        "inconsistent rebalancing frame, check the target/current columns.",
+                        asset,
+                        adjusted_qty,
+                        abs(cur_qty),
+                    )
+                    adjusted_qty = clamped_qty
+            notional_value = adjusted_qty * price if price else 0.0
+
             # Guard against NaN / missing-data targets. A NaN price or quantity
             # (e.g. a Hyperliquid missing-candle glitch) otherwise slips through
             # as a silent no-op: `NaN < min_notional` is False and `NaN > 0` is
@@ -508,28 +533,8 @@ class FuturesRebalancer:
                     reason = "Reducing position (min-notional exempt)"
                 else:
                     reason = ""
-                if is_partial_reduce:
-                    # Enforce, do not merely assert, the no-zero-crossing
-                    # invariant. It holds arithmetically today because delta is
-                    # `target - current` from the same two columns (line 285), but
-                    # this method accepts those columns independently and nothing
-                    # else here checks them for mutual consistency. Mirrors the
-                    # gate-path clamp in trading_pipeline.py:2528.
-                    clamped_qty = min(adjusted_qty, abs(cur_qty))
-                    if clamped_qty != adjusted_qty:
-                        # Keep the reported notional describing the order we
-                        # actually send — it is computed from the unclamped delta
-                        # at line 378 and is read downstream by reporting and the
-                        # dead-man freeze detector.
-                        logger.warning(
-                            "Clamping partial reduce for %s: delta %.8f exceeds position %.8f — "
-                            "inconsistent rebalancing frame, check the target/current columns.",
-                            asset,
-                            adjusted_qty,
-                            abs(cur_qty),
-                        )
-                        adjusted_qty = clamped_qty
-                        notional_value = adjusted_qty * price if price else 0.0
+                # (The partial-reduce clamp runs above the gate chain, so
+                # `adjusted_qty` and `notional_value` are already final here.)
 
             order_records.append(
                 {

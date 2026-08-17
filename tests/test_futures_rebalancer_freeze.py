@@ -239,6 +239,40 @@ def test_partial_reduce_clamped_at_zero_on_inconsistent_input():
     assert row["Notional Value"] == pytest.approx(1969.0 * 0.004)
 
 
+def test_clamped_partial_reduce_is_judged_on_the_clamped_size():
+    """The clamp runs ABOVE the gate chain, so the floors judge what is sent.
+
+    A frame whose raw delta clears ordermin but whose CLAMPED size does not must
+    suppress as "Below min qty". If the clamp ran after the gate the row would be
+    marked Executable and the broker would then silently return None — the
+    send-and-vanish failure the base-unit floor exists to prevent.
+    """
+    reb = FuturesRebalancer()
+    df = pd.DataFrame(
+        [
+            _rebal_row(
+                "ADA",
+                action="Buy",
+                delta_qty=2.0,  # inconsistent: exceeds |current|, and clears ordermin
+                price=100.0,
+                weight_delta=0.05,
+                target_weight=-0.10,
+                current_qty=-0.5,
+                target_qty=-0.4,
+            )
+        ]
+    )
+    orders = reb._create_executable_orders(
+        df,
+        min_trade_size=MIN_TRADE,
+        min_notional=MIN_NOTIONAL,
+        min_qty_map={"ADA": 1.0},  # clamped 0.5 < 1.0, raw 2.0 > 1.0
+    )
+    row = orders.iloc[0]
+    assert row["Order Status"] == "Below min qty", row["Order Status"]
+    assert bool(row["Executable"]) is False
+
+
 def test_partial_reduce_still_subject_to_churn_band():
     """A partial reduce is NOT exempt from min_trade_size.
 
