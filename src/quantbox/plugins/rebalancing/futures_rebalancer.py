@@ -374,8 +374,10 @@ class FuturesRebalancer:
             price = row["Price"]
             status = None
             reason = None
-            adjusted_qty = abs(delta_qty)
-            notional_value = adjusted_qty * price if price else 0.0
+            # NOTE: `adjusted_qty` / `notional_value` are derived AFTER the
+            # reduce classification below, because a partial reduce is clamped to
+            # the position size first. Every floor check and every reported column
+            # must see the same quantity — the one actually sent.
 
             # Resolve the binding per-pair minimums. Prefer the venue's real
             # floors from the snapshot; fall back to the flat config min_notional
@@ -408,7 +410,74 @@ class FuturesRebalancer:
             # its $10 minimum (SOL 0.03, $2.33, filled). The exit was available
             # the whole time — the earlier "trapped residual" suppression was built
             # on that false premise and is removed.
-            is_closing = row.get("Target Weight", 0) == 0 and row.get("Current Quantity", 0) != 0
+            # TOM-402 adds a SECOND, deliberately narrower category: a PARTIAL
+            # reduce (same sign, |target| < |current|, e.g. -0.40 -> -0.10).
+            #
+            # These two are NOT interchangeable, and the difference is why they get
+            # different exemptions. A flat-target close is a one-shot, terminal act
+            # of intent. A partial reduce is mostly PRICE-DRIVEN: target quantity is
+            # `total_value * weight / price` (line 233), so for an unchanged target
+            # weight any asset that appreciates relative to the book gets a smaller
+            # same-sign target. On a diversified book that describes the winning
+            # names on essentially every run — not a rare event.
+            #
+            # So a partial reduce earns exactly the two exemptions the reduce-only
+            # argument actually supports:
+            #   * the min-notional floor  — the venue genuinely waives it for
+            #     reduceOnly (binance_futures.py:501, hyperliquid.py:767)
+            #   * the `reduce_only` flag itself
+            # and NOT the other two, which that argument does not support:
+            #   * the min_trade_size churn band — exempting a recurring, price-
+            #     driven trim while adds stay banded would trim winners at any size
+            #     and never re-add, drifting the book to under-exposure and paying
+            #     the fees the band exists to prevent.
+            #   * the `ordermin` base-unit floor — venues do NOT waive lot size or
+            #     step size for reduceOnly (binance_futures.py:487 adjust_quantity,
+            #     hyperliquid.py:755 precision round, neither with a reduce_only
+            #     escape). Exempting it would mark the row Executable, then have the
+            #     broker silently return None — the exact send-and-vanish failure
+            #     the floor exists to prevent.
+            cur_qty = row.get("Current Quantity", 0)
+            tgt_qty = row.get("Target Quantity")
+            if _is_nan(cur_qty) or tgt_qty is None or _is_nan(tgt_qty):
+                # Fail closed: a missing or NaN target is never read as intent to
+                # reduce. NaN is surfaced loudly below.
+                is_flat_target = row.get("Target Weight", 0) == 0 and cur_qty != 0 and not _is_nan(cur_qty)
+                is_partial_reduce = False
+            else:
+                is_flat_target = row.get("Target Weight", 0) == 0 and cur_qty != 0
+                # Sign comparison rather than a product: no multiply, and it reads
+                # as the question being asked.
+                same_sign = (tgt_qty > 0) == (cur_qty > 0)
+                is_partial_reduce = cur_qty != 0 and same_sign and abs(tgt_qty) < abs(cur_qty)
+
+            # Exempt from the min-notional floor and sent reduce-only.
+            is_exposure_reducing = bool(is_flat_target or is_partial_reduce)
+            # Exempt from the churn band and the base-unit floor — closes only.
+            is_closing = bool(is_flat_target)
+
+            adjusted_qty = abs(delta_qty)
+            if is_partial_reduce:
+                # Enforce, do not merely assert, the no-zero-crossing invariant,
+                # and do it HERE — above the gate chain — so the churn band, the
+                # min-notional floor, the base-unit floor and the reported
+                # `Notional Value` all judge the quantity we actually send. The
+                # invariant holds arithmetically today because delta is
+                # `target - current` from the same two columns (line 285), but
+                # this method accepts those columns independently and nothing else
+                # checks them for mutual consistency. Mirrors the gate-path clamp
+                # in trading_pipeline.py:2528.
+                clamped_qty = min(adjusted_qty, abs(cur_qty))
+                if clamped_qty != adjusted_qty:
+                    logger.warning(
+                        "Clamping partial reduce for %s: delta %.8f exceeds position %.8f — "
+                        "inconsistent rebalancing frame, check the target/current columns.",
+                        asset,
+                        adjusted_qty,
+                        abs(cur_qty),
+                    )
+                    adjusted_qty = clamped_qty
+            notional_value = adjusted_qty * price if price else 0.0
 
             # Guard against NaN / missing-data targets. A NaN price or quantity
             # (e.g. a Hyperliquid missing-candle glitch) otherwise slips through
@@ -439,7 +508,7 @@ class FuturesRebalancer:
                 status = "Zero price"
                 reason = "No price available"
                 adjusted_qty = 0.0
-            elif notional_value < effective_min_notional and not is_closing:
+            elif notional_value < effective_min_notional and not is_exposure_reducing:
                 status = "Below min notional"
                 reason = f"Notional {notional_value:.2f} < {effective_min_notional:.2f}"
                 adjusted_qty = 0.0
@@ -460,10 +529,12 @@ class FuturesRebalancer:
                 adjusted_qty = 0.0
             else:
                 status = "To be placed"
-                if is_closing and notional_value < effective_min_notional:
-                    reason = "Closing position (min-notional exempt)"
+                if is_exposure_reducing and notional_value < effective_min_notional:
+                    reason = "Reducing position (min-notional exempt)"
                 else:
                     reason = ""
+                # (The partial-reduce clamp runs above the gate chain, so
+                # `adjusted_qty` and `notional_value` are already final here.)
 
             order_records.append(
                 {
@@ -476,9 +547,12 @@ class FuturesRebalancer:
                     "Notional Value": notional_value,
                     "Order Status": status,
                     "Reason": reason,
-                    # A flat-target close is sent reduce-only: the venue exempts it
-                    # from the min-notional floor and it can't flip through zero.
-                    "reduce_only": bool(is_closing),
+                    # An exposure-reducing order (full close or partial reduce) is
+                    # sent reduce-only: the venue exempts it from the min-notional
+                    # floor and it can't flip through zero. Note this is a WIDER
+                    # set than `is_closing`, which additionally waives the churn
+                    # band and the base-unit floor and so stays closes-only.
+                    "reduce_only": is_exposure_reducing,
                 }
             )
 
