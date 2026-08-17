@@ -6,25 +6,99 @@
 # checks match CI exactly (CI runs `uv run ruff check .` + `uv run ruff format
 # --check .`), with no version to keep in sync.
 #
-# Install once per clone:
+# ---------------------------------------------------------------------------
+# Test posture: three tiers, chosen by MEASUREMENT (2026-08-17, this box)
+# ---------------------------------------------------------------------------
+#
+#   pre-commit  lint only — ruff + the file hygiene hooks.  ~1s
+#   pre-push    the suite minus `slow`, plus the L1 pipeline smoke.  ~39s
+#   CI          everything, `slow` and the canonical reproductions included.
+#
+# Why the suite is NOT on pre-commit: the full suite is 162s. Removing the
+# tests marked `slow` brings it to 34.6s for 1312 tests — still over the ~30s
+# a per-commit hook can spend without the hook being the thing you disable.
+# So it moves one tier out, to pre-push.
+#
+# Why `slow` is worth marking at all — the slowness is CONCENTRATED, not
+# uniform. 11 tests are 107s of the 162s (66%); the remaining 1312 average
+# 26ms. Marking those 11 buys back two thirds of the wall clock for 0.8% of
+# the tests:
+#
+#   6x tests/test_ml_strategy.py (sklearn model fits)          ~91s
+#   tests/test_backtest_optimizer.py TestGridSearch.test_basic ~18s
+#   2x tests/test_data_utils.py TestRetry (real tenacity sleeps) ~13s
+#   2x tests/test_parameter_grid.py sweeps (vbt over 600 bars)   ~10s
+#
+# `slow` RELOCATES a test, it never weakens one. Every one of those 11 still
+# runs, unmodified, in CI's `test` job. Same for the canonical reproductions:
+# they are end-to-end backtest parity checks against committed goldens, which
+# is exactly the kind CI should own — they need `--extra full` and their own
+# job, so the pre-push tier skips them and CI does not.
+#
+# The deselection lives HERE, in the hook, and only here. `pyproject.toml`
+# carries no `addopts` marker filter by design: a bare `pytest` runs every
+# test, because a default that silently skips is indistinguishable from a
+# suite that passes.
+#
+# Install once per clone (BOTH hook types — `default_install_hook_types`
+# below means a bare `pre-commit install` is enough):
 #   uv tool install pre-commit && pre-commit install
 # Run on all files:
 #   pre-commit run --all-files
+# Run the pre-push tier by hand:
+#   pre-commit run --hook-stage pre-push --all-files
+#
+# The repo already has a native .git/hooks/pre-push (the qute branch guard
+# dispatcher). Installing the pre-push type does NOT clobber it: pre-commit
+# moves it to pre-push.legacy and runs it first with the raw stdin the guard
+# needs, and the dispatcher in turn skips pre-commit's shim in its pre-push.d/
+# so nothing runs twice.
+
+default_install_hook_types: [pre-commit, pre-push]
+# Everything is a commit-time check unless it says otherwise; the test hook
+# below opts into pre-push. Without this, every hook would run at BOTH stages.
+default_stages: [pre-commit]
+
 repos:
   - repo: local
     hooks:
+      # `exclude` keeps local == CI, which is this file's whole reason to
+      # exist. CI runs `ruff .`, and ruff discovers by EXTENSION — so a
+      # `.claude/hooks/` script with a python shebang and no `.py` suffix is
+      # invisible to it. pre-commit selects by content (identify reads the
+      # shebang), so without this it would reformat the qute branch-guard
+      # dispatcher — a stamped, "do not hand-edit" file this repo does not own.
       - id: ruff-check
         name: ruff check (project ruff via uv)
         entry: uv run ruff check --fix
         language: system
         types_or: [python, pyi]
+        exclude: ^\.claude/hooks/
         require_serial: true
       - id: ruff-format
         name: ruff format (project ruff via uv)
         entry: uv run ruff format
         language: system
         types_or: [python, pyi]
+        exclude: ^\.claude/hooks/
         require_serial: true
+
+      # --- pre-push tier -------------------------------------------------
+      # `not slow`                 -> the 11 heavyweights, CI's job
+      # `not canonical_reproduction` -> golden-diffed end-to-end backtests,
+      #                               need `--extra full`, CI's job
+      # pipeline_smoke is deliberately INCLUDED: 4.5s, and it is the L1
+      # structural guard that catches "pytest is green but the pipeline
+      # cannot load its plugins" — the class unit tests miss by design.
+      - id: pytest-not-slow
+        name: pytest (suite minus slow — pre-push)
+        entry: uv run pytest -q -m "not slow and not canonical_reproduction"
+        language: system
+        types_or: [python, pyi, toml]
+        pass_filenames: false
+        require_serial: true
+        stages: [pre-push]
+
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
