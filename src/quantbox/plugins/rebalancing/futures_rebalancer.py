@@ -408,7 +408,24 @@ class FuturesRebalancer:
             # its $10 minimum (SOL 0.03, $2.33, filled). The exit was available
             # the whole time — the earlier "trapped residual" suppression was built
             # on that false premise and is removed.
-            is_closing = row.get("Target Weight", 0) == 0 and row.get("Current Quantity", 0) != 0
+            # TOM-402 generalises this from "target is exactly flat" to "the
+            # position is moving toward zero". A PARTIAL reduce (same sign,
+            # |target| < |current|, e.g. -0.40 -> -0.10) is exposure-reducing for
+            # exactly the same reasons a full close is: it is sent reduce-only, the
+            # venue exempts it from the floor, and it cannot flip through zero
+            # because |delta| = |target - current| < |current|. Requiring
+            # ``Target Weight == 0`` exactly left those legs neither exempt nor
+            # reduce-only, so they froze against the floor — 14 such legs blocked on
+            # carver-HL over 2026-07. Opens and adds are deliberately NOT covered.
+            cur_qty = row.get("Current Quantity", 0)
+            tgt_qty = row.get("Target Quantity", 0)
+            if _is_nan(cur_qty) or _is_nan(tgt_qty):
+                # NaN targets are surfaced loudly below; never infer intent here.
+                is_closing = False
+            else:
+                is_flat_target = row.get("Target Weight", 0) == 0 and cur_qty != 0
+                is_partial_reduce = cur_qty != 0 and tgt_qty * cur_qty > 0 and abs(tgt_qty) < abs(cur_qty)
+                is_closing = bool(is_flat_target or is_partial_reduce)
 
             # Guard against NaN / missing-data targets. A NaN price or quantity
             # (e.g. a Hyperliquid missing-candle glitch) otherwise slips through
@@ -461,7 +478,7 @@ class FuturesRebalancer:
             else:
                 status = "To be placed"
                 if is_closing and notional_value < effective_min_notional:
-                    reason = "Closing position (min-notional exempt)"
+                    reason = "Reducing position (min-notional exempt)"
                 else:
                     reason = ""
 
@@ -476,8 +493,9 @@ class FuturesRebalancer:
                     "Notional Value": notional_value,
                     "Order Status": status,
                     "Reason": reason,
-                    # A flat-target close is sent reduce-only: the venue exempts it
-                    # from the min-notional floor and it can't flip through zero.
+                    # An exposure-reducing order (full close or partial reduce) is
+                    # sent reduce-only: the venue exempts it from the min-notional
+                    # floor and it can't flip through zero.
                     "reduce_only": bool(is_closing),
                 }
             )
