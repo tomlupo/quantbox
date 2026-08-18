@@ -5,7 +5,7 @@
      the machine-readable declaration — qute's routing engine reads it; the prose
      is for agents and humans. Keep exactly one marker. -->
 
-<!-- qute-tracker: linear team=TOM -->
+<!-- qute-tracker: linear team=TOM project=quantbox -->
 
 ## Task source — Linear
 
