@@ -56,35 +56,23 @@ main (production-ready)  ← merge dev when ready
 
 The release policy — who bumps, who tags, on which branch, and why the merge
 method does not matter — is stated once, in
-[`CLAUDE.md` → Shipping cycle](../../CLAUDE.md#shipping-cycle-two-stage-pr-mirrors-dm-evo).
+[`CLAUDE.md` → Shipping cycle](../../CLAUDE.md#shipping-cycle).
 This page covers the cross-repo half only: pinning and promotion.
 
 ## Promoting code to production
 
 ### 1. Tag a release in quantbox
 
-Two stages — bump on `dev`, tag on `main` after the merge. Rationale in
-`CLAUDE.md::Shipping cycle`; the commands are:
+**`/ship` on `dev`. That is the whole command.** It bumps, changelogs, refreshes
+`uv.lock`, commits, cuts the annotated tag, pushes and opens the promotion PR —
+one act. Merge that PR **with a merge commit, never squash**.
 
-```bash
-cd ~/workspace/projects/quantbox
-# 1. Bump on dev. /ship bumps version + CHANGELOG and refreshes uv.lock into the
-#    same commit. It does NOT tag here. Never hand-roll `cz bump`.
-git checkout dev
-/ship
-
-git push origin dev
-gh pr create --base main --head dev --title "release: v0.x.y"
-gh pr merge          # squash or merge commit — either is safe; see CLAUDE.md
-
-# 2. Tag on main, AFTER the merge. /ship --tag checks the tree, the remote and
-#    the version at the tip, then creates the ANNOTATED tag and pushes it.
-git checkout main && git pull
-/ship --tag
-
-git ls-remote --tags origin v0.x.y       # VERIFY it landed
-git checkout dev
-```
+The policy, the reasons and the failure it prevents live in ONE place:
+[`CLAUDE.md` -> Shipping cycle](../../CLAUDE.md#shipping-cycle).
+This page deliberately keeps no command inventory — the copy that used to live
+here went stale across a `/ship` rewrite and told readers `/ship` does not tag and
+that squashing is safe, both of which now produce the v0.4.0 incident it warns
+about. A restated policy drifts; a link cannot.
 
 ### 2. Bump quantbox-live
 

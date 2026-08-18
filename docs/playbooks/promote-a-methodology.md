@@ -149,7 +149,7 @@ git push origin "prod-{slug}-vX.Y.0-${TODAY}"
 ```
 
 Tag format: `prod-{subsystem}-vMAJOR.MINOR.PATCH-YYYYMMDD`. The repo's own
-release tag is a different act — `/ship --tag`, see `CLAUDE.md::Shipping cycle`.
+release tag is a different act — `/ship`, see `CLAUDE.md::Shipping cycle`.
 
 ### 5. Update `meta.status`
 

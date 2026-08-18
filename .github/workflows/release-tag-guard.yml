@@ -15,7 +15,7 @@
 # checks WHAT the tag says and never WHERE the tag sits. The release had to be
 # re-cut.
 #
-# `tag-on-release-branch` below closes that hole. It is the important job here:
+# `release-tag-reachable` below closes that hole. It is the important job here:
 # anything that pins this tag (pip/uv install from git, a Docker build, a
 # submodule, a deploy) resolves code that was never released.
 #
@@ -46,26 +46,37 @@ on:
   push:
     tags:
       - 'v*'
+    # The release branch moving is the OTHER moment worth checking, and it is the
+    # one that actually catches a squashed promotion. See the job comments below.
+    branches:
+      - 'main'
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-tag-guard-${{ github.ref }}
+  group: release-tag-guard-${{ github.ref }}-${{ github.ref_type }}
   cancel-in-progress: false
 
 jobs:
-  # ── JOB 1: WHERE the tag sits ───────────────────────────────────────────────
-  tag-on-release-branch:
+  # ── JOB 1: WHERE the tag sits, AT TAG-PUSH TIME ────────────────────────────
+  # `/ship` (qute-essentials v9.0.0) cuts the tag on the INTEGRATION branch and
+  # promotes by merge, so at tag-push time the release branch does NOT yet
+  # contain the commit. This job used to compare against the release branch and
+  # therefore FAILED on every correct release (observed on v0.4.2, 2026-08-18)
+  # while never re-running after the promotion — it cried wolf on success and
+  # slept through the actual failure. It now checks the claim that IS true at
+  # this moment: the tag sits on the integration branch, not some stray checkout.
+  # The squash detector moved to JOB 1b, which runs when `main` actually moves.
+  tag-on-integration-branch:
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     env:
-      # Empty = use the repo's default branch. See "Configuration" above.
-      # quantbox releases from `main`, which IS this repo's GitHub default
-      # branch, so the self-configuring case is the correct one — left empty
-      # deliberately, not by omission. (`conductor.yml` `release.branch: main`
-      # agrees; fill this in only if the release branch ever moves off the
-      # default branch.)
-      RELEASE_BRANCH: ""
+      # The branch `/ship` cuts the tag ON. Empty, or a branch that does not
+      # exist, falls back to the repo's default branch — which is the correct
+      # answer for a SINGLE-STAGE repo, where the integration and release
+      # branches are the same branch.
+      INTEGRATION_BRANCH: "dev"
     steps:
       - name: Check out the tagged commit with FULL history
         uses: actions/checkout@v4
@@ -85,13 +96,18 @@ jobs:
         run: |
           set -euo pipefail
 
-          branch="${RELEASE_BRANCH:-${DEFAULT_BRANCH:-}}"
+          branch="${INTEGRATION_BRANCH:-}"
+          if [ -n "$branch" ] && ! git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            echo "No '${branch}' branch on origin — single-stage repo; falling back to the default branch."
+            branch=""
+          fi
+          branch="${branch:-${DEFAULT_BRANCH:-}}"
           if [ -z "$branch" ]; then
-            echo "::error title=release-tag-guard misconfigured::Could not resolve a release branch (RELEASE_BRANCH empty and no default branch in the event payload). Refusing to pass vacuously."
+            echo "::error title=release-tag-guard misconfigured::Could not resolve a branch to check the tag against (INTEGRATION_BRANCH empty/absent and no default branch in the event payload). Refusing to pass vacuously."
             exit 1
           fi
-          echo "Release branch: $branch"
-          echo "Tag:            ${GITHUB_REF_NAME}"
+          echo "Integration branch: $branch"
+          echo "Tag:                ${GITHUB_REF_NAME}"
 
           # ── Guard A: the clone must not be shallow ──────────────────────────
           # On a shallow clone merge-base silently answers a question about a
@@ -139,7 +155,66 @@ jobs:
               echo "OK: ${GITHUB_REF_NAME} (${tagged_commit}) is contained in origin/${branch}."
               ;;
             1)
-              echo "::error title=Release tag is not on ${branch}::Tag ${GITHUB_REF_NAME} points at commit ${tagged_commit}, which is NOT an ancestor of origin/${branch}. The release branch does not contain this code, so anything pinning this tag installs code that was never released. Usual cause: the tag was cut on a feature/integration branch and the PR was then SQUASH-merged, which rewrites the commits onto ${branch} as a new SHA. Fix: delete the tag, then re-cut it on the merge commit on ${branch}."
+              echo "::error title=Release tag is not on ${branch}::Tag ${GITHUB_REF_NAME} points at commit ${tagged_commit}, which is NOT an ancestor of origin/${branch}. /ship cuts the tag on the integration branch, so a tag that is not there was created somewhere else — a stray checkout, a feature branch, or a hand 'git tag'. Fix: delete the tag and re-cut it with /ship on ${branch}. (A SQUASHED promotion is a different failure and is caught by the release-tag-reachable job, which runs when the release branch moves.)"
+              exit 1
+              ;;
+            *)
+              echo "::error title=release-tag-guard failed::'git merge-base --is-ancestor' exited ${rc} (an error, not a verdict). Refusing to report a pass it did not establish."
+              exit 1
+              ;;
+          esac
+
+  # ── JOB 1b: THE SQUASH DETECTOR ────────────────────────────────────────────
+  # Runs when the RELEASE BRANCH moves, which is the only moment a squashed
+  # promotion becomes observable. Job 1 cannot see it: at tag-push time the
+  # release branch has not moved yet, and that run never repeats.
+  #
+  # The failure it exists to catch (v0.4.0, 2026-07-28): the tag is cut on the
+  # integration branch, the promotion PR is then SQUASH-merged, which replays the
+  # commits onto the release branch as a NEW sha. The tagged commit is left
+  # outside the release branch's ancestry, so anything pinning that tag — a
+  # uv/pip install from git, a Docker build, a submodule — resolves code the
+  # release branch never contained. Version strings all agree, so job 2 passes.
+  release-tag-reachable:
+    if: github.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out with FULL history and tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Assert the newest release tag is contained in this branch
+        run: |
+          set -euo pipefail
+
+          # Newest v* tag by commit date. --match keeps prod-{slug}-* promotion
+          # tags (docs/playbooks/promote-a-methodology.md) out of the answer.
+          tag="$(git tag --list 'v[0-9]*' --sort=-creatordate | head -n1)"
+          if [ -z "$tag" ]; then
+            echo "No v* tags yet — nothing to check. (A repo before its first release.)"
+            exit 0
+          fi
+
+          if ! tagged_commit="$(git rev-parse --verify --quiet "${tag}^{commit}")"; then
+            echo "::error title=release-tag-guard failed::Could not resolve ${tag} to a commit."
+            exit 1
+          fi
+
+          echo "Branch:        ${GITHUB_REF_NAME} (${GITHUB_SHA})"
+          echo "Newest tag:    ${tag} (${tagged_commit})"
+
+          set +e
+          git merge-base --is-ancestor "$tagged_commit" "$GITHUB_SHA"
+          rc=$?
+          set -e
+
+          case "$rc" in
+            0)
+              echo "OK: ${tag} is contained in ${GITHUB_REF_NAME}. Safe to pin."
+              ;;
+            1)
+              echo "::error title=${tag} is NOT contained in ${GITHUB_REF_NAME}::The newest release tag points at ${tagged_commit}, which is not an ancestor of this branch. Anything pinning ${tag} resolves code this branch never contained. Usual cause: the promotion PR was SQUASH- or REBASE-merged, which rewrites the tagged bump commit into a new sha. Fix: revert/re-do the promotion as a MERGE COMMIT, or delete the tag and re-cut it. See CLAUDE.md -> Shipping cycle."
               exit 1
               ;;
             *)
@@ -180,6 +255,7 @@ jobs:
   # to catch, and skipping it would re-introduce the vacuous pass one branch to
   # the left.
   version-matches-tag:
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -14,15 +14,17 @@ The plugin runtime (`run_from_config`, CLI) is *one* of multiple entry points �
 
 QuantBox is a **composing framework** — owned and opinionated, but composing external libraries (vectorbt, MLflow, riskfolio, optionally Qlib) rather than competing with them on their turf. See [ADR-0001](docs/adr/0001-library-not-framework.md).
 
-## Task source: Linear (team TOM, project quantbox)
+## Task source: Linear
 
-**Linear is the task source** (qute-code-kit ADR-0004). Tasks, planning, and agent
-assignment live in Linear — see [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md)
-for the binding (machine marker `qute-tracker: linear team=TOM`). qute `/task` and
-`/repo-status` route there automatically. **GitHub Issues on `tomlupo/quantbox` are issue
-*records* only** — bugs/defects/tech-debt attached to the code; an issue becomes work only
-when a Linear task references it. Never pull work from the Issues list directly. **Never
-Paperclip** — the fleet's Paperclip orchestrator is retired.
+Linear is the task source (qute-code-kit ADR-0004). The binding — team, project,
+and the machine marker skills read — lives in
+[`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md) and is not
+restated here; a copy in this file said "project quantbox" until 2026-08-18, and
+no such project exists.
+
+**GitHub Issues on `tomlupo/quantbox` are issue *records* only** — bugs and tech
+debt attached to the code. An issue becomes work when a Linear task references
+it; never pull work from the Issues list directly.
 
 ## qute runtime
 
@@ -33,7 +35,7 @@ This repo runs the standard qute regime (qute-code-kit ADR-0001..0004). Key skil
 - `/handoff` + `/pickup` — the continuity pair for pausing/resuming work.
 - `/ship` — the release boundary (commitizen). ONE act on `dev`: bump,
   changelog, lockfile, commit and the annotated `vX.Y.Z` tag, pushed, then the
-  promotion PR into `main`. See [`## Shipping cycle`](#shipping-cycle-two-stage-pr-mirrors-dm-evo)
+  promotion PR into `main`. See [`## Shipping cycle`](#shipping-cycle)
   — the one place this repo states its release policy.
 - Guards (secrets, audit, destructive-command, lakera/langfuse) stay active under all workflows.
 
@@ -213,39 +215,16 @@ Quantbox uses custom exceptions (see `quantbox.exceptions`):
 | `dev` | Integration branch | `main`, at release time |
 | `feat/{slug}` | One change | `dev` via PR |
 
-Branch a `feat/{slug}` off `dev`, commit there, and open the PR to **`dev`**
-(`gh pr create --base dev`) — never a feature straight to `main`. Release flow is
-[Shipping cycle](#shipping-cycle-two-stage-pr-mirrors-dm-evo) below.
+Branch off `dev`, PR to `dev` (`gh pr create --base dev`). **Never commit or push
+directly to `main`** — every change reaches it through a PR. Features never go
+straight to `main`: that drift was corrected 2026-07-06, and #152 slipped through
+again on 2026-08-18, so it is worth actually checking.
 
-**Never commit or push directly to `main`.** Every change reaches it through a
-PR; trivial fixes still get a short-lived branch. This is the deterministic
-stand-in for GitHub branch protection, which this repo's plan does not offer.
-**Land work on `dev` through a PR too** — that is the convention, not a guard
-refusal: `dev` is deliberately unguarded locally (`integration_branch: null`),
-so the cost of a direct push is a convention broken, not a hook fired.
-
-Two guard layers enforce the `main` rule, both shipped by the **qute-essentials
-plugin** — neither is a file this repo maintains. `.claude/git-guard.json` is the
-opt-in: its *presence* arms both, and it carries only what differs from the house
-defaults. `main` protected is the default, so the file names just
-`integration_branch: null` (the deliberate deviation — house default would detect
-`dev` and guard it) and `release_tool`.
-
-- **`pre-push`** is the layer that holds. Git hands it the resolved refs, so it
-  covers humans, scripts and agents alike. Install/verify it with
-  `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/install_pre_push_guard.py" --repo . --check`.
-  Override one push with **`CLAUDE_GUARD_BRANCH_PUSH=0 git push …`**, which skips
-  this check only; `git push --no-verify` also works but drops every other
-  pre-push hook with it.
-- **The `git-workflow` `PreToolUse` hook** is the speed bump in front of it: it
-  sees Claude tool calls only, but it catches `git commit` (which never reaches
-  `pre-push`) and explains the route before the command runs. Turn it off with
-  **`/guard git-workflow off`**; that disarms only this layer.
-
-A `.claude/hooks/git-workflow-guard.py` checked into this repo is a stale fork of
-the plugin's guard — deleted in TOM-354, and it belongs deleted, not maintained.
-(`GIT_GUARD_DISABLE=1`, which older revisions of this file advertised, was only
-ever read by that fork and does nothing now.)
+The `main` rule is enforced by two qute-essentials guard layers armed by the
+presence of `.claude/git-guard.json` — `pre-push` (the one that holds) and the
+`git-workflow` PreToolUse hook. Neither is a file this repo maintains; `/guard`
+documents and toggles them. This repo's only deviation is `integration_branch:
+null`, so `dev` is deliberately unguarded locally.
 
 Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`, `test:`) —
 the prefixes drive the semver bump. Never `--no-verify`, never force-push `main`,
@@ -256,73 +235,31 @@ and commit only when asked.
 | Repo | Purpose | Branch/tag |
 |---|---|---|
 | quantbox (this) | Library | `dev` for development, `main` for releases |
-| quantbox-live | Production trading | Pins to tags on `main` (e.g. `@v0.1.0`) |
+| quantbox-live | Production trading | Pins tags on `main` (e.g. `@v0.4.2`) |
 | quantbox-lab | Research/backtesting | Pins `quantbox@main` (no `dev` branch) |
 
-### Shipping cycle (two-stage PR, mirrors dm-evo)
+### Shipping cycle
 
-**This section is the single statement of the release policy for this repo.**
-Every other file that needs it links here rather than restating it — a restated
-policy drifts, and this one did (three flows across seven files, TOM-354). The
-machine-readable half lives in [`conductor.yml`](conductor.yml) (`release.branch`,
-`baseBranch`) and must agree with what follows.
+**This section is the single statement of the release policy.** Every other file
+links here rather than restating it — this policy has drifted twice now
+(TOM-354; then again across three files by 2026-08-18). `conductor.yml`
+(`release.branch`) is the machine-readable half and must agree.
 
-1. **Feature work → PR to `dev`** (`gh pr create --base dev`). `ci.yml` runs on
-   `dev` PRs; the independent-reviewer gate runs on **`main`** PRs only — the
-   expensive pass belongs at the merge gate, so a `dev` PR gets CI and nothing
-   else. Merge feature PRs into `dev`, never straight to `main`.
-2. **Release → `/ship` on `dev`. One act; there is no second command.**
+1. **Feature work → PR to `dev`.** `ci.yml` runs on `dev` PRs; the
+   independent-reviewer gate runs on **`main`** PRs only.
+2. **Release → `/ship` on `dev`.** One act: bump, changelog, `uv.lock`, commit,
+   annotated tag, push, promotion PR. There is no second command — `/ship --tag`
+   was removed in qute-essentials v9.0.0 and is rejected by name.
+3. **Merge the promotion PR with a MERGE COMMIT (`--merge`).** Not squash, not
+   rebase. The tag is cut on `dev` *before* the promotion, so a squash rewrites
+   the bump into a new sha and strands the tag outside `main`'s ancestry — the
+   tag would name code `main` does not contain while `quantbox-live` pins it.
+   That is the v0.4.0 incident (2026-07-28). `release-tag-guard.yml` job
+   `release-tag-reachable` fires when `main` moves and fails exactly this case.
+4. **Then bump the `quantbox@vX.Y.Z` pin in `quantbox-live`** and PR it to that
+   repo's `main`. **There is no deploy command** — prod never pulls this repo;
+   quantbox-live pins the tag and its cron picks it up (`run_daily.sh` does
+   `git merge origin/main` + `uv sync`, 06:00 UTC). Run
+   `./scripts/after-release.sh` to check the tag is reachable from `main`, see
+   the pin quantbox-live currently declares, and print what remains.
 
-   a. On `dev`, run **`/ship`**. It bumps `pyproject.toml` + `CHANGELOG.md`,
-      refreshes `uv.lock`, commits, creates the annotated `vX.Y.Z` tag, pushes
-      both (`git push --follow-tags`) and opens the promotion PR — atomically.
-      Never hand-roll `cz bump` or `git tag`: `/ship` is the single writer of a
-      version or a tag. (`annotated_tag = true` in `[tool.commitizen]` is the
-      second line of defence — a lightweight tag is one `git push --follow-tags`
-      silently declines to push, so it stays local until something downstream
-      cannot resolve it.)
-   b. Merge the promotion PR (`dev` → `main`) **with a MERGE COMMIT (`--merge`)**.
-      NOT squash, NOT rebase — see below.
-   c. Bump the `quantbox @ …@vX.Y.Z` pin in `quantbox-live/pyproject.toml`,
-      `uv lock && uv sync`, and PR it to quantbox-live `main`. Do this AFTER
-      the promotion merges, so the tag is already an ancestor of `main`.
-      **There is no deploy command** — prod never pulls THIS repo. quantbox-live
-      pins the tag and its cron picks it up: `scripts/run_daily.sh` (06:00 UTC)
-      does `git merge origin/main` + `uv sync`. Run `./scripts/after-release.sh`
-      to check both conditions and print what remains.
-      Verify the tag contains what you expect before pinning to it —
-      `git show vX.Y.Z:<file>`. **The release is not finished at the tag:** in
-      Python mode "released" means the tag is pushed, and the failure that hides
-      is a tag that exists while prod never pulled.
-
-   **`/ship --tag` no longer exists** and is rejected by name, along with
-   `--bump-only` and `--bump-and-tag`. They were the two halves of an act that
-   is now indivisible (qute-essentials v9.0.0).
-
-   **Why the merge method matters — merge, never squash.** The tag is cut on
-   `dev`, *before* the promotion. A squash or rebase rewrites the bump into a
-   NEW commit on `main`, leaving the tagged commit outside `main`'s ancestry —
-   the tag would name code `main` does not contain, while `quantbox-live` pins
-   that tag. That is how `v0.4.0` was cut on 2026-07-28 missing a fix and had to
-   be re-cut as `v0.4.1`. A merge commit preserves the tagged commit in `main`'s
-   ancestry, which is the whole point.
-
-   `.github/workflows/release-tag-guard.yml` asserts this on every pushed `v*`
-   tag (it is read-only and tag-triggered — it never writes a version). `/ship`
-   also refuses the NEXT release until a squashed promotion is repaired: its
-   gate is "the previous release tag is an ancestor of the release branch".
-
-   **History note.** Between qute-essentials v3.6.0 (TOM-349) and v9.0.0 the tag
-   was cut on `main` *after* the merge, which made the merge method genuinely
-   irrelevant, and this section said so. v9.0.0 made bump-and-tag one indivisible
-   act on `dev`, so the merge-commit requirement is live again. Do not re-delete
-   it as ceremony.
-
-   **Known one-time artefact.** `v0.4.1` was cut under the old flow and is not an
-   ancestor of `dev`, so v0.4.2's generated changelog re-listed entries already
-   shipped in v0.4.0/v0.4.1 (#143, #144, #146). `CHANGELOG.md` was corrected by
-   hand; the `v0.4.2` tag carries the unedited copy. Self-corrects from v0.4.3.
-
-`main` is release-only; `dev` is the integration branch. Do NOT PR features to
-`main` (the drift we corrected 2026-07-06 — dev had gone stale while everything
-landed on main). `quantbox-lab` pins `quantbox@main`; `quantbox-live` pins a `main` tag.
