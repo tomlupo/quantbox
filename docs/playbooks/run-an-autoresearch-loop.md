@@ -73,7 +73,7 @@ goal:
   constraints:
     max_drawdown: -0.20
     min_trades_per_year: 12
-    deflated_sharpe_min: 0.3
+    bootstrap_adjusted_sharpe_min: 0.3
 
 evaluation:
   walk_forward:
