@@ -66,11 +66,45 @@ class StrategyCache:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def config_hash(self, strategy_cfg: dict, indicator_cfg: dict | None = None) -> str:
-        """Deterministic hash of strategy + indicator configuration."""
+    def config_hash(
+        self,
+        strategy_cfg: dict,
+        indicator_cfg: dict | None = None,
+        data_vintage: dict | str | None = None,
+    ) -> str:
+        """Deterministic hash of strategy + indicator config and data vintage.
+
+        Parameters
+        ----------
+        strategy_cfg : dict
+            Strategy configuration.
+        indicator_cfg : dict, optional
+            Configuration of the indicators the strategy depends on.
+        data_vintage : dict or str, optional
+            Opaque identifier for the *state of the input data*. Omitting
+            it reproduces the previous key exactly, so existing callers
+            and existing cache entries are unaffected.
+
+            This matters because the cache is incremental: already-computed
+            dates are skipped and never recomputed. A key built from
+            configuration alone cannot notice that the data underneath a
+            cached date has changed — a corrected price, a re-pointed
+            proxy chain, an instrument added to a universe — so the stale
+            weights are served indefinitely, with no error raised and
+            nothing written to the log.
+
+            The caller supplies the value because only it knows what its
+            inputs are made of. A useful fingerprint is cheap and narrow:
+            hash the fields that decide how an instrument resolves to a
+            series, plus universe membership. Avoid including the latest
+            observation date — it advances daily and would defeat the
+            cache entirely.
+        """
         combined: dict = {"strategy": strategy_cfg}
         if indicator_cfg is not None:
             combined["indicators"] = indicator_cfg
+        if data_vintage is not None:
+            combined["data_vintage"] = data_vintage
         return _deterministic_hash(combined)
 
     def _cache_path(self, strategy_name: str, cfg_hash: str) -> Path:
