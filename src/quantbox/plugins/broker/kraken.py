@@ -42,7 +42,7 @@ from quantbox.contracts import PluginMeta
 from quantbox.retry import with_retry
 
 from ..datasources.kraken_data import KRAKEN_BALANCE_SUFFIXES, normalize_kraken_asset
-from ._fills import resolve_fill
+from ._fills import resolve_fill, trade_fee, trade_fee_currency
 
 try:
     import ccxt
@@ -381,6 +381,9 @@ class KrakenBroker:
         here (the rebalancer is responsible for sizing); we reject negative
         quantities defensively.
         """
+        # NOTE: `pd.DataFrame(rows, columns=cols)` below SELECTS — a key added
+        # to the row dict but not listed here is dropped silently, no error.
+        # That is how the #92 fee was lost in fetch_fills. Keep them in step.
         cols = ["symbol", "side", "qty", "price", "order_id", "status", "error"]
         if self.readonly:
             raise PermissionError("readonly broker: order placement disabled")
@@ -679,7 +682,10 @@ class KrakenBroker:
 
     def fetch_fills(self, since: str) -> pd.DataFrame:
         """Trade history since ``since`` (ISO timestamp) via Kraken TradesHistory."""
-        cols = ["symbol", "side", "qty", "price", "timestamp"]
+        # NOTE: `pd.DataFrame(rows, columns=cols)` SELECTS — any key not listed
+        # here is dropped silently, no error. Adding a field to the row dict
+        # below without adding it here makes that field a no-op (#92).
+        cols = ["symbol", "side", "qty", "price", "timestamp", "fee", "fee_currency"]
         try:
             since_ts = int(pd.Timestamp(since).timestamp() * 1000)
         except Exception:
@@ -701,6 +707,9 @@ class KrakenBroker:
                     "qty": float(t.get("amount", 0) or 0),
                     "price": float(t.get("price", 0) or 0),
                     "timestamp": t.get("datetime", ""),
+                    # #92: keep the venue-reported fee. None = UNKNOWN.
+                    "fee": trade_fee(t),
+                    "fee_currency": trade_fee_currency(t),
                 }
             )
         return pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)

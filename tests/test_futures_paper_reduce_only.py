@@ -10,6 +10,7 @@ made the divergence a recurring, price-driven condition.
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from quantbox.plugins.broker.futures_paper import FuturesPaperBroker
 
@@ -168,13 +169,13 @@ def test_reduce_only_bypasses_the_position_limit_cap_and_never_flips():
     assert b.positions["ETH"] > 0, "reduce-only order flipped the position through zero"
 
 
-def test_non_reduce_only_reducing_order_still_hits_the_known_cap_bug():
-    """Pins the CURRENT (broken) behaviour of the cap for unflagged orders.
+def test_non_reduce_only_reducing_order_is_not_flipped_by_the_cap():
+    """TOM-886, now fixed — this assertion was inverted, not deleted.
 
-    This is TOM-886, deliberately not fixed here: the same algebra flips a
-    reducing order that is not flagged reduce_only. Asserting it keeps the bug
-    visible and makes the TOM-886 fix announce itself by breaking this test —
-    at which point the assertion should be inverted, not deleted.
+    It previously pinned the BROKEN behaviour (`positions["ETH"] < 0`) so the
+    fix would announce itself by breaking the test. It did. The cap now only
+    engages on orders that INCREASE exposure, so a 30-unit trim on an
+    over-limit position stays a 30-unit trim.
     """
     b = FuturesPaperBroker(margin_balance=100_000.0)
     b.prices = {"ETH": 100.0}
@@ -185,8 +186,8 @@ def test_non_reduce_only_reducing_order_still_hits_the_known_cap_bug():
     orders = pd.DataFrame([{"symbol": "ETH", "side": "sell", "qty": 30.0}])
     b.place_orders(orders)
 
-    # KNOWN BUG (TOM-886): a 30-unit trim overshoots and flips the book short.
-    assert b.positions["ETH"] < 0, "TOM-886 appears fixed — invert this assertion"
+    assert b.positions["ETH"] == 70.0, "the cap must not resize an order moving toward compliance"
+    assert b.positions["ETH"] > 0, "TOM-886 regression: the cap flipped the book through zero"
 
 
 # ---------------------------------------------------------------------------
@@ -260,3 +261,76 @@ def test_skipped_columns_survive_an_all_skipped_batch():
 
     assert "status" in fills.columns
     assert "error" in fills.columns
+
+
+# ---------------------------------------------------------------------------
+# TOM-886: the position limit may only SHRINK an order, never grow or flip it
+# ---------------------------------------------------------------------------
+
+
+def _limited(old_qty: float, limit_units: float, price: float = 100.0) -> FuturesPaperBroker:
+    b = FuturesPaperBroker(margin_balance=1_000_000.0)
+    b.prices = {"ETH": price}
+    if old_qty:
+        b.positions["ETH"] = old_qty
+        b.entry_prices["ETH"] = price
+    b.position_limits = {"ETH": limit_units * price}
+    return b
+
+
+def _order_eth(side: str, qty: float, **extra) -> pd.DataFrame:
+    return pd.DataFrame([{"symbol": "ETH", "side": side, "qty": qty, **extra}])
+
+
+def test_cap_never_grows_an_order():
+    """The invariant the old algebra broke: a limit shrinks, it never enlarges."""
+    b = _limited(+40.0, 50)
+    fills = b.place_orders(_order_eth("buy", 30.0))
+    filled = float(fills.iloc[0]["qty"])
+    assert filled <= 30.0, "the cap enlarged the order"
+    assert b.positions["ETH"] == 50.0  # capped exactly to the limit
+
+
+def test_cap_never_reverses_the_requested_direction():
+    """A buy may be shrunk to nothing, but it must never become a sell."""
+    for old, side in ((-100.0, "buy"), (+100.0, "sell")):
+        b = _limited(old, 50)
+        fills = b.place_orders(_order_eth(side, 30.0))
+        if not fills.empty and "status" in fills.columns:
+            fills = fills[fills["status"] != "SKIPPED"]
+        for _, row in fills.iterrows():
+            assert str(row["side"]) == side
+        assert b.positions["ETH"] * old > 0, "the cap reversed the position's sign"
+
+
+def test_cap_does_not_engage_on_an_order_moving_toward_compliance():
+    """An over-limit position being reduced is not 'capped' — it is welcomed."""
+    b = _limited(+100.0, 50)  # already 2x the limit
+    b.place_orders(_order_eth("sell", 30.0))
+    assert b.positions["ETH"] == 70.0, "a reducing order must pass through untouched"
+
+
+def test_cap_refuses_rather_than_inventing_a_trade():
+    """If obeying the limit would mean trading the other way, refuse."""
+    b = _limited(+100.0, 50)
+    fills = b.place_orders(_order_eth("buy", 10.0))  # would push further over
+    assert (fills["status"] == "SKIPPED").all()
+    assert b.positions["ETH"] == 100.0, "a refused order must not move the book"
+
+
+def test_cap_runs_before_the_slippage_model():
+    """A capped order must be charged impact for what it filled, not requested.
+
+    Fee is taken on the filled notional, so an order capped 80 -> 50 must cost
+    the same as an order that asked for 50 outright.
+    """
+    capped = _limited(0.0, 50)
+    capped.place_orders(_order_eth("buy", 80.0))
+
+    exact = _limited(0.0, 50)
+    exact.place_orders(_order_eth("buy", 50.0))
+
+    assert capped.positions["ETH"] == exact.positions["ETH"] == 50.0
+    assert capped._cumulative_fees == pytest.approx(exact._cumulative_fees), (
+        "the capped order was priced on its pre-cap size"
+    )

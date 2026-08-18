@@ -424,7 +424,7 @@ class FuturesRebalancer:
             # So a partial reduce earns exactly the two exemptions the reduce-only
             # argument actually supports:
             #   * the min-notional floor  — the venue genuinely waives it for
-            #     reduceOnly (binance_futures.py:501, hyperliquid.py:767)
+            #     reduceOnly (binance_futures.py:501, hyperliquid.py:733)
             #   * the `reduce_only` flag itself
             # and NOT the other two, which that argument does not support:
             #   * the min_trade_size churn band — exempting a recurring, price-

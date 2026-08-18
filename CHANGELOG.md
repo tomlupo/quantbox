@@ -29,6 +29,20 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.4.3 (2026-08-18)
+
+### Feat
+
+- **cache**: let callers fold a data vintage into the strategy cache key (#152)
+
+### Fix
+
+- **costs**: an unmeasured cost is unknown, not zero (#92) (#166)
+- **paper**: a position limit may only shrink an order, never flip it (TOM-886) (#165)
+- **release**: kill the policy drift, repair the tag guard, trim CLAUDE.md (#163)
+
+## v0.4.1 (2026-07-28)
+
 ## v0.4.2 (2026-08-18)
 
 <!-- Three entries generated into this section were REMOVED by hand: the feat

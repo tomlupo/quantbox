@@ -64,7 +64,7 @@ autoresearch:
     constraints:
       max_drawdown: -0.20
       min_trades_per_year: 12
-      deflated_sharpe_min: 0.3
+      bootstrap_adjusted_sharpe_min: 0.3
 
   proposer:
     name: proposer.hybrid.v1
@@ -120,7 +120,7 @@ These are **mandatory**. Refuse to produce a config without them:
 | `evaluation.walk_forward.splits` | ≥ 5 | One in-sample number is meaningless |
 | `evaluation.walk_forward.embargo_days` | ≥ 5 | Prevent train/test leakage |
 | `evaluation.bootstrap_ci` | 0.95 | Quantify metric uncertainty |
-| `goal.constraints.deflated_sharpe_min` | required | Adjust for multiple-testing inflation |
+| `goal.constraints.bootstrap_adjusted_sharpe_min` | required | Adjust for multiple-testing inflation |
 | `goal.constraints.max_drawdown` | required | Hard cap on tail risk |
 | `budget.max_trials` | required | Bound the loop |
 | `budget.max_wall_clock` | required | Bound time |

@@ -152,7 +152,7 @@ autoresearch:
     constraints:
       max_drawdown: -0.20
       min_trades_per_year: 12
-      deflated_sharpe_min: 0.3
+      bootstrap_adjusted_sharpe_min: 0.3
 
   proposer:
     name: proposer.hybrid.v1
@@ -194,7 +194,7 @@ One line per trial. The source of truth.
 ```json
 {"trial_id": "T0042", "ts": "2026-04-25T14:33:21Z",
  "variant_params": {"lookback_days": 90, "vol_target": 0.18},
- "metrics": {"sharpe_oos": 1.23, "deflated_sharpe": 0.42, "drawdown": -0.16},
+ "metrics": {"sharpe_oos": 1.23, "bootstrap_adjusted_sharpe": 0.42, "drawdown": -0.16},
  "decision": "kept", "rank_among_history": 3,
  "run_id": "ar_T0042_2026-04-25T14-33", "cost_usd": 0.42,
  "lineage": {...}}
