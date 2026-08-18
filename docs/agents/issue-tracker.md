@@ -5,12 +5,12 @@
      the machine-readable declaration — qute's routing engine reads it; the prose
      is for agents and humans. Keep exactly one marker. -->
 
-<!-- qute-tracker: linear team=TOM -->
+<!-- qute-tracker: linear team=TOM project=quant-research -->
 
 ## Task source — Linear
 
 **Linear is the task source** (qute-code-kit ADR-0004): all work items — tasks, planning,
-priority, agent assignment — live in Linear (team `TOM`, project **quantbox**). Jimek monitors
+priority, agent assignment — live in Linear (team `TOM`, project **quant-research**). Jimek monitors
 Linear for assigned tasks; `conductor.yml` declares how the repo's workflows run. Humans and
 agents pull work from Linear only.
 
