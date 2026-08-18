@@ -177,10 +177,10 @@ class FuturesPaperBroker:
             # the impact/fee/fill quantities describe the order actually filled.
             if reduce_only:
                 if abs(old_qty) < 1e-12:
-                    logger.info("reduce_only order on flat %s, skipping", sym)
+                    logger.warning("reduce_only order on flat %s, skipping", sym)
                     continue
                 if signed * old_qty > 0:
-                    logger.info("reduce_only order would increase %s exposure, skipping", sym)
+                    logger.warning("reduce_only order would increase %s exposure, skipping", sym)
                     continue
                 if abs(signed) > abs(old_qty):
                     logger.info(
@@ -202,7 +202,17 @@ class FuturesPaperBroker:
             # Position-limit check. Skipped for reduce-only orders: they strictly
             # shrink exposure, so the limit cannot bind, and the cap's algebra
             # (which sizes *to* the limit) would otherwise be free to re-open the
-            # position on the far side of zero.
+            # position on the far side of zero. Worked example: old=+100,
+            # signed=-30, fill=100, max_notional=5000 gives capped_signed=-150
+            # and lands at -50 — a 30-unit trim turned into a 150-unit sell that
+            # flips the book short.
+            #
+            # NOTE: that defect is NOT fixed here, only routed around for this one
+            # class of caller. `capped_signed` below can still flip ANY reducing
+            # order that is not flagged reduce_only (e.g. the rebalancer's
+            # fail-closed path, which produces a reducing order with
+            # reduce_only=False). Tracked as TOM-886 — do not read this skip as
+            # evidence the cap is sound for everyone else.
             max_notional = self.position_limits.get(sym, self.default_max_notional)
             new_notional = abs(old_qty + signed) * fill_price
             if not reduce_only and new_notional > max_notional:

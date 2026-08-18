@@ -137,3 +137,51 @@ def test_reduce_only_partial_reduce_leaves_entry_price_untouched():
     assert b.positions["BTC"] == 1.5
     assert b.entry_prices["BTC"] == 50_000.0
     assert fills.iloc[0]["qty"] == 0.5
+
+
+def test_reduce_only_bypasses_the_position_limit_cap_and_never_flips():
+    """The cap-skip is load-bearing, not tidiness — guard the reasoning.
+
+    The position-limit cap sizes the fill *to* the limit from a zero base
+    (``allowed_qty * sign(signed) - old_qty``), so on a position that is STILL
+    over its limit after the reduce, the two terms add instead of cancelling and
+    the order overshoots through zero.
+
+    Without the ``not reduce_only`` guard this exact case fills as a 150-unit
+    sell and lands at -50, flipping a +100 long into a 50 short. Every other
+    reduce-only test leaves the cap disengaged, so this is the only test that
+    fails if the guard is removed.
+    """
+    b = FuturesPaperBroker(margin_balance=100_000.0)
+    b.prices = {"ETH": 100.0}
+    b.positions["ETH"] = 100.0
+    b.entry_prices["ETH"] = 100.0
+    b.position_limits = {"ETH": 5_000.0}  # 50 units — the position is already over it
+
+    orders = pd.DataFrame([{"symbol": "ETH", "side": "sell", "qty": 30.0, "reduce_only": True}])
+    b.place_orders(orders)
+
+    # Reduced by exactly what was asked, and still long.
+    assert b.positions["ETH"] == 70.0
+    assert b.positions["ETH"] > 0, "reduce-only order flipped the position through zero"
+
+
+def test_non_reduce_only_reducing_order_still_hits_the_known_cap_bug():
+    """Pins the CURRENT (broken) behaviour of the cap for unflagged orders.
+
+    This is TOM-886, deliberately not fixed here: the same algebra flips a
+    reducing order that is not flagged reduce_only. Asserting it keeps the bug
+    visible and makes the TOM-886 fix announce itself by breaking this test —
+    at which point the assertion should be inverted, not deleted.
+    """
+    b = FuturesPaperBroker(margin_balance=100_000.0)
+    b.prices = {"ETH": 100.0}
+    b.positions["ETH"] = 100.0
+    b.entry_prices["ETH"] = 100.0
+    b.position_limits = {"ETH": 5_000.0}
+
+    orders = pd.DataFrame([{"symbol": "ETH", "side": "sell", "qty": 30.0}])
+    b.place_orders(orders)
+
+    # KNOWN BUG (TOM-886): a 30-unit trim overshoots and flips the book short.
+    assert b.positions["ETH"] < 0, "TOM-886 appears fixed — invert this assertion"
