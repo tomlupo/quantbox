@@ -1,5 +1,4 @@
 {
-  "protected_branch": "main",
   "integration_branch": null,
   "release_tool": "commitizen (/ship)"
 }

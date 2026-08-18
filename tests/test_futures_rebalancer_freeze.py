@@ -19,6 +19,7 @@ Plus a NaN-target guard so a missing-candle glitch fails loudly.
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
 from quantbox.plugins.rebalancing.futures_rebalancer import FuturesRebalancer
@@ -36,6 +37,7 @@ def _rebal_row(
     weight_delta: float,
     target_weight: float,
     current_qty: float,
+    target_qty: float = 0.0,
 ) -> dict:
     return {
         "Asset": asset,
@@ -45,6 +47,7 @@ def _rebal_row(
         "Weight Delta": weight_delta,
         "Target Weight": target_weight,
         "Current Quantity": current_qty,
+        "Target Quantity": target_qty,
     }
 
 
@@ -124,6 +127,278 @@ def test_tiny_close_below_min_trade_size_still_exempt():
     row = orders.iloc[0]
     assert row["Order Status"] == "To be placed"
     assert bool(row["Executable"]) is True
+
+
+# ---------------------------------------------------------------------------
+# TOM-402: partial reduces are exposure-reducing too
+# ---------------------------------------------------------------------------
+
+
+def test_partial_reduce_exempt_from_min_notional():
+    """A same-sign move toward zero (-100 -> -10 DOGE, $6.30) is exposure-
+    reducing, so it is reduce-only and exempt from the floor.
+
+    Before TOM-402 ``is_closing`` required ``Target Weight == 0`` exactly, so
+    this leg was neither exempt nor reduce-only and froze against the $10 floor.
+    """
+    orders = _make_orders(
+        [
+            _rebal_row(
+                "DOGE",
+                action="Buy",  # buying back part of a short
+                delta_qty=90.0,
+                price=0.07,  # notional ~$6.30, under $10
+                weight_delta=0.06,
+                target_weight=-0.01,
+                current_qty=-100.0,
+                target_qty=-10.0,
+            )
+        ]
+    )
+    row = orders.iloc[0]
+    assert row["Order Status"] == "To be placed", row["Order Status"]
+    assert bool(row["Executable"]) is True
+    assert bool(row["reduce_only"]) is True
+    assert row["Reason"] == "Reducing position (min-notional exempt)"
+
+
+def test_partial_add_below_min_notional_still_blocked():
+    """The real 2026-07-29 DOGE leg: -500 -> -516.3 ADDS to the short. It is
+    exposure-INCREASING, so the floor must still block it and it is not
+    reduce-only."""
+    orders = _make_orders(
+        [
+            _rebal_row(
+                "DOGE",
+                action="Sell",
+                delta_qty=-16.3,
+                price=0.07,  # notional ~$1.14
+                weight_delta=-0.013,
+                target_weight=-0.42,
+                current_qty=-500.0,
+                target_qty=-516.3,
+            )
+        ]
+    )
+    row = orders.iloc[0]
+    assert row["Order Status"] == "Below min notional", row["Order Status"]
+    assert bool(row["Executable"]) is False
+    assert bool(row["reduce_only"]) is False
+
+
+def test_sign_flip_below_min_notional_not_treated_as_reduce():
+    """A target that crosses zero (-100 -> +40) is not a reduce: a reduce-only
+    order could not express it. It stays subject to the floor."""
+    orders = _make_orders(
+        [
+            _rebal_row(
+                "ARB",
+                action="Buy",
+                delta_qty=140.0,
+                price=0.05,  # notional ~$7.00
+                weight_delta=0.07,
+                target_weight=0.04,
+                current_qty=-100.0,
+                target_qty=40.0,
+            )
+        ]
+    )
+    row = orders.iloc[0]
+    assert row["Order Status"] == "Below min notional", row["Order Status"]
+    assert bool(row["Executable"]) is False
+    assert bool(row["reduce_only"]) is False
+
+
+def test_partial_reduce_clamped_at_zero_on_inconsistent_input():
+    """The no-zero-crossing invariant is ENFORCED, not merely asserted.
+
+    ``_create_executable_orders`` takes Delta/Current/Target as independent
+    columns and nothing else checks them for mutual consistency, so feed it an
+    inconsistent frame — a delta LARGER than the position — and require the
+    clamp to hold anyway.
+    """
+    orders = _make_orders(
+        [
+            _rebal_row(
+                "PENGU",
+                action="Buy",
+                delta_qty=5000.0,  # inconsistent: exceeds |current|
+                price=0.004,
+                weight_delta=0.06,
+                target_weight=-0.02,
+                current_qty=-1969.0,
+                target_qty=-469.0,
+            )
+        ]
+    )
+    row = orders.iloc[0]
+    assert bool(row["reduce_only"]) is True
+    assert row["Adjusted Quantity"] == 1969.0  # clamped to |current|, never past zero
+    # The reported notional must describe the order actually sent, not the
+    # unclamped delta — reporting and the dead-man freeze detector read it.
+    assert row["Notional Value"] == pytest.approx(1969.0 * 0.004)
+
+
+def test_clamped_partial_reduce_is_judged_on_the_clamped_size():
+    """The clamp runs ABOVE the gate chain, so the floors judge what is sent.
+
+    A frame whose raw delta clears ordermin but whose CLAMPED size does not must
+    suppress as "Below min qty". If the clamp ran after the gate the row would be
+    marked Executable and the broker would then silently return None — the
+    send-and-vanish failure the base-unit floor exists to prevent.
+    """
+    reb = FuturesRebalancer()
+    df = pd.DataFrame(
+        [
+            _rebal_row(
+                "ADA",
+                action="Buy",
+                delta_qty=2.0,  # inconsistent: exceeds |current|, and clears ordermin
+                price=100.0,
+                weight_delta=0.05,
+                target_weight=-0.10,
+                current_qty=-0.5,
+                target_qty=-0.4,
+            )
+        ]
+    )
+    orders = reb._create_executable_orders(
+        df,
+        min_trade_size=MIN_TRADE,
+        min_notional=MIN_NOTIONAL,
+        min_qty_map={"ADA": 1.0},  # clamped 0.5 < 1.0, raw 2.0 > 1.0
+    )
+    row = orders.iloc[0]
+    assert row["Order Status"] == "Below min qty", row["Order Status"]
+    assert bool(row["Executable"]) is False
+
+
+def test_partial_reduce_still_subject_to_churn_band():
+    """A partial reduce is NOT exempt from min_trade_size.
+
+    Target quantity is price-derived (``total_value * weight / price``), so an
+    appreciated long produces a smaller same-sign target on an unchanged weight.
+    Exempting those recurring trims from the churn band while adds stay banded
+    would trim winners at any size and never re-add. Closes keep the exemption;
+    partial reduces do not.
+    """
+    orders = _make_orders(
+        [
+            _rebal_row(
+                "BTC",
+                action="Sell",
+                delta_qty=-0.0001,
+                price=60000.0,
+                weight_delta=-0.005,  # < MIN_TRADE
+                target_weight=0.20,
+                current_qty=0.01,
+                target_qty=0.0099,
+            )
+        ]
+    )
+    row = orders.iloc[0]
+    assert row["Order Status"] == "Below threshold", row["Order Status"]
+    assert bool(row["Executable"]) is False
+
+
+def test_partial_reduce_still_subject_to_base_unit_floor():
+    """A partial reduce is NOT exempt from the ordermin base-unit floor.
+
+    Venues waive the min-NOTIONAL floor for reduceOnly but do not waive lot/step
+    size, so exempting it would mark the row Executable and then have the broker
+    silently drop it.
+    """
+    reb = FuturesRebalancer()
+    df = pd.DataFrame(
+        [
+            _rebal_row(
+                "ADA",
+                action="Buy",
+                delta_qty=0.5,
+                price=100.0,  # notional $50, clears the notional floor
+                weight_delta=0.05,
+                target_weight=-0.10,
+                current_qty=-10.0,
+                target_qty=-9.5,
+            )
+        ]
+    )
+    orders = reb._create_executable_orders(
+        df,
+        min_trade_size=MIN_TRADE,
+        min_notional=MIN_NOTIONAL,
+        min_qty_map={"ADA": 1.0},  # ordermin 1.0 > delta 0.5
+    )
+    row = orders.iloc[0]
+    assert row["Order Status"] == "Below min qty", row["Order Status"]
+    assert bool(row["Executable"]) is False
+
+
+def test_full_close_still_exempt_from_base_unit_floor():
+    """The close path keeps its base-unit exemption — you must always be able to
+    exit. Only the partial-reduce path is narrowed."""
+    reb = FuturesRebalancer()
+    df = pd.DataFrame(
+        [
+            _rebal_row(
+                "ADA",
+                action="Buy",
+                delta_qty=0.5,
+                price=100.0,
+                weight_delta=0.05,
+                target_weight=0.0,
+                current_qty=-0.5,
+                target_qty=0.0,
+            )
+        ]
+    )
+    orders = reb._create_executable_orders(
+        df,
+        min_trade_size=MIN_TRADE,
+        min_notional=MIN_NOTIONAL,
+        min_qty_map={"ADA": 1.0},
+    )
+    row = orders.iloc[0]
+    assert row["Order Status"] == "To be placed", row["Order Status"]
+    assert bool(row["reduce_only"]) is True
+
+
+def test_missing_target_quantity_never_infers_a_partial_reduce():
+    """Fail closed: a frame without a Target Quantity column (older parquet, a
+    third-party rebalancing plugin) must not be read as intent to reduce."""
+    row_dict = _rebal_row(
+        "ARB",
+        action="Buy",
+        delta_qty=50.0,
+        price=0.10,  # notional $5, under the floor
+        weight_delta=0.05,
+        target_weight=-0.10,
+        current_qty=-100.0,
+    )
+    del row_dict["Target Quantity"]
+    orders = _make_orders([row_dict])
+    row = orders.iloc[0]
+    assert row["Order Status"] == "Below min notional", row["Order Status"]
+    assert bool(row["reduce_only"]) is False
+
+
+def test_full_close_still_reduce_only():
+    """The pre-existing flat-target close keeps its reduce-only marking."""
+    orders = _make_orders(
+        [
+            _rebal_row(
+                "SOL",
+                action="Sell",
+                delta_qty=-0.03,
+                price=71.30,
+                weight_delta=-0.025,
+                target_weight=0.0,
+                current_qty=0.03,
+                target_qty=0.0,
+            )
+        ]
+    )
+    assert bool(orders.iloc[0]["reduce_only"]) is True
 
 
 def test_nan_price_flagged_not_silent():

@@ -29,6 +29,26 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.4.2 (2026-08-18)
+
+<!-- Three entries generated into this section were REMOVED by hand: the feat
+     for #143 and the fixes for #144 and #146. All three shipped in v0.4.0 /
+     v0.4.1 and were re-listed because the v0.4.1 tag is not an ancestor of
+     `dev` (it was cut on `main` from a squash), so commitizen's "since the last
+     reachable tag" range reached back past it. The v0.4.2 TAG carries the
+     unedited copy; this file is the corrected record. Self-corrects from
+     v0.4.3, which is cut from `dev` with v0.4.2 in its ancestry. -->
+
+### Fix
+
+- **tracker**: declare project=quant-research in the tracker marker (#158)
+- **paper**: report declined reduce-only orders as SKIPPED, not silence (#159)
+- **paper**: honour reduce_only so paper cannot cross zero where live clamps (TOM-877) (#157)
+- **live**: exempt partial reduces from the min-notional floor (TOM-402) (#155)
+- **release**: one release path, and annotated tags by config (#148)
+- **release**: do NOT put uv.lock in cz version_files (#147 review)
+- **release**: keep uv.lock's version in step with the bump (#147 review)
+
 ## v0.4.1 (2026-07-28)
 
 ### Fix

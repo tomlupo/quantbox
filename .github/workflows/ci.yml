@@ -31,7 +31,16 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync
-      - run: uv run pytest -q
+        # Runs everything this env can run, INCLUDING `slow` — CI is the tier
+        # that owns slow tests, which is what makes the pre-push hook's
+        # `-m "not slow"` safe rather than a hole in coverage.
+        #
+        # The two markers below are excluded HERE, in the job, not in
+        # pyproject's addopts: this job installs the base env, while
+        # pipeline-smoke and canonical-reproductions need `--extra full` and
+        # get their own jobs. Previously this exclusion lived in `addopts`,
+        # which meant a bare local `pytest` silently skipped them too.
+      - run: uv run pytest -q -m "not pipeline_smoke and not canonical_reproduction"
 
   pipeline-smoke:
     # L1 of the pipeline-correctness ladder. Catches the "pytest is green

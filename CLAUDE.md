@@ -31,7 +31,10 @@ This repo runs the standard qute regime (qute-code-kit ADR-0001..0004). Key skil
 - `/task` + `/repo-status` — honor [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md) (Linear).
 - `/decision` — records ADRs to [`docs/adr/`](docs/adr/) (`NNNN-title.md`).
 - `/handoff` + `/pickup` — the continuity pair for pausing/resuming work.
-- `/ship` — the release boundary (commitizen, annotated `vX.Y.Z` tags on `main`).
+- `/ship` — the release boundary (commitizen). ONE act on `dev`: bump,
+  changelog, lockfile, commit and the annotated `vX.Y.Z` tag, pushed, then the
+  promotion PR into `main`. See [`## Shipping cycle`](#shipping-cycle-two-stage-pr-mirrors-dm-evo)
+  — the one place this repo states its release policy.
 - Guards (secrets, audit, destructive-command, lakera/langfuse) stay active under all workflows.
 
 Jimek dispatch + workflow policy is declared in [`conductor.yml`](conductor.yml).
@@ -202,6 +205,52 @@ Quantbox uses custom exceptions (see `quantbox.exceptions`):
 
 **For any architectural change, the rules in [`docs/architecture/principles.md`](docs/architecture/principles.md) take precedence over this file.** Anti-patterns to refuse, decision rules for new features, and the layer-choice doctrine all live there.
 
+## Git workflow
+
+| Branch | Purpose | Merge target |
+|---|---|---|
+| `main` | Release-only — **protected** | — (the tag + deploy target) |
+| `dev` | Integration branch | `main`, at release time |
+| `feat/{slug}` | One change | `dev` via PR |
+
+Branch a `feat/{slug}` off `dev`, commit there, and open the PR to **`dev`**
+(`gh pr create --base dev`) — never a feature straight to `main`. Release flow is
+[Shipping cycle](#shipping-cycle-two-stage-pr-mirrors-dm-evo) below.
+
+**Never commit or push directly to `main`.** Every change reaches it through a
+PR; trivial fixes still get a short-lived branch. This is the deterministic
+stand-in for GitHub branch protection, which this repo's plan does not offer.
+**Land work on `dev` through a PR too** — that is the convention, not a guard
+refusal: `dev` is deliberately unguarded locally (`integration_branch: null`),
+so the cost of a direct push is a convention broken, not a hook fired.
+
+Two guard layers enforce the `main` rule, both shipped by the **qute-essentials
+plugin** — neither is a file this repo maintains. `.claude/git-guard.json` is the
+opt-in: its *presence* arms both, and it carries only what differs from the house
+defaults. `main` protected is the default, so the file names just
+`integration_branch: null` (the deliberate deviation — house default would detect
+`dev` and guard it) and `release_tool`.
+
+- **`pre-push`** is the layer that holds. Git hands it the resolved refs, so it
+  covers humans, scripts and agents alike. Install/verify it with
+  `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/install_pre_push_guard.py" --repo . --check`.
+  Override one push with **`CLAUDE_GUARD_BRANCH_PUSH=0 git push …`**, which skips
+  this check only; `git push --no-verify` also works but drops every other
+  pre-push hook with it.
+- **The `git-workflow` `PreToolUse` hook** is the speed bump in front of it: it
+  sees Claude tool calls only, but it catches `git commit` (which never reaches
+  `pre-push`) and explains the route before the command runs. Turn it off with
+  **`/guard git-workflow off`**; that disarms only this layer.
+
+A `.claude/hooks/git-workflow-guard.py` checked into this repo is a stale fork of
+the plugin's guard — deleted in TOM-354, and it belongs deleted, not maintained.
+(`GIT_GUARD_DISABLE=1`, which older revisions of this file advertised, was only
+ever read by that fork and does nothing now.)
+
+Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`, `test:`) —
+the prefixes drive the semver bump. Never `--no-verify`, never force-push `main`,
+and commit only when asked.
+
 ## Multi-repo setup
 
 | Repo | Purpose | Branch/tag |
@@ -212,12 +261,67 @@ Quantbox uses custom exceptions (see `quantbox.exceptions`):
 
 ### Shipping cycle (two-stage PR, mirrors dm-evo)
 
-1. **Feature work → PR to `dev`** (`gh pr create --base dev`). CI tests + the
-   independent-reviewer gate run on `dev` PRs (both wired in `.github/workflows`).
-   Merge feature PRs into `dev`, never straight to `main`.
-2. **Release → PR `dev` → `main`** (`--base main --head dev`), then cut an
-   annotated tag `vX.Y.Z` on `main`, then bump the `quantbox @ …@vX.Y.Z` pin in
-   `quantbox-live/pyproject.toml` and redeploy (the `sudo -u prod` step).
+**This section is the single statement of the release policy for this repo.**
+Every other file that needs it links here rather than restating it — a restated
+policy drifts, and this one did (three flows across seven files, TOM-354). The
+machine-readable half lives in [`conductor.yml`](conductor.yml) (`release.branch`,
+`baseBranch`) and must agree with what follows.
+
+1. **Feature work → PR to `dev`** (`gh pr create --base dev`). `ci.yml` runs on
+   `dev` PRs; the independent-reviewer gate runs on **`main`** PRs only — the
+   expensive pass belongs at the merge gate, so a `dev` PR gets CI and nothing
+   else. Merge feature PRs into `dev`, never straight to `main`.
+2. **Release → `/ship` on `dev`. One act; there is no second command.**
+
+   a. On `dev`, run **`/ship`**. It bumps `pyproject.toml` + `CHANGELOG.md`,
+      refreshes `uv.lock`, commits, creates the annotated `vX.Y.Z` tag, pushes
+      both (`git push --follow-tags`) and opens the promotion PR — atomically.
+      Never hand-roll `cz bump` or `git tag`: `/ship` is the single writer of a
+      version or a tag. (`annotated_tag = true` in `[tool.commitizen]` is the
+      second line of defence — a lightweight tag is one `git push --follow-tags`
+      silently declines to push, so it stays local until something downstream
+      cannot resolve it.)
+   b. Merge the promotion PR (`dev` → `main`) **with a MERGE COMMIT (`--merge`)**.
+      NOT squash, NOT rebase — see below.
+   c. Bump the `quantbox @ …@vX.Y.Z` pin in `quantbox-live/pyproject.toml`,
+      `uv lock && uv sync`, and PR it to quantbox-live `main`. Do this AFTER
+      the promotion merges, so the tag is already an ancestor of `main`.
+      **There is no deploy command** — prod never pulls THIS repo. quantbox-live
+      pins the tag and its cron picks it up: `scripts/run_daily.sh` (06:00 UTC)
+      does `git merge origin/main` + `uv sync`. Run `./scripts/after-release.sh`
+      to check both conditions and print what remains.
+      Verify the tag contains what you expect before pinning to it —
+      `git show vX.Y.Z:<file>`. **The release is not finished at the tag:** in
+      Python mode "released" means the tag is pushed, and the failure that hides
+      is a tag that exists while prod never pulled.
+
+   **`/ship --tag` no longer exists** and is rejected by name, along with
+   `--bump-only` and `--bump-and-tag`. They were the two halves of an act that
+   is now indivisible (qute-essentials v9.0.0).
+
+   **Why the merge method matters — merge, never squash.** The tag is cut on
+   `dev`, *before* the promotion. A squash or rebase rewrites the bump into a
+   NEW commit on `main`, leaving the tagged commit outside `main`'s ancestry —
+   the tag would name code `main` does not contain, while `quantbox-live` pins
+   that tag. That is how `v0.4.0` was cut on 2026-07-28 missing a fix and had to
+   be re-cut as `v0.4.1`. A merge commit preserves the tagged commit in `main`'s
+   ancestry, which is the whole point.
+
+   `.github/workflows/release-tag-guard.yml` asserts this on every pushed `v*`
+   tag (it is read-only and tag-triggered — it never writes a version). `/ship`
+   also refuses the NEXT release until a squashed promotion is repaired: its
+   gate is "the previous release tag is an ancestor of the release branch".
+
+   **History note.** Between qute-essentials v3.6.0 (TOM-349) and v9.0.0 the tag
+   was cut on `main` *after* the merge, which made the merge method genuinely
+   irrelevant, and this section said so. v9.0.0 made bump-and-tag one indivisible
+   act on `dev`, so the merge-commit requirement is live again. Do not re-delete
+   it as ceremony.
+
+   **Known one-time artefact.** `v0.4.1` was cut under the old flow and is not an
+   ancestor of `dev`, so v0.4.2's generated changelog re-listed entries already
+   shipped in v0.4.0/v0.4.1 (#143, #144, #146). `CHANGELOG.md` was corrected by
+   hand; the `v0.4.2` tag carries the unedited copy. Self-corrects from v0.4.3.
 
 `main` is release-only; `dev` is the integration branch. Do NOT PR features to
 `main` (the drift we corrected 2026-07-06 — dev had gone stale while everything

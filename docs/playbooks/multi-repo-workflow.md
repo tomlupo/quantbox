@@ -52,18 +52,37 @@ main (production-ready)  ← merge dev when ready
 
 - **`dev`** — all active development happens here
 - **`main`** — only receives merges from `dev` when code is tested and ready
-- **Tags** — created on `main` after each merge, following semver
+- **Tags** — annotated, semver, cut on `main` after the release PR merges
+
+The release policy — who bumps, who tags, on which branch, and why the merge
+method does not matter — is stated once, in
+[`CLAUDE.md` → Shipping cycle](../../CLAUDE.md#shipping-cycle-two-stage-pr-mirrors-dm-evo).
+This page covers the cross-repo half only: pinning and promotion.
 
 ## Promoting code to production
 
 ### 1. Tag a release in quantbox
 
+Two stages — bump on `dev`, tag on `main` after the merge. Rationale in
+`CLAUDE.md::Shipping cycle`; the commands are:
+
 ```bash
 cd ~/workspace/projects/quantbox
-git checkout main
-git merge dev
-git tag v0.x.y
-git push origin main --tags
+# 1. Bump on dev. /ship bumps version + CHANGELOG and refreshes uv.lock into the
+#    same commit. It does NOT tag here. Never hand-roll `cz bump`.
+git checkout dev
+/ship
+
+git push origin dev
+gh pr create --base main --head dev --title "release: v0.x.y"
+gh pr merge          # squash or merge commit — either is safe; see CLAUDE.md
+
+# 2. Tag on main, AFTER the merge. /ship --tag checks the tree, the remote and
+#    the version at the tip, then creates the ANNOTATED tag and pushes it.
+git checkout main && git pull
+/ship --tag
+
+git ls-remote --tags origin v0.x.y       # VERIFY it landed
 git checkout dev
 ```
 

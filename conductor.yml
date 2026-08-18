@@ -101,7 +101,8 @@ prIdentity:
 
 # Shape of the open → review → assign chain. quantbox: agents NEVER self-merge
 # — the PR is assigned to Tom, who approves and merges. Independent review is
-# required and enforced by the review-gate CI on `dev` PRs.
+# required, and enforced by the review-gate CI on `main` PRs (the merge gate);
+# `dev` PRs get ci.yml only.
 prFlow:
   assignTo: tomlupo
   reviewRequestFrom: tomlupo
@@ -135,9 +136,18 @@ escalation:
 
 taskThreshold: 12           # TASKS.md → Linear (team TOM) graduation threshold
 
-# Ship-verb release namespace. quantbox cuts annotated vX.Y.Z tags on `main`
-# (release-only branch); forbiddenPaths guards against committing skill
-# artifacts (none tracked here today).
+# Ship-verb release namespace. `branch` is the RELEASE branch — the one tags are
+# cut on and must be reachable from — which is `main`. The bump happens earlier,
+# on `dev` (`/ship`), and rides to `main` through the release PR; `/ship --tag`
+# then cuts the annotated vX.Y.Z tag on `main` AFTER that merge (qute-essentials
+# v3.6.0, TOM-349). Tagging after the merge is what makes the merge method
+# irrelevant — the tag names a commit `main` contains by construction, squashed
+# or not. It was `dev` while tags were still cut pre-merge, which is the
+# arrangement that produced the v0.4.0 incident (2026-07-28).
+#
+# This field is the MACHINE-READABLE contract; the prose it must agree with is
+# CLAUDE.md::Shipping cycle, which is where the policy is STATED. Do not restate
+# it here — a second statement is a second thing to drift.
 release:
   branch: main
   tagPattern: "v*"
