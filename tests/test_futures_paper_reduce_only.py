@@ -43,7 +43,9 @@ def test_reduce_only_on_flat_position_is_a_noop():
 
     fills = b.place_orders(_order("sell", 1.0, reduce_only=True))
 
-    assert fills.empty
+    # A no-op on the BOOK — but reported, not silent: the order comes back as
+    # SKIPPED so the pipeline can tell a deliberate decline from a missed fill.
+    assert (fills["status"] == "SKIPPED").all()
     assert "BTC" not in b.positions
     assert b.margin_balance == 100_000.0  # no fee charged either
 
@@ -55,7 +57,7 @@ def test_reduce_only_that_would_add_to_a_position_is_a_noop():
 
     fills = b.place_orders(_order("buy", 0.5, reduce_only=True))
 
-    assert fills.empty
+    assert (fills["status"] == "SKIPPED").all()
     assert b.positions["BTC"] == 1.0
     assert b.margin_balance == 100_000.0
 
@@ -185,3 +187,76 @@ def test_non_reduce_only_reducing_order_still_hits_the_known_cap_bug():
 
     # KNOWN BUG (TOM-886): a 30-unit trim overshoots and flips the book short.
     assert b.positions["ETH"] < 0, "TOM-886 appears fixed — invert this assertion"
+
+
+# ---------------------------------------------------------------------------
+# Declined orders must be VISIBLE, not silent (the pipeline's SKIPPED contract)
+# ---------------------------------------------------------------------------
+
+
+def _skipped_rows(fills: pd.DataFrame) -> pd.DataFrame:
+    return fills[fills["status"] == "SKIPPED"] if "status" in fills.columns else fills.iloc[0:0]
+
+
+def test_reduce_only_on_flat_emits_a_skipped_row():
+    """A declined order must report SKIPPED, not vanish.
+
+    `trading_pipeline` distinguishes filled / FAILED / intentional no-op, and a
+    broker signals the third with `status="SKIPPED"`. Returning nothing drops the
+    order out of `orders_details` and leaves a dangling intent-FIFO entry, which
+    reads downstream as a MISSED FILL rather than a deliberate decline.
+    """
+    b = _broker()
+    b.positions.pop("BTC", None)
+
+    fills = b.place_orders(_order("sell", 0.5, reduce_only=True))
+
+    rows = _skipped_rows(fills)
+    assert len(rows) == 1, "declined reduce-only order emitted no SKIPPED row"
+    row = rows.iloc[0]
+    assert row["symbol"] == "BTC"
+    assert row["side"] == "sell"
+    assert row["qty"] == 0.5, "the REQUESTED qty is what the book wanted; keep it"
+    assert row["price"] == 0.0
+    assert row["notional"] == 0.0
+    assert row["fee"] == 0.0
+    assert "flat" in str(row["error"]).lower()
+
+
+def test_reduce_only_increase_emits_a_skipped_row():
+    b = _broker()
+    b.positions["BTC"] = 1.0
+    b.entry_prices["BTC"] = 60_000.0
+
+    fills = b.place_orders(_order("buy", 0.5, reduce_only=True))
+
+    rows = _skipped_rows(fills)
+    assert len(rows) == 1
+    assert "increase" in str(rows.iloc[0]["error"]).lower()
+    assert b.positions["BTC"] == 1.0, "a declined order must not move the book"
+
+
+def test_skipped_rows_do_not_pollute_the_fill_log_or_pnl():
+    """SKIPPED is not a fill: it must not reach the fill log, fees or margin."""
+    b = _broker()
+    b.positions.pop("BTC", None)
+    before_balance = b.margin_balance
+    before_fees = b._cumulative_fees
+    before_log = len(b._fill_log)
+
+    b.place_orders(_order("sell", 0.5, reduce_only=True))
+
+    assert len(b._fill_log) == before_log, "a skipped order was logged as a fill"
+    assert b.margin_balance == before_balance
+    assert b._cumulative_fees == before_fees
+
+
+def test_skipped_columns_survive_an_all_skipped_batch():
+    """A batch of nothing but declines must still carry status/error columns."""
+    b = _broker()
+    b.positions.pop("BTC", None)
+
+    fills = b.place_orders(_order("sell", 0.5, reduce_only=True))
+
+    assert "status" in fills.columns
+    assert "error" in fills.columns
