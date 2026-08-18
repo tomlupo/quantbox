@@ -26,6 +26,32 @@ from quantbox.contracts import PluginMeta
 logger = logging.getLogger(__name__)
 
 
+def _skipped(symbol: str, side: str, qty: float, reason: str) -> dict[str, Any]:
+    """A row for an order the broker intentionally did not place.
+
+    The pipeline distinguishes three outcomes — filled, FAILED, and an
+    intentional broker-side no-op — and a broker signals the third by returning
+    a row with ``status="SKIPPED"`` (``trading_pipeline.py`` treats it as
+    "neither executed nor failed: record for visibility but do not count it").
+    Returning nothing instead makes the order vanish from ``orders_details`` and
+    leaves a dangling entry in the per-(symbol, side) intent FIFO, which reads
+    downstream as a MISSED FILL rather than a deliberate decline.
+
+    Shape mirrors the Kraken broker's skip row: the REQUESTED quantity is kept
+    (it is what the book wanted), price is 0.0 because nothing traded.
+    """
+    return {
+        "symbol": symbol,
+        "side": side,
+        "qty": qty,
+        "price": 0.0,
+        "notional": 0.0,
+        "fee": 0.0,
+        "status": "SKIPPED",
+        "error": reason,
+    }
+
+
 @dataclass
 class FuturesPaperBroker:
     """Paper-trading broker for perpetual futures.
@@ -178,9 +204,11 @@ class FuturesPaperBroker:
             if reduce_only:
                 if abs(old_qty) < 1e-12:
                     logger.warning("reduce_only order on flat %s, skipping", sym)
+                    fills.append(_skipped(sym, side, qty, "reduce_only on a flat position"))
                     continue
                 if signed * old_qty > 0:
                     logger.warning("reduce_only order would increase %s exposure, skipping", sym)
+                    fills.append(_skipped(sym, side, qty, "reduce_only would increase exposure"))
                     continue
                 if abs(signed) > abs(old_qty):
                     logger.info(
@@ -289,7 +317,9 @@ class FuturesPaperBroker:
         return (
             pd.DataFrame(fills)
             if fills
-            else pd.DataFrame(columns=["symbol", "side", "qty", "price", "notional", "fee", "timestamp"])
+            else pd.DataFrame(
+                columns=["symbol", "side", "qty", "price", "notional", "fee", "timestamp", "status", "error"]
+            )
         )
 
     def fetch_fills(self, since: str) -> pd.DataFrame:
