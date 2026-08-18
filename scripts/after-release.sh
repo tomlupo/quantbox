@@ -13,7 +13,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+# --match: this repo also carries prod-{slug}-* promotion tags
+# (docs/playbooks/promote-a-methodology.md), which are NOT releases.
+TAG="$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)"
 if [ -z "$TAG" ]; then
     echo "after-release: no tags in this repo — nothing to verify." >&2
     exit 1
