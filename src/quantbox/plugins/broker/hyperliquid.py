@@ -592,6 +592,9 @@ class HyperliquidBroker:
                 [(f["side"], f["symbol"]) for f in failed_rows],
             )
 
+        # NOTE: `pd.DataFrame(rows, columns=cols)` below SELECTS — a key added
+        # to the row dict but not listed here is dropped silently, no error.
+        # That is how the #92 fee was lost in fetch_fills. Keep them in step.
         cols = ["symbol", "side", "qty", "price", "order_id", "status", "error"]
         return pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
 

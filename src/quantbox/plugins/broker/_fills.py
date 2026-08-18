@@ -272,9 +272,14 @@ def trade_fee(trade: dict | None) -> float | None:
     if isinstance(fees, list):
         entries = [f for f in fees if isinstance(f, dict) and _to_float(f.get("cost")) is not None]
         if entries:
-            currencies = {str(f["currency"]) for f in entries if f.get("currency")}
-            if len(currencies) > 1:
-                # Summing across currencies would invent a number. Say so.
+            # Sum only when the entries are HOMOGENEOUS in what they state:
+            # either every entry names the same currency, or none names one. A
+            # stated currency alongside an unstated one is the same fabrication
+            # as the mixed case, with the second unit hidden instead of visible
+            # — 0.10 USDT + 0.002 <unknown> is not 0.102 USDT.
+            stated = [f for f in entries if f.get("currency")]
+            currencies = {str(f["currency"]) for f in stated}
+            if len(currencies) > 1 or (stated and len(stated) != len(entries)):
                 return None
             return sum(_to_float(f.get("cost")) or 0.0 for f in entries)
 
@@ -282,8 +287,15 @@ def trade_fee(trade: dict | None) -> float | None:
 
 
 def trade_fee_currency(trade: dict | None) -> str | None:
-    """Currency of a ccxt trade's fee, or ``None``. See :func:`trade_fee`."""
+    """Currency of a ccxt trade's fee, or ``None``. See :func:`trade_fee`.
+
+    Returns None whenever :func:`trade_fee` does. A currency label on an
+    unmeasured fee invites the reader to assume the cost was denominated in it
+    and merely missing, which is a different (and wrong) claim.
+    """
     if not trade:
+        return None
+    if trade_fee(trade) is None:
         return None
     fee = trade.get("fee")
     if isinstance(fee, dict) and fee.get("currency"):

@@ -331,6 +331,23 @@ def _compute_data_age(prices: pd.DataFrame, asof: str) -> tuple[float | None, fl
 # ---------------------------------------------------------------------------
 
 
+def _to_fee(value: Any) -> float | None:
+    """A fee that was not reported is UNKNOWN, never 0.0 (#92).
+
+    The `float(x or 0)` idiom this replaces mapped both "no fee key" and
+    "fee was genuinely zero" onto 0.0. Only the second is data. Conflating them
+    is what produced 165 days of `Fees (cumulative) $0.00` on a book with ~24x
+    equity turnover.
+    """
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if f != f else f  # NaN is not a measurement
+
+
 @dataclass
 class TradingPipeline:
     meta = PluginMeta(
@@ -2126,7 +2143,11 @@ class TradingPipeline:
                     "side": str(fill_row.get("side", "")),
                     "executed_quantity": float(fill_row.get("qty", 0)),
                     "executed_price": float(fill_row.get("price", 0)),
-                    "fee": float(fill_row.get("fee", 0) or 0),
+                    # #92: absent means the broker did not report one — UNKNOWN,
+                    # not free. No LIVE broker's place_orders emits a fee key;
+                    # only futures_paper does. The old `, 0` default is what made
+                    # `fees_this_run` read $0.00 on every live run.
+                    "fee": _to_fee(fill_row.get("fee")),
                     "status": "PARTIAL" if is_partial else "FILLED",
                 }
                 # Find reference price
@@ -2972,12 +2993,18 @@ class TradingPipeline:
         summary = execution_report.get("summary", {})
         executed_orders: list[dict[str, Any]] = []
         failed_orders: list[dict[str, Any]] = []
-        total_order_fees = 0.0
+        # #92: None once ANY executed order's fee is unknown. A partial sum
+        # presented as the run's cost is a fabricated number — the same defect
+        # as the fabricated zero, wearing a more plausible value.
+        total_order_fees: float | None = 0.0
         for detail in execution_report.get("orders_details", []):
             detail_status = detail.get("status")
             if detail_status in ("FILLED", "PARTIAL"):
-                order_fee = float(detail.get("fee", 0) or 0)
-                total_order_fees += order_fee
+                order_fee = _to_fee(detail.get("fee"))
+                if order_fee is None or total_order_fees is None:
+                    total_order_fees = None
+                else:
+                    total_order_fees += order_fee
                 executed_orders.append(
                     {
                         "symbol": str(detail.get("symbol", "")),
@@ -2986,7 +3013,7 @@ class TradingPipeline:
                         "executed_price": detail.get("executed_price"),
                         "reference_price": detail.get("reference_price"),
                         "spread_bps": round(float(detail.get("spread_pct", 0) or 0) * 10000, 1),
-                        "fee": round(order_fee, 4),
+                        "fee": (round(order_fee, 4) if order_fee is not None else None),
                         "status": detail_status,
                     }
                 )
@@ -3014,7 +3041,7 @@ class TradingPipeline:
                 "failed_orders": failed_orders,
             },
             "trading_costs": {
-                "fees_this_run": round(total_order_fees, 4),
+                "fees_this_run": (round(total_order_fees, 4) if total_order_fees is not None else None),
                 # None (not 0.0) when the cost could not be measured — see #92.
                 "cumulative_fees": (round(cumulative_fees, 4) if cumulative_fees is not None else None),
                 "funding_charge": (round(funding_charge, 4) if funding_charge is not None else None),

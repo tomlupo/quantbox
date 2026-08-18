@@ -381,6 +381,9 @@ class KrakenBroker:
         here (the rebalancer is responsible for sizing); we reject negative
         quantities defensively.
         """
+        # NOTE: `pd.DataFrame(rows, columns=cols)` below SELECTS — a key added
+        # to the row dict but not listed here is dropped silently, no error.
+        # That is how the #92 fee was lost in fetch_fills. Keep them in step.
         cols = ["symbol", "side", "qty", "price", "order_id", "status", "error"]
         if self.readonly:
             raise PermissionError("readonly broker: order placement disabled")

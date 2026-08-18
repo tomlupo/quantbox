@@ -158,3 +158,57 @@ def test_funding_charge_is_null_when_unmeasured():
     costs = payload["trading_costs"]
     assert costs["funding_charge"] is None, "unmeasured funding must be null, not $0.00"
     assert costs["cumulative_fees"] is None
+
+
+def test_stated_and_unstated_currencies_do_not_mix():
+    """0.10 USDT + 0.002 <unstated> is not 0.102 USDT.
+
+    Narrower than the mixed case but the identical error, with the second unit
+    hidden rather than visible. Sum only when the entries are homogeneous in
+    what they state.
+    """
+    assert trade_fee({"fees": [{"cost": 0.10, "currency": "USDT"}, {"cost": 0.002}]}) is None
+
+
+def test_an_unknown_fee_is_never_given_a_currency_label():
+    """A currency on an unmeasured fee implies it was denominated in it."""
+    mixed = {"fees": [{"cost": 0.10, "currency": "USDT"}, {"cost": 0.002, "currency": "BNB"}]}
+    assert trade_fee(mixed) is None
+    assert trade_fee_currency(mixed) is None, "labelled an unknown fee with a currency"
+
+
+def test_fees_this_run_is_null_when_a_fill_reports_no_fee():
+    """The THIRD fabricated zero — no live broker's place_orders emits a fee."""
+    from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
+
+    payload = TradingPipeline._build_artifact_payload(
+        TradingPipeline(),
+        rebalancing_df=pd.DataFrame(),
+        orders_df=pd.DataFrame(),
+        # One executed order whose fee the broker never reported.
+        execution_report={"orders_details": [{"status": "FILLED", "symbol": "BTC", "fee": None}]},
+        final_weights={},
+        total_value=1000.0,
+        mode="live",
+    )
+    assert payload["trading_costs"]["fees_this_run"] is None, "an unreported fill fee must not sum to a confident $0.00"
+
+
+def test_fees_this_run_sums_when_every_fee_is_known():
+    from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
+
+    payload = TradingPipeline._build_artifact_payload(
+        TradingPipeline(),
+        rebalancing_df=pd.DataFrame(),
+        orders_df=pd.DataFrame(),
+        execution_report={
+            "orders_details": [
+                {"status": "FILLED", "symbol": "BTC", "fee": 0.25},
+                {"status": "PARTIAL", "symbol": "ETH", "fee": 0.10},
+            ]
+        },
+        final_weights={},
+        total_value=1000.0,
+        mode="live",
+    )
+    assert payload["trading_costs"]["fees_this_run"] == pytest.approx(0.35)

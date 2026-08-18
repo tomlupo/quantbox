@@ -130,7 +130,10 @@ class RunResult:
         mode: Execution mode (backtest/paper/live).
         asof: Reference date (ISO format).
         artifacts: Map of artifact name → file path.
-        metrics: Numeric metrics (e.g. portfolio_value, n_orders).
+        metrics: Numeric metrics; None where a value could not be MEASURED (#92) —
+        an explicit null is a signal, whereas an absent key is indistinguishable
+        from a metric that was never emitted and lets every consumer default it
+        to 0 (e.g. portfolio_value, n_orders).
         notes: Freeform metadata (risk findings, debug info, etc.).
     """
 
@@ -139,7 +142,7 @@ class RunResult:
     mode: Mode
     asof: str
     artifacts: dict[str, str]
-    metrics: dict[str, float]
+    metrics: dict[str, float | None]
     notes: dict[str, Any]
 
 
