@@ -160,10 +160,37 @@ class FuturesPaperBroker:
             side = str(o["side"]).lower()
             qty = float(o["qty"])
             mid_price = self.prices.get(sym, float(o.get("price", 0.0) or 0.0))
+            # Optional column, NaN-safe (a mixed-column frame fills it NaN;
+            # bool(NaN) is True), mirroring the live Hyperliquid broker.
+            _ro = o.get("reduce_only", False)
+            reduce_only = bool(_ro) if pd.notna(_ro) else False
 
             if not (mid_price > 0):
                 logger.warning("Invalid price (%r) for %s, skipping order", mid_price, sym)
                 continue
+
+            signed = qty if side == "buy" else -qty
+            old_qty = self.positions.get(sym, 0.0)
+
+            # Venue semantics: a reduceOnly order can never open a position and
+            # can never flip one through zero. Clamp before the slippage model so
+            # the impact/fee/fill quantities describe the order actually filled.
+            if reduce_only:
+                if abs(old_qty) < 1e-12:
+                    logger.info("reduce_only order on flat %s, skipping", sym)
+                    continue
+                if signed * old_qty > 0:
+                    logger.info("reduce_only order would increase %s exposure, skipping", sym)
+                    continue
+                if abs(signed) > abs(old_qty):
+                    logger.info(
+                        "reduce_only: clamped %s qty from %.4f to %.4f",
+                        sym,
+                        abs(signed),
+                        abs(old_qty),
+                    )
+                    signed = -old_qty
+                    qty = abs(signed)
 
             # Slippage model: spread + slippage + volume-dependent impact
             direction = 1 if side == "buy" else -1
@@ -172,13 +199,13 @@ class FuturesPaperBroker:
             cost_bps = (self.spread_bps + self.slippage_bps + impact_bps) / 10_000
             fill_price = mid_price * (1 + direction * cost_bps)
 
-            signed = qty if side == "buy" else -qty
-
-            # Position-limit check
-            old_qty = self.positions.get(sym, 0.0)
+            # Position-limit check. Skipped for reduce-only orders: they strictly
+            # shrink exposure, so the limit cannot bind, and the cap's algebra
+            # (which sizes *to* the limit) would otherwise be free to re-open the
+            # position on the far side of zero.
             max_notional = self.position_limits.get(sym, self.default_max_notional)
             new_notional = abs(old_qty + signed) * fill_price
-            if new_notional > max_notional:
+            if not reduce_only and new_notional > max_notional:
                 # Cap to stay within limit
                 allowed_qty = max_notional / fill_price
                 if abs(old_qty + signed) > allowed_qty:
