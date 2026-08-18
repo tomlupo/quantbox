@@ -331,6 +331,23 @@ def _compute_data_age(prices: pd.DataFrame, asof: str) -> tuple[float | None, fl
 # ---------------------------------------------------------------------------
 
 
+def _to_fee(value: Any) -> float | None:
+    """A fee that was not reported is UNKNOWN, never 0.0 (#92).
+
+    The `float(x or 0)` idiom this replaces mapped both "no fee key" and
+    "fee was genuinely zero" onto 0.0. Only the second is data. Conflating them
+    is what produced 165 days of `Fees (cumulative) $0.00` on a book with ~24x
+    equity turnover.
+    """
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if f != f else f  # NaN is not a measurement
+
+
 @dataclass
 class TradingPipeline:
     meta = PluginMeta(
@@ -758,10 +775,14 @@ class TradingPipeline:
         a_fills = store.put_parquet("fills", fills)
 
         # Apply funding rates to open positions (if broker supports it)
-        funding_charge = 0.0
+        # #92, same defect as cumulative_fees below: `apply_funding` exists ONLY
+        # on futures_paper, so every LIVE run fabricated a $0.00 funding charge —
+        # on a perps book, where funding is a first-order cost. Unmeasured is
+        # None, not free.
+        funding_charge: float | None = None
         if broker is not None and hasattr(broker, "apply_funding"):
             funding_charge = broker.apply_funding()
-            logger.info("Applied funding charge: %.2f", funding_charge)
+            logger.info("Applied funding charge: %.2f", funding_charge or 0.0)
 
         # Portfolio snapshot -- prefer broker.get_equity() for derivatives
         # brokers where cash + sum(qty * price) is wrong for short positions.
@@ -833,8 +854,15 @@ class TradingPipeline:
             if execution_report.get("recon_gated"):
                 recon_notes["recon_gated"] = execution_report["recon_gated"]
 
-        # Collect fee/funding metrics from broker
-        cumulative_fees = 0.0
+        # Collect fee/funding metrics from broker.
+        #
+        # #92: this used to initialise to 0.0 and only overwrite it when the
+        # broker carried `_cumulative_fees` — an attribute only the SIM brokers
+        # have. Every LIVE run therefore reported a FABRICATED $0.00: 165 days
+        # of it on a book that turned over ~24x its equity, which made the
+        # TOM-33 loss attribution unresolvable. An unmeasured cost is UNKNOWN,
+        # not free, so it is None here and null downstream.
+        cumulative_fees: float | None = None
         if broker is not None and hasattr(broker, "_cumulative_fees"):
             cumulative_fees = float(broker._cumulative_fees)
 
@@ -910,7 +938,7 @@ class TradingPipeline:
             "total_executed": float(execution_report.get("summary", {}).get("total_executed", 0)),
             "total_partial": float(execution_report.get("summary", {}).get("total_partial", 0)),
             "total_failed": float(execution_report.get("summary", {}).get("total_failed", 0)),
-            "funding_charge": float(funding_charge),
+            "funding_charge": (float(funding_charge) if funding_charge is not None else None),
             "cumulative_fees": cumulative_fees,
             # Dead-man health signal: 1.0 means the strategy wanted to rebalance
             # but every order was suppressed (book frozen on stale positions).
@@ -2115,7 +2143,11 @@ class TradingPipeline:
                     "side": str(fill_row.get("side", "")),
                     "executed_quantity": float(fill_row.get("qty", 0)),
                     "executed_price": float(fill_row.get("price", 0)),
-                    "fee": float(fill_row.get("fee", 0) or 0),
+                    # #92: absent means the broker did not report one — UNKNOWN,
+                    # not free. No LIVE broker's place_orders emits a fee key;
+                    # only futures_paper does. The old `, 0` default is what made
+                    # `fees_this_run` read $0.00 on every live run.
+                    "fee": _to_fee(fill_row.get("fee")),
                     "status": "PARTIAL" if is_partial else "FILLED",
                 }
                 # Find reference price
@@ -2921,8 +2953,8 @@ class TradingPipeline:
         final_weights: dict[str, float],
         total_value: float,
         mode: str,
-        funding_charge: float = 0.0,
-        cumulative_fees: float = 0.0,
+        funding_charge: float | None = None,
+        cumulative_fees: float | None = None,
         broker_costs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Build structured artifact payload for publishers.
@@ -2961,12 +2993,18 @@ class TradingPipeline:
         summary = execution_report.get("summary", {})
         executed_orders: list[dict[str, Any]] = []
         failed_orders: list[dict[str, Any]] = []
-        total_order_fees = 0.0
+        # #92: None once ANY executed order's fee is unknown. A partial sum
+        # presented as the run's cost is a fabricated number — the same defect
+        # as the fabricated zero, wearing a more plausible value.
+        total_order_fees: float | None = 0.0
         for detail in execution_report.get("orders_details", []):
             detail_status = detail.get("status")
             if detail_status in ("FILLED", "PARTIAL"):
-                order_fee = float(detail.get("fee", 0) or 0)
-                total_order_fees += order_fee
+                order_fee = _to_fee(detail.get("fee"))
+                if order_fee is None or total_order_fees is None:
+                    total_order_fees = None
+                else:
+                    total_order_fees += order_fee
                 executed_orders.append(
                     {
                         "symbol": str(detail.get("symbol", "")),
@@ -2975,7 +3013,7 @@ class TradingPipeline:
                         "executed_price": detail.get("executed_price"),
                         "reference_price": detail.get("reference_price"),
                         "spread_bps": round(float(detail.get("spread_pct", 0) or 0) * 10000, 1),
-                        "fee": round(order_fee, 4),
+                        "fee": (round(order_fee, 4) if order_fee is not None else None),
                         "status": detail_status,
                     }
                 )
@@ -3003,9 +3041,10 @@ class TradingPipeline:
                 "failed_orders": failed_orders,
             },
             "trading_costs": {
-                "fees_this_run": round(total_order_fees, 4),
-                "cumulative_fees": round(cumulative_fees, 4),
-                "funding_charge": round(funding_charge, 4),
+                "fees_this_run": (round(total_order_fees, 4) if total_order_fees is not None else None),
+                # None (not 0.0) when the cost could not be measured — see #92.
+                "cumulative_fees": (round(cumulative_fees, 4) if cumulative_fees is not None else None),
+                "funding_charge": (round(funding_charge, 4) if funding_charge is not None else None),
                 **(broker_costs or {}),
             },
         }

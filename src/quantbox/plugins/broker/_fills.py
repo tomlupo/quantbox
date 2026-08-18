@@ -231,3 +231,78 @@ def resolve_fill(
         price,
         f"order not confirmed filled (venue status={raw_status})",
     )
+
+
+# ---------------------------------------------------------------------------
+# Fee extraction (#92) — the same philosophy, applied to cost.
+# ---------------------------------------------------------------------------
+def trade_fee(trade: dict | None) -> float | None:
+    """Fee cost from a ccxt trade, or ``None`` when the venue reported none.
+
+    **Never 0.0 on absence.** A fee that was not reported is UNKNOWN, not free,
+    and substituting a fabricated zero is exactly what produced 165 days of
+    ``Fees (cumulative) $0.00`` on a book that turned over ~24x its equity
+    (#92). It made a loss attribution unresolvable: measured slippage was
+    -$0.14 against estimated taker fees of $0.52-0.94, and nothing in the
+    artifacts could say which was real.
+
+    Mirrors ``classify_fill``'s rule for the same reason — only report what we
+    can affirmatively see. A caller that wants "no fee" must say so itself; it
+    cannot get there by accident.
+
+    ccxt reports either a single ``fee`` mapping or a ``fees`` list (some venues
+    split maker/taker, or charge commission in a different asset). A list is
+    summed ONLY when its entries agree on currency. Mixed currencies return
+    ``None``: 0.10 USDT + 0.002 BNB is not 0.102 of anything, and returning that
+    under one currency's label would be a fabricated number wearing a plausible
+    unit — the same sin this function exists to prevent, one level down. Real
+    case: Binance futures with the BNB fee discount charges commission in BNB on
+    a USDT-quoted trade.
+    """
+    if not trade:
+        return None
+
+    fee = trade.get("fee")
+    if isinstance(fee, dict):
+        cost = _to_float(fee.get("cost"))
+        if cost is not None:
+            return cost
+
+    fees = trade.get("fees")
+    if isinstance(fees, list):
+        entries = [f for f in fees if isinstance(f, dict) and _to_float(f.get("cost")) is not None]
+        if entries:
+            # Sum only when the entries are HOMOGENEOUS in what they state:
+            # either every entry names the same currency, or none names one. A
+            # stated currency alongside an unstated one is the same fabrication
+            # as the mixed case, with the second unit hidden instead of visible
+            # — 0.10 USDT + 0.002 <unknown> is not 0.102 USDT.
+            stated = [f for f in entries if f.get("currency")]
+            currencies = {str(f["currency"]) for f in stated}
+            if len(currencies) > 1 or (stated and len(stated) != len(entries)):
+                return None
+            return sum(_to_float(f.get("cost")) or 0.0 for f in entries)
+
+    return None
+
+
+def trade_fee_currency(trade: dict | None) -> str | None:
+    """Currency of a ccxt trade's fee, or ``None``. See :func:`trade_fee`.
+
+    Returns None whenever :func:`trade_fee` does. A currency label on an
+    unmeasured fee invites the reader to assume the cost was denominated in it
+    and merely missing, which is a different (and wrong) claim.
+    """
+    if not trade:
+        return None
+    if trade_fee(trade) is None:
+        return None
+    fee = trade.get("fee")
+    if isinstance(fee, dict) and fee.get("currency"):
+        return str(fee["currency"])
+    fees = trade.get("fees")
+    if isinstance(fees, list):
+        for f in fees:
+            if isinstance(f, dict) and f.get("currency"):
+                return str(f["currency"])
+    return None

@@ -60,7 +60,7 @@ from quantbox.contracts import PluginMeta
 from quantbox.exceptions import BrokerExecutionError
 from quantbox.retry import with_retry
 
-from ._fills import resolve_fill
+from ._fills import resolve_fill, trade_fee, trade_fee_currency
 
 try:
     import ccxt
@@ -592,6 +592,9 @@ class HyperliquidBroker:
                 [(f["side"], f["symbol"]) for f in failed_rows],
             )
 
+        # NOTE: `pd.DataFrame(rows, columns=cols)` below SELECTS — a key added
+        # to the row dict but not listed here is dropped silently, no error.
+        # That is how the #92 fee was lost in fetch_fills. Keep them in step.
         cols = ["symbol", "side", "qty", "price", "order_id", "status", "error"]
         return pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
 
@@ -614,16 +617,20 @@ class HyperliquidBroker:
                             "qty": float(t.get("amount", 0)),
                             "price": float(t.get("price", 0)),
                             "timestamp": t.get("datetime", ""),
+                            # #92: the venue reports a fee here and we used
+                            # to drop it on the floor. None means UNKNOWN.
+                            "fee": trade_fee(t),
+                            "fee_currency": trade_fee_currency(t),
                         }
                     )
             return (
                 pd.DataFrame(all_trades)
                 if all_trades
-                else pd.DataFrame(columns=["symbol", "side", "qty", "price", "timestamp"])
+                else pd.DataFrame(columns=["symbol", "side", "qty", "price", "timestamp", "fee", "fee_currency"])
             )
         except Exception as e:
             logger.error(f"Error fetching fills: {e}")
-            return pd.DataFrame(columns=["symbol", "side", "qty", "price", "timestamp"])
+            return pd.DataFrame(columns=["symbol", "side", "qty", "price", "timestamp", "fee", "fee_currency"])
 
     def get_price(self, symbol: str) -> float | None:
         """Get current price for symbol."""

@@ -56,6 +56,8 @@ import pandas as pd
 from quantbox.contracts import PluginMeta
 from quantbox.retry import with_retry
 
+from ._fills import trade_fee, trade_fee_currency
+
 try:
     import ccxt
 except ImportError:  # pragma: no cover
@@ -396,16 +398,19 @@ class BinanceFuturesBroker:
                             "qty": float(t.get("amount", 0)),
                             "price": float(t.get("price", 0)),
                             "timestamp": t.get("datetime", ""),
+                            # #92: keep the venue-reported fee. None = UNKNOWN.
+                            "fee": trade_fee(t),
+                            "fee_currency": trade_fee_currency(t),
                         }
                     )
             return (
                 pd.DataFrame(all_trades)
                 if all_trades
-                else pd.DataFrame(columns=["symbol", "side", "qty", "price", "timestamp"])
+                else pd.DataFrame(columns=["symbol", "side", "qty", "price", "timestamp", "fee", "fee_currency"])
             )
         except Exception as e:
             logger.error(f"Error fetching fills: {e}")
-            return pd.DataFrame(columns=["symbol", "side", "qty", "price", "timestamp"])
+            return pd.DataFrame(columns=["symbol", "side", "qty", "price", "timestamp", "fee", "fee_currency"])
 
     def get_price(self, symbol: str) -> float | None:
         """Get current price for symbol."""
