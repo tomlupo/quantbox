@@ -220,37 +220,60 @@ class FuturesPaperBroker:
                     signed = -old_qty
                     qty = abs(signed)
 
-            # Slippage model: spread + slippage + volume-dependent impact
-            direction = 1 if side == "buy" else -1
-            notional_est = qty * mid_price
-            impact_bps = min(notional_est * self.impact_factor / 10_000, self.max_impact_bps)
-            cost_bps = (self.spread_bps + self.slippage_bps + impact_bps) / 10_000
-            fill_price = mid_price * (1 + direction * cost_bps)
-
-            # Position-limit check. Skipped for reduce-only orders: they strictly
-            # shrink exposure, so the limit cannot bind, and the cap's algebra
-            # (which sizes *to* the limit) would otherwise be free to re-open the
-            # position on the far side of zero. Worked example: old=+100,
-            # signed=-30, fill=100, max_notional=5000 gives capped_signed=-150
-            # and lands at -50 — a 30-unit trim turned into a 150-unit sell that
-            # flips the book short.
+            # ── Position limit ─────────────────────────────────────────────
+            # Runs BEFORE the slippage model, and against mid_price, for two
+            # reasons: every downstream number (impact, fee, reported qty) must
+            # describe the quantity actually filled, and a risk limit should not
+            # move with slippage.
             #
-            # NOTE: that defect is NOT fixed here, only routed around for this one
-            # class of caller. `capped_signed` below can still flip ANY reducing
-            # order that is not flagged reduce_only (e.g. the rebalancer's
-            # fail-closed path, which produces a reducing order with
-            # reduce_only=False). Tracked as TOM-886 — do not read this skip as
-            # evidence the cap is sound for everyone else.
-            max_notional = self.position_limits.get(sym, self.default_max_notional)
-            new_notional = abs(old_qty + signed) * fill_price
-            if not reduce_only and new_notional > max_notional:
-                # Cap to stay within limit
-                allowed_qty = max_notional / fill_price
-                if abs(old_qty + signed) > allowed_qty:
-                    capped_signed = allowed_qty * (1 if signed > 0 else -1) - old_qty
+            # TOM-886: the old form sized the fill *to* the limit from a ZERO
+            # base — `allowed * sign(signed) - old_qty` — so for an order moving
+            # toward zero the terms ADDED. old=+100, req=-30, limit=50 came out
+            # as -150 and landed at -50: a 30-unit trim turned into a 150-unit
+            # sell that reversed the book. Two invariants now hold by
+            # construction, and they are the whole fix:
+            #
+            #   1. a limit may only ever SHRINK an order, never grow it;
+            #   2. a limit may never change the direction the order was going.
+            #
+            # It also only engages on an order that INCREASES exposure. An order
+            # already moving toward compliance is never "capped" — that was the
+            # case the old algebra inverted.
+            if not reduce_only:
+                max_notional = self.position_limits.get(sym, self.default_max_notional)
+                projected_notional = abs(old_qty + signed) * mid_price
+                current_notional = abs(old_qty) * mid_price
+                if projected_notional > max_notional and projected_notional > current_notional:
+                    allowed_abs = max_notional / mid_price
+                    # Where the book lands if it obeys the limit, on the side the
+                    # order is heading for.
+                    target_new = allowed_abs * (1.0 if (old_qty + signed) > 0 else -1.0)
+                    capped_signed = target_new - old_qty
+
+                    if capped_signed * signed <= 0:
+                        # Obeying the limit would mean trading the OTHER way.
+                        # That is not a cap, so refuse rather than invent a trade
+                        # nobody asked for.
+                        logger.warning(
+                            "Position limit reached for %s: holding %.4f units ($%.2f), "
+                            "order would reach $%.2f against a $%.2f limit — skipping",
+                            sym,
+                            old_qty,
+                            current_notional,
+                            projected_notional,
+                            max_notional,
+                        )
+                        fills.append(_skipped(sym, side, qty, "position limit reached"))
+                        continue
+
+                    # Invariant 1: shrink only. Invariant 2: keep the direction.
+                    capped_signed = (1.0 if signed > 0 else -1.0) * min(abs(capped_signed), abs(signed))
+
                     if abs(capped_signed) < 1e-12:
                         logger.warning("Position limit reached for %s, skipping", sym)
+                        fills.append(_skipped(sym, side, qty, "position limit reached"))
                         continue
+
                     logger.info(
                         "Position limit: capped %s qty from %.4f to %.4f",
                         sym,
@@ -259,6 +282,14 @@ class FuturesPaperBroker:
                     )
                     signed = capped_signed
                     qty = abs(signed)
+
+            # Slippage model: spread + slippage + volume-dependent impact.
+            # Sits AFTER both clamps so it prices the order actually filled.
+            direction = 1 if side == "buy" else -1
+            notional_est = qty * mid_price
+            impact_bps = min(notional_est * self.impact_factor / 10_000, self.max_impact_bps)
+            cost_bps = (self.spread_bps + self.slippage_bps + impact_bps) / 10_000
+            fill_price = mid_price * (1 + direction * cost_bps)
 
             # Update position with weighted-average entry price
             old_entry = self.entry_prices.get(sym, 0.0)
