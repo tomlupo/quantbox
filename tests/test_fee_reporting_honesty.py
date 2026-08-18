@@ -116,28 +116,70 @@ def test_artifact_reports_a_measured_fee():
 # ---------------------------------------------------------------------------
 
 
+def _column_lists(func) -> list[list[str]]:
+    """Every literal column list in a function: `columns=[...]` and `cols = [...]`.
+
+    Parsed, not grepped — a source-substring check is blind to formatting and
+    to which of the two styles a broker uses, which is exactly how the first
+    version of this test missed two of the three brokers.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+    out: list[list[str]] = []
+
+    def literal(node):
+        if isinstance(node, ast.List) and all(isinstance(e, ast.Constant) for e in node.elts):
+            return [e.value for e in node.elts]
+        return None
+
+    for node in ast.walk(tree):
+        # `pd.DataFrame(..., columns=[...])`
+        if isinstance(node, ast.Call):
+            for kw in node.keywords:
+                if kw.arg == "columns" and (lit := literal(kw.value)):
+                    out.append(lit)
+        # `cols = [...]` — by target name, so an unrelated `rows = []` is not
+        # mistaken for a column list.
+        if isinstance(node, ast.Assign) and (lit := literal(node.value)):
+            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            if any("col" in n.lower() for n in names):
+                out.append(lit)
+    return out
+
+
 def test_every_live_broker_frames_the_fee_columns():
     """The seam that broke: Kraken built the fee then dropped it.
 
-    `pd.DataFrame(rows, columns=cols)` SELECTS — a key absent from `cols` is
-    discarded with no error, so the fee was fetched, parsed and thrown away on
-    one of the three brokers while the suite stayed green. Nothing in this repo
+    `pd.DataFrame(rows, columns=cols)` SELECTS — a key absent from the column
+    list is discarded with no error, so the fee was fetched, parsed and thrown
+    away on one broker while the suite stayed green. Nothing in this repo
     consumes fetch_fills, so there was no symptom to notice locally.
 
-    Asserts against the SOURCE column lists rather than a live call, since these
-    brokers need credentials to run.
+    EVERY literal column list in the method must carry the fee columns, not just
+    the one style a given broker happens to use: Kraken assigns `cols = [...]`
+    and reuses it, while Hyperliquid and Binance write `columns=[...]` inline on
+    their empty-frame paths. The first version of this test only inspected the
+    former, so a drop in either of the latter would still have passed — the same
+    blind spot as the bug it was written to catch.
     """
     import inspect
 
     from quantbox.plugins.broker import binance_futures, hyperliquid, kraken
 
     for mod in (hyperliquid, binance_futures, kraken):
-        src = inspect.getsource(mod.__dict__[[n for n in dir(mod) if n.endswith("Broker")][0]].fetch_fills)
+        broker = mod.__dict__[[n for n in dir(mod) if n.endswith("Broker")][0]]
+        src = inspect.getsource(broker.fetch_fills)
         assert '"fee": trade_fee(t)' in src, f"{mod.__name__}: fee not captured"
-        # Any explicit column list in this method must carry the fee columns.
-        for literal in ("columns=cols", "cols = ["):
-            if literal in src and literal == "cols = [":
-                assert '"fee", "fee_currency"' in src, f"{mod.__name__}: builds a fee key but its column list drops it"
+
+        lists = _column_lists(broker.fetch_fills)
+        assert lists, f"{mod.__name__}: no literal column list found — has the framing changed?"
+        for cols in lists:
+            assert "fee" in cols and "fee_currency" in cols, (
+                f"{mod.__name__}: a column list {cols} drops the fee it just built"
+            )
 
 
 def test_funding_charge_is_null_when_unmeasured():

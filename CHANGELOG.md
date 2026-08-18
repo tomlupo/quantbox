@@ -41,8 +41,6 @@ First tagged release. Core framework with full plugin architecture.
 - **paper**: a position limit may only shrink an order, never flip it (TOM-886) (#165)
 - **release**: kill the policy drift, repair the tag guard, trim CLAUDE.md (#163)
 
-## v0.4.1 (2026-07-28)
-
 ## v0.4.2 (2026-08-18)
 
 <!-- Three entries generated into this section were REMOVED by hand: the feat
