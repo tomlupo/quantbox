@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from quantbox.analysis.parameter_grid import _parse_vbt_slice_label, sweep
 from quantbox.plugins.strategies.vol_matched_buy_hold import VolMatchedBuyHoldStrategy
@@ -29,6 +30,7 @@ def test_parse_non_label() -> None:
     assert _parse_vbt_slice_label(("BTC", 5)) == {"slice": ("BTC", 5)}
 
 
+@pytest.mark.slow
 def test_sweep_vol_matched_btc() -> None:
     """Sweep target_annual_vol on the vol-matched BTC strategy. Realised vol
     should track the target ordering across the grid (monotonic increase)."""
@@ -56,6 +58,7 @@ def test_sweep_vol_matched_btc() -> None:
         )
 
 
+@pytest.mark.slow
 def test_sweep_preserves_sweep_columns() -> None:
     prices = _btc_prices(n=300, seed=7)
     grid = sweep(

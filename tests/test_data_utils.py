@@ -314,6 +314,7 @@ class TestOHLCVCache:
 class TestRetry:
     """Tests for the retry_transient tenacity decorator."""
 
+    @pytest.mark.slow
     def test_retries_on_transient_then_succeeds(self):
         """Function is retried on transient failure and succeeds on later attempt."""
         call_count = 0
@@ -330,6 +331,7 @@ class TestRetry:
         assert result == "ok"
         assert call_count == 3  # failed twice, succeeded on third
 
+    @pytest.mark.slow
     def test_gives_up_after_max_retries(self):
         """After 4 attempts (stop_after_attempt(4)), the exception is reraised."""
         call_count = 0

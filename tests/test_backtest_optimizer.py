@@ -45,6 +45,7 @@ def _momentum_fn(prices: pd.DataFrame, params: dict) -> pd.DataFrame:
 
 
 class TestGridSearch:
+    @pytest.mark.slow
     def test_basic(self, prices):
         result = optimize(
             prices,

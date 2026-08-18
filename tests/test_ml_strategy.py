@@ -161,6 +161,7 @@ def test_weights_threshold():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 def test_run_classification(data: dict):
     strategy = MLPredictionStrategy(
         train_lookback=200,
@@ -183,6 +184,7 @@ def test_run_classification(data: dict):
     assert weights.shape[1] <= 10
 
 
+@pytest.mark.slow
 def test_run_regression(data: dict):
     strategy = MLPredictionStrategy(
         task="regression",
@@ -201,6 +203,7 @@ def test_run_regression(data: dict):
     assert len(weights) > 0
 
 
+@pytest.mark.slow
 def test_weights_sum_to_one(data: dict):
     strategy = MLPredictionStrategy(
         train_lookback=200,
@@ -219,6 +222,7 @@ def test_weights_sum_to_one(data: dict):
         assert (nonzero - 1.0).abs().max() < 0.05
 
 
+@pytest.mark.slow
 def test_max_symbols_limiting(data: dict):
     strategy = MLPredictionStrategy(
         train_lookback=200,
@@ -231,6 +235,7 @@ def test_max_symbols_limiting(data: dict):
     assert result["weights"].shape[1] <= 5
 
 
+@pytest.mark.slow
 def test_output_columns_match_symbols(data: dict):
     strategy = MLPredictionStrategy(
         train_lookback=200,
@@ -244,6 +249,7 @@ def test_output_columns_match_symbols(data: dict):
     assert list(result["weights"].columns) == expected_symbols
 
 
+@pytest.mark.slow
 def test_params_override(data: dict):
     strategy = MLPredictionStrategy()
     result = strategy.run(
