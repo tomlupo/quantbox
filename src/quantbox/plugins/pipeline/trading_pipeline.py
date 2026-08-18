@@ -833,8 +833,15 @@ class TradingPipeline:
             if execution_report.get("recon_gated"):
                 recon_notes["recon_gated"] = execution_report["recon_gated"]
 
-        # Collect fee/funding metrics from broker
-        cumulative_fees = 0.0
+        # Collect fee/funding metrics from broker.
+        #
+        # #92: this used to initialise to 0.0 and only overwrite it when the
+        # broker carried `_cumulative_fees` — an attribute only the SIM brokers
+        # have. Every LIVE run therefore reported a FABRICATED $0.00: 165 days
+        # of it on a book that turned over ~24x its equity, which made the
+        # TOM-33 loss attribution unresolvable. An unmeasured cost is UNKNOWN,
+        # not free, so it is None here and null downstream.
+        cumulative_fees: float | None = None
         if broker is not None and hasattr(broker, "_cumulative_fees"):
             cumulative_fees = float(broker._cumulative_fees)
 
@@ -2922,7 +2929,7 @@ class TradingPipeline:
         total_value: float,
         mode: str,
         funding_charge: float = 0.0,
-        cumulative_fees: float = 0.0,
+        cumulative_fees: float | None = None,
         broker_costs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Build structured artifact payload for publishers.
@@ -3004,7 +3011,8 @@ class TradingPipeline:
             },
             "trading_costs": {
                 "fees_this_run": round(total_order_fees, 4),
-                "cumulative_fees": round(cumulative_fees, 4),
+                # None (not 0.0) when the cost could not be measured — see #92.
+                "cumulative_fees": (round(cumulative_fees, 4) if cumulative_fees is not None else None),
                 "funding_charge": round(funding_charge, 4),
                 **(broker_costs or {}),
             },

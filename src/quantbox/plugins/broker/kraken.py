@@ -42,7 +42,7 @@ from quantbox.contracts import PluginMeta
 from quantbox.retry import with_retry
 
 from ..datasources.kraken_data import KRAKEN_BALANCE_SUFFIXES, normalize_kraken_asset
-from ._fills import resolve_fill
+from ._fills import resolve_fill, trade_fee, trade_fee_currency
 
 try:
     import ccxt
@@ -701,6 +701,9 @@ class KrakenBroker:
                     "qty": float(t.get("amount", 0) or 0),
                     "price": float(t.get("price", 0) or 0),
                     "timestamp": t.get("datetime", ""),
+                    # #92: keep the venue-reported fee. None = UNKNOWN.
+                    "fee": trade_fee(t),
+                    "fee_currency": trade_fee_currency(t),
                 }
             )
         return pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)

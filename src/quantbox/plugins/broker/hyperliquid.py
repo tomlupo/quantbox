@@ -60,7 +60,7 @@ from quantbox.contracts import PluginMeta
 from quantbox.exceptions import BrokerExecutionError
 from quantbox.retry import with_retry
 
-from ._fills import resolve_fill
+from ._fills import resolve_fill, trade_fee, trade_fee_currency
 
 try:
     import ccxt
@@ -614,16 +614,20 @@ class HyperliquidBroker:
                             "qty": float(t.get("amount", 0)),
                             "price": float(t.get("price", 0)),
                             "timestamp": t.get("datetime", ""),
+                            # #92: the venue reports a fee here and we used
+                            # to drop it on the floor. None means UNKNOWN.
+                            "fee": trade_fee(t),
+                            "fee_currency": trade_fee_currency(t),
                         }
                     )
             return (
                 pd.DataFrame(all_trades)
                 if all_trades
-                else pd.DataFrame(columns=["symbol", "side", "qty", "price", "timestamp"])
+                else pd.DataFrame(columns=["symbol", "side", "qty", "price", "timestamp", "fee", "fee_currency"])
             )
         except Exception as e:
             logger.error(f"Error fetching fills: {e}")
-            return pd.DataFrame(columns=["symbol", "side", "qty", "price", "timestamp"])
+            return pd.DataFrame(columns=["symbol", "side", "qty", "price", "timestamp", "fee", "fee_currency"])
 
     def get_price(self, symbol: str) -> float | None:
         """Get current price for symbol."""
