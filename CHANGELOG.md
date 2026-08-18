@@ -31,9 +31,13 @@ First tagged release. Core framework with full plugin architecture.
 
 ## v0.4.2 (2026-08-18)
 
-### Feat
-
-- explainable freeze alerts + Kraken ledger cashflows (#143)
+<!-- Three entries generated into this section were REMOVED by hand: the feat
+     for #143 and the fixes for #144 and #146. All three shipped in v0.4.0 /
+     v0.4.1 and were re-listed because the v0.4.1 tag is not an ancestor of
+     `dev` (it was cut on `main` from a squash), so commitizen's "since the last
+     reachable tag" range reached back past it. The v0.4.2 TAG carries the
+     unedited copy; this file is the corrected record. Self-corrects from
+     v0.4.3, which is cut from `dev` with v0.4.2 in its ancestry. -->
 
 ### Fix
 
@@ -44,8 +48,6 @@ First tagged release. Core framework with full plugin architecture.
 - **release**: one release path, and annotated tags by config (#148)
 - **release**: do NOT put uv.lock in cz version_files (#147 review)
 - **release**: keep uv.lock's version in step with the bump (#147 review)
-- **pipeline**: enforce-dropped order stole a submitted order's notional (#145 review) (#146)
-- **pipeline,kraken**: recover freeze detail at the broker boundary (#143 review) (#144)
 
 ## v0.4.1 (2026-07-28)
 

@@ -31,9 +31,9 @@ This repo runs the standard qute regime (qute-code-kit ADR-0001..0004). Key skil
 - `/task` + `/repo-status` — honor [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md) (Linear).
 - `/decision` — records ADRs to [`docs/adr/`](docs/adr/) (`NNNN-title.md`).
 - `/handoff` + `/pickup` — the continuity pair for pausing/resuming work.
-- `/ship` — the release boundary (commitizen). Two stages: `/ship` bumps on
-  `dev`, `/ship --tag` cuts the annotated `vX.Y.Z` tag on `main` after the
-  release PR merges. See [`## Shipping cycle`](#shipping-cycle-two-stage-pr-mirrors-dm-evo)
+- `/ship` — the release boundary (commitizen). ONE act on `dev`: bump,
+  changelog, lockfile, commit and the annotated `vX.Y.Z` tag, pushed, then the
+  promotion PR into `main`. See [`## Shipping cycle`](#shipping-cycle-two-stage-pr-mirrors-dm-evo)
   — the one place this repo states its release policy.
 - Guards (secrets, audit, destructive-command, lakera/langfuse) stay active under all workflows.
 
@@ -271,37 +271,57 @@ machine-readable half lives in [`conductor.yml`](conductor.yml) (`release.branch
    `dev` PRs; the independent-reviewer gate runs on **`main`** PRs only — the
    expensive pass belongs at the merge gate, so a `dev` PR gets CI and nothing
    else. Merge feature PRs into `dev`, never straight to `main`.
-2. **Release → `/ship` on `dev` (bump), then `/ship --tag` on `main` (tag).**
+2. **Release → `/ship` on `dev`. One act; there is no second command.**
 
    a. On `dev`, run **`/ship`**. It bumps `pyproject.toml` + `CHANGELOG.md`,
-      refreshes `uv.lock` into the same commit, and stops there — **no tag**.
-      Never hand-roll `cz bump`: `/ship` is the single writer of a version or a
-      tag. (`annotated_tag = true` in `[tool.commitizen]` is the second line of
-      defence — a lightweight tag is one `git push --follow-tags` silently
-      declines to push, so it stays local until something downstream cannot
-      resolve it.)
-   b. Push `dev`, then PR `dev` → `main` and merge it. **Squash or merge commit,
-      either is fine** — see below.
-   c. On `main`, after the merge, run **`/ship --tag`**. It asserts the tree is
-      clean, the remote is reachable, the local branch matches its remote, and
-      the version at the tip is the one being tagged; then it creates the
-      annotated `vX.Y.Z` tag **and pushes it**.
+      refreshes `uv.lock`, commits, creates the annotated `vX.Y.Z` tag, pushes
+      both (`git push --follow-tags`) and opens the promotion PR — atomically.
+      Never hand-roll `cz bump` or `git tag`: `/ship` is the single writer of a
+      version or a tag. (`annotated_tag = true` in `[tool.commitizen]` is the
+      second line of defence — a lightweight tag is one `git push --follow-tags`
+      silently declines to push, so it stays local until something downstream
+      cannot resolve it.)
+   b. Merge the promotion PR (`dev` → `main`) **with a MERGE COMMIT (`--merge`)**.
+      NOT squash, NOT rebase — see below.
+   c. Bump the `quantbox @ …@vX.Y.Z` pin in `quantbox-live/pyproject.toml`,
+      `uv lock && uv sync`, and PR it to quantbox-live `main`. Do this AFTER
+      the promotion merges, so the tag is already an ancestor of `main`.
+      **There is no deploy command** — prod never pulls THIS repo. quantbox-live
+      pins the tag and its cron picks it up: `scripts/run_daily.sh` (06:00 UTC)
+      does `git merge origin/main` + `uv sync`. Run `./scripts/after-release.sh`
+      to check both conditions and print what remains.
+      Verify the tag contains what you expect before pinning to it —
+      `git show vX.Y.Z:<file>`. **The release is not finished at the tag:** in
+      Python mode "released" means the tag is pushed, and the failure that hides
+      is a tag that exists while prod never pulled.
 
-   **Why the merge method no longer matters.** It used to: the tag was cut on
-   `dev` *before* the merge, so a squash — which rewrites the bump into a new
-   commit on `main` — left the tagged commit outside `main`'s ancestry, naming
-   code `main` did not contain while `quantbox-live` pinned that tag. That is
-   how `v0.4.0` was cut on 2026-07-28 missing a fix and had to be re-cut as
-   `v0.4.1`. The old rule against `--squash` was the workaround. The fix
-   replaced it: the tag is now created on `main` *after* the merge (qute-essentials
-   v3.6.0, TOM-349), so it names a commit `main` contains **by construction**,
-   whichever way the PR landed. `.github/workflows/release-tag-guard.yml` asserts
-   exactly that on every pushed `v*` tag. **Do not reinstate a merge-commit
-   mandate** — it would be ceremony guarding a hole that is already closed.
+   **`/ship --tag` no longer exists** and is rejected by name, along with
+   `--bump-only` and `--bump-and-tag`. They were the two halves of an act that
+   is now indivisible (qute-essentials v9.0.0).
 
-   Then bump the `quantbox @ …@vX.Y.Z` pin in `quantbox-live/pyproject.toml` and
-   redeploy (the `sudo -u prod` step). Verify the tag contains what you expect
-   before pinning to it — `git show vX.Y.Z:<file>`.
+   **Why the merge method matters — merge, never squash.** The tag is cut on
+   `dev`, *before* the promotion. A squash or rebase rewrites the bump into a
+   NEW commit on `main`, leaving the tagged commit outside `main`'s ancestry —
+   the tag would name code `main` does not contain, while `quantbox-live` pins
+   that tag. That is how `v0.4.0` was cut on 2026-07-28 missing a fix and had to
+   be re-cut as `v0.4.1`. A merge commit preserves the tagged commit in `main`'s
+   ancestry, which is the whole point.
+
+   `.github/workflows/release-tag-guard.yml` asserts this on every pushed `v*`
+   tag (it is read-only and tag-triggered — it never writes a version). `/ship`
+   also refuses the NEXT release until a squashed promotion is repaired: its
+   gate is "the previous release tag is an ancestor of the release branch".
+
+   **History note.** Between qute-essentials v3.6.0 (TOM-349) and v9.0.0 the tag
+   was cut on `main` *after* the merge, which made the merge method genuinely
+   irrelevant, and this section said so. v9.0.0 made bump-and-tag one indivisible
+   act on `dev`, so the merge-commit requirement is live again. Do not re-delete
+   it as ceremony.
+
+   **Known one-time artefact.** `v0.4.1` was cut under the old flow and is not an
+   ancestor of `dev`, so v0.4.2's generated changelog re-listed entries already
+   shipped in v0.4.0/v0.4.1 (#143, #144, #146). `CHANGELOG.md` was corrected by
+   hand; the `v0.4.2` tag carries the unedited copy. Self-corrects from v0.4.3.
 
 `main` is release-only; `dev` is the integration branch. Do NOT PR features to
 `main` (the drift we corrected 2026-07-06 — dev had gone stale while everything

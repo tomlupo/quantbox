@@ -1,0 +1,33 @@
+{
+  "$comment": [
+    "The one per-repo qute policy surface (qute-essentials scripts/qute_config.py).",
+    "Sections are namespaced; an ABSENT section means 'this repo says nothing' and",
+    "the caller applies its own derived default — absence is never 'off'.",
+    "",
+    "The `git` section is deliberately NOT here: this repo's .claude/git-guard.json",
+    "is still what the in-tree pre-push hook reads."
+  ],
+
+  "ship": {
+    "$comment": [
+      "/ship finishes at 'the tag is pushed' and then asks the repo what the",
+      "after-step is. For quantbox there is NO deploy command: prod does not pull",
+      "this repo at all. quantbox-live PINS a tag, and its cron picks the pin up",
+      "(scripts/run_daily.sh does `git merge origin/main` + `uv sync` at 06:00 UTC).",
+      "",
+      "So the after-step is a VERIFICATION and a hand-off, not a deploy — the",
+      "script checks the tag is an ancestor of main, reports the pin quantbox-live",
+      "currently declares, and prints what remains. It changes nothing."
+    ],
+    "after_release": "./scripts/after-release.sh"
+  },
+
+  "review": {
+    "$comment": [
+      "base_branch is load-bearing: without it /quant-review falls back to",
+      "origin/HEAD, which resolves to main here — so every review of a feature",
+      "branch would diff the whole of dev as if it were the change under review."
+    ],
+    "base_branch": "dev"
+  }
+}
