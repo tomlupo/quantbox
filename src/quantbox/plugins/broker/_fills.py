@@ -250,10 +250,14 @@ def trade_fee(trade: dict | None) -> float | None:
     can affirmatively see. A caller that wants "no fee" must say so itself; it
     cannot get there by accident.
 
-    ccxt reports either a single ``fee`` mapping or a ``fees`` list (some
-    venues split maker/taker or charge in several currencies). Both are summed;
-    the currency is deliberately NOT reconciled here, so a multi-currency fee
-    is returned as a raw sum for the caller to interpret.
+    ccxt reports either a single ``fee`` mapping or a ``fees`` list (some venues
+    split maker/taker, or charge commission in a different asset). A list is
+    summed ONLY when its entries agree on currency. Mixed currencies return
+    ``None``: 0.10 USDT + 0.002 BNB is not 0.102 of anything, and returning that
+    under one currency's label would be a fabricated number wearing a plausible
+    unit — the same sin this function exists to prevent, one level down. Real
+    case: Binance futures with the BNB fee discount charges commission in BNB on
+    a USDT-quoted trade.
     """
     if not trade:
         return None
@@ -266,10 +270,13 @@ def trade_fee(trade: dict | None) -> float | None:
 
     fees = trade.get("fees")
     if isinstance(fees, list):
-        costs = [_to_float(f.get("cost")) for f in fees if isinstance(f, dict)]
-        known = [c for c in costs if c is not None]
-        if known:
-            return sum(known)
+        entries = [f for f in fees if isinstance(f, dict) and _to_float(f.get("cost")) is not None]
+        if entries:
+            currencies = {str(f["currency"]) for f in entries if f.get("currency")}
+            if len(currencies) > 1:
+                # Summing across currencies would invent a number. Say so.
+                return None
+            return sum(_to_float(f.get("cost")) or 0.0 for f in entries)
 
     return None
 

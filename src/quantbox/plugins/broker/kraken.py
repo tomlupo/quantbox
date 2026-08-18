@@ -679,7 +679,10 @@ class KrakenBroker:
 
     def fetch_fills(self, since: str) -> pd.DataFrame:
         """Trade history since ``since`` (ISO timestamp) via Kraken TradesHistory."""
-        cols = ["symbol", "side", "qty", "price", "timestamp"]
+        # NOTE: `pd.DataFrame(rows, columns=cols)` SELECTS — any key not listed
+        # here is dropped silently, no error. Adding a field to the row dict
+        # below without adding it here makes that field a no-op (#92).
+        cols = ["symbol", "side", "qty", "price", "timestamp", "fee", "fee_currency"]
         try:
             since_ts = int(pd.Timestamp(since).timestamp() * 1000)
         except Exception:

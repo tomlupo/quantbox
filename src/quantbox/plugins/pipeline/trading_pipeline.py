@@ -758,10 +758,14 @@ class TradingPipeline:
         a_fills = store.put_parquet("fills", fills)
 
         # Apply funding rates to open positions (if broker supports it)
-        funding_charge = 0.0
+        # #92, same defect as cumulative_fees below: `apply_funding` exists ONLY
+        # on futures_paper, so every LIVE run fabricated a $0.00 funding charge —
+        # on a perps book, where funding is a first-order cost. Unmeasured is
+        # None, not free.
+        funding_charge: float | None = None
         if broker is not None and hasattr(broker, "apply_funding"):
             funding_charge = broker.apply_funding()
-            logger.info("Applied funding charge: %.2f", funding_charge)
+            logger.info("Applied funding charge: %.2f", funding_charge or 0.0)
 
         # Portfolio snapshot -- prefer broker.get_equity() for derivatives
         # brokers where cash + sum(qty * price) is wrong for short positions.
@@ -917,7 +921,7 @@ class TradingPipeline:
             "total_executed": float(execution_report.get("summary", {}).get("total_executed", 0)),
             "total_partial": float(execution_report.get("summary", {}).get("total_partial", 0)),
             "total_failed": float(execution_report.get("summary", {}).get("total_failed", 0)),
-            "funding_charge": float(funding_charge),
+            "funding_charge": (float(funding_charge) if funding_charge is not None else None),
             "cumulative_fees": cumulative_fees,
             # Dead-man health signal: 1.0 means the strategy wanted to rebalance
             # but every order was suppressed (book frozen on stale positions).
@@ -2928,7 +2932,7 @@ class TradingPipeline:
         final_weights: dict[str, float],
         total_value: float,
         mode: str,
-        funding_charge: float = 0.0,
+        funding_charge: float | None = None,
         cumulative_fees: float | None = None,
         broker_costs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -3013,7 +3017,7 @@ class TradingPipeline:
                 "fees_this_run": round(total_order_fees, 4),
                 # None (not 0.0) when the cost could not be measured — see #92.
                 "cumulative_fees": (round(cumulative_fees, 4) if cumulative_fees is not None else None),
-                "funding_charge": round(funding_charge, 4),
+                "funding_charge": (round(funding_charge, 4) if funding_charge is not None else None),
                 **(broker_costs or {}),
             },
         }
