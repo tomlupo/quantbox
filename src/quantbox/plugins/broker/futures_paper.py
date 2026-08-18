@@ -255,10 +255,13 @@ class FuturesPaperBroker:
                         # That is not a cap, so refuse rather than invent a trade
                         # nobody asked for.
                         logger.warning(
-                            "Position limit reached for %s (holding %.4f, limit %.4f units) — skipping",
+                            "Position limit reached for %s: holding %.4f units ($%.2f), "
+                            "order would reach $%.2f against a $%.2f limit — skipping",
                             sym,
                             old_qty,
-                            allowed_abs,
+                            current_notional,
+                            projected_notional,
+                            max_notional,
                         )
                         fills.append(_skipped(sym, side, qty, "position limit reached"))
                         continue
