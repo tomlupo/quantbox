@@ -29,6 +29,24 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.4.2 (2026-08-18)
+
+### Feat
+
+- explainable freeze alerts + Kraken ledger cashflows (#143)
+
+### Fix
+
+- **tracker**: declare project=quant-research in the tracker marker (#158)
+- **paper**: report declined reduce-only orders as SKIPPED, not silence (#159)
+- **paper**: honour reduce_only so paper cannot cross zero where live clamps (TOM-877) (#157)
+- **live**: exempt partial reduces from the min-notional floor (TOM-402) (#155)
+- **release**: one release path, and annotated tags by config (#148)
+- **release**: do NOT put uv.lock in cz version_files (#147 review)
+- **release**: keep uv.lock's version in step with the bump (#147 review)
+- **pipeline**: enforce-dropped order stole a submitted order's notional (#145 review) (#146)
+- **pipeline,kraken**: recover freeze detail at the broker boundary (#143 review) (#144)
+
 ## v0.4.1 (2026-07-28)
 
 ### Fix
