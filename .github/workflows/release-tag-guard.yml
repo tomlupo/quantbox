@@ -20,9 +20,14 @@
 # submodule, a deploy) resolves code that was never released.
 #
 # ── Configuration ───────────────────────────────────────────────────────────
-# RELEASE_BRANCH (job env, below): the branch releases are cut from. Leave it
-# EMPTY and the repo's GitHub default branch is used, which is right for every
-# repo that tags off `main`. `/setup-qute-repo` fills it in from the repo's
+# INTEGRATION_BRANCH (job 1 env, below): the branch `/ship` CUTS the tag on —
+# `dev` here. Leave it empty, or name a branch that does not exist, and the
+# repo's default branch is used, which is right for a SINGLE-STAGE repo where
+# the integration and release branches are the same branch.
+#
+# There is no RELEASE_BRANCH setting any more. Job 1b derives the release
+# branch from the push event itself, because it only runs when that branch
+# moves. `/setup-qute-repo` fills this in from the repo's
 # `conductor.yml` `release.branch` when that key is present and differs from
 # the default branch (e.g. a `dev` -> `main` repo releasing off `main`, or a
 # repo releasing off a maintenance branch). Do NOT hardcode it otherwise —
@@ -127,7 +132,7 @@ jobs:
               "+refs/heads/${branch}:refs/remotes/origin/${branch}" || true
           fi
           if ! branch_head="$(git rev-parse --verify --quiet "refs/remotes/origin/${branch}^{commit}")"; then
-            echo "::error title=Release branch not found::Could not resolve 'origin/${branch}'. Either the branch does not exist or RELEASE_BRANCH in this workflow is wrong. Not passing without a branch to compare against."
+            echo "::error title=Release branch not found::Could not resolve 'origin/${branch}'. Either the branch does not exist or INTEGRATION_BRANCH in this workflow is wrong. Not passing without a branch to compare against."
             exit 1
           fi
 
@@ -183,6 +188,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # EXPLICIT, not incidental. This job's verdict is read off the tag
+          # list; if tags were absent it would find none and pass vacuously —
+          # a squash detector that detects nothing. Do not rely on
+          # fetch-depth: 0 implying tags.
+          fetch-tags: true
 
       - name: Assert the newest release tag is contained in this branch
         run: |
@@ -192,7 +202,15 @@ jobs:
           # tags (docs/playbooks/promote-a-methodology.md) out of the answer.
           tag="$(git tag --list 'v[0-9]*' --sort=-creatordate | head -n1)"
           if [ -z "$tag" ]; then
-            echo "No v* tags yet — nothing to check. (A repo before its first release.)"
+            # An empty tag list is the one input that makes this job pass
+            # WITHOUT checking anything, so prove it is real rather than a
+            # fetch that did not happen. A repo before its first release has no
+            # tags at all; a broken checkout usually has some.
+            if [ -n "$(git tag --list | head -n1)" ]; then
+              echo "::error title=No release tags, but other tags exist::Found tags in this checkout but none matching 'v[0-9]*'. Either the release tag namespace changed (this job assumes vX.Y.Z) or the release tag was not fetched. Refusing to pass a check that inspected nothing."
+              exit 1
+            fi
+            echo "No tags at all in this checkout — a repo before its first release. Nothing to check."
             exit 0
           fi
 
