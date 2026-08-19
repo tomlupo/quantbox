@@ -13,14 +13,14 @@ has completed and every artifact has been flushed — the process prints its
 result, then dies with a non-zero status and no Python traceback.
 
 Measured on prod (Python 3.12.3, pandas 2.3.3, pyarrow 24.0.0), reading the same
-366×100 parquet file in a fresh process:
+366×100 parquet file in a fresh process per trial:
 
-===================================  ==========
-variant                              abort rate
-===================================  ==========
-``pd.read_parquet(path)``            ~1-2%
-``pq.read_table(path).to_pandas()``  0
-===================================  ==========
+- ``pd.read_parquet(path)``                    5 aborts / 380
+- ``pd.read_parquet(path, use_threads=False)``  0 aborts / 200
+- ``pq.read_table(path).to_pandas()``           0 aborts / 570
+
+That ``use_threads=False`` row is the control that names the mechanism: remove
+the reader threads and the abort goes with them.
 
 Reading by path keeps the file handle entirely on the C++ side and removes the
 callback, so the teardown race cannot happen. See TOM-435: eight of these
