@@ -65,6 +65,7 @@ src/quantbox/              ← installable library (uv add quantbox)
   registry.py              Plugin discovery (builtins + entry points)
   cli.py                   CLI entry point (quantbox command)
   store.py                 Artifact storage (Parquet + JSON)
+  parquet_io.py            Teardown-safe parquet reads (all reads route here)
   schemas.py               Runtime schema validation
   artifact_schemas/        JSON schemas for artifacts (bundled as package data)
   plugins/
@@ -262,4 +263,3 @@ links here rather than restating it — this policy has drifted twice now
    `git merge origin/main` + `uv sync`, 06:00 UTC). Run
    `./scripts/after-release.sh` to check the tag is reachable from `main`, see
    the pin quantbox-live currently declares, and print what remains.
-

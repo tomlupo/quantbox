@@ -8,6 +8,8 @@ returns, index and dtypes included.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -69,7 +71,9 @@ def test_file_object_delegates(tmp_path):
     path = tmp_path / "handle.parquet"
     df.to_parquet(path, index=False)
     with path.open("rb") as fh:
-        pd.testing.assert_frame_equal(df, read_parquet(fh))
+        expected = pd.read_parquet(fh)
+    with path.open("rb") as fh:
+        pd.testing.assert_frame_equal(expected, read_parquet(fh))
 
 
 @pytest.mark.parametrize(
@@ -106,3 +110,34 @@ def test_extension_dtypes_round_trip(tmp_path):
     path = tmp_path / "ext.parquet"
     df.to_parquet(path)
     pd.testing.assert_frame_equal(pd.read_parquet(path), read_parquet(path))
+
+
+def test_no_library_code_calls_pandas_read_parquet_directly():
+    """The chokepoint must be enforced, not merely documented.
+
+    ``parquet_io`` only helps if every read goes through it, and the crash it
+    dodges is per-call-site — one stray ``pd.read_parquet`` reintroduces it for
+    that read alone. Parsing the AST (rather than grepping) means docstring
+    examples and the module's own documented fallback don't register as
+    call sites.
+    """
+    import ast
+
+    src = Path(__file__).resolve().parents[1] / "src" / "quantbox"
+    allowed = {src / "parquet_io.py"}  # owns the one deliberate fallback
+    offenders = []
+    for py in sorted(src.rglob("*.py")):
+        if py in allowed:
+            continue
+        for node in ast.walk(ast.parse(py.read_text(), filename=str(py))):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            if isinstance(fn, ast.Attribute) and fn.attr == "read_parquet":
+                base = fn.value
+                if isinstance(base, ast.Name) and base.id in {"pd", "pandas"}:
+                    offenders.append(f"{py.relative_to(src.parent.parent)}:{node.lineno}")
+    assert not offenders, (
+        "these call pandas.read_parquet directly instead of quantbox.parquet_io.read_parquet, "
+        "reintroducing the teardown abort (TOM-435): " + ", ".join(offenders)
+    )
