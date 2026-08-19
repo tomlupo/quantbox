@@ -115,11 +115,11 @@ def test_extension_dtypes_round_trip(tmp_path):
 def test_no_library_code_calls_pandas_read_parquet_directly():
     """The chokepoint must be enforced, not merely documented.
 
-    ``parquet_io`` only helps if every read goes through it, and the crash it
-    dodges is per-call-site — one stray ``pd.read_parquet`` reintroduces it for
-    that read alone. Parsing the AST (rather than grepping) means docstring
-    examples and the module's own documented fallback don't register as
-    call sites.
+    ``parquet_io`` only helps if every pandas-bound read goes through it, and
+    the crash it dodges is per-call-site — one stray ``pd.read_parquet``
+    reintroduces it for that read alone. Parsing the AST (rather than grepping)
+    means docstring examples and the module's own documented fallback don't
+    register as call sites.
     """
     import ast
 

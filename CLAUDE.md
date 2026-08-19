@@ -65,7 +65,7 @@ src/quantbox/              ← installable library (uv add quantbox)
   registry.py              Plugin discovery (builtins + entry points)
   cli.py                   CLI entry point (quantbox command)
   store.py                 Artifact storage (Parquet + JSON)
-  parquet_io.py            Teardown-safe parquet reads (all reads route here)
+  parquet_io.py            Teardown-safe parquet reads (every pandas read routes here)
   schemas.py               Runtime schema validation
   artifact_schemas/        JSON schemas for artifacts (bundled as package data)
   plugins/

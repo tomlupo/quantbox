@@ -27,22 +27,23 @@ callback, so the teardown race cannot happen. See TOM-435: eight of these
 aborts over five weeks of the ``quantbox-paper`` cron, across seven unrelated
 strategies, two of which turned a fully successful run into ``exit=1``.
 
-Every parquet read in quantbox goes through :func:`read_parquet` so the library
-cannot re-introduce the crash one call site at a time. It is a drop-in for
-``pd.read_parquet`` and falls back to it whenever the fast path does not apply
-(non-local input, file-like object, unsupported keyword, or no pyarrow).
+Every *pandas-bound* parquet read in quantbox goes through :func:`read_parquet`
+so the library cannot re-introduce the crash one call site at a time; a test
+enforces that no module calls ``pd.read_parquet`` directly. Reads that quantbox
+hands to DuckDB as SQL (``SELECT * FROM read_parquet(...)``) are a different
+engine, never touch a Python file handle, and are out of scope here. It is a
+drop-in for ``pd.read_parquet`` and falls back to it whenever the fast path does
+not apply (non-local input, file-like object, unsupported keyword, or no
+pyarrow).
 """
 
 from __future__ import annotations
 
-import logging
 import os
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
-
-logger = logging.getLogger(__name__)
 
 try:
     import pyarrow.parquet as pq
