@@ -7,6 +7,8 @@ from typing import Any
 
 import pandas as pd
 
+from quantbox.parquet_io import read_parquet as _read_parquet
+
 logger = logging.getLogger(__name__)
 
 
@@ -59,7 +61,7 @@ class FileArtifactStore:
 
     def read_parquet(self, name: str) -> pd.DataFrame:
         path = self.root / f"{name}.parquet"
-        return pd.read_parquet(path)
+        return _read_parquet(path)
 
     def read_json(self, name: str) -> dict[str, Any]:
         path = self.root / f"{name}.json"
@@ -145,5 +147,5 @@ class FileArtifactStore:
             query = f"SELECT * FROM read_parquet({paths!r})"
             return duckdb.sql(query).df()
         except ImportError:
-            frames = [pd.read_parquet(p) for p in paths]
+            frames = [_read_parquet(p) for p in paths]
             return pd.concat(frames, ignore_index=True)

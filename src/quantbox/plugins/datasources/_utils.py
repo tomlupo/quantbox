@@ -18,6 +18,8 @@ import duckdb
 import httpx
 import pandas as pd
 
+from quantbox.parquet_io import read_parquet
+
 # Transient-error retry lives in the central quantbox.retry module now; keep the
 # historical names importable here (is_transient / retry_transient) so the
 # data-source plugins that ``from ._utils import ...`` them are unchanged.
@@ -411,7 +413,7 @@ class MarketCapProvider:
         if path is None or not path.exists():
             return None
         try:
-            df = pd.read_parquet(path)
+            df = read_parquet(path)
             if "fetch_timestamp" not in df.columns:
                 return None
             age_hours = (pd.Timestamp.now() - pd.Timestamp(df["fetch_timestamp"].iloc[0])).total_seconds() / 3600
@@ -791,7 +793,7 @@ def load_pit_market_cap(prices: pd.DataFrame) -> pd.DataFrame:
         if not mc_path.exists():
             logger.debug("curated market_cap.parquet not found at %s; skipping PIT mcap tier", mc_path)
             return pd.DataFrame()
-        cur = pd.read_parquet(mc_path)
+        cur = read_parquet(mc_path)
     except Exception as exc:  # noqa: BLE001 — never break data loading on a soft dep
         logger.warning("Failed to read curated PIT market cap: %s; skipping mcap tier", exc)
         return pd.DataFrame()

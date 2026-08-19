@@ -21,6 +21,7 @@ from typing import Any
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+from quantbox.parquet_io import read_parquet
 
 from ._utils import MarketCapProvider, resolve_screen_inputs
 from .hyperliquid_data_plugin import HyperliquidDataPlugin
@@ -103,7 +104,7 @@ class HyperliquidCachedDataPlugin:
         path = self._cache_path(series)
         if not path.exists():
             return pd.DataFrame(columns=_EMPTY_LONG_COLS)
-        df = pd.read_parquet(path)
+        df = read_parquet(path)
         df["date"] = pd.to_datetime(df["date"], utc=True)
         return df
 
