@@ -42,6 +42,7 @@ import numpy as np
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+from quantbox.parquet_io import read_parquet
 
 
 @dataclass
@@ -129,7 +130,7 @@ class FrozenWeightsStrategy:
         if not path.exists():
             raise FileNotFoundError(f"strategy.frozen_weights.v1: weights file not found at {path}")
 
-        weights = pd.read_parquet(path)
+        weights = read_parquet(path)
         if not isinstance(weights.index, pd.DatetimeIndex):
             weights.index = pd.to_datetime(weights.index)
 

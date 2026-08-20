@@ -16,6 +16,7 @@ from typing import Any
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+from quantbox.parquet_io import read_parquet
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,7 @@ def _read_via_duckdb(path: str, ext: str, asof: str | None, symbols: list[str] |
 def _read_via_pandas(path: str, ext: str, asof: str | None, symbols: list[str] | None) -> pd.DataFrame:
     """Fallback reader using pandas."""
     if ext == ".parquet":
-        df = pd.read_parquet(path)
+        df = read_parquet(path)
     elif ext == ".csv":
         df = pd.read_csv(path)
     else:
@@ -301,7 +302,7 @@ class LocalFileDataPlugin:
 
         # Pandas fallback
         if ext == ".parquet":
-            df = pd.read_parquet(path)
+            df = read_parquet(path)
         elif ext == ".csv":
             df = pd.read_csv(path)
         else:

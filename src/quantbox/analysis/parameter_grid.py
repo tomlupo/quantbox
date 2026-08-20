@@ -42,6 +42,7 @@ from typing import Any
 
 import pandas as pd
 
+from quantbox.parquet_io import read_parquet
 from quantbox.plugins.backtesting.vectorbt_engine import run as _run_backtest
 
 logger = logging.getLogger(__name__)
@@ -333,12 +334,12 @@ def load_parquet_market_data(
     misaligned columns). Returns a dict keyed by the supplied ``names``.
     """
     root = Path(root)
-    anchor = pd.read_parquet(root / f"{align_to}.parquet")
+    anchor = read_parquet(root / f"{align_to}.parquet")
     out: dict[str, pd.DataFrame] = {align_to: anchor}
     for name in names:
         if name == align_to:
             continue
-        df = pd.read_parquet(root / f"{name}.parquet")
+        df = read_parquet(root / f"{name}.parquet")
         out[name] = df.reindex(index=anchor.index, columns=anchor.columns)
     # Restrict the anchor to columns present in every loaded frame.
     common_cols = anchor.columns

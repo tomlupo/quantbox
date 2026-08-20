@@ -11,6 +11,8 @@ from typing import Any
 
 import pandas as pd
 
+from quantbox.parquet_io import read_parquet
+
 from .contracts import (
     BrokerPlugin,
     DataPlugin,
@@ -483,8 +485,8 @@ def run_from_config(
             # Load returns and weights from artifacts
             returns_path = result.artifacts.get("returns", "")
             weights_path = result.artifacts.get("weights_history", "")
-            returns_df = pd.read_parquet(returns_path) if returns_path else pd.DataFrame()
-            weights_df = pd.read_parquet(weights_path) if weights_path else pd.DataFrame()
+            returns_df = read_parquet(returns_path) if returns_path else pd.DataFrame()
+            weights_df = read_parquet(weights_path) if weights_path else pd.DataFrame()
             benchmark_df = None
             v_result = v_plugin.validate(returns_df, weights_df, benchmark_df, v_cfg.get("params", {}))
             validation_results.append({"plugin": v_name, **v_result})
@@ -582,7 +584,7 @@ def run_from_config(
         schema_path = schema_dir / f"{logical}.schema.json"
         if schema_path.exists() and path.endswith(".parquet"):
             try:
-                df = pd.read_parquet(path)
+                df = read_parquet(path)
                 schema = load_schema(schema_path)
                 manifest["warnings"].extend([f"{logical}:{w}" for w in validate_table(df, schema)])
             except Exception as e:

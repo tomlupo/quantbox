@@ -11,8 +11,9 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import pandas as pd
 import pyarrow as pa
+
+from quantbox.parquet_io import read_parquet
 
 if TYPE_CHECKING:
     from ..store import FileArtifactStore
@@ -64,7 +65,7 @@ def ingest_run(
             continue
 
         try:
-            df = pd.read_parquet(parquet_path)
+            df = read_parquet(parquet_path)
             if df.empty:
                 continue
 

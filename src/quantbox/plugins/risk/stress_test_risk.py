@@ -12,6 +12,7 @@ from typing import Any
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+from quantbox.parquet_io import read_parquet
 from quantbox.simulation.stress_testing import (
     StressTestEngine,
 )
@@ -130,7 +131,7 @@ class StressTestRiskManager:
             import contextlib
 
             with contextlib.suppress(Exception):
-                returns_df = pd.read_parquet(hist_path)
+                returns_df = read_parquet(hist_path)
 
         engine = StressTestEngine(returns=returns_df, weights=weights)
 

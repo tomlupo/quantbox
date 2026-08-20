@@ -5,6 +5,7 @@ __all__ = [
     "exceptions",
     "features",
     "indicators",
+    "parquet_io",
     "performance",
     "plugins",
     "registry",
