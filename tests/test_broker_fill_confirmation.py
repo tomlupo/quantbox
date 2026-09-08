@@ -150,10 +150,13 @@ def test_resolve_unknown_refetch_raises_fails_safe():
     assert qty == 0.0
 
 
-def test_resolve_open_order_is_failed_not_filled():
-    status, qty, _, _ = resolve_fill({"status": "open", "filled": 0.0}, 1.0)
-    assert status == "FAILED"
+def test_resolve_open_order_is_working_not_filled_and_not_failed():
+    # An order the venue accepted and still reports open is WORKING: we claim no
+    # fill (qty 0.0) but we must not call a live resting order a failure.
+    status, qty, _, reason = resolve_fill({"status": "open", "filled": 0.0}, 1.0)
+    assert status == "WORKING"
     assert qty == 0.0
+    assert "still working" in reason
 
 
 def test_resolve_partial_reports_real_qty():
@@ -198,14 +201,47 @@ def test_resolve_pending_settles_to_partial_via_repoll():
     assert "partial" in reason.lower()
 
 
-def test_resolve_pending_that_never_fills_fails_safe():
-    # Re-polled but the venue keeps reporting open/filled=0: after the bounded
-    # wait it must fail safe to FAILED (never an unconfirmed FILLED). This is the
-    # reconciliation-safe direction — next cycle re-attempts if truly missed.
+def test_resolve_pending_that_never_settles_is_working_never_filled():
+    # Re-polled but the venue keeps reporting open/filled=0. It must NOT claim a
+    # fill (the reconciliation-safe direction is preserved: qty stays 0.0) and it
+    # must NOT call it FAILED — the order is alive on the book. This is the exact
+    # shape of the Kraken limit order that rested 6m04s and then filled in full.
     status, qty, _, reason = resolve_fill(
         {"id": "x", "status": "open", "filled": 0.0},
         1.0,
         refetch=lambda: {"id": "x", "status": "open", "filled": 0.0},
+        confirm_delay=0,
+    )
+    assert status == "WORKING"
+    assert qty == 0.0
+    assert "still working" in reason
+
+
+def test_working_reason_reports_the_venues_last_status_not_the_stale_first_read():
+    # THE 20-day bug, pinned. Kraken's create_order reply carries no `status` and
+    # no `filled`, so the first read classifies UNKNOWN. The re-poll then sees the
+    # real state — `open`. The emitted reason must name what the venue LAST said;
+    # reading the original order here is what printed "venue status=unknown" on
+    # 19 of 20 runs and hid the true state.
+    status, _, _, reason = resolve_fill(
+        {"id": "x"},
+        1.0,
+        refetch=lambda: {"id": "x", "status": "open", "filled": 0.0},
+        confirm_delay=0,
+    )
+    assert status == "WORKING"
+    assert "status=open" in reason
+    assert "unknown" not in reason
+
+
+def test_unconfirmable_order_still_fails_safe_to_failed():
+    # No status anywhere and the venue cannot be re-read: there is no evidence the
+    # order is alive, so WORKING would be a lie. This must stay FAILED — the guard
+    # that keeps the new WORKING branch from swallowing genuine unknowns.
+    status, qty, _, reason = resolve_fill(
+        {"id": "x"},
+        1.0,
+        refetch=lambda: None,
         confirm_delay=0,
     )
     assert status == "FAILED"

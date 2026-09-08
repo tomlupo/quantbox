@@ -740,6 +740,25 @@ class TradingPipeline:
 
         gate_applied = bool(recon_preflight.get("applied"))
 
+        # --- Stage 6c: resolve orders left WORKING by a previous cycle ---
+        # A priced order goes to the venue as a LIMIT order and may rest on the
+        # book long after the run that placed it exited. Those are queued rather
+        # than alarmed; this is where the book finds out what became of them, so a
+        # fill that landed minutes (or hours) later still reaches the accounts.
+        # Guarded: resolution is bookkeeping and must never block trading.
+        working_store = None
+        resolved_working: list[dict[str, Any]] = []
+        try:
+            working_store = self._working_store(params)
+            if working_store is not None:
+                resolved_working = self._resolve_working_orders(
+                    working_store,
+                    broker,
+                    ledger=recon_ctx.ledger if recon_ctx is not None else None,
+                )
+        except Exception as exc:  # noqa: BLE001 - bookkeeping must never be fatal
+            logger.error("Working-order resolution failed (non-fatal): %s", exc)
+
         # --- Stage 7: Execution ---
         trading_enabled = bool(params.get("trading_enabled", True))
         execution_report = self._execute_orders(
@@ -758,6 +777,7 @@ class TradingPipeline:
             # Under enforce, a failed intent write drops the order (fail closed) —
             # never trade live without the durable intent record.
             capture_fail_closed=bool(recon_ctx is not None and recon_ctx.tol.is_enforce),
+            working_store=working_store,
         )
 
         fills_data = []
@@ -938,6 +958,8 @@ class TradingPipeline:
             "total_executed": float(execution_report.get("summary", {}).get("total_executed", 0)),
             "total_partial": float(execution_report.get("summary", {}).get("total_partial", 0)),
             "total_failed": float(execution_report.get("summary", {}).get("total_failed", 0)),
+            "total_working": float(execution_report.get("summary", {}).get("total_working", 0)),
+            "resolved_working": float(len(resolved_working)),
             "funding_charge": (float(funding_charge) if funding_charge is not None else None),
             "cumulative_fees": cumulative_fees,
             # Dead-man health signal: 1.0 means the strategy wanted to rebalance
@@ -1668,6 +1690,7 @@ class TradingPipeline:
         gate_orders_allowed: bool = True,
         gate_reduce_only: bool = False,
         capture_fail_closed: bool = False,
+        working_store: Any = None,
     ) -> dict[str, Any]:
         """Execute orders via broker with sell-before-buy ordering.
 
@@ -1685,12 +1708,20 @@ class TradingPipeline:
           mode only). ``gate_orders_allowed=False`` halts all orders this cycle;
           ``gate_reduce_only=True`` keeps only exposure-reducing orders. In observe
           mode the caller passes the permissive defaults, so behavior is unchanged.
+        * ``working_store`` (optional): queue for orders the venue ACCEPTED that
+          were still resting on the book when the confirmation window closed. They
+          are recorded here so the next cycle can resolve them against the venue
+          and book the real fill; without a store they are still reported, but
+          their eventual fill is not recovered.
         * ``capture_fail_closed`` (enforce mode): if intent capture fails for an
           order, that order is DROPPED (not submitted) — under enforcement we must
           never trade live without the crash-durable intent record. In observe mode
           (default) a capture failure is only an observability loss and the order
           still sends.
         """
+        # Orders left working at the venue this cycle. Defined before any early
+        # return so the persist step at the end is always safe to run.
+        working_to_queue: list[dict[str, Any]] = []
         report: dict[str, Any] = {
             "executed_orders": [],
             "failed_orders": [],
@@ -1698,6 +1729,9 @@ class TradingPipeline:
                 "total_executed": 0,
                 "total_partial": 0,
                 "total_failed": 0,
+                # Accepted by the venue, still resting on the book when the run
+                # ended. Neither executed nor failed — resolved next cycle.
+                "total_working": 0,
                 "total_value": 0.0,
                 "total_cost": 0.0,
             },
@@ -2111,6 +2145,53 @@ class TradingPipeline:
                         # a healthy run (#81).
                         n_skipped_sell += 1
                     continue
+                if status == "WORKING":
+                    # The venue accepted this order and it was still on the book
+                    # when the confirmation window closed. NOT a failure and NOT a
+                    # fill: record it for visibility, queue it for resolution by
+                    # the next cycle, and leave the ledger intent deliberately
+                    # unmatched — the order has no terminal result yet, and
+                    # writing one would forge an outcome we have not observed.
+                    order_id = str(fill_row.get("order_id") or "")
+                    report["orders_details"].append(
+                        {
+                            "symbol": str(fill_row.get("symbol", "")),
+                            "action": str(fill_row.get("side", "")),
+                            "quantity": float(fill_row.get("qty", 0)),
+                            "status": "WORKING",
+                            "order_id": order_id,
+                            "error": str(fill_row.get("error", "still working at the venue")),
+                        }
+                    )
+                    report["summary"]["total_working"] += 1
+                    # Consume this order's intent slot to keep the per-(symbol,
+                    # side) FIFO aligned with the results that follow, and carry
+                    # the ref forward so the late fill binds to THIS intent. We
+                    # deliberately write no ledger RESULT yet: the order has no
+                    # outcome, and inventing one would forge an observation.
+                    _pool = intent_refs.get((str(fill_row.get("symbol", "")), side))
+                    intent_ref = _pool.pop(0) if _pool else None
+                    if order_id:
+                        working_to_queue.append(
+                            {
+                                "symbol": str(fill_row.get("symbol", "")),
+                                "side": side,
+                                "order_id": order_id,
+                                "requested_qty": float(fill_row.get("requested_qty", 0) or 0.0),
+                                "reason": str(fill_row.get("error", "")),
+                                "order_ref": intent_ref,
+                            }
+                        )
+                    else:
+                        # Working but untrackable: no id means no later resolution,
+                        # so this one really can go missing. Say so loudly rather
+                        # than let it look like the handled case.
+                        logger.error(
+                            "Order for %s is working at the venue but carries NO order id — "
+                            "it cannot be resolved next cycle and its fill may go unrecorded",
+                            fill_row.get("symbol", ""),
+                        )
+                    continue
                 if status == "FAILED":
                     report["orders_details"].append(
                         {
@@ -2316,12 +2397,198 @@ class TradingPipeline:
             if d.get("status") in ("FILLED", "PARTIAL")
         )
 
+        # Persist BEFORE the alerting call below: queuing a working order is the
+        # durable step that lets its fill be recovered next cycle, and it must not
+        # be skipped because a notification path raised.
+        if working_to_queue and working_store is not None:
+            for rec in working_to_queue:
+                try:
+                    working_store.record(cycle_id=str(cycle_id or ""), **rec)
+                except Exception:
+                    # A lost queue entry is a lost fill, so this is loud and it
+                    # does NOT swallow: the run continues (the order is live and
+                    # the position reconciles next cycle regardless), but the
+                    # operator must see that automatic resolution will not happen.
+                    logger.exception(
+                        "FAILED to queue working order %s %s (id=%s) for next-cycle "
+                        "resolution — its fill will not be booked automatically",
+                        rec.get("side"),
+                        rec.get("symbol"),
+                        rec.get("order_id"),
+                    )
+        elif working_to_queue:
+            logger.warning(
+                "%d order(s) working at the venue but no working-order store is "
+                "configured — their fills will not be booked automatically",
+                len(working_to_queue),
+            )
+
         self._report_order_failures(report, broker)
         return report
 
     # ==================================================================
     # Reconciliation context + PRE-EXECUTION gate (issue #90)
     # ==================================================================
+    # ==================================================================
+    # Working orders left resting at the venue (cross-cycle resolution)
+    # ==================================================================
+    # Orders left WORKING are queued for a day at most before we stop expecting
+    # them; a limit order that has not resolved by the next daily cycle is either
+    # long dead or long filled, and the position reconciliation covers the book
+    # either way. The cap exists so an order the venue never resolves cannot grow
+    # the queue without bound.
+    _WORKING_MAX_AGE_DAYS = 7
+
+    def _working_store(self, params: dict[str, Any]) -> Any:
+        """Build the per-book working-order queue, or None when unidentifiable.
+
+        Needs a ``book_key`` to namespace the queue — the same key the token
+        policy store and the reconciliation ledger use. Without one there is no
+        safe per-book path, so we return None and let the caller say so loudly
+        rather than silently share one queue between books.
+        """
+        from quantbox.reconciliation.working_orders import WorkingOrderStore
+
+        recon = params.get("reconciliation") or {}
+        book_key = str(params.get("book_key") or recon.get("book_key") or "")
+        if not book_key:
+            logger.warning(
+                "No book_key configured — orders left working at the venue cannot be "
+                "queued for resolution, and a late fill will not be booked automatically"
+            )
+            return None
+        root = str(recon.get("data_dir") or params.get("data_dir") or "data")
+        return WorkingOrderStore(book_key=book_key, root=root)
+
+    def _resolve_working_orders(self, store: Any, broker: BrokerPlugin, ledger: Any = None) -> list[dict[str, Any]]:
+        """Ask the venue what became of orders a previous cycle left working.
+
+        Returns the list of orders that reached a terminal state this cycle. An
+        order the venue cannot be read for stays queued (an API blip must never
+        discard a real fill); an order still working stays queued too.
+        """
+        queued = store.load()
+        if not queued:
+            return []
+
+        resolver = getattr(broker, "fetch_order_result", None)
+        if not callable(resolver):
+            logger.warning(
+                "%d working order(s) queued but broker %s cannot resolve orders — their fills will not be booked",
+                len(queued),
+                type(broker).__name__,
+            )
+            return []
+
+        resolved: list[dict[str, Any]] = []
+        drop_ids: set[str] = set()
+        now = datetime.now(timezone.utc)
+        for rec in queued:
+            order_id = str(rec.get("order_id") or "")
+            symbol = str(rec.get("symbol") or "")
+            if not order_id:
+                drop_ids.add(order_id)
+                continue
+
+            outcome = resolver(order_id, symbol)
+            if outcome is None:
+                # Could not read the venue. NOT a failure — keep it queued so the
+                # next cycle tries again. This is the branch that separates
+                # "cannot check" from "checked and found nothing".
+                logger.warning(
+                    "Working order %s %s (id=%s) could not be resolved this cycle — left queued",
+                    rec.get("side"),
+                    symbol,
+                    order_id,
+                )
+                if self._working_order_expired(rec, now):
+                    logger.error(
+                        "Working order %s %s (id=%s) has been unresolved for over %d days "
+                        "— dropping from the queue; reconcile it by hand",
+                        rec.get("side"),
+                        symbol,
+                        order_id,
+                        self._WORKING_MAX_AGE_DAYS,
+                    )
+                    drop_ids.add(order_id)
+                continue
+
+            status = str(outcome.get("status", "")).strip().upper()
+            if status == "WORKING":
+                logger.info(
+                    "Working order %s %s (id=%s) is STILL working at the venue",
+                    rec.get("side"),
+                    symbol,
+                    order_id,
+                )
+                if self._working_order_expired(rec, now):
+                    logger.error(
+                        "Working order %s %s (id=%s) has rested for over %d days — "
+                        "dropping from the queue; reconcile it by hand",
+                        rec.get("side"),
+                        symbol,
+                        order_id,
+                        self._WORKING_MAX_AGE_DAYS,
+                    )
+                    drop_ids.add(order_id)
+                continue
+
+            # Terminal: FILLED / PARTIAL / FAILED. Book it and stop tracking it.
+            drop_ids.add(order_id)
+            entry = {
+                "symbol": symbol,
+                "side": str(rec.get("side", "")),
+                "order_id": order_id,
+                "status": status,
+                "quantity": float(outcome.get("qty", 0) or 0.0),
+                "price": float(outcome.get("price", 0) or 0.0),
+                "error": str(outcome.get("error", "")),
+                "placed_cycle_id": str(rec.get("cycle_id", "")),
+            }
+            resolved.append(entry)
+            logger.info(
+                "Working order resolved LATE: %s %s (id=%s) -> %s qty=%s @ %s",
+                entry["side"],
+                symbol,
+                order_id,
+                status,
+                entry["quantity"],
+                entry["price"],
+            )
+            order_ref = rec.get("order_ref")
+            if ledger is not None and order_ref:
+                try:
+                    ledger.record_result(
+                        order_ref=str(order_ref),
+                        cycle_id=str(rec.get("cycle_id") or ""),
+                        status=_EXEC_STATUS_TO_LEDGER.get(status, status.lower()),
+                        filled_qty=entry["quantity"],
+                        avg_px=entry["price"],
+                        resolved_late=True,
+                    )
+                except Exception:  # noqa: BLE001 - ledger write must not lose the resolution
+                    logger.exception(
+                        "Failed to record LATE result for %s (ref=%s) in the ledger",
+                        symbol,
+                        order_ref,
+                    )
+
+        store.drop(drop_ids)
+        return resolved
+
+    def _working_order_expired(self, rec: dict[str, Any], now: datetime) -> bool:
+        """True when a queued order is older than the retention cap."""
+        raw = rec.get("recorded_at")
+        if not raw:
+            return False
+        try:
+            recorded = datetime.fromisoformat(str(raw))
+        except ValueError:
+            return False
+        if recorded.tzinfo is None:
+            recorded = recorded.replace(tzinfo=timezone.utc)
+        return (now - recorded).days > self._WORKING_MAX_AGE_DAYS
+
     def _recon_load(self, params: dict[str, Any], run_id: str, asof: str) -> _ReconCtx | None:
         """Parse the `reconciliation` config block ONCE and build the per-cycle
         context (tolerances, ledger, persisted state, state machine).
