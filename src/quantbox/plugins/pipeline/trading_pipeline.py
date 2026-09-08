@@ -116,6 +116,8 @@ def _atomic_write_text(path: Any, text: str) -> None:
 _EXEC_STATUS_TO_LEDGER = {
     "FILLED": "filled",
     "PARTIAL": "partial",
+    # Non-terminal: accepted, still on the book. See NON_TERMINAL_RESULT_STATUSES.
+    "WORKING": "working",
     "FAILED": "failed",
     "SKIPPED": "skipped",
     "REJECTED": "rejected",
@@ -2166,11 +2168,30 @@ class TradingPipeline:
                     report["summary"]["total_working"] += 1
                     # Consume this order's intent slot to keep the per-(symbol,
                     # side) FIFO aligned with the results that follow, and carry
-                    # the ref forward so the late fill binds to THIS intent. We
-                    # deliberately write no ledger RESULT yet: the order has no
-                    # outcome, and inventing one would forge an observation.
+                    # the ref forward so the late fill binds to THIS intent.
                     _pool = intent_refs.get((str(fill_row.get("symbol", "")), side))
                     intent_ref = _pool.pop(0) if _pool else None
+                    # Record an explicit NON-TERMINAL `working` result. Leaving the
+                    # intent unmatched would be read by Stage 7b as "submitted, no
+                    # result observed" -- a MISSED FILL -- and with
+                    # degraded_failed_streak=1 a single resting limit order would
+                    # open a reconciliation break every cycle. That is the same
+                    # cry-wolf this change exists to remove, moved from Telegram
+                    # into recon. The record claims no outcome; it states the
+                    # observed fact that the order is alive.
+                    if ledger is not None and cycle_id is not None and intent_ref:
+                        try:
+                            ledger.record_result(
+                                order_ref=str(intent_ref),
+                                cycle_id=cycle_id,
+                                status="working",
+                                order_id=order_id,
+                            )
+                        except Exception:  # noqa: BLE001 - ledger must not break the run
+                            logger.exception(
+                                "Failed to record the working result for %s",
+                                fill_row.get("symbol", ""),
+                            )
                     if order_id:
                         working_to_queue.append(
                             {
@@ -2948,6 +2969,13 @@ class TradingPipeline:
                 status = str(result.get("status")).lower() if result else None
                 if status in ("filled", "partial"):
                     filled_syms.add(sym)
+                elif status == "working":
+                    # Accepted and still live on the book. Not a fill (nothing
+                    # executed yet) and NOT a missed fill (nothing went wrong) --
+                    # so it must touch neither `filled_syms` nor the failure
+                    # streak. Stage 6c resolves it against the venue next cycle
+                    # and records the terminal result against this same ref.
+                    continue
                 elif status in ("timeout", None):
                     # Submitted but no (real) result observed = missed fill.
                     this_cycle_failed[sym] = this_cycle_failed.get(sym, 0) + 1
@@ -3015,6 +3043,12 @@ class TradingPipeline:
                         )
                         if status in ("FILLED", "PARTIAL"):
                             filled_syms.add(sym)
+                        elif status == "WORKING":
+                            # Accepted, still live on the book. Neither a fill nor
+                            # a failure — the same rule as the captured-intent path
+                            # above. Without this the reconstruction path would
+                            # count every resting limit order as a failed order.
+                            pass
                         else:  # FAILED / SKIPPED / anything non-fill
                             this_cycle_failed[sym] = this_cycle_failed.get(sym, 0) + 1
                     else:
