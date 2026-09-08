@@ -60,7 +60,7 @@ from quantbox.contracts import PluginMeta
 from quantbox.exceptions import BrokerExecutionError
 from quantbox.retry import with_retry
 
-from ._fills import resolve_fill, trade_fee, trade_fee_currency
+from ._fills import STATUS_WORKING, resolve_fill, trade_fee, trade_fee_currency
 
 try:
     import ccxt
@@ -475,9 +475,10 @@ class HyperliquidBroker:
     def _refetch_order(self, order: dict, symbol: str) -> dict | None:
         """Re-read an order from the venue to confirm its fill (issue #68).
 
-        Called only when the initial order result is too ambiguous to classify
-        (no status and no ``filled`` field). Read-only; any failure returns None
-        so the caller fails safe to not-filled.
+        Called by ``resolve_fill`` when the initial result is non-terminal —
+        either too ambiguous to classify (no status and no ``filled`` field) or
+        accepted-but-still-settling. Read-only; any failure returns None so the
+        caller fails safe to not-filled.
         """
         order_id = order.get("id")
         market_symbol = self._get_market_symbol(symbol)
@@ -488,6 +489,34 @@ class HyperliquidBroker:
         except Exception as exc:  # noqa: BLE001 - confirmation must never crash execution
             logger.warning("Fill confirmation fetch_order failed for %s: %s", symbol, exc)
             return None
+
+    def fetch_order_result(self, order_id: str, symbol: str) -> dict | None:
+        """Resolve a previously-placed order against the venue. Read-only.
+
+        Second half of the WORKING outcome, matching the Kraken broker: an order
+        still resting when its run's confirmation window closed is queued rather
+        than alarmed, and the NEXT cycle calls this to book what actually
+        happened. Returns ``{status, qty, price, error}`` in the same emitted
+        vocabulary as :func:`resolve_fill`, or ``None`` when the venue cannot be
+        read — which the caller must treat as "still unresolved", never as a
+        failure, so a transient API error cannot discard a real fill.
+        """
+        market_symbol = self._get_market_symbol(symbol)
+        if not order_id or not market_symbol:
+            logger.warning("Cannot resolve working order for %s: missing order id or unknown market", symbol)
+            return None
+        try:
+            order = self._exchange.fetch_order(order_id, market_symbol)
+        except Exception as exc:  # noqa: BLE001 - resolution must never crash a run
+            logger.warning("fetch_order failed resolving %s (%s): %s", symbol, order_id, exc)
+            return None
+        if not order:
+            return None
+        # The venue's own reported size is the reference; the original request is
+        # out of scope here and would misread a floored full fill as a partial.
+        requested = order.get("amount") or 0.0
+        status, qty, price, reason = resolve_fill(order, requested, refetch=None)
+        return {"status": status, "qty": qty, "price": price, "error": reason}
 
     def _notify_order_outcome(
         self,
@@ -505,8 +534,18 @@ class HyperliquidBroker:
         order is notified too — previously a rejection produced no message at all
         while an acceptance produced a false "filled" one, which is exactly
         backwards.
+
+        WORKING is deliberately silent. It is not an outcome: the order is alive
+        on the book and this cycle simply stopped waiting for it. The message
+        built below treats anything that is not FILLED/PARTIAL as a failure, so
+        without this guard a resting limit order would send "ORDER FAILED" with a
+        reason that says it is still working — the exact cry-wolf alert this
+        status exists to stop. The run reports it as `n_working`, and the next
+        cycle resolves it and notifies the real outcome then.
         """
         st = str(status).strip().upper()
+        if st == STATUS_WORKING:
+            return False
         if st == "FILLED":
             head = f"🟢 <b>{side.upper()}</b>" if side == "buy" else f"🔴 <b>{side.upper()}</b>"
             msg = (
@@ -533,6 +572,9 @@ class HyperliquidBroker:
         """
         rows: list[dict[str, Any]] = []
         n_failed = 0
+        # Accepted by the venue and still working when the confirmation window
+        # closed. Counted apart from n_failed — a resting order is not an error.
+        n_working = 0
         for _, o in orders.iterrows():
             sym = str(o["symbol"])
             side = str(o["side"]).lower()
@@ -562,6 +604,18 @@ class HyperliquidBroker:
                 )
                 if status == "FAILED":
                     n_failed += 1
+                elif status == STATUS_WORKING:
+                    # Must be handled BEFORE the else below, which announces a
+                    # FILL for anything it has not already matched. A working
+                    # order has filled nothing yet.
+                    n_working += 1
+                    logger.info(
+                        "Order still working at the venue: %s %s (id=%s) — %s",
+                        side,
+                        sym,
+                        result.get("id"),
+                        reason,
+                    )
                 elif status == "PARTIAL":
                     logger.warning("Order partially filled: %s %s — %s", side, sym, reason)
                 else:
@@ -583,6 +637,12 @@ class HyperliquidBroker:
                 n_failed += 1
                 self._notify_order_outcome(sym, side, "FAILED", 0.0, 0.0, "placement failed")
 
+        if n_working:
+            logger.info(
+                "Orders still working at the venue (%d/%d) — resolved next cycle",
+                n_working,
+                len(orders),
+            )
         if n_failed:
             failed_rows = [r for r in rows if r["status"] == "FAILED"]
             logger.error(

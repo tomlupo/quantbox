@@ -42,7 +42,7 @@ from quantbox.contracts import PluginMeta
 from quantbox.retry import with_retry
 
 from ..datasources.kraken_data import KRAKEN_BALANCE_SUFFIXES, normalize_kraken_asset
-from ._fills import resolve_fill, trade_fee, trade_fee_currency
+from ._fills import STATUS_WORKING, resolve_fill, trade_fee, trade_fee_currency
 
 try:
     import ccxt
@@ -374,6 +374,38 @@ class KrakenBroker:
             logger.warning("Kraken fill confirmation fetch_order failed for %s: %s", symbol, exc)
             return None
 
+    def fetch_order_result(self, order_id: str, symbol: str) -> dict | None:
+        """Resolve a previously-placed order against the venue. Read-only.
+
+        This is the second half of the WORKING outcome: an order that was still
+        resting on the book when its run's confirmation window closed is recorded
+        rather than alarmed, and the NEXT cycle calls this to find out what
+        actually happened to it. Kraken keeps a closed order queryable by txid, so
+        a fill that landed minutes after the run still reaches the books.
+
+        Returns a dict of ``{status, qty, price, error}`` using the same emitted
+        vocabulary as :func:`resolve_fill`, or ``None`` when the venue cannot be
+        read at all — the caller must treat None as "still unresolved", never as a
+        failure, so a transient API error cannot silently discard a real fill.
+        """
+        ms = self._market_symbol(symbol)
+        if not order_id or ms is None:
+            logger.warning("Cannot resolve working order for %s: missing order id or unknown market", symbol)
+            return None
+        try:
+            order = self._exchange.fetch_order(order_id, ms)
+        except Exception as exc:  # noqa: BLE001 - resolution must never crash a run
+            logger.warning("Kraken fetch_order failed resolving %s (%s): %s", symbol, order_id, exc)
+            return None
+        if not order:
+            return None
+        # The venue's own reported size is the reference — the original request is
+        # not in scope here, and using it would misread a floored full fill as a
+        # partial. No refetch: this IS the refetch.
+        requested = order.get("amount") or 0.0
+        status, qty, price, reason = resolve_fill(order, requested, refetch=None)
+        return {"status": status, "qty": qty, "price": price, "error": reason}
+
     def place_orders(self, orders: pd.DataFrame) -> pd.DataFrame:
         """Place spot orders (MARKET by default, LIMIT when ``price`` given).
 
@@ -393,6 +425,10 @@ class KrakenBroker:
         rows: list[dict[str, Any]] = []
         n_failed = 0
         n_skipped = 0
+        # Orders the venue ACCEPTED that were still working when the confirmation
+        # window closed. Counted apart from n_failed: a resting limit order is a
+        # normal outcome, not an error, and must not colour the run red.
+        n_working = 0
         residual_exits: list[str] = []
         for _, o in orders.iterrows():
             sym = str(o["symbol"])
@@ -452,6 +488,15 @@ class KrakenBroker:
                 )
                 if status == "FAILED":
                     n_failed += 1
+                elif status == STATUS_WORKING:
+                    n_working += 1
+                    logger.info(
+                        "Kraken order still working at the venue: %s %s (id=%s) — %s",
+                        side,
+                        sym,
+                        result.get("id"),
+                        reason,
+                    )
                 elif status == "PARTIAL":
                     logger.warning("Kraken order partially filled: %s %s — %s", side, sym, reason)
             else:
@@ -479,6 +524,12 @@ class KrakenBroker:
                 "on %d position(s): %s. Untradeable at current size; monitor for a trapped residual.",
                 len(residual_exits),
                 ", ".join(residual_exits),
+            )
+        if n_working:
+            logger.info(
+                "Kraken orders still working at the venue (%d/%d) — resolved next cycle",
+                n_working,
+                len(orders),
             )
         if n_failed:
             logger.error("Kraken orders failed (%d/%d)", n_failed, len(orders))
