@@ -10,7 +10,7 @@ cycle resolves it against the venue and books what actually happened.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -162,7 +162,7 @@ def test_a_broker_that_cannot_resolve_leaves_the_queue_intact(tmp_path):
 def test_an_order_unresolved_past_the_retention_cap_is_dropped_loudly(tmp_path, caplog):
     store = _queued(tmp_path)
     stale = store.load()
-    stale[0]["recorded_at"] = (datetime.now(UTC) - timedelta(days=30)).isoformat()
+    stale[0]["recorded_at"] = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
     store.save(stale)
     broker = _Broker({"OID1": None})
 
