@@ -658,3 +658,97 @@ def test_observe_mode_never_applies_the_gate(tmp_path):
     assert p2["applied"] is False
     assert "recon_gated" not in r2
     assert len(b2.placed) == 1  # order flowed normally
+
+
+# ── WORKING orders must not read as missed fills (review finding, PR #171) ────
+# A resting LIMIT order is emitted as WORKING. If its intent is left unmatched,
+# Stage 7b reads "submitted but no result observed" = MISSED FILL, and with
+# degraded_failed_streak=1 a single resting order opens a reconciliation break
+# every cycle — the same cry-wolf the WORKING status exists to remove, moved out
+# of Telegram and into recon. So WORKING is recorded as an explicit NON-TERMINAL
+# result and excluded from the missed-fill class.
+
+
+def _fills_working(orders):
+    rows = []
+    for _, o in orders.iterrows():
+        rows.append(
+            {
+                "symbol": o["symbol"],
+                "side": o["side"],
+                "qty": 0.0,
+                "price": float(o["price"]),
+                "status": "WORKING",
+                "order_id": f"OID-{o['symbol']}",
+                "fee": 0.0,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def test_working_order_raises_no_reconciliation_break(tmp_path):
+    """The assertion that actually binds to the defect.
+
+    `missed_fills` alone is NOT enough: with the working result recorded, a
+    regression routes WORKING into the failure-STREAK bucket instead, which
+    leaves missed_fills empty while still opening a break. Since
+    degraded_failed_streak=1, one miscounted resting order is one break — so
+    n_breaks is the number that can actually see the bug.
+    """
+    broker = _FakeBroker(fills_fn=_fills_working)
+    params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
+    pipe = TradingPipeline()
+    _report, notes, _pre = _drive_cycle(pipe, params, broker, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1")
+    assert notes["missed_fills"] == [], f"a resting order was counted as a missed fill: {notes}"
+    # DRIFT may legitimately appear: an order that has not filled really does
+    # leave the book off target, and saying so is true. The class that must NOT
+    # appear is consecutive_failed — nothing failed.
+    classes = [b["class"] for b in notes["breaks"]]
+    assert "consecutive_failed" not in classes, f"a resting order opened a failure break: {notes['breaks']}"
+
+
+def test_working_order_is_recorded_as_a_non_terminal_result(tmp_path):
+    # Recorded rather than left unmatched: an ABSENT result cannot distinguish
+    # "still working" from "submitted and never heard about again".
+    broker = _FakeBroker(fills_fn=_fills_working)
+    params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
+    pipe = TradingPipeline()
+    _drive_cycle(pipe, params, broker, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1")
+
+    results = [r for r in _ledger_records(tmp_path) if r.get("kind") == "result"]
+    assert len(results) == 1
+    assert results[0]["status"] == "working"
+    assert results[0].get("order_id") == "OID-DOGE"
+
+
+def test_a_genuine_missed_fill_is_still_a_missed_fill(tmp_path):
+    # POSITIVE CONTROL. Without this, the WORKING exclusion could be silencing
+    # the whole missed-fill class and both tests above would pass for the wrong
+    # reason. A broker that returns NOTHING must still raise the missed fill.
+    broker = _FakeBroker(fills_fn=lambda orders: pd.DataFrame())
+    params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
+    pipe = TradingPipeline()
+    _report, notes, _pre = _drive_cycle(pipe, params, broker, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1")
+    assert notes["missed_fills"] == ["DOGE"]
+
+
+def test_a_failed_order_still_opens_a_break(tmp_path):
+    """POSITIVE CONTROL for the break machinery itself.
+
+    This is what proves the WORKING assertions above are not green merely because
+    this harness never raises a break at all. A genuine FAILED order, one cycle,
+    must reach degraded_failed_streak=1 and open exactly the break that WORKING
+    must not.
+    """
+    broker = _FakeBroker(fills_fn=_fills_all("FAILED"))
+    params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
+    pipe = TradingPipeline()
+    _report, notes, _pre = _drive_cycle(pipe, params, broker, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1")
+    results = [r for r in _ledger_records(tmp_path) if r.get("kind") == "result"]
+    assert results[0]["status"] == "failed"
+    assert notes["missed_fills"] == []  # a reported failure is not a MISSED fill
+    classes = [b["class"] for b in notes["breaks"]]
+    assert "consecutive_failed" in classes, (
+        "the failure-streak machinery did not fire on a real failure — so the "
+        f"WORKING assertions would pass for the wrong reason. breaks={notes['breaks']}"
+    )

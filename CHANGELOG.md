@@ -29,6 +29,12 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.4.4 (2026-09-08)
+
+### Fix
+
+- **broker**: a resting limit order is WORKING, not FAILED (#171)
+
 ## v0.4.3 (2026-08-18)
 
 ### Feat

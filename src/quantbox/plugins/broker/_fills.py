@@ -22,6 +22,15 @@ mis-reported real fills as FAILED, poisoning fill accounting and firing false
 alerts. So an ``open``/zero-fill order is FILL_PENDING (re-polled with a short
 wait), distinct from a terminal FILL_UNFILLED (a dead/rejected order, reported
 FAILED with no wait).
+
+A bounded wait is not enough on its own, because the window was sized for that
+*milliseconds* case while a priced order is submitted as a LIMIT order, which
+may legitimately rest on the book for minutes. Reporting that as FAILED made the
+alarm cry wolf on 19 of 20 daily runs, every one of which had in fact filled. So
+an order the venue accepted and still reports as working when the window closes
+is emitted as ``STATUS_WORKING`` — neither a fill (we never claim one we cannot
+see) nor a failure (nothing went wrong). It carries an order id, and the caller
+resolves it against the venue on the next cycle to book the real fill.
 """
 
 from __future__ import annotations
@@ -38,6 +47,12 @@ FILL_PARTIAL = "PARTIAL"
 FILL_UNFILLED = "UNFILLED"  # terminal not-filled (dead/closed-with-zero) — a real miss
 FILL_PENDING = "PENDING"  # accepted + still working (open, filled=0) — async-settling, re-poll
 FILL_UNKNOWN = "UNKNOWN"  # no evidence either way — caller should re-fetch
+
+# Emitted status (the vocabulary the pipeline consumes) for an order the venue
+# ACCEPTED and is still working at the end of the confirmation window. Distinct
+# from FAILED: nothing went wrong, the order is live on the book and carries an
+# id, so the next cycle resolves it against the venue instead of alarming.
+STATUS_WORKING = "WORKING"
 
 # Bounded confirmation wait for an async-settling order (Kraken spot settles a
 # marketable order milliseconds after create_order returns status='open',
@@ -173,18 +188,23 @@ def resolve_fill(
 ) -> tuple[str, float, float, str]:
     """Resolve an order into an *emitted* ``(status, qty, price, reason)`` row.
 
-    ``status`` is one of ``"FILLED"`` / ``"PARTIAL"`` / ``"FAILED"`` — the
-    vocabulary the pipeline understands. When the first classification is
+    ``status`` is one of ``"FILLED"`` / ``"PARTIAL"`` / ``"WORKING"`` /
+    ``"FAILED"`` — the vocabulary the pipeline understands. When the first classification is
     non-terminal — either ambiguous (FILL_UNKNOWN) or accepted-but-still-settling
     (FILL_PENDING) — and a ``refetch`` callable is supplied, the order is re-read
     (bounded ``confirm_attempts`` re-polls, sleeping ``confirm_delay`` s between
     polls for a PENDING order so Kraken's async settlement can land — issue #97).
     A terminal reject classifies as FILL_UNFILLED, never FILL_PENDING, so it is
     NOT re-polled and reports FAILED immediately. If the order is *still*
-    unconfirmed after the wait, the result fails safe to ``"FAILED"`` (never an
-    unconfirmed FILLED).
+    unconfirmed after the wait, the result never claims an unconfirmed FILLED: it
+    is ``"WORKING"`` when the venue still reports the order alive on the book,
+    and otherwise fails safe to ``"FAILED"``.
     """
     verdict, filled_qty, price = classify_fill(order, requested_qty)
+    # The most recent snapshot actually observed from the venue. Seeded with the
+    # create_order reply and advanced on every successful re-poll, so the reason
+    # string below reports what the venue LAST said rather than a stale first read.
+    last_seen = order
 
     # Non-terminal (unknown or async-settling) + we can re-read the venue:
     # bounded confirmation poll. Re-classification is driven purely by the
@@ -202,6 +222,7 @@ def resolve_fill(
                 refetched = None
             if not refetched:
                 break  # can't confirm — keep current verdict, fail safe below
+            last_seen = refetched
             verdict, filled_qty, price = classify_fill(refetched, requested_qty)
             if verdict not in (FILL_UNKNOWN, FILL_PENDING):
                 break  # reached a terminal state (filled / partial / dead)
@@ -216,15 +237,39 @@ def resolve_fill(
             f"partial fill: {filled_qty:g}/{float(requested_qty):g} filled",
         )
 
-    # FILL_UNFILLED or still-FILL_UNKNOWN: not confirmed filled. Report honestly as
-    # FAILED. This is safe against double-placement: the pipeline reconciles from the
-    # broker's ACTUAL positions every cycle (get_positions -> target-vs-current diff),
-    # so if this order in fact filled, the next cycle sees the resulting position and
-    # places no duplicate; a genuine miss is simply re-attempted. A false FAILED costs
-    # an alert + one re-check, never a double order.
+    # The venue's LAST word about this order, never the create_order reply.
+    # Kraken's AddOrder response carries neither ``status`` nor ``filled``, so
+    # reading the ORIGINAL order here printed "venue status=unknown" for every
+    # unconfirmed order no matter what the re-polls actually saw. That one stale
+    # read is what hid a resting limit order behind a generic FAILED for 20 days
+    # (19 of 20 daily runs, all with an identical reason string).
     raw_status = "unknown"
-    if order:
-        raw_status = str(order.get("status") or "unknown")
+    if last_seen:
+        raw_status = str(last_seen.get("status") or "unknown")
+
+    if verdict == FILL_PENDING:
+        # Accepted by the venue and STILL WORKING when the confirmation window
+        # closed. This is NOT a failure. The window (a few re-polls over ~1s of
+        # sleep) was sized for Kraken's async settlement of MARKET orders, but a
+        # priced order is placed as a LIMIT order and legitimately rests on the
+        # book — a real one rested 6m04s against a ~9s window on 2026-09-08 and
+        # then filled in full. We still refuse to claim a fill we cannot see, so
+        # the qty stays 0.0; the order is live and carries an id, and the caller
+        # is expected to resolve it against the venue on the next cycle.
+        return (
+            STATUS_WORKING,
+            0.0,
+            price,
+            f"order accepted and still working at the venue (status={raw_status})",
+        )
+
+    # FILL_UNFILLED or still-FILL_UNKNOWN: not confirmed filled, and NOT known to
+    # be working either. Report honestly as FAILED. This is safe against
+    # double-placement: the pipeline reconciles from the broker's ACTUAL positions
+    # every cycle (get_positions -> target-vs-current diff), so if this order in
+    # fact filled, the next cycle sees the resulting position and places no
+    # duplicate; a genuine miss is simply re-attempted. A false FAILED costs an
+    # alert + one re-check, never a double order.
     return (
         "FAILED",
         0.0,

@@ -40,7 +40,19 @@ KIND_RESULT = "result"
 
 # Terminal result statuses. ``filled`` / ``partial`` mean the exchange confirmed
 # (some) execution; the rest are non-fills the intent record lets us detect.
-RESULT_STATUSES = frozenset({"filled", "partial", "rejected", "failed", "timeout", "skipped"})
+TERMINAL_RESULT_STATUSES = frozenset({"filled", "partial", "rejected", "failed", "timeout", "skipped"})
+
+# NON-terminal, and the distinction matters to every consumer. ``working`` says
+# the venue accepted the order and it is still live on the book: the cycle simply
+# stopped waiting. It is emphatically NOT a missed fill, and counting it as one
+# turns every resting limit order into a reconciliation break. It is recorded
+# rather than left unmatched precisely so a reader can tell "still working" from
+# "submitted and never heard about again" -- an absent result cannot say which.
+# A later cycle records the real outcome against the same order_ref, and
+# ``match_intents_to_results`` keeps the last result, so the terminal record wins.
+NON_TERMINAL_RESULT_STATUSES = frozenset({"working"})
+
+RESULT_STATUSES = TERMINAL_RESULT_STATUSES | NON_TERMINAL_RESULT_STATUSES
 
 
 def safe_book_key(book_key: Any, root: str | os.PathLike[str]) -> str:
