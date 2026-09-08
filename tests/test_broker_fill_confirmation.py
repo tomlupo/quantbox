@@ -429,3 +429,46 @@ def test_floored_full_fill_is_not_a_false_partial():
     # a genuine partial (filled < submitted amount) is still PARTIAL.
     v3, q3, _ = classify_fill({"amount": 0.123, "filled": 0.05, "average": 100.0}, 0.12345)
     assert v3 == _fills.FILL_PARTIAL and q3 == 0.05
+
+
+# ── Hyperliquid: a WORKING order must not fire the FAILED alert ──────────────
+# Review finding on PR #171. The WORKING branch was added to the LOGGING chain,
+# but _notify_order_outcome is called AFTER that chain for every accepted order
+# and treats anything that is not FILLED/PARTIAL as a failure — so a resting
+# limit order would still send "❌ ORDER FAILED" to Telegram. That is precisely
+# the cry-wolf alert this change exists to stop, left intact on one of the two
+# brokers it edits. The guard belongs where the message is built, not only where
+# the log line is chosen.
+
+
+def _hl_broker(monkeypatch, sent):
+    from quantbox.plugins.broker import hyperliquid as H
+
+    broker = H.HyperliquidBroker.__new__(H.HyperliquidBroker)
+    broker.telegram_token = "tok"
+    broker.telegram_chat_id = "chat"
+    monkeypatch.setattr(H, "send_telegram", lambda tok, chat, msg: sent.append(msg) or True)
+    return broker
+
+
+def test_hyperliquid_working_order_sends_no_failure_alert(monkeypatch):
+    sent: list[str] = []
+    broker = _hl_broker(monkeypatch, sent)
+    broker._notify_order_outcome("DOGE", "buy", "WORKING", 0.0, 0.09, "order accepted and still working at the venue")
+    assert sent == [], f"a resting order alerted as a failure: {sent}"
+
+
+def test_hyperliquid_genuine_failure_still_alerts(monkeypatch):
+    # The positive control: the guard must not be so broad that it silences real
+    # rejections. Without this, "no alert" would pass for the wrong reason.
+    sent: list[str] = []
+    broker = _hl_broker(monkeypatch, sent)
+    broker._notify_order_outcome("DOGE", "buy", "FAILED", 0.0, 0.0, "rejected")
+    assert len(sent) == 1 and "ORDER FAILED" in sent[0]
+
+
+def test_hyperliquid_fill_still_alerts(monkeypatch):
+    sent: list[str] = []
+    broker = _hl_broker(monkeypatch, sent)
+    broker._notify_order_outcome("DOGE", "buy", "FILLED", 10.0, 0.09, "")
+    assert len(sent) == 1 and "ORDER FAILED" not in sent[0]

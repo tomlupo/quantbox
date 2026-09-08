@@ -534,8 +534,18 @@ class HyperliquidBroker:
         order is notified too — previously a rejection produced no message at all
         while an acceptance produced a false "filled" one, which is exactly
         backwards.
+
+        WORKING is deliberately silent. It is not an outcome: the order is alive
+        on the book and this cycle simply stopped waiting for it. The message
+        built below treats anything that is not FILLED/PARTIAL as a failure, so
+        without this guard a resting limit order would send "ORDER FAILED" with a
+        reason that says it is still working — the exact cry-wolf alert this
+        status exists to stop. The run reports it as `n_working`, and the next
+        cycle resolves it and notifies the real outcome then.
         """
         st = str(status).strip().upper()
+        if st == STATUS_WORKING:
+            return False
         if st == "FILLED":
             head = f"🟢 <b>{side.upper()}</b>" if side == "buy" else f"🔴 <b>{side.upper()}</b>"
             msg = (
