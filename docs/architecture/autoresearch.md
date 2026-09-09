@@ -54,16 +54,17 @@ The one new plugin type. Generates the next variant given the run history.
 from typing import Protocol
 import pandas as pd
 
+
 class VariantProposerPlugin(Protocol):
     meta: PluginMeta
 
     def propose(
         self,
-        baseline: dict,                 # the baseline config
-        history: pd.DataFrame,          # prior trials: params + metrics + decision
-        search_space: dict,             # bounds per param
-        params: dict,                   # proposer-specific params
-    ) -> dict:                          # next variant config (delta from baseline)
+        baseline: dict,  # the baseline config
+        history: pd.DataFrame,  # prior trials: params + metrics + decision
+        search_space: dict,  # bounds per param
+        params: dict,  # proposer-specific params
+    ) -> dict:  # next variant config (delta from baseline)
         ...
 ```
 
@@ -232,8 +233,7 @@ class BudgetTracker:
     used_llm_cost_usd: float = 0.0
     used_compute_cost_usd: float = 0.0
 
-    def consume(self, *, trials: int = 0, llm_usd: float = 0,
-                compute_usd: float = 0) -> None: ...
+    def consume(self, *, trials: int = 0, llm_usd: float = 0, compute_usd: float = 0) -> None: ...
 
     def breach(self) -> str | None:
         """Returns a non-empty reason if any limit is breached."""
