@@ -21,6 +21,12 @@ infer. This is the layer that holds.
 
 WHAT IT IS NOT
 --------------
+THIS COPY DELIBERATELY DROPS THE UPSTREAM RELEASE EXEMPTION. Re-vendoring from
+the qute-essentials template is a `cp`, so a straight refresh would silently
+restore it — and with it the only unreviewed route onto `main` in a repo with no
+server-side branch protection. The full rationale is in `main()`; read it before
+overwriting this file. `/ship` needs no exemption: `CLAUDE_GUARD_BRANCH_PUSH=0`.
+
 `git push --no-verify` skips every local hook, including this one. That is not
 a defect; it is the contract of a client-side hook, and it is what makes this
 guard safe to install: it catches the accidental push and yields to the
@@ -190,10 +196,13 @@ def _remote_branch_exists(repo_root: Path, branch: str) -> bool:
 
 
 class ConfigError(Exception):
-    """`.claude/git-guard.json` exists but cannot be trusted.
+    """The repo's git policy exists but cannot be trusted.
 
-    Raised, never swallowed. The presence of that file is somebody stating they
-    want this repo protected — so when the file cannot be understood, the push
+    Either surface — the `git` section of `.qute/config.json`, or the legacy
+    `.claude/git-guard.json`.
+
+    Raised, never swallowed. The presence of either is somebody stating they
+    want this repo protected — so when it cannot be understood, the push
     STOPS. Failing open here would leave a repo that looks guarded and is not,
     which is strictly worse than no guard at all: nobody double-checks a
     protection they believe is on.
@@ -206,23 +215,33 @@ class ConfigError(Exception):
 
 
 _SCHEMA_HELP = """
-  .claude/git-guard.json takes exactly these fields — all optional, all strings:
+  The git policy lives in the `git` SECTION of .qute/config.json — the fields
+  are all optional and all strings:
 
       {
-        "protected_branch":   "main",              // release branch
-        "integration_branch": "dev",               // or null if none
-        "release_tool":       "commitizen (/ship)" // guidance text
+        "git": {
+          "protected_branch":   "main",              // release branch
+          "integration_branch": "dev",               // or null if none
+          "release_tool":       "commitizen (/ship)" // guidance text
+        }
       }
+
+  The `git` wrapper is load-bearing: those keys written at the TOP level of
+  .qute/config.json are not a git section at all, so this guard reads the repo
+  as not opted in and allows every push to a guarded branch. The same fields
+  UNWRAPPED in the legacy .claude/git-guard.json are still honoured, as a
+  fallback for checkouts that have not folded yet.
 
   There are two branch slots, not a list. To guard two branches, name them:
   `protected_branch` for the release branch and `integration_branch` for the
   one feature PRs land on first. Those two are the whole model — the agent-side
-  guard reads the same file with the same two slots, and a third guarded branch
-  in one layer but not the other would be worse than either alone. If you need
-  a third, that is a change to both layers, not to this file.
+  guard reads the same section with the same two slots, and a third guarded
+  branch in one layer but not the other would be worse than either alone. If
+  you need a third, that is a change to both layers, not to this file.
 
-  `{}` gets the house defaults: protect `main`, and `dev` when `origin/dev`
-  exists. `"integration_branch": null` means this repo genuinely has none.
+  `"git": {}` gets the house defaults: protect `main`, and `dev` when
+  `origin/dev` exists. `"integration_branch": null` means this repo genuinely
+  has none.
 """
 
 
@@ -354,9 +373,10 @@ def _branch_field(repo_root: Path, raw: dict, key: str, allow_null: bool):
 #: This hook is installed into `.git/hooks` and runs standalone, so it cannot
 #: import `scripts/qute_config.py` the way every other consumer does. It
 #: therefore reimplements the two-step lookup — and stays the SINGLE parser for
-#: this section anyway, because `branch_policy.py` and the agent-side guard both
-#: import THIS function rather than reading the fields themselves. A second
-#: parser would be a second set of defaults.
+#: this section anyway, because `branch_policy.py` imports THIS function rather
+#: than reading the fields itself. A second parser would be a second set of
+#: defaults. (The agent-side `git-workflow` guard is the one exception and
+#: carries its own copy of the lookup — see `load_config` below.)
 CONFIG_CANDIDATES = (
     ((".qute", "config.json"), "git"),
     ((".claude", "git-guard.json"), None),
@@ -489,6 +509,29 @@ def load_config(repo_root: Path):
             if key not in data:
                 # The consolidated file exists but says nothing about git.
                 # A file's existence is not itself an opt-in — fall through.
+                #
+                # UNLESS the git fields are sitting at the TOP level, which is
+                # the one shape that is certainly a mistake rather than
+                # silence: someone wrote the flat legacy object into the
+                # consolidated file and forgot the `"git"` wrapper. Falling
+                # through there means "not opted in", i.e. every push to a
+                # guarded branch waved past, on a file whose author plainly
+                # believed they were configuring this guard. That is the
+                # "looks guarded, isn't" state, so it refuses instead.
+                misplaced = sorted(
+                    set(data) & {
+                        "protected_branch",
+                        "integration_branch",
+                        "release_tool",
+                    }
+                )
+                if misplaced:
+                    raise ConfigError(
+                        f"{candidate} has {', '.join(misplaced)} at the TOP "
+                        f"level but no '{key}' section — those fields belong "
+                        f'inside "{key}": {{ … }}, and as written they '
+                        "configure nothing." + _SCHEMA_HELP
+                    )
                 continue
             section = data[key]
             if not isinstance(section, dict):
@@ -725,7 +768,10 @@ def main(argv, stdin_text: str) -> int:
         )
         return 1
     if cfg is None:
-        _trace("allow: repo not opted in (no .claude/git-guard.json)")
+        _trace(
+            "allow: repo not opted in (no git section in .qute/config.json, "
+            "no .claude/git-guard.json)"
+        )
         return 0
 
     refs, source = collect_refs(stdin_text)
