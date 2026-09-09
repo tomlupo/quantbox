@@ -42,8 +42,16 @@ EXEMPTION_SYMBOLS = (
 )
 
 
+#: Variables that would make this suite measure the SHELL instead of the guard.
+#: `CLAUDE_GUARD_BRANCH_PUSH=0` is honoured before the config is even read, so
+#: an exported one turns every "allow" assertion green for the wrong reason —
+#: precisely the failure the guard's own docstring warns about (set it inline,
+#: never export it). `QUTE_PRE_PUSH_GUARD_TRACE` only adds stderr noise.
+_MUTING_VARS = frozenset({"CLAUDE_GUARD_BRANCH_PUSH", "QUTE_PRE_PUSH_GUARD_TRACE"})
+
+
 def _clean_env() -> dict[str, str]:
-    """`os.environ` with every `GIT_*` variable stripped.
+    """`os.environ` minus every `GIT_*` variable and every muting override.
 
     This suite runs from the repo's own pre-push hook, and git exports `GIT_DIR`
     and `GIT_INDEX_FILE` to its hooks. Inherited, they point every `git` call in
@@ -51,7 +59,7 @@ def _clean_env() -> dict[str, str]:
     guard invocation would judge the wrong repo while looking like it judged the
     fixture. Caught by the pre-push hook itself.
     """
-    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_") and k not in _MUTING_VARS}
 
 
 def _run(cwd: Path, stdin_text: str) -> subprocess.CompletedProcess:
@@ -285,3 +293,26 @@ def test_the_other_fork_only_divergences_are_still_present():
             f"fork-only divergence {marker!r} is gone from {GUARD} — this looks "
             "like a re-vendor from the upstream template."
         )
+
+
+def test_flat_keys_refuse_even_when_a_valid_legacy_file_exists(tmp_path: Path):
+    """Precedence: written-with-intent beats a working fallback.
+
+    `.qute/config.json` carrying the branch fields at the top level is someone
+    configuring THIS guard and getting the wrapper wrong. Falling back to a
+    valid `.claude/git-guard.json` would enforce a policy the repo's newest
+    statement does not describe, silently. Pinned here so a later "helpful"
+    fallback cannot reopen it.
+    """
+    repo = tmp_path / "both"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main", ".")
+    (repo / ".qute").mkdir()
+    (repo / ".qute" / "config.json").write_text('{"protected_branch": "main"}', encoding="utf-8")
+    (repo / ".claude").mkdir()
+    (repo / ".claude" / "git-guard.json").write_text('{"protected_branch": "main"}', encoding="utf-8")
+
+    result = _run(repo, "refs/heads/main aaaa refs/heads/main bbbb\n")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "TOP" in result.stderr
