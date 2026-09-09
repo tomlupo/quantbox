@@ -57,7 +57,9 @@ The rule: an adapter re-exports the underlying library so users can drop down wi
 ```python
 # adapters/vectorbt.py
 import vectorbt as vbt
+
 __all__ = ["vbt"]
+
 
 # Optional: small convenience helpers, but vbt itself is the export.
 def from_dm_evo(df): ...
@@ -67,6 +69,7 @@ Users:
 
 ```python
 from quantbox.adapters.vectorbt import vbt
+
 pf = vbt.Portfolio.from_signals(prices, entries, exits)
 ```
 
@@ -83,11 +86,17 @@ The rule: one function call covers the most common idiom for that capability. No
 import pandas as pd
 from .adapters.vectorbt import vbt
 
-def run(prices: pd.DataFrame, signals: pd.DataFrame, *, fees: float = 0.001,
-        slippage: float = 0.0005, freq: str = "1D") -> "Result":
+
+def run(
+    prices: pd.DataFrame, signals: pd.DataFrame, *, fees: float = 0.001, slippage: float = 0.0005, freq: str = "1D"
+) -> "Result":
     pf = vbt.Portfolio.from_signals(
-        close=prices, entries=signals > 0, exits=signals <= 0,
-        fees=fees, slippage=slippage, freq=freq,
+        close=prices,
+        entries=signals > 0,
+        exits=signals <= 0,
+        fees=fees,
+        slippage=slippage,
+        freq=freq,
     )
     return Result(portfolio=pf, metrics=pf.stats())
 ```
@@ -96,6 +105,7 @@ Users:
 
 ```python
 import quantbox.bt as qbt
+
 result = qbt.run(prices, signals, fees=0.001)
 print(result.metrics)
 ```
@@ -113,6 +123,7 @@ The rule: function-style API for users who want validation and contracts but wan
 
 ```python
 from quantbox.functions import run_strategy
+
 weights = run_strategy(MyStrat(params=...), data=market_data, asof="2026-04-22")
 ```
 
@@ -125,9 +136,9 @@ L2 functions accept plugin instances and return validated artifacts. They don't 
 Instantiate a plugin and call its methods directly. Useful when authoring a new plugin (test it before registering it) or when you want the contract but not the runner.
 
 ```python
-strat = MyStrategy(target_vol=0.15)                 # dataclass attrs at construction
+strat = MyStrategy(target_vol=0.15)  # dataclass attrs at construction
 result = strat.run(data, params={"lookback_days": 60})  # params override at call
-weights = result["weights"]                         # date × symbol DataFrame
+weights = result["weights"]  # date × symbol DataFrame
 ```
 
 `data` is a dict with required `"prices"` and optional `"volume"`, `"market_cap"`, `"universe"`, `"funding_rates"` (all wide-format DataFrames). `params` overrides instance attributes for that one call.
@@ -142,6 +153,7 @@ The runner. YAML config. Validated. Produces a `RunResult` with manifest, lineag
 
 ```python
 from quantbox import run_from_config
+
 result = run_from_config("cookbook/configs/research/regime_taa.yaml")
 ```
 

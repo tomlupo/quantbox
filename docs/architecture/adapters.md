@@ -25,6 +25,7 @@ Minimum:
 Users should import vbt directly via:
     from quantbox.adapters.vectorbt import vbt
 """
+
 import vectorbt as vbt
 
 __all__ = ["vbt"]
@@ -41,13 +42,16 @@ import vectorbt as vbt
 
 __all__ = ["vbt", "from_signals_with_costs"]
 
+
 def from_signals_with_costs(prices, signals, *, fees=0.001, slippage=0.0005, freq="1D"):
     """Convenience: vbt.Portfolio.from_signals with sensible cost defaults."""
     return vbt.Portfolio.from_signals(
         close=prices,
         entries=signals > 0,
         exits=signals <= 0,
-        fees=fees, slippage=slippage, freq=freq,
+        fees=fees,
+        slippage=slippage,
+        freq=freq,
     )
 ```
 
@@ -105,6 +109,7 @@ Don't add an adapter:
 2. **Re-export**:
    ```python
    import riskfolio as rp
+
    __all__ = ["rp"]
    ```
 3. **Add a convenience helper** if a common idiom emerges:
@@ -118,6 +123,7 @@ Don't add an adapter:
 4. **Wire the L1 surface** at `quantbox/opt.py`:
    ```python
    from .adapters.riskfolio import max_sharpe, rp
+
    __all__ = ["max_sharpe", "rp"]
    ```
 5. **Add an extras entry** in `pyproject.toml`:

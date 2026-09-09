@@ -52,15 +52,14 @@ class MyExchangeBroker:
 
     def __post_init__(self):
         import os
+
         self.api_key = self.api_key or os.environ.get("API_KEY_MYEXCHANGE", "")
         self.api_secret = self.api_secret or os.environ.get("API_SECRET_MYEXCHANGE", "")
 
     def get_positions(self) -> pd.DataFrame:
         """Return current positions as DataFrame with columns [symbol, qty, value]."""
         rows = [
-            {"symbol": s, "qty": q, "value": q * self.prices.get(s, 0)}
-            for s, q in self.positions.items()
-            if q != 0
+            {"symbol": s, "qty": q, "value": q * self.prices.get(s, 0)} for s, q in self.positions.items() if q != 0
         ]
         return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["symbol", "qty", "value"])
 
@@ -78,13 +77,15 @@ class MyExchangeBroker:
         fills = []
         for _, row in orders.iterrows():
             price = self.get_market_snapshot([row["symbol"]])[row["symbol"]]
-            fills.append({
-                "symbol": row["symbol"],
-                "side": row["side"],
-                "qty": row["qty"],
-                "price": price,
-                "status": "filled",
-            })
+            fills.append(
+                {
+                    "symbol": row["symbol"],
+                    "side": row["side"],
+                    "qty": row["qty"],
+                    "price": price,
+                    "status": "filled",
+                }
+            )
         return pd.DataFrame(fills)
 
     def fetch_fills(self, since: str) -> pd.DataFrame:

@@ -49,6 +49,7 @@ from typing import Any
 import pandas as pd
 from quantbox.contracts import PluginMeta, StrategyPlugin
 
+
 @dataclass
 class MyStrategy:
     """Brief description (one sentence) — what this strategy does."""
@@ -58,7 +59,7 @@ class MyStrategy:
         kind="strategy",
         version="0.1.0",
         core_compat=">=0.1,<0.2",
-        status="research",          # see lifecycle.md
+        status="research",  # see lifecycle.md
         description="Momentum strategy with vol scaling.",
         tags=("momentum", "research"),
         capabilities=("backtest", "paper", "live"),
@@ -67,7 +68,7 @@ class MyStrategy:
             "type": "object",
             "properties": {
                 "lookback_days": {"type": "integer", "minimum": 30, "default": 60},
-                "vol_target":    {"type": "number",  "minimum": 0.01, "default": 0.15},
+                "vol_target": {"type": "number", "minimum": 0.01, "default": 0.15},
             },
             "required": [],
         },

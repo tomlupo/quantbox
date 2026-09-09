@@ -90,11 +90,11 @@ The rule: an adapter is a thin pass-through plus optional convenience helpers. T
 
 ```python
 # Right
-from quantbox.adapters.vectorbt import vbt   # re-export
-from quantbox.bt import run                   # convenience helper at L1
+from quantbox.adapters.vectorbt import vbt  # re-export
+from quantbox.bt import run  # convenience helper at L1
 
 # Wrong
-from quantbox.backtesting.engine import VectorbtEngine   # opaque wrapper hiding vbt
+from quantbox.backtesting.engine import VectorbtEngine  # opaque wrapper hiding vbt
 ```
 
 If you find yourself writing logic that exists in the underlying library, stop. Use it. See [adapters.md](adapters.md) for the rule and examples.

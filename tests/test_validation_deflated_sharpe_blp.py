@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from quantbox.analysis.dsr import expected_max_sr
 from quantbox.plugins.validation.deflated_sharpe_blp import DeflatedSharpeBLPValidation
 
 
@@ -146,3 +147,130 @@ class TestDeflatedSharpeBLPValidation:
         result = plugin.validate(returns, self._empty_weights(), None, {})
         assert result["passed"] is False
         assert any(f["rule"] == "insufficient_observations" for f in result["findings"])
+
+
+class TestFailClosedOnUncomputableInput:
+    """A validation gate that cannot COMPUTE a verdict must not emit a passing one.
+
+    Both cases below previously returned a confident, plausible-looking number
+    instead of refusing: a zero-variance series was scored as if it had a
+    Sharpe, and a non-positive ``n_trials`` was coerced to 1, silently deleting
+    the entire multiple-testing deflation.
+    """
+
+    @pytest.fixture
+    def plugin(self) -> DeflatedSharpeBLPValidation:
+        return DeflatedSharpeBLPValidation()
+
+    @staticmethod
+    def _series(values: list[float]) -> pd.DataFrame:
+        return pd.DataFrame({"returns": values}, index=pd.date_range("2024-01-01", periods=len(values)))
+
+    @staticmethod
+    def _good_returns(n: int = 300) -> pd.DataFrame:
+        rng = np.random.default_rng(11)
+        return pd.DataFrame(
+            {"returns": rng.normal(0.001, 0.01, size=n)},
+            index=pd.date_range("2024-01-01", periods=n),
+        )
+
+    # --- Defect 1: degenerate (zero-variance) input ---
+
+    # A constant series computed in binary floating point does NOT reliably give
+    # std == 0. `[0.001] * 200` accumulates rounding to std = 2.17e-19 while
+    # `[0.001] * 50` gives exactly 0.0 -- whether the guard fires depends on the
+    # (value, length) pair, not on the series being constant. So this table
+    # crosses several constants that differ only in representability with
+    # several lengths. An earlier version of this test used length 50 only, where
+    # 0.0/0.01/-0.02 all happen to land on exact zero, and it passed while
+    # `[0.001] * 200` returned passed=True with dsr=1.0 and a Sharpe of 8.8e16.
+    @pytest.mark.parametrize("value", [0.0, 1.0, -1.0, 0.001, 0.1, 1e-8, -0.02, 3.7])
+    @pytest.mark.parametrize("n", [3, 50, 200, 1000])
+    def test_constant_returns_are_refused_not_scored(
+        self, plugin: DeflatedSharpeBLPValidation, value: float, n: int
+    ) -> None:
+        result = plugin.validate(self._series([value] * n), pd.DataFrame(), None, {})
+        assert result["passed"] is False
+        assert any(f["rule"] == "degenerate_returns" and f["level"] == "error" for f in result["findings"])
+        # The point of the fix: no NUMBER is emitted that a downstream reader
+        # could mistake for a computed verdict.
+        assert result["metrics"]["dsr"] is None
+        assert result["metrics"]["psr"] is None
+
+    @pytest.mark.parametrize("factor", [1e-12, 1e-6, 1.0, 1e6, 1e12])
+    def test_degeneracy_test_is_relative_not_absolute(self, plugin: DeflatedSharpeBLPValidation, factor: float) -> None:
+        """The degeneracy guard must key on std RELATIVE to the return scale.
+
+        The Sharpe ratio is scale-invariant, so rescaling a real return series
+        by any positive factor must leave the DSR unchanged and must never make
+        it look degenerate. An absolute threshold cannot satisfy this at ANY
+        level: pick one, and a series scaled below it is wrongly refused --
+        returns of order 1e-13 are unusual units, not an absent signal.
+
+        Stated as invariance rather than "a small series still works" on
+        purpose: the first version of this test used returns of order 1e-9,
+        whose std sits above any plausible absolute cutoff, and a mutant
+        substituting `std <= 1e-12` survived it.
+        """
+        rng = np.random.default_rng(3)
+        base = rng.normal(0.001, 0.01, size=400)
+        index = pd.date_range("2024-01-01", periods=400)
+        reference = plugin.validate(pd.DataFrame({"returns": base}, index=index), pd.DataFrame(), None, {"n_trials": 1})
+        scaled = plugin.validate(
+            pd.DataFrame({"returns": base * factor}, index=index), pd.DataFrame(), None, {"n_trials": 1}
+        )
+        assert not any(f["rule"] == "degenerate_returns" for f in scaled["findings"])
+        assert scaled["metrics"]["dsr"] is not None
+        assert scaled["metrics"]["dsr"] == pytest.approx(reference["metrics"]["dsr"], rel=1e-9)
+        assert scaled["metrics"]["observed_sharpe"] == pytest.approx(reference["metrics"]["observed_sharpe"], rel=1e-9)
+
+    def test_non_finite_returns_are_refused(self, plugin: DeflatedSharpeBLPValidation) -> None:
+        returns = self._good_returns()
+        returns.iloc[5, 0] = np.nan
+        result = plugin.validate(returns, pd.DataFrame(), None, {})
+        assert result["passed"] is False
+        assert any(f["rule"] == "non_finite_returns" and f["level"] == "error" for f in result["findings"])
+        assert result["metrics"]["dsr"] is None
+
+    # --- Defect 2: the multiple-testing penalty must not silently disappear ---
+
+    @pytest.mark.parametrize("n_trials", [0, -1, -5])
+    def test_non_positive_n_trials_is_refused(self, plugin: DeflatedSharpeBLPValidation, n_trials: int) -> None:
+        result = plugin.validate(self._good_returns(), pd.DataFrame(), None, {"n_trials": n_trials})
+        assert result["passed"] is False
+        assert any(f["rule"] == "invalid_n_trials" and f["level"] == "error" for f in result["findings"])
+        assert result["metrics"]["dsr"] is None
+
+    def test_non_positive_n_trials_does_not_reproduce_the_single_trial_answer(
+        self, plugin: DeflatedSharpeBLPValidation
+    ) -> None:
+        """The exact defect shape: n_trials of 0, -5 and 1 all returned the same DSR."""
+        returns = self._good_returns()
+        one = plugin.validate(returns, pd.DataFrame(), None, {"n_trials": 1})
+        assert one["metrics"]["dsr"] is not None
+        for bad in (0, -5):
+            result = plugin.validate(returns, pd.DataFrame(), None, {"n_trials": bad})
+            assert result["metrics"]["dsr"] != one["metrics"]["dsr"]
+
+    @pytest.mark.parametrize("n_trials", [2.7, "5", None])
+    def test_non_integral_n_trials_is_refused(self, plugin: DeflatedSharpeBLPValidation, n_trials: object) -> None:
+        result = plugin.validate(self._good_returns(), pd.DataFrame(), None, {"n_trials": n_trials})
+        assert result["passed"] is False
+        assert any(f["rule"] == "invalid_n_trials" for f in result["findings"])
+        assert result["metrics"]["dsr"] is None
+
+    # --- Anti-drift: the deflation term is the framework's, not a local copy ---
+
+    @pytest.mark.parametrize("n_trials", [1, 2, 7, 50, 1000])
+    def test_deflation_term_matches_the_framework_module(
+        self, plugin: DeflatedSharpeBLPValidation, n_trials: int
+    ) -> None:
+        """expected_max_sharpe_null must equal sigma_SR * analysis.dsr.expected_max_sr(N).
+
+        This module reimplemented that formula once and it drifted. Assert the
+        delegation numerically so a re-inlined copy cannot pass silently.
+        """
+        result = plugin.validate(self._good_returns(), pd.DataFrame(), None, {"n_trials": n_trials})
+        metrics = result["metrics"]
+        expected = metrics["sigma_sr"] * expected_max_sr(n_trials)
+        assert metrics["expected_max_sharpe_null"] == pytest.approx(expected, rel=1e-12, abs=1e-12)

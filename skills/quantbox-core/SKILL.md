@@ -185,17 +185,18 @@ Every plugin has a class-level `meta` attribute:
 ```python
 from quantbox.contracts import PluginMeta
 
+
 class MyStrategyPlugin:
     meta = PluginMeta(
-        name="strategy.my_strategy.v1",     # unique, dot-separated, versioned
+        name="strategy.my_strategy.v1",  # unique, dot-separated, versioned
         kind="strategy",
         version="0.1.0",
         core_compat=">=0.2.0",
-        status="research",                  # "research" | "locked" | "production"
+        status="research",  # "research" | "locked" | "production"
         description="What this does in one sentence.",
         tags=("crypto", "trend"),
-        outputs=("strategy_weights",),      # artifact names this plugin produces
-        params_schema={                     # JSON Schema for params
+        outputs=("strategy_weights",),  # artifact names this plugin produces
+        params_schema={  # JSON Schema for params
             "type": "object",
             "properties": {
                 "lookback_days": {"type": "integer", "default": 365},
@@ -254,8 +255,10 @@ Copy the closest example in `cookbook/configs/` and adapt.
 # tests/test_my_strategy.py
 from quantbox.plugins.strategies.my_strategy import MyStrategyPlugin
 
+
 def test_meta():
     assert MyStrategyPlugin.meta.name == "strategy.my_strategy.v1"
+
 
 def test_run():
     plugin = MyStrategyPlugin()

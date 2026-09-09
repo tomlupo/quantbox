@@ -61,6 +61,7 @@ from quantbox.exceptions import BrokerExecutionError
 from quantbox.retry import with_retry
 
 from ._fills import STATUS_WORKING, resolve_fill, trade_fee, trade_fee_currency
+from ._funding import net_funding, select_window
 
 try:
     import ccxt
@@ -691,6 +692,104 @@ class HyperliquidBroker:
         except Exception as e:
             logger.error(f"Error fetching fills: {e}")
             return pd.DataFrame(columns=["symbol", "side", "qty", "price", "timestamp", "fee", "fee_currency"])
+
+    def fetch_funding_payments(self, since: str, until: str) -> float | None:
+        """Net realised funding in ``[since, until)`` — ``None`` when UNKNOWN (#92).
+
+        Funding is the other half of the cost the daily report could not see.
+        The fee half was fetched and then dropped; this half was never fetched
+        at all, so ``funding_charge`` fell through to a default and 165 days of
+        reports said ``$0.00`` on a perps book that pays funding every hour on
+        its full notional.
+
+        The return is a **signed cash delta on the account** — negative when the
+        book paid, positive when it received — matching the venue's own sign
+        and ``futures_paper.apply_funding``. See :mod:`._funding`.
+
+        The window is CLOSED at both ends. ``until`` is required, not optional:
+        an open-ended read returns everything through wall-clock now, so a report
+        for a historical ``asof`` would sum days of payments and print them as
+        the day's funding — a plausible number for the wrong interval. The bound
+        goes to the venue as ccxt's unified ``until`` param (Hyperliquid maps it
+        to ``endTime``) and is re-applied to the response by
+        :func:`._funding.select_window`, so a build that ignores it cannot widen
+        the window unnoticed.
+
+        **Every failure path returns ``None``, and none returns 0.0.** An
+        unreachable venue, a ccxt build without the endpoint, an unparseable
+        response: each is a cost we did not measure, and the report renders it
+        UNKNOWN. A zero here would be indistinguishable from a genuinely
+        funding-free window, which is the whole of #92.
+        """
+        exchange = self._exchange
+        if exchange is None:
+            logger.error("Funding history: exchange not initialised — reporting UNKNOWN, not $0.00")
+            return None
+        if not (getattr(exchange, "has", None) or {}).get("fetchFundingHistory"):
+            logger.error(
+                "Funding history: this ccxt build reports no fetchFundingHistory support — reporting UNKNOWN, not $0.00"
+            )
+            return None
+
+        try:
+            since_ts = int(pd.Timestamp(since).timestamp() * 1000)
+            until_ts = int(pd.Timestamp(until).timestamp() * 1000)
+            entries = exchange.fetch_funding_history(since=since_ts, params={"until": until_ts})
+        except Exception as e:  # noqa: BLE001 - any venue/parse failure is UNKNOWN, never free
+            logger.error(
+                "Funding history for [%s, %s) failed: %s — reporting UNKNOWN, not $0.00",
+                since,
+                until,
+                e,
+            )
+            return None
+
+        if entries is None:
+            logger.error("Funding history for [%s, %s) returned nothing — reporting UNKNOWN, not $0.00", since, until)
+            return None
+
+        entries = list(entries)
+        # Re-apply the bound the venue was ALSO given: a response that ignores
+        # endTime must not silently widen the window (see select_window).
+        in_window = select_window(entries, since_ts, until_ts)
+        if in_window is None:
+            logger.error(
+                "Funding history for [%s, %s): an entry carries no usable timestamp, so it cannot be "
+                "attributed to the window — reporting UNKNOWN, not $0.00",
+                since,
+                until,
+            )
+            return None
+        if len(in_window) != len(entries):
+            logger.warning(
+                "Funding history for [%s, %s): the venue returned %d entries, %d of them OUTSIDE the "
+                "requested window — the end bound was not honoured; using the %d in-window entries.",
+                since,
+                until,
+                len(entries),
+                len(entries) - len(in_window),
+                len(in_window),
+            )
+        entries = in_window
+        total = net_funding(entries)
+        if total is None:
+            logger.error(
+                "Funding history for [%s, %s): %d entries could not be summed honestly "
+                "(missing amount or mixed currency) — reporting UNKNOWN, not $0.00",
+                since,
+                until,
+                len(entries),
+            )
+        else:
+            logger.info(
+                "Funding in [%s, %s): %d payment(s), net %.4f %s (negative = paid)",
+                since,
+                until,
+                len(entries),
+                total,
+                QUOTE_CURRENCY,
+            )
+        return total
 
     def get_price(self, symbol: str) -> float | None:
         """Get current price for symbol."""

@@ -113,15 +113,17 @@ def build_factor_loadings_chart(payload, **ctx):
 ```python
 from quantbox.plugins.pipeline.blocks import register_block, ReportBlock
 
-register_block(ReportBlock(
-    name="factor_loadings",
-    title="Factor loadings",
-    description="Heatmap of strategy weights × factor exposures.",
-    builder=build_factor_loadings_chart,
-    section="diagnostics",
-    payload_schema='{"factors": list[str], "tickers": list[str], "loadings": DataFrame}',
-    tags=("factor", "exposure"),
-))
+register_block(
+    ReportBlock(
+        name="factor_loadings",
+        title="Factor loadings",
+        description="Heatmap of strategy weights × factor exposures.",
+        builder=build_factor_loadings_chart,
+        section="diagnostics",
+        payload_schema='{"factors": list[str], "tickers": list[str], "loadings": DataFrame}',
+        tags=("factor", "exposure"),
+    )
+)
 ```
 
 For one-off lab work, do this at import time in your research module.
@@ -156,11 +158,11 @@ shared `ctx`:
 
 ```python
 ctx = {
-    "returns": pd.Series,        # strategy daily returns
+    "returns": pd.Series,  # strategy daily returns
     "portfolio_daily": pd.DataFrame,  # value column + index
     "weights_history": pd.DataFrame,  # per-day per-ticker weights
-    "bt_prices": pd.DataFrame,        # backtest universe prices
-    "variant_results": dict,          # only in multi-variant mode
+    "bt_prices": pd.DataFrame,  # backtest universe prices
+    "variant_results": dict,  # only in multi-variant mode
 }
 ```
 
@@ -168,16 +170,18 @@ Declare which keys you need in `requires`; the dispatcher skips the block
 if any required input is missing or empty:
 
 ```python
-register_block(ReportBlock(
-    name="drawdown_timeline",
-    title="Drawdown timeline",
-    description="Underwater chart with peak-to-trough annotations.",
-    builder=build_drawdown_timeline,
-    section="framework",
-    payload_schema="generic — derives from ctx['portfolio_daily']",
-    tags=("generic",),
-    requires=("portfolio_daily",),
-))
+register_block(
+    ReportBlock(
+        name="drawdown_timeline",
+        title="Drawdown timeline",
+        description="Underwater chart with peak-to-trough annotations.",
+        builder=build_drawdown_timeline,
+        section="framework",
+        payload_schema="generic — derives from ctx['portfolio_daily']",
+        tags=("generic",),
+        requires=("portfolio_daily",),
+    )
+)
 ```
 
 ## Where strategy-specific block libraries live

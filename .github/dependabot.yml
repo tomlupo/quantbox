@@ -3,6 +3,11 @@
 version: 2
 updates:
   - package-ecosystem: "github-actions"
+    # Feature and chore work integrates on dev; main is release-only
+    # (CLAUDE.md :: Shipping cycle). Without this, dependabot defaults to
+    # the repository default branch (main) and every bump widens
+    # main-ahead-of-dev until someone notices and merges main back.
+    target-branch: "dev"
     directory: "/"
     schedule:
       interval: "weekly"
@@ -12,6 +17,11 @@ updates:
         patterns: ["*"]
 
   - package-ecosystem: "pip"
+    # Feature and chore work integrates on dev; main is release-only
+    # (CLAUDE.md :: Shipping cycle). Without this, dependabot defaults to
+    # the repository default branch (main) and every bump widens
+    # main-ahead-of-dev until someone notices and merges main back.
+    target-branch: "dev"
     directory: "/"
     schedule:
       interval: "weekly"

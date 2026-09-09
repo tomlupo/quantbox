@@ -29,6 +29,21 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.5.0 (2026-09-09)
+
+### Feat
+
+- **broker**: fetch realised funding from Hyperliquid, report UNKNOWN when unread (#92) (#181)
+
+### Fix
+
+- **validation**: DSR plugin fails closed instead of emitting a confident number (#184)
+- **simulations**: stop parametric_mc mutating its caller's parameters (#180)
+
+### Perf
+
+- **simulations**: remove panel-sized copies from parametric_mc, bit-identically (#179)
+
 ## v0.4.5 (2026-09-09)
 
 ### Fix
