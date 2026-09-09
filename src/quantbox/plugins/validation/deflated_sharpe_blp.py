@@ -60,25 +60,8 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm
 
-from quantbox.analysis.dsr import expected_max_sr, sr_estimator_std
+from quantbox.analysis.dsr import DEGENERATE_RTOL, expected_max_sr, sr_estimator_std
 from quantbox.contracts import PluginMeta
-
-# A returns series is degenerate when its standard deviation is negligible
-# *relative to the scale of the returns themselves* -- never by exact float
-# equality with zero. A constant series computed in binary floating point does
-# NOT reliably give std == 0: `[0.001] * 200` accumulates rounding to
-# std = 2.17e-19 while `[0.001] * 50` gives exactly 0.0, so an `== 0` guard
-# fires or misses depending on whether the constant happens to be exactly
-# representable at that length -- and a miss yields a Sharpe of ~1e16, which is
-# a division by noise reported as maximum confidence.
-#
-# The observed noise floor for a constant series is std/|value| ~ 2e-16 (machine
-# epsilon); 1e-12 leaves ~4000x headroom above it while staying far below any
-# real series (std/scale = 1e-12 would mean a Sharpe of ~1e12). Being relative,
-# the test is unit-independent: a genuinely tiny-but-real series (returns of
-# order 1e-9 with std of order 1e-9) is unaffected. When every observation is
-# exactly zero, scale is 0 and the test reduces to std <= 0, which still holds.
-_DEGENERATE_RTOL = 1e-12
 
 
 class _UndefinedDSR(ValueError):
@@ -225,7 +208,7 @@ class DeflatedSharpeBLPValidation:
 
         std_period = float(np.std(rets, ddof=1))
         scale = float(np.mean(np.abs(rets)))
-        if std_period <= _DEGENERATE_RTOL * scale:
+        if std_period <= DEGENERATE_RTOL * scale:
             return self._undefined(
                 "degenerate_returns",
                 f"degenerate returns: standard deviation ({std_period!r}) is negligible against the "
@@ -257,7 +240,7 @@ class DeflatedSharpeBLPValidation:
             sr0_annual, sigma_sr, sigma_sr_source = _expected_max_sharpe(trial_sharpes, n_trials, se_annual)
         except _UndefinedDSR as exc:
             return self._undefined(exc.rule, exc.detail, partial_metrics)
-        except ValueError as exc:  # negative SR-estimator variance from pathological moments
+        except ValueError as exc:  # negative OR degenerate SR-estimator variance (see sr_estimator_std)
             return self._undefined("sr_variance_undefined", str(exc), partial_metrics)
 
         n_trials_used = len(trial_sharpes) if sigma_sr_source == "trial_sharpes" else _as_trial_count(n_trials)
