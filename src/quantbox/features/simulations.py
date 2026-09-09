@@ -70,10 +70,27 @@ def parametric_mc(
     cov = cov.loc[index, index]
 
     # convert to output frequency
+    #
+    # Rebind, never in place. `mu` is the caller's own Series — nothing
+    # above reassigns it — so `mu /= step_frequency` divided the caller's
+    # data by `step_frequency` and left it that way. Calling this function
+    # twice with the same parameters silently ran the second call on
+    # values already divided once.
+    #
+    # `cov` escaped that only because the `.loc` alignment above happens
+    # to return a copy: luck, not intent. Drop or change that line and the
+    # mutation starts escaping too, so it is written the safe way here as
+    # well. `var` was already correct, which is what makes the other two
+    # an inconsistency rather than a design.
+    #
+    # Found 2026-09-09, while verifying an unrelated change: passing the
+    # same `mu` to two implementations made their outputs differ by ~3e-4,
+    # identically at float32 and float64 — too large, and too
+    # precision-independent, to be rounding.
     if step_frequency is None:
         step_frequency = frequency
-    mu /= step_frequency
-    cov /= step_frequency
+    mu = mu / step_frequency
+    cov = cov / step_frequency
     var = var / step_frequency
 
     # brownian motion - drift

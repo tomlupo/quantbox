@@ -51,7 +51,7 @@ jobs:
   uv-lock-in-step:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Does this repo lock with uv?
         id: detect
@@ -67,7 +67,7 @@ jobs:
 
       - name: Install uv
         if: steps.detect.outputs.present == 'true'
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
 
       - name: uv lock --check
         if: steps.detect.outputs.present == 'true'
