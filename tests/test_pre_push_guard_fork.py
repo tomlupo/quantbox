@@ -82,6 +82,12 @@ def _git(cwd: Path, *args: str) -> str:
         "GIT_AUTHOR_EMAIL": "t@example.invalid",
         "GIT_COMMITTER_NAME": "t",
         "GIT_COMMITTER_EMAIL": "t@example.invalid",
+        # Ignore the developer's own git config too: a global `commit.gpgsign`
+        # or `core.hooksPath` would fail the fixture build instead of the
+        # assertion, which is the same "measuring the shell" leak `_clean_env`
+        # closes for the environment.
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
     }
     return subprocess.run(
         ["git", *args],
