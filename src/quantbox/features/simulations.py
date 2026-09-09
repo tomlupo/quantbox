@@ -12,6 +12,11 @@ returns; ``simulations_stats`` produces standard summary quantiles
 Callers are expected to pass a seeded ``numpy.random.Generator`` as the
 ``seed`` argument for reproducibility — a bare integer seed is accepted
 for backwards compatibility but deterministic use requires a Generator.
+
+``numpy.random.RandomState`` is NOT accepted. It was, implicitly, while
+the shocks came from ``scipy.stats``'s ``random_state``; drawing them from
+a Generator narrowed that, and a ``RandomState`` now raises from
+``default_rng``. No known caller passes one, but a vendored copy might.
 """
 
 from __future__ import annotations
@@ -46,9 +51,12 @@ def _draw_uncorrelated(size, distribution, df, dtype, seed, target_bytes=128 * 1
     out = np.empty(size, dtype=dtype)
 
     # Block sized so the transient cost is bounded instead of scaling with
-    # the horizon the way a second full panel would. Note the Student-t
-    # path holds `z` and `g` at once, so its live temporary is 2 x
-    # `target_bytes`, not one.
+    # the horizon the way a second full panel would.
+    #
+    # `target_bytes` is nominal in BOTH directions, so do not read the name
+    # literally: the divisor is hard-coded at float64's 8 bytes, so the
+    # Student-t path holds `z` and `g` at once and lives at 2x, while the
+    # normal float32 path writes straight through and lives at 0.5x.
     block = max(1, int(target_bytes // max(1, n_assets * 8)))
 
     for start in range(0, n_cols, block):
@@ -74,12 +82,17 @@ def _draw_uncorrelated(size, distribution, df, dtype, seed, target_bytes=128 * 1
         # spread covers many orders of magnitude on its own, compared
         # across a single seed each way.
         #
-        # What remains true is that this is the one step in the function
-        # that divides by a value which can be arbitrarily close to zero,
-        # and float64 gives the division ~9 more digits of headroom before
-        # the result stops being representable at all. The block is
-        # bounded, so that costs a temporary rather than a second panel —
-        # a cheap margin on the only operation here that can amplify.
+        # Overflow is not the reason either: a float32 quotient would need
+        # g < ~1e-77 * z^2, which is p ~ 1e-38 at df=1 and ~1e-115 at
+        # df=3. It does not happen, and an earlier draft of this comment
+        # that appealed to "headroom before the result is representable"
+        # was confusing significand digits with exponent range.
+        #
+        # The honest reason is narrower than either: float64 buys rounding
+        # accuracy on the quotient — the one operation here that divides
+        # by a value free to get arbitrarily small — and the block is
+        # bounded, so it costs a temporary rather than a second panel. A
+        # cheap margin, not a fix, and it should not be dressed as one.
         z = rng.standard_normal(shape)
         g = rng.standard_gamma(df / 2.0, shape)
         g *= 2.0 / df
@@ -169,6 +182,13 @@ def parametric_mc(
     # Convert precision string to numpy dtype
     if precision not in ["float32", "float64"]:
         raise ValueError(f"precision must be 'float32' or 'float64', got '{precision}'")
+    # scipy used to reject a bad `df` with "Domain error in arguments".
+    # Drawing the t ourselves lost that, and the failures it was hiding are
+    # unhelpful: df=0 raises ZeroDivisionError from `2.0 / df`, df<0 raises
+    # "shape < 0" out of `standard_gamma`. Validate it where `precision` is
+    # validated, so both knobs fail the same way.
+    if distribution != "normal" and not (isinstance(df, (int, float)) and df > 0):
+        raise ValueError(f"df must be a positive number for distribution='{distribution}', got {df!r}")
     dtype = getattr(np, precision)
 
     # Convert inputs to specified dtype for memory efficiency

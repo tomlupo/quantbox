@@ -3,11 +3,17 @@
 Covers a happy-path call for ``parametric_mc`` (shape + determinism via
 seeded Generator), plus the frequency constants export.
 
-``simulations_stats`` is exercised by the host project (robo) via its
-byte-identical end-to-end gate; the input panel requires a specific
-(date, ticker, step, sim_no) layout constructed by robo's sim driver,
-so a standalone quantbox-side integration test isn't meaningful — it
-is a straight data-transform whose correctness rides on the host.
+``simulations_stats`` is exercised by the host project (robo); the input
+panel requires a specific (date, ticker, step, sim_no) layout built by
+robo's sim driver, so a standalone quantbox-side integration test isn't
+meaningful — it is a straight data-transform whose correctness rides on
+the host.
+
+That coverage used to be described here as robo's "byte-identical
+end-to-end gate". This branch changes the random stream for robo's only
+configuration (student-t, float32), so that gate cannot be byte-identical
+across this change and has to be re-captured on the host side before it
+means anything again.
 """
 
 from __future__ import annotations
@@ -371,16 +377,36 @@ def test_draw_uncorrelated_student_t_matches_scipy_quantiles() -> None:
 
 
 @pytest.mark.parametrize("df", [1, 2, 3])
-def test_student_t_draw_stays_representable_at_low_df(df: int) -> None:
-    # The division by sqrt(X/df) is the only step here that can amplify:
-    # as df falls, X concentrates near zero and |t| grows without bound.
-    # This does not pin a bound on the tail — a heavy tail is the point of
-    # Student-t and any threshold would either be vacuous or flaky. It
-    # pins the two things that would make the output unusable rather than
-    # merely extreme: no infinities, and no NaNs from 0/0.
+def test_student_t_draw_matches_the_distribution_across_df(df: int) -> None:
+    # Quartiles against scipy's t(df), across the range where the tail
+    # gets heavy. This is the assertion with teeth: it fails on an algebra
+    # slip in Z / sqrt(X/df), on a wrong Gamma shape, and on a block loop
+    # that leaves part of the panel unwritten.
+    #
+    # Note what is deliberately NOT asserted. An `isfinite` check reads
+    # like it guards float32 representability, but the block is assembled
+    # in float64 and only the quotient is cast, so it could only fail at
+    # |t| > 3.4e38 and is vacuous for every input this function accepts.
+    # A tail BOUND would be worse — a heavy tail is the point of
+    # Student-t, so any threshold is either unreachable or flaky. An
+    # earlier version of this test asserted both and tested neither.
     out = _draw_uncorrelated((2, 500_000), "student-t", df, np.float32, np.random.default_rng(6))
-    assert np.isfinite(out).all()
-    # And the body of the distribution is still where t(df) puts it, which
-    # a broken construction would not manage.
     lo, hi = stats.t.ppf([0.25, 0.75], df)
     np.testing.assert_allclose(np.quantile(out, [0.25, 0.75]), [lo, hi], atol=0.02, rtol=0)
+
+
+def test_draw_uncorrelated_rejects_a_nonsense_df() -> None:
+    # scipy rejected a bad df with "Domain error in arguments". Drawing the
+    # t ourselves lost that, leaving ZeroDivisionError at df=0 and
+    # "shape < 0" at df<0 — loud, but not about the argument at fault.
+    for bad in (0, -3):
+        with pytest.raises(ValueError, match="df must be a positive number"):
+            parametric_mc(
+                mu=pd.Series([0.05], index=["AAA"]),
+                cov=pd.DataFrame([[0.04]], index=["AAA"], columns=["AAA"]),
+                iterations=2,
+                steps=2,
+                distribution="student-t",
+                df=bad,
+                seed=np.random.default_rng(0),
+            )
