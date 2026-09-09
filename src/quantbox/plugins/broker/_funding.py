@@ -65,6 +65,44 @@ def funding_payment(entry: dict | None) -> float | None:
     return _to_float(entry.get("amount"))
 
 
+def select_window(
+    entries: list[dict] | None,
+    start_ms: int,
+    end_ms: int,
+) -> list[dict] | None:
+    """The entries that fall in ``[start_ms, end_ms)``, or ``None`` if any cannot
+    be placed in time at all.
+
+    A funding total is only a measurement of the window it claims. The first cut
+    of this code asked the venue for everything ``since`` the window start and
+    never sent an end bound, so a report for a historical ``asof`` summed
+    payments through wall-clock *now* and printed the result as a 24h figure —
+    a plausible number for the wrong interval, which is the #92 defect wearing a
+    different disguise. The bound is now sent to the venue AND enforced here, so
+    a venue (or ccxt build) that ignores ``endTime`` cannot silently widen the
+    window behind the caller's back.
+
+    Half-open on purpose: a payment landing exactly at a window's end belongs to
+    the next window, so consecutive daily reports neither double-count it nor
+    drop it.
+
+    An entry with no readable timestamp returns ``None`` for the whole list. It
+    cannot be attributed to the window, and neither keeping it nor dropping it
+    would be a fact — the same rule this module applies to an unreadable amount.
+    """
+    if entries is None:
+        return None
+
+    kept: list[dict] = []
+    for entry in entries:
+        ts = _to_float((entry or {}).get("timestamp"))
+        if ts is None:
+            return None
+        if start_ms <= ts < end_ms:
+            kept.append(entry)
+    return kept
+
+
 def net_funding(
     entries: list[dict] | None,
     *,

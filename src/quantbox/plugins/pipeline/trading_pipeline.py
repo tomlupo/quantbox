@@ -319,9 +319,10 @@ def _compute_data_age(prices: pd.DataFrame, asof: str) -> tuple[float | None, fl
 # ---------------------------------------------------------------------------
 
 
-# Funding reporting window. The pipeline runs daily, so the window that ends at
-# `asof` starts 24h earlier; Hyperliquid settles funding hourly, giving ~24
-# payments per open position per run.
+# Length of the funding reporting window. The pipeline runs daily, so the window
+# ENDING at `asof` starts 24h earlier; Hyperliquid settles funding hourly, giving
+# ~24 payments per open position per run. See _funding_window for why the end
+# bound is `asof` and not the moment of the run.
 FUNDING_LOOKBACK = pd.Timedelta(hours=24)
 
 
@@ -350,15 +351,16 @@ def _resolve_funding_charge(broker: Any, asof: str) -> float | None:
         return charge
 
     if hasattr(broker, "fetch_funding_payments"):
-        window_start = _funding_window_start(asof)
-        charge = broker.fetch_funding_payments(window_start)
+        window_start, window_end = _funding_window(asof)
+        charge = broker.fetch_funding_payments(window_start, window_end)
         if charge is None:
             logger.error(
-                "Funding UNMEASURED for the window starting %s — reported as UNKNOWN, not $0.00",
+                "Funding UNMEASURED for the window [%s, %s) — reported as UNKNOWN, not $0.00",
                 window_start,
+                window_end,
             )
         else:
-            logger.info("Realised funding since %s: %.4f (negative = paid)", window_start, charge)
+            logger.info("Realised funding in [%s, %s): %.4f (negative = paid)", window_start, window_end, charge)
         return charge
 
     logger.warning(
@@ -369,8 +371,19 @@ def _resolve_funding_charge(broker: Any, asof: str) -> float | None:
     return None
 
 
-def _funding_window_start(asof: str) -> str:
-    """ISO start of the funding reporting window ending at ``asof``."""
+def _funding_window(asof: str) -> tuple[str, str]:
+    """The funding reporting window as ISO ``(start, end)``, half-open at the end.
+
+    CLOSED at both ends, because a funding total is only a measurement of the
+    window it claims. Asking the venue for everything since the start and
+    letting it answer through wall-clock now would report days of payments for
+    a historical ``asof`` as that day's funding.
+
+    ``end`` is ``asof`` itself, not the moment of the run: funding accruing
+    between ``asof`` and a cron that fires hours later belongs to the NEXT
+    report, and the half-open interval means consecutive daily windows abut
+    exactly — no gap, no overlap, no payment counted twice.
+    """
     try:
         ts = pd.Timestamp(asof)
     except Exception:  # noqa: BLE001 - unparseable asof: fall back to a live window
@@ -378,7 +391,7 @@ def _funding_window_start(asof: str) -> str:
     if ts is None or pd.isna(ts):
         logger.warning("Unparseable asof %r for the funding window — using the last %s", asof, FUNDING_LOOKBACK)
         ts = pd.Timestamp.utcnow()
-    return (ts - FUNDING_LOOKBACK).isoformat()
+    return (ts - FUNDING_LOOKBACK).isoformat(), ts.isoformat()
 
 
 def _to_fee(value: Any) -> float | None:
