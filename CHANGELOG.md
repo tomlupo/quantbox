@@ -29,6 +29,18 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.4.5 (2026-09-09)
+
+### Fix
+
+- **release**: declare `dev` as the integration branch, as CLAUDE.md always did (#175)
+- **io**: route every parquet read through a teardown-safe reader (#169)
+- **guard,test**: close the two holes I left, and the two cosmetics (#168)
+
+### Refactor
+
+- **reconciliation**: promote working-order resolution to a public function (#174)
+
 ## v0.4.4 (2026-09-08)
 
 ### Fix
