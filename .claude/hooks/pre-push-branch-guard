@@ -233,10 +233,12 @@ _SCHEMA_HELP = """
       }
 
   The `git` wrapper is load-bearing: those keys written at the TOP level of
-  .qute/config.json are not a git section at all, so this guard reads the repo
-  as not opted in and allows every push to a guarded branch. The same fields
-  UNWRAPPED in the legacy .claude/git-guard.json are still honoured, as a
-  fallback for checkouts that have not folded yet.
+  .qute/config.json are not a git section at all, so they configure nothing —
+  and because "configures nothing" would silently mean "not opted in", i.e.
+  every push to a guarded branch waved through, this guard REFUSES that shape
+  instead (that is the refusal above, if this is what you are reading). The
+  same fields UNWRAPPED in the legacy .claude/git-guard.json are still
+  honoured, as a fallback for checkouts that have not folded yet.
 
   There are two branch slots, not a list. To guard two branches, name them:
   `protected_branch` for the release branch and `integration_branch` for the
