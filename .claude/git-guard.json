@@ -1,4 +1,4 @@
 {
-  "integration_branch": null,
+  "integration_branch": "dev",
   "release_tool": "commitizen (/ship)"
 }
