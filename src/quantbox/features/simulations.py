@@ -39,10 +39,10 @@ import pandas as pd
 #
 # Measured, not assumed (forge, 2026-09-09, (4, 60_000), default vs 64 KiB):
 #
-#   normal     — the multiset of drawn values is IDENTICAL, but the panel is
-#                not: a block of shape (n_assets, w) is filled row-major, so
-#                the width decides which stream position lands at which
-#                (row, col). Same sample, permuted.
+#   normal     — the multiset of drawn values is IDENTICAL at BOTH dtypes,
+#                but the panel is not: a block of shape (n_assets, w) is
+#                filled row-major, so the width decides which stream
+#                position lands at which (row, col). Same sample, permuted.
 #   student-t  — the multiset itself DIFFERS. The loop takes a z-draw and a
 #                g-draw per block, so a different width pairs the two streams
 #                differently and the quotients are genuinely different
@@ -164,46 +164,51 @@ def _draw_uncorrelated(size, distribution, df, dtype, seed, _target_bytes=_TARGE
 
         # Student-t as Z / sqrt(X / df) with X ~ chi2(df) = 2 * Gamma(df/2).
         #
-        # Assembled in float64 even when the panel is float32. This is a
-        # precaution, not a fix for an observed fault, and it is worth
-        # being accurate about which: drawing it natively in float32 was
-        # measured at (4, 15_000_000), df=3, and produced no zeros, no
-        # infinities and a healthy sample (max |t| ~2.7e3, std 1.77). An
-        # earlier note here claimed a fifteen-order-of-magnitude blow-up
-        # in that configuration. That was a misreading — the statistic in
-        # question was the sample mean of a t(3) panel, whose seed-to-seed
-        # spread covers many orders of magnitude on its own, compared
-        # across a single seed each way.
+        # Assembled in float64 even when the panel is float32, and the
+        # reason is a MEASURED fault with a boundary, not a general
+        # precaution. What float64 buys is upstream of the division:
+        # resolution of the gamma draw near zero. numpy's `standard_gamma`
+        # takes a boost path at shape <= 1 whose float32 uniform can round
+        # to zero, so it returns exactly 0.0 there — and 0.0 turns a finite
+        # t into `inf`.
         #
-        # Overflow is not the reason either: a float32 quotient would need
-        # g < ~1e-77 * z^2, which is p ~ 1e-38 at df=1 and ~1e-115 at
-        # df=3. It does not happen, and an earlier draft of this comment
-        # that appealed to "headroom before the result is representable"
-        # was confusing significand digits with exponent range.
+        # Exact zeros per 20M float32 draws (float64 gives zero in every
+        # row):
         #
-        # Nor is it the division's own accuracy: IEEE division is correctly
+        #     df=1  (shape 0.5)   2
+        #     df=2  (shape 1.0)   2
+        #     df=3  (shape 1.5)   0
+        #
+        # So this matters at df <= 2 and is UNREACHABLE at df=3, which is
+        # robo's production setting — do not read the block below as
+        # something df=3 depends on. It is kept because df is caller-supplied
+        # and df=2 is a plausible ask, and because a bounded block makes it
+        # cost a temporary rather than a second panel.
+        #
+        # Two explanations that are NOT the reason, recorded because both
+        # were asserted here before and both are false. Overflow: a float32
+        # quotient would need g < ~1e-77 * z^2, p ~ 1e-38 at df=1 and ~1e-115
+        # at df=3. The division's own accuracy: IEEE division is correctly
         # rounded to within half an ulp whatever the divisor's magnitude, so
         # a small `g` does not degrade `z / g`.
-        #
-        # What float64 actually buys is UPSTREAM of the division —
-        # resolution of the gamma draw itself near zero. A float32
-        # `standard_gamma` at shape df/2 quantises in a region where float64
-        # still resolves the value, and can land on exactly 0.0, which is
-        # what would turn a finite t into `inf`. The block is bounded, so
-        # this costs a temporary rather than a second panel: a cheap margin
-        # on the one input that can be arbitrarily small, not a fix for
-        # anything observed.
         z = rng.standard_normal(shape)
         g = rng.standard_gamma(df / 2.0, shape)
-        g *= 2.0 / df
-        np.sqrt(g, out=g)
         # Suppressed so the check below is the SINGLE failure path. Without
         # this, a host running under `np.seterr(all="raise")` gets a bare
         # FloatingPointError and never reaches the message naming df and
-        # dtype. Both operations are covered deliberately: a tiny df trips
-        # divide/invalid in the quotient, and a merely small one trips
-        # overflow in the float32 cast on assignment.
+        # dtype.
+        #
+        # The scaling is INSIDE the block, not above it. With the two
+        # scaling lines outside, `df=1e-320` made `2.0 / df` inf, `g * inf`
+        # nan, and a host under `seterr(all="raise")` got
+        # "invalid value encountered in multiply" — precisely the bare error
+        # this block exists to prevent, from a df the validator accepts.
+        # Order is part of the contract here: everything that can raise a
+        # floating-point error on a pathological df has to sit under the
+        # suppression, or the single-failure-path claim is false.
         with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            g *= 2.0 / df
+            np.sqrt(g, out=g)
             z /= g
             out[:, start:stop] = z
 

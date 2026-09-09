@@ -526,6 +526,23 @@ def test_draw_uncorrelated_raises_on_a_df_too_small_to_sample(tiny_df: float) ->
         _draw_uncorrelated((2, 2_000_000), "student-t", tiny_df, np.float32, np.random.default_rng(0))
 
 
+@pytest.mark.parametrize("tiny_df", [1e-320, 1e-8])
+def test_draw_uncorrelated_keeps_one_failure_path_under_seterr_raise(tiny_df: float) -> None:
+    # Regression, found in review. The module promises the finiteness check is
+    # the SINGLE failure path, and that promise is about ORDER, not only about
+    # logic: `g *= 2.0 / df` and `np.sqrt(g, out=g)` sat ABOVE the
+    # `np.errstate` block, so at df=1e-320 `2.0 / df` was inf, `g * inf` was
+    # nan, and a host running under `np.seterr(all="raise")` — which is a
+    # perfectly ordinary thing for a risk system to do — got a bare
+    # "invalid value encountered in multiply" and never reached the message
+    # naming df and dtype.
+    #
+    # `np.errstate` as a context manager rather than `np.seterr`, so the
+    # process-wide setting is restored even when the assertion fails.
+    with np.errstate(all="raise"), pytest.raises(ValueError, match="Student-t draw produced non-finite values"):
+        _draw_uncorrelated((2, 200_000), "student-t", tiny_df, np.float32, np.random.default_rng(0))
+
+
 @pytest.mark.parametrize("good", [3, 3.0, np.int64(3), np.float32(3.0), np.float64(3.0)])
 def test_draw_uncorrelated_accepts_numpy_scalar_df(good) -> None:
     # A caller deriving df from a config frame or a Series.item() hands over

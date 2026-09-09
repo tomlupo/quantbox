@@ -53,7 +53,13 @@ def _baseline_draw(size, distribution, df, dtype, seed):
 
 
 def _panel(mu, cov, draw, iterations, steps, dtype, distribution, df, seed):
-    """`parametric_mc`'s body around whichever draw it is handed."""
+    """`parametric_mc`'s body around whichever draw it is handed.
+
+    Transcribed from `quantbox.features.simulations.parametric_mc` at
+    bb7ca8c, correlated path only. It is a COPY, and nothing here notices if
+    that function changes — if the memory numbers ever stop making sense,
+    check this against the original first.
+    """
     var = pd.Series(np.diag(cov), index=cov.index).loc[mu.index] / 252
     mu = mu / 252
     cov = cov.loc[mu.index, mu.index] / 252
@@ -115,7 +121,18 @@ def cmd_memory(args):
 
     results = {}
     for variant in ("baseline", "native"):
-        out = subprocess.run([*base, "--variant", variant], capture_output=True, text=True, check=True)
+        out = subprocess.run([*base, "--variant", variant], capture_output=True, text=True)
+        if out.returncode != 0:
+            # The baseline child deliberately allocates the float64 panel this
+            # branch exists to remove — ~6 GiB at the default size — so being
+            # OOM-killed is a likely outcome on a small box and must not
+            # surface as a bare CalledProcessError with the reason captured
+            # and thrown away.
+            sys.stderr.write(out.stderr)
+            raise SystemExit(
+                f"variant {variant!r} exited {out.returncode}. At the default size the baseline "
+                f"child needs ~6.2 GiB and the native one ~3.2 GiB; try a smaller --iterations."
+            )
         name, before, peak = out.stdout.strip().split("\t")
         results[name] = (float(before), float(peak))
 
@@ -131,6 +148,18 @@ def cmd_memory(args):
     print(f"  for reference, the float64 panel that no longer exists is {float64_panel:.3f} GiB")
 
 
+def _bootstrap_quantile_se(sample, qs, replicates, rng):
+    """Standard error of each quantile of `sample`, at `sample`'s OWN size.
+
+    Resampling at a smaller size would estimate the standard error of a
+    smaller estimator and understate how demanding the comparison is.
+    """
+    draws = np.empty((replicates, len(qs)))
+    for i in range(replicates):
+        draws[i] = np.quantile(rng.choice(sample, len(sample)), qs)
+    return draws.std(axis=0)
+
+
 def cmd_equivalence(args):
     """Same distributions, different stream — checked where it can be checked.
 
@@ -138,6 +167,15 @@ def cmd_equivalence(args):
     standard error of the two quantile estimates. A quantile's standard error
     is estimated by bootstrap rather than assumed normal, because at df=3 the
     tail quantiles are not close to normal.
+
+    The bootstrap resamples at the FULL sample size, which is the whole point
+    and was got wrong once: resampling a 200_000-element subsample to estimate
+    the standard error of a quantile of 2_000_000 values overstates that error
+    by sqrt(10), because a quantile's standard error scales as 1/sqrt(n). The
+    threshold then reads as "3 standard errors" while actually being ~9.5, so
+    the check silently could not fail. Replicates are looped rather than
+    vectorised into one (bootstrap, n) array to keep peak memory at one extra
+    copy of the sample.
     """
     qs = [0.01, 0.05, 0.25, 0.50, 0.75, 0.95, 0.99]
     dtype = getattr(np, args.precision)
@@ -153,10 +191,8 @@ def cmd_equivalence(args):
         qa = np.quantile(a, qs)
         qb = np.quantile(b, qs)
 
-        # Bootstrap SE of each quantile, on a subsample so this stays cheap.
-        sub = min(len(a), 200_000)
-        boot_a = np.quantile(rng_boot.choice(a, (args.bootstrap, sub)), qs, axis=1).std(axis=1)
-        boot_b = np.quantile(rng_boot.choice(b, (args.bootstrap, sub)), qs, axis=1).std(axis=1)
+        boot_a = _bootstrap_quantile_se(a, qs, args.bootstrap, rng_boot)
+        boot_b = _bootstrap_quantile_se(b, qs, args.bootstrap, rng_boot)
         pooled = np.sqrt(boot_a**2 + boot_b**2)
 
         z = np.abs(qa - qb) / np.where(pooled == 0, np.inf, pooled)
