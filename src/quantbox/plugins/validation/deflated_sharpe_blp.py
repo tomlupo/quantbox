@@ -19,17 +19,36 @@ where SR_hat/skew/kurt are computed on *per-period* returns, T is the number
 of observations, gamma is the Euler-Mascheroni constant, and sigma_SR is the
 standard deviation of the Sharpe ratio across the N trials actually attempted.
 
-sigma_SR requires the individual Sharpe ratios of all N trials to be exact.
-Pass them via `params["trial_sharpes"]` (recommended -- e.g. every variant's
-Sharpe from a parameter sweep) when available. Without them, this plugin falls
-back to using the observed strategy's own Sharpe standard error as a proxy for
-sigma_SR -- a common practical approximation, but strictly less rigorous than
-supplying the actual trial distribution; the `sigma_sr_source` metric reports
-which mode was used.
+**The scalar math is NOT reimplemented here.** ``quantbox.analysis.dsr`` owns
+the Sharpe-estimator variance (``sr_estimator_std``) and the expected-max-Sharpe
+deflation term (``expected_max_sr``) for the whole ecosystem, and this plugin
+imports both. What belongs to this plugin is only the layer around them:
+selecting sigma_SR (see below), annualising, and translating that module's
+raised errors into the ``findings``/``passed`` dict a validation plugin must
+return. Do not re-derive skew/kurtosis/expected-max-SR formulas in this file --
+that drift is exactly what produced the defects this module was fixed for.
 
-`trial_sharpes` and the observed Sharpe are compared in the same units
-(annualized, matching `observed_sharpe`) -- annualizing the per-period
+sigma_SR requires the individual Sharpe ratios of all N trials to be exact.
+Pass them via ``params["trial_sharpes"]`` (recommended -- e.g. the Sharpe of
+every variant in a parameter sweep) when available. Without them, this plugin
+falls back to using the observed strategy's own Sharpe standard error as a
+proxy for sigma_SR -- a common practical approximation, but strictly less
+rigorous than supplying the actual trial distribution; the ``sigma_sr_source``
+metric reports which mode was used. This sigma_SR choice is why the plugin
+cannot simply call ``deflated_sharpe_ratio_from_returns``: that entry point
+hardcodes the SE-proxy mode and has no way to accept a real trial distribution.
+
+``trial_sharpes`` and the observed Sharpe are compared in the same units
+(annualized, matching ``observed_sharpe``) -- annualizing the per-period
 standard error consistently preserves the underlying PSR/DSR ratio.
+
+**Fail-closed contract.** A validation gate that cannot COMPUTE a verdict must
+never emit a passing one. Every input this plugin cannot honestly evaluate --
+a series that is constant to within floating-point noise, NaN/Inf
+ observations, a non-positive or
+non-integral ``n_trials``, an undefined Sharpe-estimator variance -- returns
+``passed=False`` with an ``error``-level finding and ``psr``/``dsr`` set to
+``None``, never to a plausible-looking number.
 """
 
 from __future__ import annotations
@@ -41,9 +60,38 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm
 
+from quantbox.analysis.dsr import expected_max_sr, sr_estimator_std
 from quantbox.contracts import PluginMeta
 
-_EULER_MASCHERONI = 0.5772156649015329
+# A returns series is degenerate when its standard deviation is negligible
+# *relative to the scale of the returns themselves* -- never by exact float
+# equality with zero. A constant series computed in binary floating point does
+# NOT reliably give std == 0: `[0.001] * 200` accumulates rounding to
+# std = 2.17e-19 while `[0.001] * 50` gives exactly 0.0, so an `== 0` guard
+# fires or misses depending on whether the constant happens to be exactly
+# representable at that length -- and a miss yields a Sharpe of ~1e16, which is
+# a division by noise reported as maximum confidence.
+#
+# The observed noise floor for a constant series is std/|value| ~ 2e-16 (machine
+# epsilon); 1e-12 leaves ~4000x headroom above it while staying far below any
+# real series (std/scale = 1e-12 would mean a Sharpe of ~1e12). Being relative,
+# the test is unit-independent: a genuinely tiny-but-real series (returns of
+# order 1e-9 with std of order 1e-9) is unaffected. When every observation is
+# exactly zero, scale is 0 and the test reduces to std <= 0, which still holds.
+_DEGENERATE_RTOL = 1e-12
+
+
+class _UndefinedDSR(ValueError):
+    """An input this plugin cannot compute a DSR from.
+
+    Carries the ``rule`` name the failure should be reported under, so the
+    fail-closed translation in ``validate`` stays a single code path.
+    """
+
+    def __init__(self, rule: str, detail: str) -> None:
+        super().__init__(detail)
+        self.rule = rule
+        self.detail = detail
 
 
 def _skew_kurtosis(x: np.ndarray) -> tuple[float, float]:
@@ -61,36 +109,27 @@ def _skew_kurtosis(x: np.ndarray) -> tuple[float, float]:
     return skew, kurt
 
 
-def _annualized_sharpe(returns: np.ndarray, trading_days: int) -> float:
-    if len(returns) < 2:
-        return 0.0
-    std = float(np.std(returns, ddof=1))
-    if std == 0:
-        return 0.0
-    return float(np.mean(returns) / std * np.sqrt(trading_days))
+def _as_trial_count(n_trials: Any) -> int:
+    """Read a config-supplied ``n_trials`` as a trial count WITHOUT rounding it.
 
-
-def _se_sharpe_annual(returns: np.ndarray, sr_hat_daily: float, trading_days: int) -> tuple[float, float, float]:
-    """Standard error of the annualized Sharpe estimator (Bailey & Lopez de Prado 2012).
-
-    Computed on per-period returns/Sharpe, then annualized by sqrt(trading_days) --
-    this is equivalent to deriving the SE directly in annualized units, since the
-    Gaussian-vs-fat-tail correction term depends only on skew/kurtosis (scale-free)
-    and the per-period SR_hat.
+    ``n_trials`` arrives straight from a config's YAML via ``runner.py``.
+    Silently coercing a nonsensical value (0, -5, 2.7) into a usable one
+    removes the entire multiple-testing penalty and yields a plausible number
+    instead of an obvious error -- the 2026-07 gate bug that
+    ``analysis.dsr.expected_max_sr`` was written to refuse. Non-positive values
+    are rejected by ``expected_max_sr`` itself; this only rejects the shapes it
+    cannot see.
     """
-    t = len(returns)
-    skew, kurt = _skew_kurtosis(returns)
-    if t < 2:
-        return float("nan"), skew, kurt
-    variance_term = max(1.0 - skew * sr_hat_daily + ((kurt - 1.0) / 4.0) * sr_hat_daily**2, 1e-12)
-    se_daily = float(np.sqrt(variance_term / (t - 1)))
-    se_annual = se_daily * float(np.sqrt(trading_days))
-    return se_annual, skew, kurt
+    if isinstance(n_trials, bool) or not isinstance(n_trials, (int, float, np.integer, np.floating)):
+        raise _UndefinedDSR("invalid_n_trials", f"n_trials must be a positive integer, got {n_trials!r}")
+    if not np.isfinite(float(n_trials)) or float(n_trials) != int(n_trials):
+        raise _UndefinedDSR("invalid_n_trials", f"n_trials must be a whole number, got {n_trials!r}")
+    return int(n_trials)
 
 
 def _expected_max_sharpe(
     trial_sharpes: list[float] | None,
-    n_trials: int,
+    n_trials: Any,
     se_sr_annual_fallback: float,
 ) -> tuple[float, float, str]:
     """Expected maximum Sharpe achievable by chance across N independent trials.
@@ -99,23 +138,32 @@ def _expected_max_sharpe(
     when the caller supplied the actual per-trial Sharpe distribution, or
     "se_proxy_approximation" when falling back to the observed strategy's own
     Sharpe standard error.
+
+    The expected-max-SR term comes from ``quantbox.analysis.dsr``, which RAISES
+    on a non-positive trial count rather than coercing it to 1. Raises
+    ``_UndefinedDSR`` when no deflation benchmark can be computed.
     """
     if trial_sharpes and len(trial_sharpes) >= 2:
         sigma_sr = float(np.std(np.asarray(trial_sharpes, dtype=float), ddof=1))
         n = len(trial_sharpes)
         source = "trial_sharpes"
     else:
-        sigma_sr = se_sr_annual_fallback
-        n = max(int(n_trials), 1)
+        sigma_sr = float(se_sr_annual_fallback)
+        n = _as_trial_count(n_trials)
         source = "se_proxy_approximation"
 
-    if n <= 1 or not np.isfinite(sigma_sr):
-        return 0.0, sigma_sr, source
+    if not np.isfinite(sigma_sr):
+        raise _UndefinedDSR(
+            "sigma_sr_undefined",
+            f"sigma_SR is not finite ({sigma_sr!r}) -- the deflation benchmark cannot be computed.",
+        )
 
-    sr0 = sigma_sr * (
-        (1 - _EULER_MASCHERONI) * norm.ppf(1 - 1.0 / n) + _EULER_MASCHERONI * norm.ppf(1 - 1.0 / (n * np.e))
-    )
-    return float(sr0), sigma_sr, source
+    try:
+        e_max = expected_max_sr(n)
+    except ValueError as exc:  # non-positive trial count
+        raise _UndefinedDSR("invalid_n_trials", str(exc)) from exc
+
+    return float(sigma_sr * e_max), sigma_sr, source
 
 
 @dataclass
@@ -123,7 +171,7 @@ class DeflatedSharpeBLPValidation:
     meta = PluginMeta(
         name="validation.deflated_sharpe_blp.v1",
         kind="validation",
-        version="0.1.0",
+        version="0.2.0",
         core_compat=">=0.1,<0.2",
         description=(
             "Analytic Deflated Sharpe Ratio (Bailey & Lopez de Prado 2014): "
@@ -134,6 +182,15 @@ class DeflatedSharpeBLPValidation:
         tags=("validation", "statistics", "sharpe", "dsr", "psr", "multiple-testing"),
     )
 
+    @staticmethod
+    def _undefined(rule: str, detail: str, metrics: dict[str, Any]) -> dict[str, Any]:
+        """Fail closed: no verdict was computable, so emit no number to mistake for one."""
+        return {
+            "findings": [{"level": "error", "rule": rule, "detail": detail}],
+            "metrics": {**metrics, "psr": None, "dsr": None},
+            "passed": False,
+        }
+
     def validate(
         self,
         returns: pd.DataFrame,
@@ -143,7 +200,7 @@ class DeflatedSharpeBLPValidation:
     ) -> dict[str, Any]:
         confidence: float = params.get("confidence", 0.95)
         trading_days: int = params.get("trading_days", 365)
-        n_trials: int = params.get("n_trials", 1)
+        n_trials: Any = params.get("n_trials", 1)
         trial_sharpes: list[float] | None = params.get("trial_sharpes")
 
         rets_col = "returns" if "returns" in returns.columns else returns.select_dtypes("number").columns[0]
@@ -151,56 +208,80 @@ class DeflatedSharpeBLPValidation:
         t = len(rets)
 
         if t < 3:
-            return {
-                "findings": [
-                    {
-                        "level": "error",
-                        "rule": "insufficient_observations",
-                        "detail": f"Need at least 3 return observations for DSR, got {t}.",
-                    }
-                ],
-                "metrics": {"n_observations": t},
-                "passed": False,
-            }
+            return self._undefined(
+                "insufficient_observations",
+                f"Need at least 3 return observations for DSR, got {t}.",
+                {"n_observations": t},
+            )
 
-        sr_hat_daily = float(np.mean(rets) / np.std(rets, ddof=1)) if np.std(rets, ddof=1) != 0 else 0.0
-        observed_sharpe = _annualized_sharpe(rets, trading_days)
+        n_nonfinite = int((~np.isfinite(rets)).sum())
+        if n_nonfinite:
+            return self._undefined(
+                "non_finite_returns",
+                f"{n_nonfinite} of {t} return observations are NaN/Inf -- refusing to emit a DSR "
+                "verdict for a corrupted series.",
+                {"n_observations": t, "n_nonfinite": n_nonfinite},
+            )
 
-        se_annual, skew, kurt = _se_sharpe_annual(rets, sr_hat_daily, trading_days)
-        sr0_annual, sigma_sr, sigma_sr_source = _expected_max_sharpe(trial_sharpes, n_trials, se_annual)
+        std_period = float(np.std(rets, ddof=1))
+        scale = float(np.mean(np.abs(rets)))
+        if std_period <= _DEGENERATE_RTOL * scale:
+            return self._undefined(
+                "degenerate_returns",
+                f"degenerate returns: standard deviation ({std_period!r}) is negligible against the "
+                f"scale of the series itself (mean |return| = {scale!r}) -- the series is constant to "
+                "within floating-point noise, so it carries no signal and no Sharpe ratio exists. "
+                "A constant series must never be reported as passing.",
+                {"n_observations": t, "std": std_period, "scale": scale},
+            )
 
-        if not np.isfinite(se_annual) or se_annual <= 0:
-            psr = float("nan")
-            dsr = float("nan")
-        else:
-            psr = float(norm.cdf((observed_sharpe - 0.0) / se_annual))
-            dsr = float(norm.cdf((observed_sharpe - sr0_annual) / se_annual))
+        sr_hat_period = float(np.mean(rets) / std_period)
+        observed_sharpe = sr_hat_period * float(np.sqrt(trading_days))
+        skew, kurt = _skew_kurtosis(rets)
+
+        partial_metrics: dict[str, Any] = {
+            "observed_sharpe": observed_sharpe,
+            "n_observations": t,
+            "skewness": skew,
+            "kurtosis": kurt,
+        }
+
+        try:
+            se_annual = sr_estimator_std(t, sr_hat_period, skew, kurt) * float(np.sqrt(trading_days))
+            if not np.isfinite(se_annual) or se_annual <= 0:
+                raise _UndefinedDSR(
+                    "dsr_undefined",
+                    "Standard error of the Sharpe estimator is zero or undefined; DSR is undefined.",
+                )
+            partial_metrics["sharpe_standard_error"] = se_annual
+            sr0_annual, sigma_sr, sigma_sr_source = _expected_max_sharpe(trial_sharpes, n_trials, se_annual)
+        except _UndefinedDSR as exc:
+            return self._undefined(exc.rule, exc.detail, partial_metrics)
+        except ValueError as exc:  # negative SR-estimator variance from pathological moments
+            return self._undefined("sr_variance_undefined", str(exc), partial_metrics)
+
+        n_trials_used = len(trial_sharpes) if sigma_sr_source == "trial_sharpes" else _as_trial_count(n_trials)
+
+        psr = float(norm.cdf(observed_sharpe / se_annual))
+        dsr = float(norm.cdf((observed_sharpe - sr0_annual) / se_annual))
 
         findings: list[dict[str, Any]] = []
 
-        if sigma_sr_source == "se_proxy_approximation" and (trial_sharpes is None or len(trial_sharpes) < 2):
+        if sigma_sr_source == "se_proxy_approximation":
             findings.append(
                 {
                     "level": "info",
                     "rule": "sigma_sr_approximated",
                     "detail": (
                         "No trial_sharpes supplied -- sigma_SR (spread of Sharpe ratios across the "
-                        f"{n_trials} trials) was approximated using the observed strategy's own Sharpe "
+                        f"{n_trials_used} trials) was approximated using the observed strategy's own Sharpe "
                         "standard error. Pass params['trial_sharpes'] with the actual per-variant Sharpe "
                         "ratios for a rigorous DSR."
                     ),
                 }
             )
 
-        if np.isnan(dsr):
-            findings.append(
-                {
-                    "level": "error",
-                    "rule": "dsr_undefined",
-                    "detail": "Standard error of the Sharpe estimator is zero or undefined; DSR is undefined.",
-                }
-            )
-        elif dsr < confidence:
+        if dsr < confidence:
             findings.append(
                 {
                     "level": "warn",
@@ -208,13 +289,11 @@ class DeflatedSharpeBLPValidation:
                     "detail": (
                         f"DSR ({dsr:.4f}) is below the {confidence:.0%} confidence threshold -- "
                         f"observed Sharpe ({observed_sharpe:.4f}) is not statistically distinguishable "
-                        f"from the expected best-of-{max(len(trial_sharpes) if trial_sharpes else n_trials, 1)} "
+                        f"from the expected best-of-{n_trials_used} "
                         f"chance result ({sr0_annual:.4f})."
                     ),
                 }
             )
-
-        passed = bool(np.isfinite(dsr) and dsr >= confidence)
 
         return {
             "findings": findings,
@@ -224,12 +303,12 @@ class DeflatedSharpeBLPValidation:
                 "skewness": skew,
                 "kurtosis": kurt,
                 "sharpe_standard_error": se_annual,
-                "n_trials": len(trial_sharpes) if trial_sharpes else n_trials,
+                "n_trials": n_trials_used,
                 "sigma_sr": sigma_sr,
                 "sigma_sr_source": sigma_sr_source,
                 "expected_max_sharpe_null": sr0_annual,
                 "psr": psr,
                 "dsr": dsr,
             },
-            "passed": passed,
+            "passed": bool(dsr >= confidence),
         }
