@@ -51,6 +51,14 @@ target-version = "py310"
 line-length = 120
 exclude = [
     "cookbook/configs/",
+    # Agent tooling, not Python source. It also carries committed symlinks that
+    # point outside the repo, so ruff format --check dies reading them ("io: No
+    # such file or directory") and lint goes red on a clean clone regardless of
+    # any formatting question. ruff has no business walking this directory.
+    ".claude/",
+    # Nested worktrees are separate checkouts; linting them lints another
+    # branch and, worse,  REWRITES files someone else is editing.
+    ".worktrees/",
 ]
 
 [tool.ruff.lint]
