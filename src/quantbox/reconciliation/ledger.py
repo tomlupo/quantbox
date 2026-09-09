@@ -54,6 +54,37 @@ NON_TERMINAL_RESULT_STATUSES = frozenset({"working"})
 
 RESULT_STATUSES = TERMINAL_RESULT_STATUSES | NON_TERMINAL_RESULT_STATUSES
 
+# The map normalises each broker's fill-status vocabulary to the canonical set
+# above. CANCELED / CANCELLED / EXPIRED / TIMEOUT are terminal NON-fills that a
+# live venue can emit (ccxt unified statuses); they are mapped explicitly so an
+# unexpected status is classified as a non-fill for the failure/missed-fill
+# streak rather than passed through as an "unknown status" the ledger warns on.
+# Anything still unmapped falls through to a lowercased passthrough, which the
+# streak logic also treats as a non-fill.
+#
+# It lives HERE, beside the vocabulary it targets, because both the trading
+# pipeline and the out-of-cycle working-order resolver translate into it and
+# neither may own a private copy.
+EXEC_STATUS_TO_LEDGER = {
+    "FILLED": "filled",
+    "PARTIAL": "partial",
+    # Non-terminal: accepted, still on the book. See NON_TERMINAL_RESULT_STATUSES.
+    "WORKING": "working",
+    "FAILED": "failed",
+    "SKIPPED": "skipped",
+    "REJECTED": "rejected",
+    "CANCELED": "failed",
+    "CANCELLED": "failed",
+    "EXPIRED": "failed",
+    "TIMEOUT": "timeout",
+}
+
+
+def to_ledger_status(status: Any) -> str:
+    """Normalise a broker execution status into the ledger's vocabulary."""
+    raw = str(status).strip()
+    return EXEC_STATUS_TO_LEDGER.get(raw.upper(), raw.lower())
+
 
 def safe_book_key(book_key: Any, root: str | os.PathLike[str]) -> str:
     """Validate ``book_key`` as a single safe path segment under ``root``.
