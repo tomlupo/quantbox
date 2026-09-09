@@ -29,7 +29,7 @@ these repos are on a plan where protection is unavailable, which is the reason
 any of this exists. If branch protection ever becomes available, it supersedes
 this hook rather than complementing it.
 
-Deliberately, this hook does NOT consult `/guard git-workflow on|off`
+Deliberately, this hook does NOT consult the agent-side guard toggle
 (`~/.claude/qute-guards.json`). That toggle governs an agent-side Claude hook.
 This one fires for a human at a terminal too, and a Claude-session preference
 must not silently disarm a git hook for a human. A PERSISTED preference is the
@@ -42,14 +42,24 @@ pre-push hook in the repo — tests, lint, secret scanning — so someone who on
 wanted past the branch check has been silently disabling the secret scan too.
 An override that costs more than it should does not stop people overriding; it
 makes them override too much. This one names exactly what it skips, and skips
-only that. Both are per-push, both leave every later push guarded, and the
-refusal message advertises this one first for that reason.
+only that. The refusal message advertises this one first for that reason.
+
+Both are per-push ONLY WHEN WRITTEN INLINE (`CLAUDE_GUARD_BRANCH_PUSH=0 git
+push …`). Written inline they leave every later push guarded. `export`ed — in a
+shell profile, an `.envrc`, or CI env — the variable becomes exactly the
+persisted, invisible disarm this docstring refuses two paragraphs above, and it
+is not detectable from inside the hook. Set it inline; never export it.
 
 OPT-IN AND CONFIG
 -----------------
-Reads the SAME per-repo file as the `git-workflow` PreToolUse guard —
-`.claude/git-guard.json` in the repo root — with the same rules, so the two
-layers can never disagree about which branches are guarded:
+Reads the SAME per-repo policy as the `git-workflow` PreToolUse guard, from the
+same two surfaces in the same order, so the two layers can never disagree about
+which branches are guarded:
+
+  1. `.qute/config.json`, section `"git"` — the consolidated config plane;
+  2. `.claude/git-guard.json` — the legacy per-file surface, fallback only.
+
+Either way the shape is:
 
     {
       "protected_branch": "main",       // default "main"
@@ -58,9 +68,12 @@ layers can never disagree about which branches are guarded:
       "release_tool": "commitizen (/ship)"   // guidance text only
     }
 
-The PRESENCE of the file is the opt-in. No file → this hook is a no-op, which
-is what keeps it out of scratch repos and third-party clones. A repo that wants
-the house defaults commits `{}`.
+The PRESENCE of the section (or of the legacy file) is the opt-in. Neither →
+this hook is a no-op, which is what keeps it out of scratch repos and
+third-party clones. A repo that wants the house defaults commits `"git": {}`.
+That is why folding the legacy file into `.qute/config.json` and vendoring THIS
+version of the hook are one change: an older hook that knows only the legacy
+path reads a folded repo as "not opted in" and allows every push to `main`.
 
 INPUT MODES
 -----------
@@ -334,35 +347,52 @@ def _branch_field(repo_root: Path, raw: dict, key: str, allow_null: bool):
     return value
 
 
-def load_config(repo_root: Path):
-    """Resolved guard config, or None when the repo is not opted in.
+#: Where the git policy may live, in precedence order. `.qute/config.json`
+#: carries it as a `git` SECTION; `.claude/git-guard.json` is the flat
+#: pre-consolidation file, still read so no checkout breaks.
+#:
+#: This hook is installed into `.git/hooks` and runs standalone, so it cannot
+#: import `scripts/qute_config.py` the way every other consumer does. It
+#: therefore reimplements the two-step lookup — and stays the SINGLE parser for
+#: this section anyway, because `branch_policy.py` and the agent-side guard both
+#: import THIS function rather than reading the fields themselves. A second
+#: parser would be a second set of defaults.
+CONFIG_CANDIDATES = (
+    ((".qute", "config.json"), "git"),
+    ((".claude", "git-guard.json"), None),
+)
 
-    Opt-in is the PRESENCE of `.claude/git-guard.json`. Absent → None, a total
-    no-op. Present but malformed → ConfigError, which refuses the push.
 
-    Keeps the same fields and defaults as `hooks/git-workflow-guard.py`, which
-    reads this same file: any divergence in WHICH branches are guarded would be
-    worse than having only one layer. Validation is stricter here (that layer
-    is unvalidated as of writing — see this PR's report), but stricter can only
-    reject configs the other layer would have misread, never guard a different
-    branch.
+class _NotADeclaration(ConfigError):
+    """The path is not a regular file — a directory or a broken symlink.
+
+    Distinct from ordinary `ConfigError` because the two mean opposite things
+    about INTENT. Malformed JSON, a non-object, a mistyped section: somebody
+    WROTE that file meaning it to be config, so falling back to another surface
+    would guard whatever the other one says while looking like we obeyed theirs.
+    A directory sitting at `.qute/config.json` is a filesystem accident with no
+    content and no intent, and refusing every push over it — in a repo whose
+    real policy is the legacy file, sitting right there and perfectly valid —
+    would be a denial invented by the lookup rather than by the repo.
     """
-    cfg_path = repo_root / ".claude" / "git-guard.json"
 
-    # `lstat`, not `is_file()`. `is_file()` follows symlinks and answers False
-    # for a BROKEN one — so a repo carrying a tracked `.claude/git-guard.json`
-    # that points at a gitignored or machine-specific path reads as opted in to
-    # anyone looking at `git ls-files`, while the guard silently treated it as
-    # "no config" and waved every push through. Same for a directory of that
-    # name. Absent is a no-op; present-but-not-a-regular-file is a config we
-    # cannot read, which fails closed like any other.
+
+def _display_path(repo_root: Path, cfg_path: Path) -> str:
+    """The config path as a reader would type it — repo-relative when possible."""
     try:
-        st = os.lstat(cfg_path)
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        raise ConfigError(f"{cfg_path} could not be examined: {exc}") from exc
+        return str(cfg_path.relative_to(repo_root))
+    except ValueError:
+        return str(cfg_path)
 
+
+def _read_config_object(cfg_path: Path):
+    """The file's top-level object, with every presence check the guard needs."""
+    # `lstat`, not `is_file()`. `is_file()` follows symlinks and answers False
+    # for a BROKEN one — so a repo carrying a tracked config that points at a
+    # gitignored or machine-specific path reads as opted in to anyone looking at
+    # `git ls-files`, while the guard silently treated it as "no config" and
+    # waved every push through. Same for a directory of that name.
+    st = os.lstat(cfg_path)
     if not stat.S_ISREG(st.st_mode):
         if stat.S_ISLNK(st.st_mode):
             try:
@@ -374,12 +404,11 @@ def load_config(repo_root: Path):
             what = "a directory"
         else:
             what = "not a regular file"
-        raise ConfigError(
+        raise _NotADeclaration(
             f"{cfg_path} is {what}. The guard config must be a regular file — "
             "the repo looks opted in, so refusing rather than quietly guarding "
             f"nothing.{_SCHEMA_HELP}"
         )
-
     try:
         text = cfg_path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -393,6 +422,86 @@ def load_config(repo_root: Path):
             f"{cfg_path} must contain a JSON object, got {_describe(raw)}."
             f"{_SCHEMA_HELP}"
         )
+    return raw
+
+
+def load_config(repo_root: Path):
+    """Resolved guard config, or None when the repo is not opted in.
+
+    Opt-in is an explicit `git` section in `.qute/config.json`, or the presence
+    of the legacy `.claude/git-guard.json`. Neither → None, a total no-op.
+    Present but malformed → ConfigError, which refuses the push.
+
+    Keeps the same fields, defaults and CANDIDATE ORDER as
+    `hooks/git-workflow-guard.py`. That layer does not import this function —
+    their failure behaviour differs on purpose (this one refuses the push, that
+    one degrades loudly to the house defaults) — so what must not diverge is
+    which surfaces are consulted, in which order, and what counts as an opt-in.
+    `branch_policy.py` DOES import this function, and is the reason the parser
+    for the fields themselves lives here and only here.
+    """
+    cfg_path = None
+    raw = None
+    for rel, key in CONFIG_CANDIDATES:
+        candidate = repo_root.joinpath(*rel)
+        try:
+            data = _read_config_object(candidate)
+        except FileNotFoundError:
+            continue
+        except NotADirectoryError:
+            # A parent component is a regular file rather than a directory.
+            #
+            # For the CONSOLIDATED candidate that is benign: `.qute` being a
+            # file just means nothing is declared there, so move on.
+            #
+            # For the LEGACY candidate it is not. `.claude` being a regular
+            # file (or a symlink to one) would skip the only remaining
+            # candidate, leave `raw` as None, and make `load_config` return
+            # None — which this hook reads as "not opted in" and waves every
+            # push to `main` straight through. That is the "looks guarded,
+            # isn't" state `ConfigError` exists to prevent, so it fails closed
+            # like any other unreadable config.
+            if key is not None:
+                continue
+            raise ConfigError(
+                f"{candidate} is unreadable: a parent path component is a file, "
+                "not a directory"
+            ) from None
+        except OSError as exc:
+            raise ConfigError(
+                f"{candidate} could not be examined: {exc}"
+            ) from exc
+        except _NotADeclaration:
+            # No content, so no intent — fall through to a surface that has
+            # some. Only for the consolidated candidate, and only when a legacy
+            # file actually exists to answer; otherwise this is the repo's one
+            # config and being unreadable must still refuse.
+            legacy_rel = CONFIG_CANDIDATES[1][0]
+            if key is not None and repo_root.joinpath(*legacy_rel).exists():
+                print(
+                    f"{MARKER}: {candidate} is not a regular file — falling back "
+                    f"to {'/'.join(legacy_rel)}. Fix or remove it.",
+                    file=sys.stderr,
+                )
+                continue
+            raise
+        if key is not None:
+            if key not in data:
+                # The consolidated file exists but says nothing about git.
+                # A file's existence is not itself an opt-in — fall through.
+                continue
+            section = data[key]
+            if not isinstance(section, dict):
+                raise ConfigError(
+                    f"{candidate}: section '{key}' must be a JSON object, "
+                    f"got {_describe(section)}.{_SCHEMA_HELP}"
+                )
+            data = section
+        cfg_path, raw = candidate, data
+        break
+
+    if raw is None:
+        return None
 
     unknown = sorted(
         set(raw) - {"protected_branch", "integration_branch", "release_tool"}
@@ -437,6 +546,12 @@ def load_config(repo_root: Path):
         "protected": protected,
         "integration": integration,
         "release_tool": release_tool,
+        # Which surface actually answered, so the refusal can point at the file
+        # a reader must EDIT. Hardcoding one of the two candidates here sent
+        # people to `.claude/git-guard.json` after this repo folded that file
+        # into `.qute/config.json` — a refusal naming a path that no longer
+        # exists teaches people to ignore the refusal.
+        "source_path": _display_path(repo_root, cfg_path),
     }
 
 
@@ -539,7 +654,8 @@ def refusal_message(branch, kind, remote_name, cfg, source) -> str:
         # poisoned command is a special kind of bad refusal.)
         f"    gh pr create --base {shlex.quote(branch)}",
         "",
-        f"  Guarded branches ({guarded}) come from .claude/git-guard.json.",
+        f"  Guarded branches ({guarded}) come from "
+        f"{cfg.get('source_path', 'the repo git policy')}.",
     ]
     if cfg.get("release_tool"):
         lines.append(f"  Releases in this repo go through: {cfg['release_tool']}.")
@@ -624,6 +740,43 @@ def main(argv, stdin_text: str) -> int:
         return 0
 
     branch, kind = hit
+
+    # NO RELEASE EXEMPTION IN THIS REPO — deliberately, see ADR note below.
+    #
+    # The upstream qute-essentials template exempts a push whose added commits
+    # all look like release commits, so `/ship` can tag and push without an
+    # override. That exemption is not vendored here, and this is the one place
+    # this copy is INTENTIONALLY ahead of the template rather than behind it.
+    #
+    # Two reasons:
+    #
+    # 1. It would be the ONLY unguarded route to `main`. The exemption's own
+    #    docstring rationalises a forged release commit by saying it "still has
+    #    to survive review" and "CI is the layer that holds for correctness".
+    #    Neither is true here: `.github/workflows/review-gate.yml` triggers on
+    #    `pull_request` only, and its header says it "REPORTS red but can't
+    #    hard-block" because this plan has no branch protection. A push taking
+    #    the exemption opens no PR, so it is seen by NO gate at all — not the
+    #    review-gate, not the independent reviewer, not `conductor.yml`'s
+    #    human floor. And `main` is exactly the branch downstream repos consume:
+    #    quantbox-live pins `quantbox@vX.Y.Z` tags cut here, so anything that
+    #    reaches `main` unreviewed is on its way to a live book.
+    #
+    # 2. The exemption as written is not safe on its own terms — verified, not
+    #    assumed. It exempts force-pushes, so a "release" push may DESTROY
+    #    history on the protected branch; and its path check uses `any`, so a
+    #    commit merely TITLED like a release is exempted even when it also
+    #    edits arbitrary code alongside the version artifacts. A subject line
+    #    is not a proof of contents, and here nothing downstream re-checks it.
+    #
+    # `/ship` is not blocked by this: it sets `CLAUDE_GUARD_BRANCH_PUSH=0`,
+    # handled above. That override is per-invocation, names what it skips, and
+    # prints a loud line — an exemption that fires silently on a subject-line
+    # match is not the same trade.
+    #
+    # If the exemption is ever wanted here, it needs real branch protection on
+    # `main` first, so that "it still has to survive review" is a fact.
+
     _trace(f"refuse {branch} kind={kind} source={source}")
     print(refusal_message(branch, kind, remote_name, cfg, source), file=sys.stderr)
     return 1

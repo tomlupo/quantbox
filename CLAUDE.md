@@ -222,10 +222,23 @@ straight to `main`: that drift was corrected 2026-07-06, and #152 slipped throug
 again on 2026-08-18, so it is worth actually checking.
 
 The `main` rule is enforced by two qute-essentials guard layers armed by the
-presence of `.claude/git-guard.json` — `pre-push` (the one that holds) and the
-`git-workflow` PreToolUse hook. Neither is a file this repo maintains; `/guard`
-documents and toggles them. This repo declares `integration_branch: "dev"`,
-naming the branch the table above already describes.
+`git` section of [`.qute/config.json`](.qute/config.json) — `pre-push` (the one
+that holds, vendored at `.claude/hooks/pre-push-branch-guard`) and the
+`git-workflow` PreToolUse hook. `/guard` documents and toggles them. This repo
+declares `integration_branch: "dev"`, naming the branch the table above already
+describes.
+
+The section lived in `.claude/git-guard.json` until 2026-09-09. Both guard
+layers now read the consolidated file first and the legacy path only as a
+fallback, so the fold and the hook re-vendor had to land together: the older
+vendored hook knew only the legacy path, and with that file gone it would have
+read "repo not opted in" and allowed every push to `main` silently.
+
+The vendored hook deliberately has **no release exemption** — the upstream
+template exempts pushes whose commits look like releases, and that would be the
+only unreviewed route onto `main`. `/ship` does not need it: it sets
+`CLAUDE_GUARD_BRANCH_PUSH=0`, which is per-invocation and loud. The hook's own
+`main()` carries the full rationale.
 
 It said `null` until 2026-09-09, meaning "dev is cheap, push freely". That
 reading is only half of what the field does: `/ship` reads the SAME key to
