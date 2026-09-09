@@ -55,10 +55,12 @@ def _baseline_draw(size, distribution, df, dtype, seed):
 def _panel(mu, cov, draw, iterations, steps, dtype, distribution, df, seed):
     """`parametric_mc`'s body around whichever draw it is handed.
 
-    Transcribed from `quantbox.features.simulations.parametric_mc` at
-    bb7ca8c, correlated path only. It is a COPY, and nothing here notices if
-    that function changes — if the memory numbers ever stop making sense,
-    check this against the original first.
+    Transcribed from `quantbox.features.simulations.parametric_mc`, correlated
+    path only, as of the commit that introduced this script. It is a COPY, and
+    nothing here notices if that function changes — if the memory numbers ever
+    stop making sense, diff this against the original first. Deliberately not
+    pinned to a branch SHA: this branch squash-merges, so any SHA named here
+    would be unresolvable in `dev` the moment it landed.
     """
     var = pd.Series(np.diag(cov), index=cov.index).loc[mu.index] / 252
     mu = mu / 252
@@ -173,9 +175,23 @@ def cmd_equivalence(args):
     the standard error of a quantile of 2_000_000 values overstates that error
     by sqrt(10), because a quantile's standard error scales as 1/sqrt(n). The
     threshold then reads as "3 standard errors" while actually being ~9.5, so
-    the check silently could not fail. Replicates are looped rather than
-    vectorised into one (bootstrap, n) array to keep peak memory at one extra
-    copy of the sample.
+    the check silently could not fail.
+
+    Replicates are looped rather than vectorised into one (bootstrap, n) array,
+    which at the defaults would be ~640 MiB. Measured with `tracemalloc`, the
+    loop peaks at THREE times the sample, not one: `Generator.choice` with
+    replacement materialises an int64 index array — twice a float32 sample's
+    bytes on its own — plus the taken array, and `np.quantile` then copies
+    again to partition. (7.63 MiB sample -> 22.89 MiB peak above baseline,
+    3.00x.) Still the right trade at `bootstrap` replicates, but the number is
+    3x, and this file has now had two comments that were wrong because nobody
+    measured them.
+
+    `--bootstrap` defaults to 40, which gives the SE estimate ~11% relative
+    error of its own (1/sqrt(2(B-1))), so the "3 SE" threshold wobbles by
+    roughly +-0.3 SE between runs. That is far too coarse to matter against the
+    separation actually observed — null worst-z ~2.1, a t(5)-vs-t(3) positive
+    control ~40-100 — but do not read the threshold as sharper than it is.
     """
     qs = [0.01, 0.05, 0.25, 0.50, 0.75, 0.95, 0.99]
     dtype = getattr(np, args.precision)
