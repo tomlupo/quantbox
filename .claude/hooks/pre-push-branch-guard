@@ -654,7 +654,8 @@ def refusal_message(branch, kind, remote_name, cfg, source) -> str:
         # poisoned command is a special kind of bad refusal.)
         f"    gh pr create --base {shlex.quote(branch)}",
         "",
-        f"  Guarded branches ({guarded}) come from {cfg.get('source_path', 'the repo git policy')}.",
+        f"  Guarded branches ({guarded}) come from "
+        f"{cfg.get('source_path', 'the repo git policy')}.",
     ]
     if cfg.get("release_tool"):
         lines.append(f"  Releases in this repo go through: {cfg['release_tool']}.")
