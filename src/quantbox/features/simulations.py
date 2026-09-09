@@ -93,19 +93,43 @@ def parametric_mc(
         var = var.astype(dtype)
 
     # shock — generate uncorrelated random variables
+    #
+    # scipy.stats has no dtype argument, so the draw is always float64.
+    # For an (n, iterations*steps) panel that is the largest single
+    # allocation in this function and it cannot be avoided here without
+    # changing the random stream. What *can* be avoided is every copy
+    # after it: `astype(copy=False)` is a no-op when the dtype already
+    # matches, where the default would duplicate the whole panel.
+    size = (len(mu), iterations * steps)
     if distribution == "normal":
-        uncorr_x = stats.norm.rvs(size=(len(mu), iterations * steps), random_state=seed).astype(dtype)
+        uncorr_x = stats.norm.rvs(size=size, random_state=seed)
     else:
-        uncorr_x = stats.t.rvs(df, size=(len(mu), iterations * steps), random_state=seed).astype(dtype)
+        uncorr_x = stats.t.rvs(df, size=size, random_state=seed)
+    uncorr_x = uncorr_x.astype(dtype, copy=False)
 
     if correlated:
-        shock = np.dot(chol, uncorr_x).astype(dtype)
+        # `out=` writes the product straight into its destination rather
+        # than allocating the result and copying it again in `.astype`.
+        shock = np.empty(size, dtype=dtype)
+        np.dot(chol, uncorr_x, out=shock)
     else:
-        shock = (uncorr_x * np.tile(np.atleast_2d(np.sqrt(var)).T, uncorr_x.shape[1])).astype(dtype)
+        # Broadcasting the column instead of `np.tile`-ing it to the full
+        # panel width: same elementwise products, one fewer panel-sized
+        # array.
+        shock = uncorr_x * np.atleast_2d(np.sqrt(var)).T
     del uncorr_x
 
-    # simulate returns
-    returns_sim = np.exp(np.atleast_2d(drift).T + shock).astype(dtype) - 1
+    # simulate returns — in place on `shock`.
+    #
+    # As four chained expressions this allocated a fresh panel for each of
+    # the add, the exp, the astype and the subtract, all while `shock` was
+    # still alive. On a long horizon that is several GB of temporaries to
+    # produce one array of exactly the same size. The operations, their
+    # order and their dtype are unchanged, so the result is identical.
+    shock += np.atleast_2d(drift).T
+    np.exp(shock, out=shock)
+    shock -= 1
+    returns_sim = shock
 
     # reshape
     sim = []
