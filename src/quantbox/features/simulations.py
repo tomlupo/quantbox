@@ -18,6 +18,12 @@ for backwards compatibility but deterministic use requires a Generator.
 the shocks came from ``scipy.stats``'s ``random_state``; drawing them from
 a Generator narrowed that, and a ``RandomState`` now raises from
 ``default_rng``. No known caller passes one, but a vendored copy might.
+
+``seed=None`` also changed, and silently. Under ``scipy.stats`` it fell
+through to numpy's global singleton, so a host doing ``np.random.seed(42)``
+before the call got a reproducible panel. ``default_rng(None)`` seeds from
+OS entropy and ignores the global state, so that host now gets a different
+panel every run with no error. Pass a Generator.
 """
 
 from __future__ import annotations
@@ -64,17 +70,19 @@ def _draw_uncorrelated(size, distribution, df, dtype, seed, target_bytes=128 * 1
         # would otherwise pass and silently draw t(1) — Cauchy, the widest
         # possible tail — from a plainly wrong argument. numpy scalars must
         # pass, which rules out a bare isinstance(df, (int, float)): np.int64
-        # is neither. And `inf` must NOT pass — standard_gamma(inf) returns
-        # inf, 2/inf is nan, and the panel comes back silently all-NaN.
-        # (A too-SMALL df is silent garbage too, but there is no clean
-        # floor to pick, so that is caught after the draw instead.)
+        # is neither. And `inf` must NOT pass: standard_gamma(inf) returns
+        # inf, `2.0/inf` is 0.0, and inf*0.0 is nan — so the panel comes
+        # back silently all-NaN. (A too-SMALL df is silent garbage too, but
+        # there is no clean floor to pick, so that is caught after the draw
+        # instead. The block check would now catch inf as well, making this
+        # branch belt-and-braces rather than the only guard.)
         #
         # This is not "restoring what scipy did", which an earlier version
         # of this comment claimed. scipy raised its domain error only for
-        # 0, -3 and nan: `inf` returned NaN silently, True quietly drew
-        # t(1), and "3"/None raised type errors rather than domain ones.
-        # Four of the seven cases below are an improvement on scipy, not a
-        # restoration of it.
+        # 0, -3 and nan. Measured against the seven cases tested: two are
+        # faults scipy let through entirely (`inf` returned NaN silently,
+        # True quietly drew Cauchy) and two are better messages for things
+        # it already rejected as TypeErrors ("3", None).
         # `numbers.Real` rather than `float(df)`: coercing would accept the
         # STRING "3", which passes a numeric check and then fails four lines
         # later on `df / 2.0`. numpy registers its scalar types with the
@@ -92,10 +100,10 @@ def _draw_uncorrelated(size, distribution, df, dtype, seed, target_bytes=128 * 1
     # `target_bytes` is nominal in BOTH directions, so do not read the name
     # literally: the divisor is hard-coded at float64's 8 bytes, so the
     # Student-t path holds `z` and `g` at once and lives at 2x, while the
-    # normal float32 path lives at 0.5x. (Not because it writes through —
-    # a column slice of a C-contiguous panel is non-contiguous, so `out=`
-    # is not usable and a block-sized float32 temporary is still allocated
-    # and copied. The ratio is right, the mechanism is just a cast.)
+    # normal float32 path lives at 0.5x, because the only block-sized
+    # allocation on it is the draw itself: `standard_normal(dtype=dtype)`
+    # produces the block natively and assigning it into the strided column
+    # slice is a direct copy, with no second full-block temporary.
     block = max(1, int(target_bytes // max(1, n_assets * 8)))
 
     for start in range(0, n_cols, block):
@@ -143,8 +151,15 @@ def _draw_uncorrelated(size, distribution, df, dtype, seed, target_bytes=128 * 1
         g = rng.standard_gamma(df / 2.0, shape)
         g *= 2.0 / df
         np.sqrt(g, out=g)
-        z /= g
-        out[:, start:stop] = z
+        # Suppressed so the check below is the SINGLE failure path. Without
+        # this, a host running under `np.seterr(all="raise")` gets a bare
+        # FloatingPointError and never reaches the message naming df and
+        # dtype. Both operations are covered deliberately: a tiny df trips
+        # divide/invalid in the quotient, and a merely small one trips
+        # overflow in the float32 cast on assignment.
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            z /= g
+            out[:, start:stop] = z
 
         # Check the property, rather than enumerating the arguments that
         # violate it.
@@ -158,16 +173,29 @@ def _draw_uncorrelated(size, distribution, df, dtype, seed, target_bytes=128 * 1
         # zero. There is no clean floor to pick: it depends on df, on
         # dtype, and on how many values are drawn.
         #
-        # So verify what actually matters. One pass over a bounded block,
-        # negligible against the draw that produced it, and it fails on the
-        # general case instead of the three arguments someone thought of.
+        # So check the output instead. Be precise about what that is worth:
+        # this is a SAMPLING test, not validation. Whether a bad df is
+        # caught depends on how many values are drawn — at df=0.1 roughly
+        # 1 in 10_000 draws is non-finite, so a production horizon raises
+        # reliably while a 2_000-value toy call passes about four times in
+        # five. It is a high-probability backstop at production sizes, not
+        # a domain proof, and it does not make the RESULT safe end to end:
+        # a value that survives the cast as finite-but-huge still overflows
+        # in `parametric_mc`'s `np.exp` further down with no error here.
         if not np.isfinite(out[:, start:stop]).all():
-            raise ValueError(
+            msg = (
                 f"Student-t draw produced non-finite values at df={df!r}, "
                 f"dtype={np.dtype(dtype).name}. The chi-square denominator "
                 f"reached zero or the quotient overflowed — df is too small "
                 f"to sample at this precision."
             )
+            # Drop the panel BEFORE raising. `out` is 1.5 GiB at the size
+            # this function exists to make affordable, and Python keeps the
+            # raising frame alive on the exception's __traceback__ — so a
+            # host that catches and logs the stack (Prefect does) would pin
+            # exactly the allocation this branch was written to avoid.
+            del out, z, g
+            raise ValueError(msg)
 
     return out
 

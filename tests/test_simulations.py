@@ -357,14 +357,28 @@ def test_draw_uncorrelated_is_seed_deterministic() -> None:
     assert np.array_equal(a, b)
 
 
-def test_draw_uncorrelated_blocking_does_not_change_the_distribution() -> None:
-    # Same draw split into many blocks vs one: different stream, so the
-    # quantiles must agree without being equal.
+def test_draw_uncorrelated_blocking_draws_the_same_values() -> None:
+    # An EXACT test of the block loop, on the path where one is available.
+    #
+    # With the same seed, chunking changes only how many values each call
+    # takes from the generator, not the order of the stream — so one block
+    # and 49 blocks draw the identical multiset and differ only in where
+    # the values land. Verified before being asserted.
+    #
+    # An earlier version varied the seed AND the block size and compared
+    # quantiles, which could not attribute a failure to blocking at all:
+    # it would have passed just as happily if the loop had duplicated or
+    # permuted values.
+    #
+    # Student-t is deliberately excluded. There the loop interleaves a
+    # z-draw and a g-draw per block, so a different block size pairs the
+    # stream differently and the multiset genuinely does change — measured,
+    # not assumed.
     size = (2, 200_000)
     one = _draw_uncorrelated(size, "normal", 3, np.float64, np.random.default_rng(3))
-    many = _draw_uncorrelated(size, "normal", 3, np.float64, np.random.default_rng(4), target_bytes=64 * 1024)
-    qs = [0.01, 0.25, 0.5, 0.75, 0.99]
-    np.testing.assert_allclose(np.quantile(one, qs), np.quantile(many, qs), atol=0.03, rtol=0)
+    many = _draw_uncorrelated(size, "normal", 3, np.float64, np.random.default_rng(3), target_bytes=64 * 1024)
+    assert not np.array_equal(one, many), "blocking should change placement"
+    np.testing.assert_array_equal(np.sort(one.ravel()), np.sort(many.ravel()))
 
 
 def test_draw_uncorrelated_writes_every_column_across_many_blocks() -> None:
@@ -376,6 +390,13 @@ def test_draw_uncorrelated_writes_every_column_across_many_blocks() -> None:
     # on a fresh allocation is zero pages — and `standard_normal` returns
     # exactly 0.0 with probability ~0, so a single exact zero is evidence of
     # an unwritten column.
+    #
+    # Its power depends on the allocator, which is worth stating rather than
+    # relying on quietly: if `np.empty` is handed back a recently-freed
+    # buffer of the same size instead of fresh pages, an unwritten column
+    # holds plausible old draws and this passes. That is why the sorted-
+    # multiset test above exists — that one is exact and does not depend on
+    # what the allocator does.
     #
     # Comparing quantiles cannot do this job, which is why it is a separate
     # test: a whole unwritten trailing block (2% of the panel, zeros) moves
