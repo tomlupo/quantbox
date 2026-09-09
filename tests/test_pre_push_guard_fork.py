@@ -42,6 +42,18 @@ EXEMPTION_SYMBOLS = (
 )
 
 
+def _clean_env() -> dict[str, str]:
+    """`os.environ` with every `GIT_*` variable stripped.
+
+    This suite runs from the repo's own pre-push hook, and git exports `GIT_DIR`
+    and `GIT_INDEX_FILE` to its hooks. Inherited, they point every `git` call in
+    a `tmp_path` repo back at THIS repository — the fixture commit fails, and a
+    guard invocation would judge the wrong repo while looking like it judged the
+    fixture. Caught by the pre-push hook itself.
+    """
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
 def _run(cwd: Path, stdin_text: str) -> subprocess.CompletedProcess:
     """Feed the guard one pre-push stdin line, judged from `cwd`."""
     return subprocess.run(
@@ -50,13 +62,14 @@ def _run(cwd: Path, stdin_text: str) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         cwd=str(cwd),
+        env=_clean_env(),
         timeout=60,
     )
 
 
 def _git(cwd: Path, *args: str) -> str:
     env = {
-        **os.environ,
+        **_clean_env(),
         "GIT_AUTHOR_NAME": "t",
         "GIT_AUTHOR_EMAIL": "t@example.invalid",
         "GIT_COMMITTER_NAME": "t",
