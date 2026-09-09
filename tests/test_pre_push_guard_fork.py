@@ -157,8 +157,8 @@ def test_deleting_main_is_refused(guarded_repo: Path):
     assert result.returncode == 1, result.stderr
 
 
-def test_a_repo_with_no_git_section_is_not_guarded(tmp_path: Path):
-    """Opt-in is the section. Without one the hook must stay out of the way."""
+def test_a_repo_with_no_config_at_all_is_not_guarded(tmp_path: Path):
+    """No config anywhere: the hook is a no-op, as it is in third-party clones."""
     repo = tmp_path / "plain"
     repo.mkdir()
     _git(repo, "init", "-q", "-b", "main", ".")
@@ -166,6 +166,24 @@ def test_a_repo_with_no_git_section_is_not_guarded(tmp_path: Path):
     result = _run(repo, "refs/heads/main aaaa refs/heads/main bbbb\n")
 
     assert result.returncode == 0, result.stderr
+
+
+def test_a_config_with_other_sections_but_no_git_is_not_guarded(tmp_path: Path):
+    """Opt-in is the SECTION, not the file.
+
+    A repo can carry `.qute/config.json` for `ship` or `review` alone and mean
+    nothing by it about branch guarding, so the `git`-section lookup must fall
+    through rather than treat the file's existence as consent.
+    """
+    repo = tmp_path / "othersections"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main", ".")
+    (repo / ".qute").mkdir()
+    (repo / ".qute" / "config.json").write_text('{"ship": {}, "review": {}}', encoding="utf-8")
+
+    result = _run(repo, "refs/heads/main aaaa refs/heads/main bbbb\n")
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_git_fields_at_the_top_level_refuse_rather_than_disarm(tmp_path: Path):
