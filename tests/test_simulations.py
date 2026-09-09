@@ -526,8 +526,7 @@ def test_draw_uncorrelated_raises_on_a_df_too_small_to_sample(tiny_df: float) ->
         _draw_uncorrelated((2, 2_000_000), "student-t", tiny_df, np.float32, np.random.default_rng(0))
 
 
-@pytest.mark.parametrize("tiny_df", [1e-320, 1e-8])
-def test_draw_uncorrelated_keeps_one_failure_path_under_seterr_raise(tiny_df: float) -> None:
+def test_draw_uncorrelated_keeps_one_failure_path_under_seterr_raise() -> None:
     # Regression, found in review. The module promises the finiteness check is
     # the SINGLE failure path, and that promise is about ORDER, not only about
     # logic: `g *= 2.0 / df` and `np.sqrt(g, out=g)` sat ABOVE the
@@ -537,10 +536,18 @@ def test_draw_uncorrelated_keeps_one_failure_path_under_seterr_raise(tiny_df: fl
     # "invalid value encountered in multiply" and never reached the message
     # naming df and dtype.
     #
+    # Only df=1e-320 is a live guard, and it is deliberately the ONLY case
+    # here. This was parametrized over [1e-320, 1e-8] until review pointed
+    # out that the 1e-8 cell passes with the fix reverted — it never reaches
+    # the multiply that overflows, so it was a second guard in appearance
+    # only, and a parametrize that reads as two protections where there is
+    # one is worse than a single honest case. df=1e-8 is still covered, as
+    # what it actually is, by `test_draw_uncorrelated_raises_on_a_df_too_small_to_sample`.
+    #
     # `np.errstate` as a context manager rather than `np.seterr`, so the
     # process-wide setting is restored even when the assertion fails.
     with np.errstate(all="raise"), pytest.raises(ValueError, match="Student-t draw produced non-finite values"):
-        _draw_uncorrelated((2, 200_000), "student-t", tiny_df, np.float32, np.random.default_rng(0))
+        _draw_uncorrelated((2, 200_000), "student-t", 1e-320, np.float32, np.random.default_rng(0))
 
 
 @pytest.mark.parametrize("good", [3, 3.0, np.int64(3), np.float32(3.0), np.float64(3.0)])

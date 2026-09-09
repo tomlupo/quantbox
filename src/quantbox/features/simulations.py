@@ -172,18 +172,28 @@ def _draw_uncorrelated(size, distribution, df, dtype, seed, _target_bytes=_TARGE
         # to zero, so it returns exactly 0.0 there — and 0.0 turns a finite
         # t into `inf`.
         #
-        # Exact zeros per 20M float32 draws (float64 gives zero in every
-        # row):
+        # The durable number is a RATE, not a count. A float32 uniform is
+        # exactly 0 with probability 2**-24 ~ 6e-8, and only the shape <= 1
+        # paths propagate that to an exact zero: the boost `U**(1/shape)`,
+        # and the shape == 1 exponential `-log(1 - U)`. Marsaglia-Tsang, used
+        # at shape > 1, does not. A float64 uniform would need 2**-53, which
+        # is why float64 never produces one.
         #
-        #     df=1  (shape 0.5)   2
-        #     df=2  (shape 1.0)   2
-        #     df=3  (shape 1.5)   0
+        # An earlier version of this comment tabulated raw counts — "df=1: 2,
+        # df=2: 2" per 20M draws. Those are single samples of a Poisson(~1.2)
+        # and do not reproduce: re-measured across four seeds they range 0-2
+        # at df=1 and 2-4 at df=2. Quoting them as if they were properties is
+        # the mistake this file has already made twice, so the rate is what
+        # is written down and the counts are left as what they are.
         #
-        # So this matters at df <= 2 and is UNREACHABLE at df=3, which is
-        # robo's production setting — do not read the block below as
-        # something df=3 depends on. It is kept because df is caller-supplied
-        # and df=2 is a plausible ask, and because a bounded block makes it
-        # cost a temporary rather than a second panel.
+        # So this matters at df <= 2 and is not reachable in practice at
+        # df=3, which is robo's production setting — do not read the block
+        # below as something df=3 depends on. "Not in practice" is an
+        # empirical bound, not a proof: 0 zeros in 400M draws across four
+        # seeds, with the smallest value seen ~1e-06, against the ~1e-38
+        # underflow it would take. The block is kept because df is
+        # caller-supplied and df=2 is a plausible ask, and because a bounded
+        # block makes it cost a temporary rather than a second panel.
         #
         # Two explanations that are NOT the reason, recorded because both
         # were asserted here before and both are false. Overflow: a float32
