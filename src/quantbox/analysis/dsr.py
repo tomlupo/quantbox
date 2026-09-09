@@ -33,6 +33,30 @@ from scipy import stats
 
 EULER_MASCHERONI = 0.5772156649015329
 
+# Degeneracy is tested RELATIVELY -- never by exact float equality with zero.
+#
+# A quantity that is mathematically zero does not reliably come out as 0.0 in
+# binary floating point. A constant returns series is the canonical example:
+# `[0.001] * 200` accumulates rounding to std = 2.17e-19 while `[0.001] * 50`
+# gives exactly 0.0, so whether an `== 0` guard fires is a lottery on the
+# (value, length) pair rather than a property of the input. Measured on this
+# module before the fix: of 32 constant series (8 values x 4 lengths), 17 hit
+# the exact guard and 15 sailed past it into the moment path, where scipy hit
+# catastrophic cancellation and the refusal came -- by luck -- from an
+# unrelated downstream finiteness check.
+#
+# The observed noise floor for a constant series is std/|value| ~ 2e-16
+# (machine epsilon); 1e-12 leaves ~4000x headroom above it while staying far
+# below any real series (std/scale = 1e-12 would imply a Sharpe of ~1e12).
+# Being relative, the test is unit-independent: a genuinely tiny-but-real
+# series (returns of order 1e-9 with std of order 1e-9) is unaffected. When
+# every observation is exactly zero, scale is 0 and the test reduces to
+# std <= 0, which still holds.
+#
+# This is the framework's single threshold for "cancelled to noise"; the
+# validation plugin imports it rather than keeping a second copy.
+DEGENERATE_RTOL = 1e-12
+
 
 @dataclass(frozen=True)
 class DSRResult:
@@ -73,15 +97,36 @@ def sr_estimator_std(T: int, sr: float, skew: float, kurtosis: float) -> float:
     """Std of the Sharpe-ratio estimator (Mertens 2002 / Bailey-López de Prado), per-period units."""
     if T <= 1:
         raise ValueError(f"need at least 2 observations to estimate SR variance, got T={T!r}")
-    variance = (1 - skew * sr + (kurtosis - 1) / 4 * sr**2) / (T - 1)
-    if variance < 0:
+    # The numerator is a three-term sum, and the terms can cancel. Keep them
+    # separately so the cancellation can be measured against their own scale.
+    terms = (1.0, -skew * sr, (kurtosis - 1) / 4 * sr**2)
+    numerator = sum(terms)
+    if numerator < 0:
         # Can happen with pathological (garbage) skew/kurtosis/sr combinations.
         # Fail loudly rather than silently sqrt()-ing a negative number to NaN.
         raise ValueError(
-            f"negative SR-estimator variance ({variance!r}) from T={T}, sr={sr}, "
+            f"negative SR-estimator variance ({numerator / (T - 1)!r}) from T={T}, sr={sr}, "
             f"skew={skew}, kurtosis={kurtosis} — check inputs"
         )
-    return math.sqrt(variance)
+    # Degenerate when the three terms cancel to noise. Under the Pearson bound
+    # kurtosis >= skew**2 + 1 (enforced by the caller) the numerator is bounded
+    # below by (1 - skew*sr/2)**2, so it reaches zero only on the knife edge
+    # kurtosis == skew**2 + 1 AND skew*sr == 2 -- a two-point distribution whose
+    # Sharpe estimator has no spread. There the estimator std is genuinely zero
+    # and the DSR is undefined; nearby, the sum has lost every significant digit
+    # and the value that survives is rounding noise. Both are refused here.
+    # NOTE this must stay RELATIVE to the terms, not to the numerator alone: a
+    # small sr_std is otherwise perfectly legitimate (it falls as 1/sqrt(T-1),
+    # so any long series has one), and an absolute floor would refuse real data.
+    scale = sum(abs(t) for t in terms)
+    if numerator <= DEGENERATE_RTOL * scale:
+        raise ValueError(
+            f"degenerate SR-estimator variance: the numerator ({numerator!r}) is negligible "
+            f"against the scale of its own terms ({scale!r}) — the moments T={T}, sr={sr}, "
+            f"skew={skew}, kurtosis={kurtosis} describe a distribution whose Sharpe estimator "
+            "has no spread, so the DSR is undefined"
+        )
+    return math.sqrt(numerator / (T - 1))
 
 
 def deflated_sharpe_ratio(sr: float, T: int, skew: float, kurtosis: float, n_trials: int) -> DSRResult:
@@ -119,9 +164,15 @@ def deflated_sharpe_ratio(sr: float, T: int, skew: float, kurtosis: float, n_tri
             "function requires fisher=False (3.0 for a normal distribution, not 0.0)."
         )
 
+    # No `sr_std == 0` check here any more. That was the second exact-float
+    # equality guard; the check now lives inside sr_estimator_std, where the
+    # terms of the variance sum exist to measure the cancellation against (see
+    # DEGENERATE_RTOL). That function is guaranteed to return a strictly
+    # positive value: the numerator's scale always includes the literal 1.0
+    # term, so scale >= 1 and any accepted numerator therefore exceeds 1e-12.
+    # Repeating the test here could never fire, and a second, weaker copy of a
+    # guard is how the first one stops being the real protection.
     sr_std = sr_estimator_std(T, sr, skew, kurtosis)
-    if sr_std == 0:
-        raise ValueError("zero SR-estimator std (degenerate/constant returns) — cannot compute DSR")
 
     e_max = expected_max_sr(n_trials)
     sr0 = sr_std * e_max
@@ -187,9 +238,16 @@ def deflated_sharpe_ratio_from_returns(returns, n_trials: int, *, allow_nonfinit
     T = len(r)
     if T <= 1:
         raise ValueError(f"need at least 2 finite return observations, got T={T!r}")
-    std = r.std(ddof=1)
-    if std == 0:
-        raise ValueError("zero-variance returns — cannot compute a Sharpe ratio")
+    std = float(r.std(ddof=1))
+    # Relative, not `== 0` — see DEGENERATE_RTOL. `scale` is 0 only when every
+    # observation is exactly zero, where this reduces to `std <= 0`.
+    scale = float(np.mean(np.abs(r)))
+    if std <= DEGENERATE_RTOL * scale:
+        raise ValueError(
+            f"zero-variance returns — cannot compute a Sharpe ratio: the standard deviation "
+            f"({std!r}) is negligible against the scale of the series itself "
+            f"(mean |return| = {scale!r}), i.e. the series is constant to within floating-point noise"
+        )
     sr = r.mean() / std
     skew = float(stats.skew(r))
     kurtosis = float(stats.kurtosis(r, fisher=False))

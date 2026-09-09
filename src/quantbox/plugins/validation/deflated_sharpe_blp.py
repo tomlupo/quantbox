@@ -60,25 +60,12 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm
 
-from quantbox.analysis.dsr import expected_max_sr, sr_estimator_std
+from quantbox.analysis.dsr import DEGENERATE_RTOL, expected_max_sr, sr_estimator_std
 from quantbox.contracts import PluginMeta
 
-# A returns series is degenerate when its standard deviation is negligible
-# *relative to the scale of the returns themselves* -- never by exact float
-# equality with zero. A constant series computed in binary floating point does
-# NOT reliably give std == 0: `[0.001] * 200` accumulates rounding to
-# std = 2.17e-19 while `[0.001] * 50` gives exactly 0.0, so an `== 0` guard
-# fires or misses depending on whether the constant happens to be exactly
-# representable at that length -- and a miss yields a Sharpe of ~1e16, which is
-# a division by noise reported as maximum confidence.
-#
-# The observed noise floor for a constant series is std/|value| ~ 2e-16 (machine
-# epsilon); 1e-12 leaves ~4000x headroom above it while staying far below any
-# real series (std/scale = 1e-12 would mean a Sharpe of ~1e12). Being relative,
-# the test is unit-independent: a genuinely tiny-but-real series (returns of
-# order 1e-9 with std of order 1e-9) is unaffected. When every observation is
-# exactly zero, scale is 0 and the test reduces to std <= 0, which still holds.
-_DEGENERATE_RTOL = 1e-12
+# Degeneracy threshold: quantbox.analysis.dsr owns it (see DEGENERATE_RTOL there
+# for the derivation and the measurements behind 1e-12).
+_DEGENERATE_RTOL = DEGENERATE_RTOL
 
 
 class _UndefinedDSR(ValueError):

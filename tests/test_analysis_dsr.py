@@ -13,6 +13,7 @@ is the single home for the DSR math regression.
 from __future__ import annotations
 
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -22,6 +23,7 @@ from quantbox.analysis import (
     deflated_sharpe_ratio,
     deflated_sharpe_ratio_from_returns,
     expected_max_sr,
+    sr_estimator_std,
 )
 
 
@@ -215,9 +217,111 @@ def test_too_few_observations_rejected():
         deflated_sharpe_ratio(sr=0.1, T=1, skew=0.0, kurtosis=3.0, n_trials=10)
 
 
-def test_zero_variance_returns_rejected():
-    with pytest.raises(ValueError):
-        deflated_sharpe_ratio_from_returns(np.zeros(100), n_trials=10)
+# --- degeneracy is detected RELATIVELY, not by exact float equality ---
+#
+# The guard this replaced was `if std == 0`, and the only test aiming at it
+# passed `np.zeros(100)` with a bare `pytest.raises(ValueError)`. Both halves of
+# that were blind: zeros is the one constant that IS exactly representable, and
+# an unmatched ValueError accepts a refusal that came from somewhere else. Under
+# the old guard 15 of the 32 (value, length) pairs below slipped past it and were
+# refused only by an unrelated downstream finiteness check on NaN moments — the
+# protection was not where the code said it was. Hence: many constants, and the
+# message pinned.
+
+
+@pytest.mark.parametrize("value", [0.0, 1.0, -1.0, 0.001, 0.1, 1e-8, -0.02, 3.7])
+@pytest.mark.parametrize("length", [3, 50, 200, 1000])
+def test_constant_returns_rejected_regardless_of_representability(value, length):
+    """Every constant series is degenerate, whatever the constant or the length.
+
+    Whether ``std`` lands on exactly 0.0 or on ~1e-19 is an artefact of binary
+    floating point (e.g. ``[0.001] * 50`` gives 0.0, ``[0.001] * 200`` gives
+    2.17e-19). The refusal must not depend on it, and must come from the
+    zero-variance guard rather than from a downstream NaN check.
+    """
+    returns = np.full(length, value, dtype=float)
+    with pytest.raises(ValueError, match="zero-variance returns"):
+        deflated_sharpe_ratio_from_returns(returns, n_trials=10)
+
+
+def test_constant_returns_do_not_reach_the_moment_computation():
+    """The guard fires BEFORE scipy sees near-identical data.
+
+    scipy emits a catastrophic-cancellation RuntimeWarning when asked for the
+    moments of a near-constant series. Its absence proves the refusal happened at
+    the variance guard, not downstream of it -- which is the actual defect: the
+    old code refused these inputs for the wrong reason.
+    """
+    returns = np.full(200, 0.001, dtype=float)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with pytest.raises(ValueError, match="zero-variance returns"):
+            deflated_sharpe_ratio_from_returns(returns, n_trials=10)
+
+
+@pytest.mark.parametrize("factor", [1e-12, 1e-6, 1.0, 1e6, 1e12])
+def test_degeneracy_guard_is_scale_invariant(factor):
+    """Rescaling a genuinely real series must not change the DSR at all.
+
+    This is what separates a RELATIVE guard from an absolute one: an absolute
+    threshold (``std <= 1e-12``) would pass the unscaled series and silently
+    start refusing -- or, worse, keep accepting while meaning something else --
+    as the units shrink. Bit-identical is the assertion; anything weaker (e.g.
+    "a tiny series still works") is satisfied by an absolute threshold too.
+    """
+    rng = np.random.default_rng(20260909)
+    base = rng.standard_normal(500) * 0.01 + 0.0005
+    reference = deflated_sharpe_ratio_from_returns(base, n_trials=50)
+    scaled = deflated_sharpe_ratio_from_returns(base * factor, n_trials=50)
+    # The DSR itself is bit-identical; the intermediates differ by a couple of
+    # ulp because mean/std of a rescaled array are not bit-exact reproductions.
+    assert scaled.dsr == reference.dsr
+    assert scaled.sr_period == pytest.approx(reference.sr_period, rel=1e-12)
+    assert scaled.z == pytest.approx(reference.z, rel=1e-12)
+
+
+def test_a_real_series_with_tiny_absolute_std_is_accepted():
+    """Positive control: small in absolute terms is not the same as degenerate."""
+    rng = np.random.default_rng(7)
+    returns = rng.standard_normal(500) * 1e-15 + 1e-16
+    result = deflated_sharpe_ratio_from_returns(returns, n_trials=10)
+    assert math.isfinite(result.dsr)
+
+
+# --- the second exact-equality guard: the SR-estimator variance ---
+
+
+def test_sr_estimator_variance_degeneracy_is_reachable_and_refused():
+    """kurtosis == skew**2 + 1 with skew*sr == 2 drives the variance to zero.
+
+    Under the Pearson bound the numerator is bounded below by
+    ``(1 - skew*sr/2)**2``, so this knife edge is the ONLY way it reaches zero --
+    a two-point distribution whose Sharpe estimator has no spread.
+    """
+    with pytest.raises(ValueError, match="degenerate SR-estimator variance"):
+        sr_estimator_std(T=500, sr=1.0, skew=2.0, kurtosis=5.0)
+
+
+@pytest.mark.parametrize("sr", [1.0 - 1e-6, 1.0 - 1e-9, 1.0, 1.0 + 1e-9, 1.0 + 1e-6])
+def test_neighbourhood_of_the_knife_edge_is_refused_not_just_the_exact_point(sr):
+    """Near the edge the three-term sum has lost every significant digit.
+
+    An ``== 0`` test refuses only where rounding happens to land on 0.0; at
+    sr = 1 +/- 1e-6 the numerator is ~1e-12 and the old guard passed it through,
+    reporting dsr = 1.0 from a division by noise.
+    """
+    with pytest.raises(ValueError, match="degenerate SR-estimator variance"):
+        deflated_sharpe_ratio(sr=sr, T=500, skew=2.0, kurtosis=5.0, n_trials=100)
+
+
+def test_small_sr_estimator_std_from_a_long_series_is_not_degenerate():
+    """Positive control, and the reason this guard must NOT be relative to 1/sqrt(T).
+
+    ``sr_std`` falls as ``1/sqrt(T-1)``, so any long series has a small one. Only
+    cancellation among the numerator's own terms means degeneracy.
+    """
+    std = sr_estimator_std(T=1_000_000, sr=0.05, skew=0.0, kurtosis=3.0)
+    assert 0 < std < 1e-2
 
 
 # --- THE REGRESSION: the verified false-PASS band, pinned as FAIL under real DSR ---
