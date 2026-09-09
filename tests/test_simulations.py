@@ -22,6 +22,7 @@ from quantbox.features import (
     parametric_mc,
     simulations_stats,
 )
+from quantbox.features.simulations import _draw_uncorrelated
 
 
 def test_freq_to_periods_public() -> None:
@@ -113,18 +114,33 @@ def test_parametric_mc_reusing_parameters_is_repeatable(
     pd.testing.assert_frame_equal(first, second)
 
 
-# Bit-identity, checked two ways — the claim this branch makes is that the
-# refactor above `parametric_mc`'s shock/returns lines changes allocations
-# and nothing else.
+# Bit-identity against the pre-refactor expressions — RE-SCOPED by this
+# branch. Read the scope before trusting the name.
 #
-# 1. `test_parametric_mc_matches_reference_implementation` runs the
-#    pre-refactor expressions and the current ones on the SAME machine and
-#    demands exact equality. That is the actual claim, it covers both the
-#    correlated and the uncorrelated branch, and it holds on any CPU.
+# On `dev` this test asserted bit-identity for every
+# (correlated, distribution, precision) cell. This branch draws the shocks
+# from `numpy.random.Generator` instead of `scipy.stats`, which changes the
+# random stream ON PURPOSE, so six of those eight cells cannot hold. They
+# are REMOVED rather than loosened, because a loosened version would be
+# asserting a statistical resemblance under a name that promises identity:
 #
-# 2. `test_parametric_mc_matches_stored_reference` pins a stored panel, so
-#    a change in scipy's sampling internals — `pyproject.toml` bounds
-#    scipy only from below — is caught rather than silently absorbed.
+#   * float32 — the draw is now native at float32 rather than float64
+#     downcast, so the values differ from the first element on.
+#   * student-t — assembled as `Z / sqrt(X / df)` from `standard_normal`
+#     and `standard_gamma`, which consumes the bit stream differently from
+#     `scipy.stats.t.rvs`.
+#
+# What survives is the (normal, float64) cell, and it is not a leftover.
+# `scipy.stats.norm.rvs(random_state=<Generator>)` delegates to that same
+# Generator's `standard_normal` at float64, so on this ONE path the new
+# code must still be exactly the old code — and it is, which is worth
+# pinning: it keeps the refactor's allocation changes (`out=`, the
+# broadcast, the in-place `exp`) under an exact, same-machine comparison
+# across both the correlated and the uncorrelated branch. Had this cell
+# moved too, the stream change would have been wider than intended.
+#
+# The cells that had to go are covered instead by the regenerated stored
+# reference below and by the distribution tests on `_draw_uncorrelated`.
 
 
 def _reference_parametric_mc(
@@ -133,21 +149,23 @@ def _reference_parametric_mc(
     iterations: int,
     steps: int,
     correlated: bool,
-    distribution: str,
-    df: int,
     seed: np.random.Generator,
-    precision: str,
 ) -> np.ndarray:
     """The panel `parametric_mc` produced BEFORE this branch's refactor.
 
     Transcribed expression for expression from
     `src/quantbox/features/simulations.py` at 58e5e09, covering the
-    `mu`/`cov`-supplied call path only, and returning the raw
-    `returns_sim` array from just before the reshape (which this branch
+    `mu`/`cov`-supplied, normal, float64 call path only, and returning the
+    raw `returns_sim` array from just before the reshape (which this branch
     does not touch). Deliberately dumb: its job is to be recognisably the
     old lines, not to be good code.
+
+    The float32 and student-t branches of the original are deliberately NOT
+    transcribed — this branch changes the random stream on both, so a
+    comparison there would be asserting something false.
     """
     frequency = 252
+    dtype = np.float64
     index = mu.index
     var = pd.Series(np.diag(cov), index=cov.index).loc[index]
     cov = cov.loc[index, index]
@@ -158,7 +176,6 @@ def _reference_parametric_mc(
     var = var / step_frequency
 
     drift = mu - 0.5 * var
-    dtype = getattr(np, precision)
     drift = drift.astype(dtype)
     if correlated:
         cov = cov.astype(dtype)
@@ -166,10 +183,7 @@ def _reference_parametric_mc(
     else:
         var = var.astype(dtype)
 
-    if distribution == "normal":
-        uncorr_x = stats.norm.rvs(size=(len(mu), iterations * steps), random_state=seed).astype(dtype)
-    else:
-        uncorr_x = stats.t.rvs(df, size=(len(mu), iterations * steps), random_state=seed).astype(dtype)
+    uncorr_x = stats.norm.rvs(size=(len(mu), iterations * steps), random_state=seed).astype(dtype)
 
     if correlated:
         shock = np.dot(chol, uncorr_x).astype(dtype)
@@ -179,36 +193,56 @@ def _reference_parametric_mc(
     return np.exp(np.atleast_2d(drift).T + shock).astype(dtype) - 1
 
 
-@pytest.mark.parametrize("precision", ["float64", "float32"])
-@pytest.mark.parametrize("distribution", ["normal", "student-t"])
 @pytest.mark.parametrize("correlated", [True, False])
-def test_parametric_mc_matches_reference_implementation(correlated: bool, distribution: str, precision: str) -> None:
+def test_parametric_mc_matches_reference_implementation(correlated: bool) -> None:
     tickers = ["AAA", "BBB"]
     mu = pd.Series([0.05, 0.07], index=tickers)
     cov = pd.DataFrame([[0.04, 0.01], [0.01, 0.09]], index=tickers, columns=tickers)
     steps, iterations = 5, 7
-    kwargs = dict(
+
+    got = parametric_mc(
+        mu=mu,
+        cov=cov,
+        seed=np.random.default_rng(2026),
         iterations=iterations,
         steps=steps,
         correlated=correlated,
-        distribution=distribution,
-        df=3,
-        precision=precision,
+        distribution="normal",
+        precision="float64",
+    ).to_numpy()
+
+    reference = _reference_parametric_mc(
+        mu=mu,
+        cov=cov,
+        seed=np.random.default_rng(2026),
+        iterations=iterations,
+        steps=steps,
+        correlated=correlated,
     )
-
-    got = parametric_mc(mu=mu, cov=cov, seed=np.random.default_rng(2026), **kwargs).to_numpy()
-
-    reference = _reference_parametric_mc(mu=mu, cov=cov, seed=np.random.default_rng(2026), **kwargs)
     # The reshape/concat the function applies to `returns_sim`, unchanged
     # by this branch and reproduced here so the comparison is on panels.
     want = np.hstack([reference[i].reshape(steps, iterations) for i in range(len(tickers))])
 
-    assert got.dtype == getattr(np, precision)
+    assert got.dtype == np.float64
     np.testing.assert_array_equal(got, want)
 
 
-# Generated at 39cc04b and verified equal to the revision before it. Kept
-# tiny and fully written out: a reference you can read is one you can
+# REGENERATED on this branch, deliberately — the values below are NOT the
+# ones `dev` carries, and that is the point rather than an accident.
+#
+# Drawing the shocks from `numpy.random.Generator` at the panel's own dtype
+# instead of drawing float64 through `scipy.stats` and casting produces a
+# DIFFERENT valid sample from the same distributions. Three of the four
+# cells therefore had to be re-recorded.
+#
+# The fourth did not, and it is the useful control: ("float64", "normal")
+# below is byte-for-byte the value `dev` stores, because
+# `scipy.stats.norm.rvs(random_state=<Generator>)` delegates to that
+# Generator's own `standard_normal` at float64. If a future change to the
+# draw moved THAT cell too, it would be changing more than this branch
+# claims to.
+#
+# Kept tiny and fully written out: a reference you can read is one you can
 # reason about when it fails.
 GOLDEN = {
     ("float64", "normal"): [
@@ -231,42 +265,46 @@ GOLDEN = {
     ],
     ("float64", "student-t"): [
         [
-            -0.01000682826373811,
-            0.015463354591143341,
-            -0.0037696558119070245,
-            -0.008715843404286328,
-            0.019606705896591414,
-            0.006083138915198294,
+            -0.011489620607138429,
+            0.003320298124244392,
+            -0.032419219678561095,
+            -0.007815025444610546,
+            0.010271301125419852,
+            -0.019548932413441134,
         ],
         [
-            -0.0022668083295737107,
-            -0.0008341994945846309,
-            -0.010534677379957835,
-            0.059497612692870794,
-            -0.014679140902960519,
-            0.036888500318631445,
+            0.02155567453374929,
+            0.011768119006467348,
+            -0.004535207944862507,
+            -0.003934026005773306,
+            0.022941635514055037,
+            0.0066686402786255705,
         ],
     ],
     ("float32", "normal"): [
-        [-0.009824812, 0.0031548738, -0.023492038, -0.008178115, 0.0065398216, -0.010802448],
-        [0.017861724, 0.008194208, -0.0035541058, 0.0002859831, 0.015648484, 0.008808851],
+        [-0.019417644, 0.0009651184, 0.0007904768, -0.0026753545, -0.008721948, 0.009429216],
+        [-0.010847867, -0.011642039, 0.014804721, 0.011250019, -0.016670048, -0.0151949525],
     ],
     ("float32", "student-t"): [
-        [-0.010006785, 0.015463352, -0.0037696362, -0.008715868, 0.01960659, 0.006083131],
-        [-0.0022668242, -0.0008342266, -0.010534644, 0.059497595, -0.014679074, 0.0368886],
+        [-0.01148963, 0.0033203363, -0.032419264, -0.007815063, 0.010271311, -0.019548953],
+        [0.021555662, 0.011768103, -0.0045351386, -0.0039340854, 0.02294159, 0.006668687],
     ],
 }
 
-# Why this one is `assert_allclose` and not `assert_array_equal`, when
-# bit-identity is the whole point of the branch: as an exact assertion it
-# went red on GitHub's runners while passing on every dev box, by 1 ULP
-# (2.2e-16) in two of twelve float64 elements. `np.dot` here goes to BLAS,
-# which selects its kernel from the CPU, so the last bit of a float64
-# product is a property of the machine, not of this code —
-# `test_parametric_mc_matches_reference_implementation` is what pins the
-# refactor, because it compares old and new ON the same machine. This test
-# is a drift alarm: the tolerances sit orders of magnitude above one ULP
-# and orders of magnitude below any drift worth hearing about.
+# Why this one is `assert_allclose` and not `assert_array_equal`: as an
+# exact assertion it went red on GitHub's runners while passing on every
+# dev box, by 1 ULP (2.2e-16) in two of twelve float64 elements. `np.dot`
+# here goes to BLAS, which selects its kernel from the CPU, so the last bit
+# of a float64 product is a property of the machine, not of this code.
+#
+# So this test is a DRIFT ALARM, not the identity proof: the tolerances sit
+# orders of magnitude above one ULP and orders of magnitude below any drift
+# worth hearing about. What it now guards, since the draw is ours rather
+# than scipy's, is a change in numpy's `standard_normal` / `standard_gamma`
+# sampling internals — `pyproject.toml` bounds numpy only from below — and
+# any accidental change to the block loop or the t construction. The exact
+# claim, on the one path where identity still holds, is pinned by
+# `test_parametric_mc_matches_reference_implementation` above.
 _GOLDEN_RTOL = {"float64": 1e-12, "float32": 1e-5}
 
 
@@ -292,3 +330,54 @@ def test_parametric_mc_matches_stored_reference(distribution: str, precision: st
     assert got.dtype == getattr(np, precision)
     want = np.array(GOLDEN[(precision, distribution)], dtype=got.dtype)
     np.testing.assert_allclose(got, want, rtol=_GOLDEN_RTOL[precision], atol=0)
+
+
+# --- _draw_uncorrelated -------------------------------------------------
+
+
+@pytest.mark.parametrize("precision", ["float32", "float64"])
+@pytest.mark.parametrize("distribution", ["normal", "student-t"])
+def test_draw_uncorrelated_shape_and_dtype(distribution: str, precision: str) -> None:
+    dtype = getattr(np, precision)
+    out = _draw_uncorrelated((3, 5000), distribution, 3, dtype, np.random.default_rng(0))
+    assert out.shape == (3, 5000)
+    assert out.dtype == dtype
+
+
+def test_draw_uncorrelated_is_seed_deterministic() -> None:
+    kw = ((2, 10_000), "student-t", 3, np.float32)
+    a = _draw_uncorrelated(*kw, np.random.default_rng(11))
+    b = _draw_uncorrelated(*kw, np.random.default_rng(11))
+    assert np.array_equal(a, b)
+
+
+def test_draw_uncorrelated_blocking_does_not_change_the_distribution() -> None:
+    # Same draw split into many blocks vs one: different stream, but the
+    # quantiles must agree. Guards the block loop's bookkeeping — an
+    # off-by-one there would leave a slice of the panel unwritten (i.e.
+    # whatever np.empty found in memory) and skew the tails.
+    size = (2, 200_000)
+    one = _draw_uncorrelated(size, "normal", 3, np.float64, np.random.default_rng(3))
+    many = _draw_uncorrelated(size, "normal", 3, np.float64, np.random.default_rng(4), target_bytes=64 * 1024)
+    qs = [0.01, 0.25, 0.5, 0.75, 0.99]
+    np.testing.assert_allclose(np.quantile(one, qs), np.quantile(many, qs), atol=0.03, rtol=0)
+
+
+def test_draw_uncorrelated_student_t_matches_scipy_quantiles() -> None:
+    df = 3
+    out = _draw_uncorrelated((1, 400_000), "student-t", df, np.float64, np.random.default_rng(5))
+    qs = [0.05, 0.25, 0.5, 0.75, 0.95]
+    np.testing.assert_allclose(np.quantile(out, qs), stats.t.ppf(qs, df), atol=0.03, rtol=0)
+
+
+def test_student_t_float32_draw_has_no_spurious_extreme_outliers() -> None:
+    # Regression, 2026-09-09. Assembling the t construction natively in
+    # float32 looked fine through the 1st-99th percentile but produced
+    # ~1e15 outliers: `standard_gamma` returns values near zero, and a
+    # float32 sqrt of one of those loses enough precision that the
+    # division manufactures a value no t(3) can produce. For 2e6 draws
+    # from t(3) the largest |value| sits around 150; this bound is three
+    # orders of magnitude clear of that and twelve clear of the bug.
+    out = _draw_uncorrelated((2, 1_000_000), "student-t", 3, np.float32, np.random.default_rng(6))
+    assert np.isfinite(out).all()
+    assert np.abs(out).max() < 1e5

@@ -17,7 +17,68 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import scipy.stats as stats
+
+
+def _draw_uncorrelated(size, distribution, df, dtype, seed, target_bytes=128 * 1024**2):
+    """Fill an ``(n_assets, n_cols)`` panel of iid shocks, natively at *dtype*.
+
+    ``scipy.stats`` has no dtype argument, so ``norm.rvs`` / ``t.rvs``
+    always materialise float64 and a float32 caller then pays for a second
+    full-size array to downcast into. On a long horizon that is the single
+    largest allocation in ``parametric_mc``: a (4, 100_800_000) panel is
+    3.0 GiB in float64 to produce a 1.5 GiB float32 result, and it is what
+    a production batch died on (2026-09-09, MemoryError with ~10 GiB free).
+
+    ``numpy``'s Generator does take a dtype — for ``standard_normal`` and
+    ``standard_gamma``, though not for ``standard_t`` or ``chisquare`` — so
+    Student-t is assembled from those two as ``Z / sqrt(X / df)`` with
+    ``X ~ chi2(df) = 2 * Gamma(df/2)``. Drawing in column blocks into one
+    preallocated panel keeps the transient cost to a block rather than a
+    second copy of the whole thing.
+
+    This changes the random stream: output is drawn from the same
+    distributions with the same parameters, but the numbers differ, exactly
+    as reseeding would. It is not a drop-in for a byte-identical rerun.
+    """
+    rng = seed if isinstance(seed, np.random.Generator) else np.random.default_rng(seed)
+    n_assets, n_cols = size
+    out = np.empty(size, dtype=dtype)
+
+    # One block ~= `target_bytes` of float64 working space, so the
+    # transient cost is bounded instead of scaling with the horizon the
+    # way a second full panel would.
+    block = max(1, int(target_bytes // max(1, n_assets * 8)))
+
+    for start in range(0, n_cols, block):
+        stop = min(start + block, n_cols)
+        shape = (n_assets, stop - start)
+
+        if distribution == "normal":
+            # No division, so nothing here can amplify a small value:
+            # the draw is safe directly at the panel's own dtype.
+            out[:, start:stop] = rng.standard_normal(shape, dtype=dtype)
+            continue
+
+        # Student-t as Z / sqrt(X / df) with X ~ chi2(df) = 2 * Gamma(df/2).
+        #
+        # This block is assembled in float64 even when the panel is
+        # float32, and that is not incidental. `standard_gamma` returns
+        # values arbitrarily close to zero; in float32 the sqrt of one of
+        # those loses enough precision that the division turns a
+        # legitimate tail draw into a spurious ~1e15 outlier. Measured:
+        # drawing this construction natively in float32 left the body of
+        # the distribution (1st-99th percentile) correct while the sample
+        # mean and standard deviation diverged by fifteen orders of
+        # magnitude. The block is bounded, so float64 here costs a
+        # temporary rather than a second panel.
+        z = rng.standard_normal(shape)
+        g = rng.standard_gamma(df / 2.0, shape)
+        g *= 2.0 / df
+        np.sqrt(g, out=g)
+        z /= g
+        out[:, start:stop] = z
+
+    return out
 
 
 def parametric_mc(
@@ -109,20 +170,10 @@ def parametric_mc(
     else:
         var = var.astype(dtype)
 
-    # shock — generate uncorrelated random variables
-    #
-    # scipy.stats has no dtype argument, so the draw is always float64.
-    # For an (n, iterations*steps) panel that is the largest single
-    # allocation in this function and it cannot be avoided here without
-    # changing the random stream. What *can* be avoided is every copy
-    # after it: `astype(copy=False)` is a no-op when the dtype already
-    # matches, where the default would duplicate the whole panel.
+    # shock — generate uncorrelated random variables, natively at `dtype`
+    # and in column blocks. See `_draw_uncorrelated`.
     size = (len(mu), iterations * steps)
-    if distribution == "normal":
-        uncorr_x = stats.norm.rvs(size=size, random_state=seed)
-    else:
-        uncorr_x = stats.t.rvs(df, size=size, random_state=seed)
-    uncorr_x = uncorr_x.astype(dtype, copy=False)
+    uncorr_x = _draw_uncorrelated(size, distribution, df, dtype, seed)
 
     if correlated:
         # `out=` writes the product straight into its destination rather
