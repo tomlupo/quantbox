@@ -61,6 +61,7 @@ from quantbox.exceptions import BrokerExecutionError
 from quantbox.retry import with_retry
 
 from ._fills import STATUS_WORKING, resolve_fill, trade_fee, trade_fee_currency
+from ._funding import net_funding
 
 try:
     import ccxt
@@ -691,6 +692,65 @@ class HyperliquidBroker:
         except Exception as e:
             logger.error(f"Error fetching fills: {e}")
             return pd.DataFrame(columns=["symbol", "side", "qty", "price", "timestamp", "fee", "fee_currency"])
+
+    def fetch_funding_payments(self, since: str) -> float | None:
+        """Net realised funding since ``since`` — ``None`` when UNKNOWN (#92).
+
+        Funding is the other half of the cost the daily report could not see.
+        The fee half was fetched and then dropped; this half was never fetched
+        at all, so ``funding_charge`` fell through to a default and 165 days of
+        reports said ``$0.00`` on a perps book that pays funding every hour on
+        its full notional.
+
+        The return is a **signed cash delta on the account** — negative when the
+        book paid, positive when it received — matching the venue's own sign
+        and ``futures_paper.apply_funding``. See :mod:`._funding`.
+
+        **Every failure path returns ``None``, and none returns 0.0.** An
+        unreachable venue, a ccxt build without the endpoint, an unparseable
+        response: each is a cost we did not measure, and the report renders it
+        UNKNOWN. A zero here would be indistinguishable from a genuinely
+        funding-free window, which is the whole of #92.
+        """
+        exchange = self._exchange
+        if exchange is None:
+            logger.error("Funding history: exchange not initialised — reporting UNKNOWN, not $0.00")
+            return None
+        if not (getattr(exchange, "has", None) or {}).get("fetchFundingHistory"):
+            logger.error(
+                "Funding history: this ccxt build reports no fetchFundingHistory support — reporting UNKNOWN, not $0.00"
+            )
+            return None
+
+        try:
+            since_ts = int(pd.Timestamp(since).timestamp() * 1000)
+            entries = exchange.fetch_funding_history(since=since_ts)
+        except Exception as e:  # noqa: BLE001 - any venue/parse failure is UNKNOWN, never free
+            logger.error("Funding history since %s failed: %s — reporting UNKNOWN, not $0.00", since, e)
+            return None
+
+        if entries is None:
+            logger.error("Funding history since %s returned nothing — reporting UNKNOWN, not $0.00", since)
+            return None
+
+        entries = list(entries)
+        total = net_funding(entries)
+        if total is None:
+            logger.error(
+                "Funding history since %s: %d entries could not be summed honestly "
+                "(missing amount or mixed currency) — reporting UNKNOWN, not $0.00",
+                since,
+                len(entries),
+            )
+        else:
+            logger.info(
+                "Funding since %s: %d payment(s), net %.4f %s (negative = paid)",
+                since,
+                len(entries),
+                total,
+                QUOTE_CURRENCY,
+            )
+        return total
 
     def get_price(self, symbol: str) -> float | None:
         """Get current price for symbol."""
