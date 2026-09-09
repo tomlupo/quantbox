@@ -59,7 +59,16 @@ def _clean_env() -> dict[str, str]:
     guard invocation would judge the wrong repo while looking like it judged the
     fixture. Caught by the pre-push hook itself.
     """
-    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_") and k not in _MUTING_VARS}
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith("GIT_")
+        # pre-commit re-exposes a ref through `PRE_COMMIT_*`, which
+        # `collect_refs` falls back to when stdin carries none — another way
+        # for the shell to answer a question about the guard.
+        and not k.startswith("PRE_COMMIT_")
+        and k not in _MUTING_VARS
+    }
 
 
 def _run(cwd: Path, stdin_text: str) -> subprocess.CompletedProcess:
@@ -160,9 +169,14 @@ def test_a_release_shaped_push_to_main_is_refused(guarded_repo: Path):
 def test_the_guard_is_discriminating_not_broken_shut(guarded_repo: Path):
     """Positive control on both sides, so 'refuses everything' cannot pass."""
     refused = _run(guarded_repo, "refs/heads/main aaaa refs/heads/main bbbb\n")
+    # `dev` is guarded only because the SECTION names it — `main` would be
+    # refused by the house default even if section parsing broke entirely, so
+    # without this assertion a re-vendor could leave `dev` open, silently.
+    integration = _run(guarded_repo, "refs/heads/dev aaaa refs/heads/dev bbbb\n")
     allowed = _run(guarded_repo, "refs/heads/feat/x aaaa refs/heads/feat/x bbbb\n")
 
     assert refused.returncode == 1, refused.stderr
+    assert integration.returncode == 1, integration.stderr
     assert allowed.returncode == 0, allowed.stderr
 
 
