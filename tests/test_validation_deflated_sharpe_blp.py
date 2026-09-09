@@ -176,15 +176,53 @@ class TestFailClosedOnUncomputableInput:
 
     # --- Defect 1: degenerate (zero-variance) input ---
 
-    @pytest.mark.parametrize("value", [0.0, 0.01, -0.02])
-    def test_constant_returns_are_refused_not_scored(self, plugin: DeflatedSharpeBLPValidation, value: float) -> None:
-        result = plugin.validate(self._series([value] * 50), pd.DataFrame(), None, {})
+    # A constant series computed in binary floating point does NOT reliably give
+    # std == 0. `[0.001] * 200` accumulates rounding to std = 2.17e-19 while
+    # `[0.001] * 50` gives exactly 0.0 -- whether the guard fires depends on the
+    # (value, length) pair, not on the series being constant. So this table
+    # crosses several constants that differ only in representability with
+    # several lengths. An earlier version of this test used length 50 only, where
+    # 0.0/0.01/-0.02 all happen to land on exact zero, and it passed while
+    # `[0.001] * 200` returned passed=True with dsr=1.0 and a Sharpe of 8.8e16.
+    @pytest.mark.parametrize("value", [0.0, 1.0, -1.0, 0.001, 0.1, 1e-8, -0.02, 3.7])
+    @pytest.mark.parametrize("n", [3, 50, 200, 1000])
+    def test_constant_returns_are_refused_not_scored(
+        self, plugin: DeflatedSharpeBLPValidation, value: float, n: int
+    ) -> None:
+        result = plugin.validate(self._series([value] * n), pd.DataFrame(), None, {})
         assert result["passed"] is False
         assert any(f["rule"] == "degenerate_returns" and f["level"] == "error" for f in result["findings"])
         # The point of the fix: no NUMBER is emitted that a downstream reader
         # could mistake for a computed verdict.
         assert result["metrics"]["dsr"] is None
         assert result["metrics"]["psr"] is None
+
+    @pytest.mark.parametrize("factor", [1e-12, 1e-6, 1.0, 1e6, 1e12])
+    def test_degeneracy_test_is_relative_not_absolute(self, plugin: DeflatedSharpeBLPValidation, factor: float) -> None:
+        """The degeneracy guard must key on std RELATIVE to the return scale.
+
+        The Sharpe ratio is scale-invariant, so rescaling a real return series
+        by any positive factor must leave the DSR unchanged and must never make
+        it look degenerate. An absolute threshold cannot satisfy this at ANY
+        level: pick one, and a series scaled below it is wrongly refused --
+        returns of order 1e-13 are unusual units, not an absent signal.
+
+        Stated as invariance rather than "a small series still works" on
+        purpose: the first version of this test used returns of order 1e-9,
+        whose std sits above any plausible absolute cutoff, and a mutant
+        substituting `std <= 1e-12` survived it.
+        """
+        rng = np.random.default_rng(3)
+        base = rng.normal(0.001, 0.01, size=400)
+        index = pd.date_range("2024-01-01", periods=400)
+        reference = plugin.validate(pd.DataFrame({"returns": base}, index=index), pd.DataFrame(), None, {"n_trials": 1})
+        scaled = plugin.validate(
+            pd.DataFrame({"returns": base * factor}, index=index), pd.DataFrame(), None, {"n_trials": 1}
+        )
+        assert not any(f["rule"] == "degenerate_returns" for f in scaled["findings"])
+        assert scaled["metrics"]["dsr"] is not None
+        assert scaled["metrics"]["dsr"] == pytest.approx(reference["metrics"]["dsr"], rel=1e-9)
+        assert scaled["metrics"]["observed_sharpe"] == pytest.approx(reference["metrics"]["observed_sharpe"], rel=1e-9)
 
     def test_non_finite_returns_are_refused(self, plugin: DeflatedSharpeBLPValidation) -> None:
         returns = self._good_returns()
