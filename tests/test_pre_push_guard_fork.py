@@ -145,7 +145,10 @@ def test_a_release_shaped_push_to_main_is_refused(guarded_repo: Path):
         "back, probably via a re-vendor from the upstream template.\n"
         f"stdout={result.stdout!r} stderr={result.stderr!r}"
     )
-    assert "REFUSED" in result.stderr
+    # Wording unique to the BRANCH refusal: the unusable-config refusal also
+    # says "REFUSED", so a fixture broken by a later edit would otherwise keep
+    # this green while the exemption was back.
+    assert "is a guarded branch in this repo" in result.stderr
 
 
 def test_the_guard_is_discriminating_not_broken_shut(guarded_repo: Path):
