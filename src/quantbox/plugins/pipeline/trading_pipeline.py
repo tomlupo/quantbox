@@ -34,6 +34,8 @@ from quantbox.contracts import (
     RunResult,
     StrategyPlugin,
 )
+from quantbox.reconciliation.ledger import EXEC_STATUS_TO_LEDGER
+from quantbox.reconciliation.working_orders import DEFAULT_MAX_AGE_DAYS
 
 logger = logging.getLogger(__name__)
 
@@ -105,27 +107,11 @@ def _atomic_write_text(path: Any, text: str) -> None:
 
 
 # Ledger result status mapped from an execution ``orders_details`` row status.
-# The map normalises each broker's fill-status vocabulary to the ledger's
-# canonical set (see ``reconciliation.ledger.RESULT_STATUSES``). CANCELED /
-# CANCELLED / EXPIRED / TIMEOUT are terminal NON-fills that a live venue can
-# emit (ccxt unified statuses); they are mapped explicitly so an unexpected
-# status is classified as a non-fill for the failure/missed-fill streak
-# (trading_pipeline streak else-branch) rather than passed through as an
-# "unknown status" the ledger warns on. Anything still unmapped falls through
-# to a lowercased passthrough, which the streak logic also treats as a non-fill.
-_EXEC_STATUS_TO_LEDGER = {
-    "FILLED": "filled",
-    "PARTIAL": "partial",
-    # Non-terminal: accepted, still on the book. See NON_TERMINAL_RESULT_STATUSES.
-    "WORKING": "working",
-    "FAILED": "failed",
-    "SKIPPED": "skipped",
-    "REJECTED": "rejected",
-    "CANCELED": "failed",
-    "CANCELLED": "failed",
-    "EXPIRED": "failed",
-    "TIMEOUT": "timeout",
-}
+# Backwards-compatible alias. The map itself now lives in
+# ``reconciliation.ledger`` beside the vocabulary it targets, because the
+# out-of-cycle working-order resolver must translate into the same map and a
+# private second copy is how two callers start disagreeing.
+_EXEC_STATUS_TO_LEDGER = EXEC_STATUS_TO_LEDGER
 
 
 @dataclass
@@ -2453,12 +2439,9 @@ class TradingPipeline:
     # ==================================================================
     # Working orders left resting at the venue (cross-cycle resolution)
     # ==================================================================
-    # Orders left WORKING are queued for a day at most before we stop expecting
-    # them; a limit order that has not resolved by the next daily cycle is either
-    # long dead or long filled, and the position reconciliation covers the book
-    # either way. The cap exists so an order the venue never resolves cannot grow
-    # the queue without bound.
-    _WORKING_MAX_AGE_DAYS = 7
+    # Retention cap for the queue; rationale lives with the constant in
+    # ``reconciliation.working_orders``.
+    _WORKING_MAX_AGE_DAYS = DEFAULT_MAX_AGE_DAYS
 
     def _working_store(self, params: dict[str, Any]) -> Any:
         """Build the per-book working-order queue, or None when unidentifiable.
@@ -2482,133 +2465,23 @@ class TradingPipeline:
         return WorkingOrderStore(book_key=book_key, root=root)
 
     def _resolve_working_orders(self, store: Any, broker: BrokerPlugin, ledger: Any = None) -> list[dict[str, Any]]:
-        """Ask the venue what became of orders a previous cycle left working.
+        """Stage 6c: ask the venue what became of orders a previous cycle left working.
 
-        Returns the list of orders that reached a terminal state this cycle. An
-        order the venue cannot be read for stays queued (an API blip must never
-        discard a real fill); an order still working stays queued too.
+        Thin delegate. The semantics — unreadable venue keeps the order queued,
+        still-working keeps it, terminal books it against the carried order_ref,
+        past the cap drops it loudly — live in
+        :func:`quantbox.reconciliation.working_orders.resolve_working_orders`,
+        which the out-of-cycle follow-up job calls too. Returns the orders that
+        reached a terminal state this cycle.
         """
-        queued = store.load()
-        if not queued:
-            return []
+        from quantbox.reconciliation.working_orders import resolve_working_orders
 
-        resolver = getattr(broker, "fetch_order_result", None)
-        if not callable(resolver):
-            logger.warning(
-                "%d working order(s) queued but broker %s cannot resolve orders — their fills will not be booked",
-                len(queued),
-                type(broker).__name__,
-            )
-            return []
-
-        resolved: list[dict[str, Any]] = []
-        drop_ids: set[str] = set()
-        now = datetime.now(timezone.utc)
-        for rec in queued:
-            order_id = str(rec.get("order_id") or "")
-            symbol = str(rec.get("symbol") or "")
-            if not order_id:
-                drop_ids.add(order_id)
-                continue
-
-            outcome = resolver(order_id, symbol)
-            if outcome is None:
-                # Could not read the venue. NOT a failure — keep it queued so the
-                # next cycle tries again. This is the branch that separates
-                # "cannot check" from "checked and found nothing".
-                logger.warning(
-                    "Working order %s %s (id=%s) could not be resolved this cycle — left queued",
-                    rec.get("side"),
-                    symbol,
-                    order_id,
-                )
-                if self._working_order_expired(rec, now):
-                    logger.error(
-                        "Working order %s %s (id=%s) has been unresolved for over %d days "
-                        "— dropping from the queue; reconcile it by hand",
-                        rec.get("side"),
-                        symbol,
-                        order_id,
-                        self._WORKING_MAX_AGE_DAYS,
-                    )
-                    drop_ids.add(order_id)
-                continue
-
-            status = str(outcome.get("status", "")).strip().upper()
-            if status == "WORKING":
-                logger.info(
-                    "Working order %s %s (id=%s) is STILL working at the venue",
-                    rec.get("side"),
-                    symbol,
-                    order_id,
-                )
-                if self._working_order_expired(rec, now):
-                    logger.error(
-                        "Working order %s %s (id=%s) has rested for over %d days — "
-                        "dropping from the queue; reconcile it by hand",
-                        rec.get("side"),
-                        symbol,
-                        order_id,
-                        self._WORKING_MAX_AGE_DAYS,
-                    )
-                    drop_ids.add(order_id)
-                continue
-
-            # Terminal: FILLED / PARTIAL / FAILED. Book it and stop tracking it.
-            drop_ids.add(order_id)
-            entry = {
-                "symbol": symbol,
-                "side": str(rec.get("side", "")),
-                "order_id": order_id,
-                "status": status,
-                "quantity": float(outcome.get("qty", 0) or 0.0),
-                "price": float(outcome.get("price", 0) or 0.0),
-                "error": str(outcome.get("error", "")),
-                "placed_cycle_id": str(rec.get("cycle_id", "")),
-            }
-            resolved.append(entry)
-            logger.info(
-                "Working order resolved LATE: %s %s (id=%s) -> %s qty=%s @ %s",
-                entry["side"],
-                symbol,
-                order_id,
-                status,
-                entry["quantity"],
-                entry["price"],
-            )
-            order_ref = rec.get("order_ref")
-            if ledger is not None and order_ref:
-                try:
-                    ledger.record_result(
-                        order_ref=str(order_ref),
-                        cycle_id=str(rec.get("cycle_id") or ""),
-                        status=_EXEC_STATUS_TO_LEDGER.get(status, status.lower()),
-                        filled_qty=entry["quantity"],
-                        avg_px=entry["price"],
-                        resolved_late=True,
-                    )
-                except Exception:  # noqa: BLE001 - ledger write must not lose the resolution
-                    logger.exception(
-                        "Failed to record LATE result for %s (ref=%s) in the ledger",
-                        symbol,
-                        order_ref,
-                    )
-
-        store.drop(drop_ids)
-        return resolved
-
-    def _working_order_expired(self, rec: dict[str, Any], now: datetime) -> bool:
-        """True when a queued order is older than the retention cap."""
-        raw = rec.get("recorded_at")
-        if not raw:
-            return False
-        try:
-            recorded = datetime.fromisoformat(str(raw))
-        except ValueError:
-            return False
-        if recorded.tzinfo is None:
-            recorded = recorded.replace(tzinfo=timezone.utc)
-        return (now - recorded).days > self._WORKING_MAX_AGE_DAYS
+        return resolve_working_orders(
+            store,
+            broker,
+            ledger=ledger,
+            max_age_days=self._WORKING_MAX_AGE_DAYS,
+        ).resolved
 
     def _recon_load(self, params: dict[str, Any], run_id: str, asof: str) -> _ReconCtx | None:
         """Parse the `reconciliation` config block ONCE and build the per-cycle

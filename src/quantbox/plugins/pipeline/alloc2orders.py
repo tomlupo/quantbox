@@ -11,6 +11,7 @@ import pandas as pd
 import yaml
 
 from quantbox.contracts import ArtifactStore, BrokerPlugin, DataPlugin, Mode, PluginMeta, RiskPlugin, RunResult
+from quantbox.parquet_io import read_parquet
 from quantbox.run_history import resolve_latest_artifact
 
 logger = logging.getLogger(__name__)
@@ -236,7 +237,7 @@ class AllocationsToOrdersPipeline:
             alloc_path = str(resolve_latest_artifact(artifacts_root, pipe, artifact_file))
         if not alloc_path:
             raise ValueError("Must provide allocations_path or allocations_ref=latest:<pipeline>")
-        alloc = pd.read_parquet(alloc_path)
+        alloc = read_parquet(alloc_path)
         if "symbol" not in alloc.columns or "weight" not in alloc.columns:
             raise ValueError("allocations_path must contain columns: symbol, weight")
 

@@ -65,6 +65,7 @@ src/quantbox/              ← installable library (uv add quantbox)
   registry.py              Plugin discovery (builtins + entry points)
   cli.py                   CLI entry point (quantbox command)
   store.py                 Artifact storage (Parquet + JSON)
+  parquet_io.py            Teardown-safe parquet reads (every pandas read routes here)
   schemas.py               Runtime schema validation
   artifact_schemas/        JSON schemas for artifacts (bundled as package data)
   plugins/
@@ -223,8 +224,21 @@ again on 2026-08-18, so it is worth actually checking.
 The `main` rule is enforced by two qute-essentials guard layers armed by the
 presence of `.claude/git-guard.json` — `pre-push` (the one that holds) and the
 `git-workflow` PreToolUse hook. Neither is a file this repo maintains; `/guard`
-documents and toggles them. This repo's only deviation is `integration_branch:
-null`, so `dev` is deliberately unguarded locally.
+documents and toggles them. This repo declares `integration_branch: "dev"`,
+naming the branch the table above already describes.
+
+It said `null` until 2026-09-09, meaning "dev is cheap, push freely". That
+reading is only half of what the field does: `/ship` reads the SAME key to
+decide whether a repo is two-stage, and `null` there does not mean "unguarded",
+it means **this repo has no integration branch at all** — so `/ship` refused on
+`dev` and sent the caller to release from `main`, which is the opposite of
+[`## Shipping cycle`](#shipping-cycle) and how v0.4.4 ended up with a hand-cut
+tag outside `origin/dev`'s ancestry (repaired in #173). One key, two consumers:
+it is declared for the stricter one.
+
+`review-gate.yml` gates `main` only, which is the rule `branch_policy` asserts —
+the gate fires on the protected branch and NOT on the integration branch — and
+that stays true with `dev` named rather than null.
 
 Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`, `test:`) —
 the prefixes drive the semver bump. Never `--no-verify`, never force-push `main`,
@@ -262,4 +276,3 @@ links here rather than restating it — this policy has drifted twice now
    `git merge origin/main` + `uv sync`, 06:00 UTC). Run
    `./scripts/after-release.sh` to check the tag is reachable from `main`, see
    the pin quantbox-live currently declares, and print what remains.
-

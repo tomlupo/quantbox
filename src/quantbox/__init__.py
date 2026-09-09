@@ -5,6 +5,7 @@ __all__ = [
     "exceptions",
     "features",
     "indicators",
+    "parquet_io",
     "performance",
     "plugins",
     "registry",
@@ -12,4 +13,4 @@ __all__ = [
     "schemas",
     "store",
 ]
-__version__ = "0.4.4"
+__version__ = "0.4.5"
