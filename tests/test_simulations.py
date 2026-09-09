@@ -338,6 +338,51 @@ def test_parametric_mc_matches_stored_reference(distribution: str, precision: st
     np.testing.assert_allclose(got, want, rtol=_GOLDEN_RTOL[precision], atol=0)
 
 
+def test_parametric_mc_ignores_a_target_bytes_kwarg() -> None:
+    # The block width changes the output — a permutation on the normal path,
+    # a genuinely different sample on the Student-t one (both measured; see
+    # `_TARGET_BLOCK_BYTES`). So it must not be reachable from the public
+    # API, or a caller trimming memory to fit a box would silently get
+    # different numbers while `canonical-reproductions`, which runs at the
+    # default, stayed green.
+    #
+    # `parametric_mc` takes `**kwargs`, so this cannot be an "it raises
+    # TypeError" test: the argument is swallowed today. What is asserted is
+    # the property that actually matters — passing it changes NOTHING — and
+    # that is what breaks the day someone plumbs it through to
+    # `_draw_uncorrelated` without thinking about determinism.
+    #
+    # Student-t deliberately, because it is the path where the multiset
+    # moves rather than merely the placement, and float32 because it is
+    # robo's production configuration.
+    tickers = ["AAA", "BBB"]
+    mu = pd.Series([0.05, 0.07], index=tickers)
+    cov = pd.DataFrame([[0.04, 0.01], [0.01, 0.09]], index=tickers, columns=tickers)
+    kw = dict(
+        mu=mu,
+        cov=cov,
+        iterations=200,
+        steps=50,
+        distribution="student-t",
+        precision="float32",
+        df=3,
+    )
+
+    plain = parametric_mc(seed=np.random.default_rng(99), **kw)
+    with_kwarg = parametric_mc(seed=np.random.default_rng(99), target_bytes=64 * 1024, **kw)
+
+    pd.testing.assert_frame_equal(plain, with_kwarg)
+
+    # Positive control for the assertion above: at this size the width DOES
+    # move the numbers, so the equality just asserted is a real constraint
+    # rather than a comparison of two identical no-ops.
+    size = (len(tickers), 200 * 50)
+    default = _draw_uncorrelated(size, "student-t", 3, np.float32, np.random.default_rng(99))
+    narrow = _draw_uncorrelated(size, "student-t", 3, np.float32, np.random.default_rng(99), _target_bytes=64 * 1024)
+    assert not np.array_equal(default, narrow)
+    assert not np.array_equal(np.sort(default, axis=None), np.sort(narrow, axis=None))
+
+
 # --- _draw_uncorrelated -------------------------------------------------
 
 
@@ -376,14 +421,14 @@ def test_draw_uncorrelated_blocking_draws_the_same_values() -> None:
     # not assumed.
     size = (2, 200_000)
     one = _draw_uncorrelated(size, "normal", 3, np.float64, np.random.default_rng(3))
-    many = _draw_uncorrelated(size, "normal", 3, np.float64, np.random.default_rng(3), target_bytes=64 * 1024)
+    many = _draw_uncorrelated(size, "normal", 3, np.float64, np.random.default_rng(3), _target_bytes=64 * 1024)
     assert not np.array_equal(one, many), "blocking should change placement"
     np.testing.assert_array_equal(np.sort(one.ravel()), np.sort(many.ravel()))
 
 
 def test_draw_uncorrelated_writes_every_column_across_many_blocks() -> None:
     # The block loop's bookkeeping, tested by something that can actually
-    # fail on it. `target_bytes=64KiB` at 2 assets gives 4096-column blocks,
+    # fail on it. `_target_bytes=64KiB` at 2 assets gives 4096-column blocks,
     # so 49 of them over 200k columns.
     #
     # An off-by-one leaves a slice holding whatever `np.empty` found, which
@@ -404,7 +449,7 @@ def test_draw_uncorrelated_writes_every_column_across_many_blocks() -> None:
     # tolerance loose enough to survive two different seeds, and a realistic
     # `stop = start + block - 1` slip leaves 1/4096 of columns unwritten and
     # is invisible at any tolerance at all.
-    out = _draw_uncorrelated((2, 200_000), "normal", 3, np.float64, np.random.default_rng(4), target_bytes=64 * 1024)
+    out = _draw_uncorrelated((2, 200_000), "normal", 3, np.float64, np.random.default_rng(4), _target_bytes=64 * 1024)
     # Only the exact-zero check earns its place. `assert isfinite(...)` was
     # here too and could not fail — `standard_normal` never returns a
     # non-finite value at either dtype, and this branch has no division.
@@ -424,7 +469,7 @@ def test_draw_uncorrelated_student_t_matches_scipy_quantiles() -> None:
 def test_student_t_draw_matches_the_distribution_across_df(df: int) -> None:
     # Quartiles against scipy's t(df), across the range where the tail gets
     # heavy. Fails on an algebra slip in Z / sqrt(X/df) or a wrong Gamma
-    # shape. `target_bytes` is set so this spans many blocks rather than
+    # shape. `_target_bytes` is set so this spans many blocks rather than
     # one — at the default it would be a single block and the comment would
     # be describing coverage the call does not have.
     #
@@ -437,7 +482,7 @@ def test_student_t_draw_matches_the_distribution_across_df(df: int) -> None:
     # than bolted on here.) A tail BOUND would be worse — a heavy tail is
     # the point of Student-t, so any threshold is unreachable or flaky.
     out = _draw_uncorrelated(
-        (2, 500_000), "student-t", df, np.float32, np.random.default_rng(6), target_bytes=64 * 1024
+        (2, 500_000), "student-t", df, np.float32, np.random.default_rng(6), _target_bytes=64 * 1024
     )
     lo, hi = stats.t.ppf([0.25, 0.75], df)
     np.testing.assert_allclose(np.quantile(out, [0.25, 0.75]), [lo, hi], atol=0.02, rtol=0)

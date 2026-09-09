@@ -33,9 +33,41 @@ import numbers
 import numpy as np
 import pandas as pd
 
+# Block size for the draw, in nominal bytes. PART OF THE NUMERICAL CONTRACT,
+# not a memory tunable — which is why it is a module constant and not a
+# parameter of `parametric_mc`.
+#
+# Measured, not assumed (forge, 2026-09-09, (4, 60_000), default vs 64 KiB):
+#
+#   normal     — the multiset of drawn values is IDENTICAL, but the panel is
+#                not: a block of shape (n_assets, w) is filled row-major, so
+#                the width decides which stream position lands at which
+#                (row, col). Same sample, permuted.
+#   student-t  — the multiset itself DIFFERS. The loop takes a z-draw and a
+#                g-draw per block, so a different width pairs the two streams
+#                differently and the quotients are genuinely different
+#                numbers.
+#
+# Either way the output moves, so a caller lowering this to fit a smaller box
+# would silently get different numbers while `canonical-reproductions` — which
+# runs at the default — stayed green. A parameter cannot be both a memory
+# tunable and an input to determinism; this repo resolves that by keeping the
+# value fixed here and exposing no way to change it.
+#
+# `_draw_uncorrelated` still accepts `_target_bytes` so the block loop itself
+# can be tested at a width that produces many blocks. It is underscore-prefixed
+# and never forwarded by `parametric_mc`;
+# `test_parametric_mc_ignores_a_target_bytes_kwarg` fails if that ever changes.
+_TARGET_BLOCK_BYTES = 128 * 1024**2
 
-def _draw_uncorrelated(size, distribution, df, dtype, seed, target_bytes=128 * 1024**2):
+
+def _draw_uncorrelated(size, distribution, df, dtype, seed, _target_bytes=_TARGET_BLOCK_BYTES):
     """Fill an ``(n_assets, n_cols)`` panel of iid shocks at *dtype*.
+
+    The block width comes from `_TARGET_BLOCK_BYTES` and is part of the
+    numerical contract, not a knob — see the note on that constant. The
+    `_target_bytes` argument exists so the block loop can be tested at a
+    width that produces many blocks; nothing in the public API forwards it.
 
     Any float64 intermediate is bounded to ONE BLOCK rather than the whole
     panel. That is the achievement, and it is deliberately weaker than "no
@@ -87,7 +119,21 @@ def _draw_uncorrelated(size, distribution, df, dtype, seed, target_bytes=128 * 1
         # STRING "3", which passes a numeric check and then fails four lines
         # later on `df / 2.0`. numpy registers its scalar types with the
         # numbers ABCs, so np.int64 and np.float32 pass here.
-        if isinstance(df, bool) or not isinstance(df, numbers.Real) or not np.isfinite(float(df)) or float(df) <= 0:
+        #
+        # Named rather than written inline so this stays two statements: as a
+        # bare nested `if` it is the single statement of its parent's body,
+        # which ruff's SIM102 asks to be flattened into
+        # `distribution != "normal" and (...)`. Flattening it would put the
+        # reasoning above four screens from the condition it explains.
+        #
+        # The `or` chain short-circuits left to right, and that ordering is
+        # load-bearing: `not isinstance(df, numbers.Real)` must be decided
+        # BEFORE `float(df)` is evaluated, or the string "3" raises a bare
+        # ValueError from the coercion instead of this message.
+        df_is_unusable = (
+            isinstance(df, bool) or not isinstance(df, numbers.Real) or not np.isfinite(float(df)) or float(df) <= 0
+        )
+        if df_is_unusable:
             raise ValueError(f"df must be a finite positive number, got {df!r}")
 
     rng = seed if isinstance(seed, np.random.Generator) else np.random.default_rng(seed)
@@ -97,14 +143,14 @@ def _draw_uncorrelated(size, distribution, df, dtype, seed, target_bytes=128 * 1
     # Block sized so the transient cost is bounded instead of scaling with
     # the horizon the way a second full panel would.
     #
-    # `target_bytes` is nominal in BOTH directions, so do not read the name
+    # The figure is nominal in BOTH directions, so do not read the name
     # literally: the divisor is hard-coded at float64's 8 bytes, so the
     # Student-t path holds `z` and `g` at once and lives at 2x, while the
     # normal float32 path lives at 0.5x, because the only block-sized
     # allocation on it is the draw itself: `standard_normal(dtype=dtype)`
     # produces the block natively and assigning it into the strided column
     # slice is a direct copy, with no second full-block temporary.
-    block = max(1, int(target_bytes // max(1, n_assets * 8)))
+    block = max(1, int(_target_bytes // max(1, n_assets * 8)))
 
     for start in range(0, n_cols, block):
         stop = min(start + block, n_cols)
