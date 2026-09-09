@@ -526,12 +526,11 @@ def load_config(repo_root: Path):
                 # guarded branch waved past, on a file whose author plainly
                 # believed they were configuring this guard. That is the
                 # "looks guarded, isn't" state, so it refuses instead.
+                # BRANCH fields only. `release_tool` is guidance text with no
+                # security meaning, and refusing every push in the repo over a
+                # stray string is a guard that costs more than it protects.
                 misplaced = sorted(
-                    set(data) & {
-                        "protected_branch",
-                        "integration_branch",
-                        "release_tool",
-                    }
+                    set(data) & {"protected_branch", "integration_branch"}
                 )
                 if misplaced:
                     raise ConfigError(
@@ -799,8 +798,11 @@ def main(argv, stdin_text: str) -> int:
     #
     # The upstream qute-essentials template exempts a push whose added commits
     # all look like release commits, so `/ship` can tag and push without an
-    # override. That exemption is not vendored here, and this is the one place
-    # this copy is INTENTIONALLY ahead of the template rather than behind it.
+    # override. That exemption is not vendored here. It is the LARGEST of this
+    # fork's deliberate divergences, not the only one — the refusal naming the
+    # config surface that answered (`source_path`) and the misplaced-top-level-
+    # keys refusal are fork-only too, and `tests/test_pre_push_guard_fork.py`
+    # asserts all three survive a re-vendor.
     #
     # Two reasons:
     #
