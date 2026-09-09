@@ -45,6 +45,7 @@ from typing import Any
 import pandas as pd
 from quantbox.contracts import PluginMeta, StrategyPlugin
 
+
 @dataclass
 class MyStrategy:
     """One-sentence description."""
@@ -54,7 +55,7 @@ class MyStrategy:
         kind="strategy",
         version="0.1.0",
         core_compat=">=0.1,<0.2",
-        status="research",                    # see lifecycle.md
+        status="research",  # see lifecycle.md
         description="...",
         tags=("...",),
         capabilities=("backtest", "paper", "live"),
@@ -120,22 +121,26 @@ quantbox plugins list | grep {slug}
 def test_smoke():
     """Plugin instantiates and runs without crashing."""
     strat = MyStrategy()
-    data = {"prices": _synthetic_prices()}      # wide-format DataFrame
+    data = {"prices": _synthetic_prices()}  # wide-format DataFrame
     result = strat.run(data, params={})
     assert "weights" in result
     assert isinstance(result["weights"], pd.DataFrame)
 
+
 def test_params_schema_rejects_bad_input():
     """Schema validation catches bogus params."""
     from quantbox.runner import validate_params
+
     findings = validate_params(MyStrategy.meta, {"lookback_days": -1})
     assert findings  # non-empty = validation caught it
+
 
 def test_output_schema():
     """Output matches the registered schema."""
     strat = MyStrategy()
     result = strat.run({"prices": _synthetic_prices()}, params={})
     from quantbox.schemas import validate
+
     assert validate("strategy_weights", result["weights"])
 ```
 

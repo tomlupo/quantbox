@@ -58,6 +58,7 @@ The producer pipeline asserts these contracts before writing. Consumers may assu
 
 ```python
 import pandas as pd
+
 df = pd.read_parquet("data/published/fund_selection/scores.parquet")
 print(df.shape, df.columns.tolist())
 print(df.head())
@@ -67,6 +68,7 @@ print(df.head())
 
 ```python
 import duckdb
+
 con = duckdb.connect()
 df = con.execute("""
     SELECT date, symbol, score, rank

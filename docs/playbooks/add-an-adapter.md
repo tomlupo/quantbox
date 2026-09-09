@@ -49,6 +49,7 @@ Example for riskfolio:
 
 ```python
 import riskfolio as rp
+
 __all__ = ["rp"]
 ```
 
@@ -90,6 +91,7 @@ If the adapter serves a top-level capability (`quantbox.bt`, `quantbox.opt`, `qu
 ```python
 # src/quantbox/opt.py
 from .adapters.riskfolio import max_sharpe, rp
+
 __all__ = ["max_sharpe", "rp"]
 ```
 
@@ -101,11 +103,14 @@ __all__ = ["max_sharpe", "rp"]
 def test_reexport_is_the_library():
     from quantbox.adapters.riskfolio import rp
     import riskfolio
+
     assert rp is riskfolio
+
 
 def test_convenience_helper_runs():
     import pandas as pd
     from quantbox.adapters.riskfolio import max_sharpe
+
     returns = pd.DataFrame({"A": [0.01, 0.02], "B": [0.03, -0.01]})
     w = max_sharpe(returns)
     assert w is not None

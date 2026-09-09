@@ -84,7 +84,7 @@ jobs:
       INTEGRATION_BRANCH: "dev"
     steps:
       - name: Check out the tagged commit with FULL history
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # REQUIRED, not cosmetic. `actions/checkout` defaults to a depth-1
           # shallow fetch of the tagged ref alone: no other branches, no
@@ -185,7 +185,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out with FULL history and tags
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           # EXPLICIT, not incidental. This job's verdict is read off the tag
@@ -276,7 +276,7 @@ jobs:
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Assert declared versions match the tag
         env:
