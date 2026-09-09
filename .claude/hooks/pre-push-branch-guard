@@ -66,12 +66,15 @@ OPT-IN AND CONFIG
 -----------------
 Reads the SAME per-repo policy as the `git-workflow` PreToolUse guard, from the
 same two surfaces in the same order, so the two layers can never disagree about
-which branches are guarded:
+which branches are guarded — with the one fork-only exception named in
+`load_config` (branch fields written at the top level of `.qute/config.json`
+refuse here, and are merely ignored there):
 
   1. `.qute/config.json`, section `"git"` — the consolidated config plane;
   2. `.claude/git-guard.json` — the legacy per-file surface, fallback only.
 
-Either way the shape is:
+In the legacy file this object is the WHOLE file; in `.qute/config.json` it must
+sit under `"git"`, and flat keys there are REFUSED, not ignored:
 
     {
       "protected_branch": "main",       // default "main"
