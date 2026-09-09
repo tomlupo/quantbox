@@ -68,3 +68,45 @@ def test_parametric_mc_student_t_shape(toy_prices: pd.DataFrame) -> None:
         seed=rng,
     )
     assert sim.shape == (30, len(toy_prices.columns) * 25)
+
+
+@pytest.fixture
+def toy_params() -> tuple[pd.Series, pd.DataFrame]:
+    rng = np.random.default_rng(0)
+    tickers = ["AAA", "BBB", "CCC"]
+    mu = pd.Series(rng.uniform(0.02, 0.09, len(tickers)), index=tickers)
+    a = rng.normal(size=(len(tickers), len(tickers)))
+    cov = pd.DataFrame(a @ a.T / 50, index=tickers, columns=tickers)
+    return mu, cov
+
+
+def test_parametric_mc_does_not_mutate_caller_parameters(
+    toy_params: tuple[pd.Series, pd.DataFrame],
+) -> None:
+    # Regression, 2026-09-09: `mu /= step_frequency` divided the CALLER's
+    # Series in place, so simply calling this function rescaled parameters
+    # the caller still held.
+    mu, cov = toy_params
+    mu_before = mu.copy()
+    cov_before = cov.copy()
+
+    parametric_mc(mu=mu, cov=cov, iterations=20, steps=10, seed=np.random.default_rng(1))
+
+    pd.testing.assert_series_equal(mu, mu_before)
+    pd.testing.assert_frame_equal(cov, cov_before)
+
+
+def test_parametric_mc_reusing_parameters_is_repeatable(
+    toy_params: tuple[pd.Series, pd.DataFrame],
+) -> None:
+    # The symptom that mutation produced, and the reason it is worth a
+    # test of its own: two identically-seeded calls sharing parameter
+    # objects returned different panels, because the second ran on values
+    # already divided by step_frequency once.
+    mu, cov = toy_params
+    kw = dict(mu=mu, cov=cov, iterations=20, steps=10)
+
+    first = parametric_mc(seed=np.random.default_rng(1), **kw)
+    second = parametric_mc(seed=np.random.default_rng(1), **kw)
+
+    pd.testing.assert_frame_equal(first, second)
