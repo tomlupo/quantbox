@@ -1,8 +1,9 @@
 """Parametric Monte Carlo simulations and summary statistics.
 
 These are the two building blocks historically vendored into host projects
-(see e.g. robo's ``src/market/simulations.py``). They are pure-numpy/pandas
-+ ``scipy.stats`` for the distribution shocks.
+(see e.g. robo's ``src/market/simulations.py``). They are pure numpy and
+pandas — the shocks are drawn from ``numpy.random.Generator`` directly, so
+they can be produced at the caller's precision without a float64 stage.
 
 ``parametric_mc`` generates a GBM-style correlated simulation of asset
 returns; ``simulations_stats`` produces standard summary quantiles
@@ -44,9 +45,10 @@ def _draw_uncorrelated(size, distribution, df, dtype, seed, target_bytes=128 * 1
     n_assets, n_cols = size
     out = np.empty(size, dtype=dtype)
 
-    # One block ~= `target_bytes` of float64 working space, so the
-    # transient cost is bounded instead of scaling with the horizon the
-    # way a second full panel would.
+    # Block sized so the transient cost is bounded instead of scaling with
+    # the horizon the way a second full panel would. Note the Student-t
+    # path holds `z` and `g` at once, so its live temporary is 2 x
+    # `target_bytes`, not one.
     block = max(1, int(target_bytes // max(1, n_assets * 8)))
 
     for start in range(0, n_cols, block):
@@ -61,16 +63,23 @@ def _draw_uncorrelated(size, distribution, df, dtype, seed, target_bytes=128 * 1
 
         # Student-t as Z / sqrt(X / df) with X ~ chi2(df) = 2 * Gamma(df/2).
         #
-        # This block is assembled in float64 even when the panel is
-        # float32, and that is not incidental. `standard_gamma` returns
-        # values arbitrarily close to zero; in float32 the sqrt of one of
-        # those loses enough precision that the division turns a
-        # legitimate tail draw into a spurious ~1e15 outlier. Measured:
-        # drawing this construction natively in float32 left the body of
-        # the distribution (1st-99th percentile) correct while the sample
-        # mean and standard deviation diverged by fifteen orders of
-        # magnitude. The block is bounded, so float64 here costs a
-        # temporary rather than a second panel.
+        # Assembled in float64 even when the panel is float32. This is a
+        # precaution, not a fix for an observed fault, and it is worth
+        # being accurate about which: drawing it natively in float32 was
+        # measured at (4, 15_000_000), df=3, and produced no zeros, no
+        # infinities and a healthy sample (max |t| ~2.7e3, std 1.77). An
+        # earlier note here claimed a fifteen-order-of-magnitude blow-up
+        # in that configuration. That was a misreading — the statistic in
+        # question was the sample mean of a t(3) panel, whose seed-to-seed
+        # spread covers many orders of magnitude on its own, compared
+        # across a single seed each way.
+        #
+        # What remains true is that this is the one step in the function
+        # that divides by a value which can be arbitrarily close to zero,
+        # and float64 gives the division ~9 more digits of headroom before
+        # the result stops being representable at all. The block is
+        # bounded, so that costs a temporary rather than a second panel —
+        # a cheap margin on the only operation here that can amplify.
         z = rng.standard_normal(shape)
         g = rng.standard_gamma(df / 2.0, shape)
         g *= 2.0 / df

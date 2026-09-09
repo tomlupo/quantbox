@@ -370,14 +370,17 @@ def test_draw_uncorrelated_student_t_matches_scipy_quantiles() -> None:
     np.testing.assert_allclose(np.quantile(out, qs), stats.t.ppf(qs, df), atol=0.03, rtol=0)
 
 
-def test_student_t_float32_draw_has_no_spurious_extreme_outliers() -> None:
-    # Regression, 2026-09-09. Assembling the t construction natively in
-    # float32 looked fine through the 1st-99th percentile but produced
-    # ~1e15 outliers: `standard_gamma` returns values near zero, and a
-    # float32 sqrt of one of those loses enough precision that the
-    # division manufactures a value no t(3) can produce. For 2e6 draws
-    # from t(3) the largest |value| sits around 150; this bound is three
-    # orders of magnitude clear of that and twelve clear of the bug.
-    out = _draw_uncorrelated((2, 1_000_000), "student-t", 3, np.float32, np.random.default_rng(6))
+@pytest.mark.parametrize("df", [1, 2, 3])
+def test_student_t_draw_stays_representable_at_low_df(df: int) -> None:
+    # The division by sqrt(X/df) is the only step here that can amplify:
+    # as df falls, X concentrates near zero and |t| grows without bound.
+    # This does not pin a bound on the tail — a heavy tail is the point of
+    # Student-t and any threshold would either be vacuous or flaky. It
+    # pins the two things that would make the output unusable rather than
+    # merely extreme: no infinities, and no NaNs from 0/0.
+    out = _draw_uncorrelated((2, 500_000), "student-t", df, np.float32, np.random.default_rng(6))
     assert np.isfinite(out).all()
-    assert np.abs(out).max() < 1e5
+    # And the body of the distribution is still where t(df) puts it, which
+    # a broken construction would not manage.
+    lo, hi = stats.t.ppf([0.25, 0.75], df)
+    np.testing.assert_allclose(np.quantile(out, [0.25, 0.75]), [lo, hi], atol=0.02, rtol=0)
