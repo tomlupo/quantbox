@@ -33,6 +33,31 @@ from scipy import stats
 
 EULER_MASCHERONI = 0.5772156649015329
 
+# Degeneracy is tested RELATIVELY -- never by exact float equality with zero.
+#
+# A quantity that is mathematically zero does not reliably come out as 0.0 in
+# binary floating point. A constant returns series is the canonical example:
+# `[0.001] * 200` accumulates rounding to std = 2.17e-19 while `[0.001] * 50`
+# gives exactly 0.0, so whether an `== 0` guard fires is a lottery on the
+# (value, length) pair rather than a property of the input. Measured on this
+# module before the fix: of 32 constant series (8 values x 4 lengths), 20 hit
+# the exact guard and 12 sailed past it into the moment path, where scipy hit
+# catastrophic cancellation; those 12 were then refused -- by luck -- by two
+# unrelated downstream checks, 8 by the skew/kurtosis finiteness test (NaN
+# moments) and 4 by the Pearson-bound "impossible moments" test.
+#
+# The observed noise floor for a constant series is std/|value| ~ 2e-16
+# (machine epsilon); 1e-12 leaves ~4000x headroom above it while staying far
+# below any real series (std/scale = 1e-12 would imply a Sharpe of ~1e12).
+# Being relative, the test is unit-independent: a genuinely tiny-but-real
+# series (returns of order 1e-9 with std of order 1e-9) is unaffected. When
+# every observation is exactly zero, scale is 0 and the test reduces to
+# std <= 0, which still holds.
+#
+# This is the framework's single threshold for "cancelled to noise"; the
+# validation plugin imports it rather than keeping a second copy.
+DEGENERATE_RTOL = 1e-12
+
 
 @dataclass(frozen=True)
 class DSRResult:
@@ -73,15 +98,54 @@ def sr_estimator_std(T: int, sr: float, skew: float, kurtosis: float) -> float:
     """Std of the Sharpe-ratio estimator (Mertens 2002 / Bailey-López de Prado), per-period units."""
     if T <= 1:
         raise ValueError(f"need at least 2 observations to estimate SR variance, got T={T!r}")
-    variance = (1 - skew * sr + (kurtosis - 1) / 4 * sr**2) / (T - 1)
-    if variance < 0:
-        # Can happen with pathological (garbage) skew/kurtosis/sr combinations.
-        # Fail loudly rather than silently sqrt()-ing a negative number to NaN.
+    # The numerator is a three-term sum, and the terms can cancel. Keep them
+    # separately so the cancellation can be measured against their own scale.
+    terms = (1.0, -skew * sr, (kurtosis - 1) / 4 * sr**2)
+    numerator = sum(terms)
+    scale = sum(abs(t) for t in terms)
+    # Degeneracy is tested FIRST, and on |numerator|, because the sign of a
+    # cancelled sum is itself rounding noise. Identity:
+    #
+    #     numerator - (1 - skew*sr/2)**2 == ((kurtosis - 1) - skew**2)/4 * sr**2
+    #
+    # so under the Pearson bound kurtosis >= skew**2 + 1 (enforced by the
+    # caller) the numerator is bounded below by (1 - skew*sr/2)**2 and reaches
+    # zero only on the knife edge kurtosis == skew**2 + 1 AND skew*sr == 2 --
+    # a two-point distribution whose Sharpe estimator has no spread, where the
+    # DSR is genuinely undefined. In exact arithmetic that edge gives 0; in
+    # floating point it lands either side of it, so 21.5% of a 4000-point sweep
+    # along the edge came out at ~-2e-17 and, when `numerator < 0` was tested
+    # first, was reported as "check inputs" -- telling a researcher their
+    # moments were garbage when they were a valid two-point distribution. That
+    # is the same exact-comparison lottery this guard exists to remove, so the
+    # order matters and is part of the contract.
+    #
+    # The test is relative to the TERMS, not to the numerator alone, because
+    # this is a catastrophic-cancellation test: it asks whether the sum still
+    # carries significant digits. (Note the numerator is T-independent -- the
+    # 1/(T-1) is applied below -- so this is not about long series.)
+    #
+    # It closes the numerics sliver, NOT the modelling class: at skew*sr - 2 =
+    # 1e-5 the numerator is still accurate to 8 significant digits, so the
+    # series is accepted and reports dsr ~ 1.0. Whether a near-two-point
+    # distribution should be refused at all is a modelling decision this
+    # function deliberately does not make.
+    if abs(numerator) <= DEGENERATE_RTOL * scale:
         raise ValueError(
-            f"negative SR-estimator variance ({variance!r}) from T={T}, sr={sr}, "
+            f"degenerate SR-estimator variance: the numerator ({numerator!r}) is negligible "
+            f"against the scale of its own terms ({scale!r}) — the moments T={T}, sr={sr}, "
+            f"skew={skew}, kurtosis={kurtosis} describe a distribution whose Sharpe estimator "
+            "has no spread, so the DSR is undefined"
+        )
+    if numerator < 0:
+        # Genuinely negative (not cancellation noise -- that was caught above):
+        # pathological (garbage) skew/kurtosis/sr combinations. Fail loudly
+        # rather than silently sqrt()-ing a negative number to NaN.
+        raise ValueError(
+            f"negative SR-estimator variance ({numerator / (T - 1)!r}) from T={T}, sr={sr}, "
             f"skew={skew}, kurtosis={kurtosis} — check inputs"
         )
-    return math.sqrt(variance)
+    return math.sqrt(numerator / (T - 1))
 
 
 def deflated_sharpe_ratio(sr: float, T: int, skew: float, kurtosis: float, n_trials: int) -> DSRResult:
@@ -110,7 +174,17 @@ def deflated_sharpe_ratio(sr: float, T: int, skew: float, kurtosis: float, n_tri
     # pair into the Mertens variance term can silently flip a FAIL to a
     # PASS, so this is refused rather than "trusted".
     min_kurtosis = skew**2 + 1
-    if kurtosis < min_kurtosis:
+    # Relative slack, for the same reason as DEGENERATE_RTOL: this bound is
+    # attained EXACTLY by a two-point distribution (a binary-payoff strategy:
+    # win x, lose y, flat sizing -- an ordinary object in this domain), and its
+    # sample moments land ~1e-14 either side of the bound. Measured on 4416
+    # two-point samples, 40.6% fell just below it and were refused with a
+    # confident, wrong, actionable-in-the-wrong-direction diagnosis ("this
+    # usually means EXCESS kurtosis was passed"). The slack is ~1e-12 relative
+    # and cannot mask the bug this check is for: excess-vs-Pearson confusion is
+    # an O(3) error (kurtosis 0.0 where 3.0 was required), twelve orders larger.
+    kurtosis_tol = DEGENERATE_RTOL * (abs(kurtosis) + min_kurtosis)
+    if kurtosis < min_kurtosis - kurtosis_tol:
         raise ValueError(
             f"impossible moments: kurtosis={kurtosis!r} < skew**2 + 1 = {min_kurtosis!r} "
             f"(skew={skew!r}). Pearson (non-excess) kurtosis is always >= skew**2 + 1 for any "
@@ -119,9 +193,15 @@ def deflated_sharpe_ratio(sr: float, T: int, skew: float, kurtosis: float, n_tri
             "function requires fisher=False (3.0 for a normal distribution, not 0.0)."
         )
 
+    # No `sr_std == 0` check here any more. That was the second exact-float
+    # equality guard; the check now lives inside sr_estimator_std, where the
+    # terms of the variance sum exist to measure the cancellation against (see
+    # DEGENERATE_RTOL). That function is guaranteed to return a strictly
+    # positive value: the numerator's scale always includes the literal 1.0
+    # term, so scale >= 1 and any accepted numerator therefore exceeds 1e-12.
+    # Repeating the test here could never fire, and a second, weaker copy of a
+    # guard is how the first one stops being the real protection.
     sr_std = sr_estimator_std(T, sr, skew, kurtosis)
-    if sr_std == 0:
-        raise ValueError("zero SR-estimator std (degenerate/constant returns) — cannot compute DSR")
 
     e_max = expected_max_sr(n_trials)
     sr0 = sr_std * e_max
@@ -168,8 +248,9 @@ def deflated_sharpe_ratio_from_returns(returns, n_trials: int, *, allow_nonfinit
       loss is always visible in the output, never silently absorbed into
       ``T``.
 
-    Degenerate input (fewer than 2 finite observations, zero variance) still
-    raises via the same paths as ``deflated_sharpe_ratio``.
+    Degenerate input (fewer than 2 finite observations, or a variance
+    negligible relative to the scale of the series -- see ``DEGENERATE_RTOL``)
+    still raises via the same paths as ``deflated_sharpe_ratio``.
     """
     import numpy as np
 
@@ -187,9 +268,16 @@ def deflated_sharpe_ratio_from_returns(returns, n_trials: int, *, allow_nonfinit
     T = len(r)
     if T <= 1:
         raise ValueError(f"need at least 2 finite return observations, got T={T!r}")
-    std = r.std(ddof=1)
-    if std == 0:
-        raise ValueError("zero-variance returns — cannot compute a Sharpe ratio")
+    std = float(r.std(ddof=1))
+    # Relative, not `== 0` — see DEGENERATE_RTOL. `scale` is 0 only when every
+    # observation is exactly zero, where this reduces to `std <= 0`.
+    scale = float(np.mean(np.abs(r)))
+    if std <= DEGENERATE_RTOL * scale:
+        raise ValueError(
+            f"zero-variance returns — cannot compute a Sharpe ratio: the standard deviation "
+            f"({std!r}) is negligible against the scale of the series itself "
+            f"(mean |return| = {scale!r}), i.e. the series is constant to within floating-point noise"
+        )
     sr = r.mean() / std
     skew = float(stats.skew(r))
     kurtosis = float(stats.kurtosis(r, fisher=False))

@@ -13,6 +13,7 @@ is the single home for the DSR math regression.
 from __future__ import annotations
 
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -22,6 +23,7 @@ from quantbox.analysis import (
     deflated_sharpe_ratio,
     deflated_sharpe_ratio_from_returns,
     expected_max_sr,
+    sr_estimator_std,
 )
 
 
@@ -215,9 +217,161 @@ def test_too_few_observations_rejected():
         deflated_sharpe_ratio(sr=0.1, T=1, skew=0.0, kurtosis=3.0, n_trials=10)
 
 
-def test_zero_variance_returns_rejected():
-    with pytest.raises(ValueError):
-        deflated_sharpe_ratio_from_returns(np.zeros(100), n_trials=10)
+# --- degeneracy is detected RELATIVELY, not by exact float equality ---
+#
+# The guard this replaced was `if std == 0`, and the only test aiming at it
+# passed `np.zeros(100)` with a bare `pytest.raises(ValueError)`. Both halves of
+# that were blind: zeros is the one constant that IS exactly representable, and
+# an unmatched ValueError accepts a refusal that came from somewhere else. Under
+# the old guard 12 of the 32 (value, length) pairs below slipped past it and were
+# refused only by unrelated downstream checks — 8 by the finiteness test on NaN
+# moments, 4 by the Pearson-bound test — so the protection was not where the code
+# said it was. Hence: many constants, and the message pinned.
+
+
+@pytest.mark.parametrize("value", [0.0, 1.0, -1.0, 0.001, 0.1, 1e-8, -0.02, 3.7])
+@pytest.mark.parametrize("length", [3, 50, 200, 1000])
+def test_constant_returns_rejected_regardless_of_representability(value, length):
+    """Every constant series is degenerate, whatever the constant or the length.
+
+    Whether ``std`` lands on exactly 0.0 or on ~1e-19 is an artefact of binary
+    floating point (e.g. ``[0.001] * 50`` gives 0.0, ``[0.001] * 200`` gives
+    2.17e-19). The refusal must not depend on it, and must come from the
+    zero-variance guard rather than from a downstream NaN check.
+    """
+    returns = np.full(length, value, dtype=float)
+    with pytest.raises(ValueError, match="zero-variance returns"):
+        deflated_sharpe_ratio_from_returns(returns, n_trials=10)
+
+
+def test_constant_returns_do_not_reach_the_moment_computation():
+    """The guard fires BEFORE scipy sees near-identical data.
+
+    scipy emits a catastrophic-cancellation RuntimeWarning when asked for the
+    moments of a near-constant series. Its absence proves the refusal happened at
+    the variance guard, not downstream of it -- which is the actual defect: the
+    old code refused these inputs for the wrong reason.
+    """
+    returns = np.full(200, 0.001, dtype=float)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with pytest.raises(ValueError, match="zero-variance returns"):
+            deflated_sharpe_ratio_from_returns(returns, n_trials=10)
+
+
+@pytest.mark.parametrize("factor", [1e-12, 1e-6, 1.0, 1e6, 1e12])
+def test_degeneracy_guard_is_scale_invariant(factor):
+    """Rescaling a genuinely real series must not change the DSR at all.
+
+    This is what separates a RELATIVE guard from an absolute one: an absolute
+    threshold (``std <= 1e-12``) would pass the unscaled series and silently
+    start refusing -- or, worse, keep accepting while meaning something else --
+    as the units shrink. Bit-identical is the assertion; anything weaker (e.g.
+    "a tiny series still works") is satisfied by an absolute threshold too.
+    """
+    rng = np.random.default_rng(20260909)
+    base = rng.standard_normal(500) * 0.01 + 0.0005
+    reference = deflated_sharpe_ratio_from_returns(base, n_trials=50)
+    scaled = deflated_sharpe_ratio_from_returns(base * factor, n_trials=50)
+    # The DSR itself is bit-identical; the intermediates differ by a couple of
+    # ulp because mean/std of a rescaled array are not bit-exact reproductions.
+    assert scaled.dsr == reference.dsr
+    assert scaled.sr_period == pytest.approx(reference.sr_period, rel=1e-12)
+    assert scaled.z == pytest.approx(reference.z, rel=1e-12)
+
+
+# --- the second exact-equality guard: the SR-estimator variance ---
+
+
+def test_sr_estimator_variance_degeneracy_is_reachable_and_refused():
+    """kurtosis == skew**2 + 1 with skew*sr == 2 drives the variance to zero.
+
+    Under the Pearson bound the numerator is bounded below by
+    ``(1 - skew*sr/2)**2``, so this knife edge is the ONLY way it reaches zero --
+    a two-point distribution whose Sharpe estimator has no spread.
+    """
+    with pytest.raises(ValueError, match="degenerate SR-estimator variance"):
+        sr_estimator_std(T=500, sr=1.0, skew=2.0, kurtosis=5.0)
+
+
+@pytest.mark.parametrize("sr", [1.0 - 1e-7, 1.0 - 1e-9, 1.0, 1.0 + 1e-9, 1.0 + 1e-7])
+def test_neighbourhood_of_the_knife_edge_is_refused_not_just_the_exact_point(sr):
+    """Near the edge the three-term sum has lost every significant digit.
+
+    An ``== 0`` test refuses only where rounding happens to land on 0.0; just
+    off the edge the numerator is ~1e-14 and the old guard passed it through,
+    reporting dsr = 1.0 from a division by noise. The measured boundary of the
+    refusal window is skew*sr - 2 ~ 4e-6; these points sit an order inside it,
+    so a modest change to DEGENERATE_RTOL does not turn this red for the wrong
+    reason.
+    """
+    with pytest.raises(ValueError, match="degenerate SR-estimator variance"):
+        deflated_sharpe_ratio(sr=sr, T=500, skew=2.0, kurtosis=5.0, n_trials=100)
+
+
+@pytest.mark.parametrize("skew", [0.05, 1.0, 5.0, 30.0])
+def test_the_pearson_knife_edge_is_diagnosed_as_degenerate_not_as_bad_input(skew):
+    """The edge must not be reported as "negative variance -- check inputs".
+
+    In exact arithmetic the numerator is 0 on this edge; in floating point it
+    lands either side, and a ``numerator < 0`` test placed FIRST caught ~21% of
+    the edge and told the caller their moments were garbage. They are not: a
+    two-point distribution is a perfectly ordinary binary-payoff strategy. The
+    ordering of the two raises in ``sr_estimator_std`` is the contract here.
+    """
+    with pytest.raises(ValueError, match="degenerate SR-estimator variance"):
+        sr_estimator_std(T=500, sr=2.0 / skew, skew=skew, kurtosis=skew**2 + 1)
+
+
+@pytest.mark.parametrize("n_heads", [3, 17, 40])
+@pytest.mark.parametrize("length", [50, 252, 1000])
+def test_two_point_returns_are_accepted_not_called_impossible_moments(n_heads, length):
+    """Positive control on the Pearson bound, which real data sits exactly on.
+
+    A binary-payoff series attains ``kurtosis == skew**2 + 1`` exactly, so its
+    sample moments land ~1e-14 either side of the bound. With an exact ``<``
+    test, 40.6% of such samples were refused as "impossible moments ... this
+    usually means EXCESS kurtosis was passed" -- a confident, wrong diagnosis of
+    a legitimate strategy. Delete the relative slack and this goes red.
+    """
+    returns = np.full(length, -0.01)
+    returns[:n_heads] = 0.02
+    result = deflated_sharpe_ratio_from_returns(returns, n_trials=20)
+    assert math.isfinite(result.dsr)
+
+
+def test_ordinary_series_across_shapes_and_lengths_are_all_accepted():
+    """Broad positive control: the guards must not refuse ordinary research.
+
+    This is the cheap "did we break real data" sweep. It does NOT pin
+    DEGENERATE_RTOL from above — measured, nothing it generates comes within
+    ten orders of magnitude of the boundary, so it stays green even at a
+    threshold of 1e-2. That job belongs to
+    ``test_degenerate_rtol_is_tight_enough_to_admit_a_near_two_point_series``.
+    """
+    rng = np.random.default_rng(20260909)
+    refused = []
+    checked = 0
+    for length in (60, 252, 1000):
+        for annual_sharpe in (0.0, 0.5, 1.0, 2.0, 5.0):
+            for dist in ("normal", "t3", "lognormal"):
+                if dist == "normal":
+                    noise = rng.standard_normal(length)
+                elif dist == "t3":
+                    noise = rng.standard_t(df=3, size=length)
+                else:
+                    noise = rng.lognormal(sigma=1.0, size=length) - math.exp(0.5)
+                noise = noise / noise.std(ddof=1)
+                returns = noise * 0.01 + annual_sharpe / math.sqrt(252) * 0.01
+                checked += 1
+                try:
+                    deflated_sharpe_ratio_from_returns(returns, n_trials=20)
+                except ValueError as exc:
+                    refused.append((length, annual_sharpe, dist, str(exc)[:60]))
+    # COUNT what was looked at: a sweep whose loops silently collapsed would
+    # otherwise report an empty `refused` list and read as clean.
+    assert checked == 45, f"sweep covered {checked} series, expected 45"
+    assert refused == [], f"{len(refused)} of {checked} ordinary series refused: {refused[:3]}"
 
 
 # --- THE REGRESSION: the verified false-PASS band, pinned as FAIL under real DSR ---
@@ -246,3 +400,37 @@ def test_false_pass_band_now_fails_under_real_dsr(z_naive, expected_dsr):
 
     assert result.dsr == pytest.approx(expected_dsr, abs=5e-3)
     assert result.dsr < 0.95
+
+
+def test_garbage_moments_still_report_negative_variance_not_degeneracy():
+    """The two diagnoses must stay distinguishable.
+
+    Degeneracy is tested on ``abs(numerator)`` so the sign of a cancelled sum
+    cannot decide the message. Drop the ``abs()`` and the ``numerator < 0``
+    branch becomes unreachable: genuinely impossible moments would then be
+    reported as "the series has no spread" instead of "check inputs". These
+    triples violate the Pearson bound, so they can only arrive by calling this
+    public function directly — which the validation plugin does.
+    """
+    with pytest.raises(ValueError, match="negative SR-estimator variance"):
+        sr_estimator_std(T=500, sr=1.0, skew=0.0, kurtosis=-100.0)
+    with pytest.raises(ValueError, match="negative SR-estimator variance"):
+        sr_estimator_std(T=500, sr=2.0, skew=5.0, kurtosis=1.0)
+
+
+def test_degenerate_rtol_is_tight_enough_to_admit_a_near_two_point_series():
+    """Pins DEGENERATE_RTOL from ABOVE — the side nothing else defends.
+
+    Every other test here goes red if the threshold is too TIGHT; without this
+    one it could be loosened by ten orders of magnitude and the suite would stay
+    green. A loose relative threshold does not refuse ordinary series (their
+    numerator/scale ratio is ~1), it refuses exactly the high-Sharpe,
+    near-two-point regime — which is where a real binary-payoff strategy lives.
+
+    These moments are legitimate: kurtosis is strictly above the Pearson bound
+    (5.0001 > skew**2 + 1 = 5), so this is a genuine distribution, not the knife
+    edge. Its numerator/scale ratio is ~6e-6 — nine orders above 1e-12 and four
+    below 1e-2, so it is accepted now and refused by any meaningful loosening.
+    """
+    std = sr_estimator_std(T=500, sr=1.0, skew=2.0, kurtosis=5.0001)
+    assert math.isfinite(std) and std > 0
