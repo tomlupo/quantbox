@@ -358,15 +358,34 @@ def test_draw_uncorrelated_is_seed_deterministic() -> None:
 
 
 def test_draw_uncorrelated_blocking_does_not_change_the_distribution() -> None:
-    # Same draw split into many blocks vs one: different stream, but the
-    # quantiles must agree. Guards the block loop's bookkeeping — an
-    # off-by-one there would leave a slice of the panel unwritten (i.e.
-    # whatever np.empty found in memory) and skew the tails.
+    # Same draw split into many blocks vs one: different stream, so the
+    # quantiles must agree without being equal.
     size = (2, 200_000)
     one = _draw_uncorrelated(size, "normal", 3, np.float64, np.random.default_rng(3))
     many = _draw_uncorrelated(size, "normal", 3, np.float64, np.random.default_rng(4), target_bytes=64 * 1024)
     qs = [0.01, 0.25, 0.5, 0.75, 0.99]
     np.testing.assert_allclose(np.quantile(one, qs), np.quantile(many, qs), atol=0.03, rtol=0)
+
+
+def test_draw_uncorrelated_writes_every_column_across_many_blocks() -> None:
+    # The block loop's bookkeeping, tested by something that can actually
+    # fail on it. `target_bytes=64KiB` at 2 assets gives 4096-column blocks,
+    # so 49 of them over 200k columns.
+    #
+    # An off-by-one leaves a slice holding whatever `np.empty` found, which
+    # on a fresh allocation is zero pages — and `standard_normal` returns
+    # exactly 0.0 with probability ~0, so a single exact zero is evidence of
+    # an unwritten column.
+    #
+    # Comparing quantiles cannot do this job, which is why it is a separate
+    # test: a whole unwritten trailing block (2% of the panel, zeros) moves
+    # the 1% quantile of a standard normal by about 0.009, well inside any
+    # tolerance loose enough to survive two different seeds, and a realistic
+    # `stop = start + block - 1` slip leaves 1/4096 of columns unwritten and
+    # is invisible at any tolerance at all.
+    out = _draw_uncorrelated((2, 200_000), "normal", 3, np.float64, np.random.default_rng(4), target_bytes=64 * 1024)
+    assert int((out == 0.0).sum()) == 0
+    assert np.isfinite(out).all()
 
 
 def test_draw_uncorrelated_student_t_matches_scipy_quantiles() -> None:
@@ -378,35 +397,60 @@ def test_draw_uncorrelated_student_t_matches_scipy_quantiles() -> None:
 
 @pytest.mark.parametrize("df", [1, 2, 3])
 def test_student_t_draw_matches_the_distribution_across_df(df: int) -> None:
-    # Quartiles against scipy's t(df), across the range where the tail
-    # gets heavy. This is the assertion with teeth: it fails on an algebra
-    # slip in Z / sqrt(X/df), on a wrong Gamma shape, and on a block loop
-    # that leaves part of the panel unwritten.
+    # Quartiles against scipy's t(df), across the range where the tail gets
+    # heavy. Fails on an algebra slip in Z / sqrt(X/df) or a wrong Gamma
+    # shape. `target_bytes` is set so this spans many blocks rather than
+    # one — at the default it would be a single block and the comment would
+    # be describing coverage the call does not have.
     #
-    # Note what is deliberately NOT asserted. An `isfinite` check reads
-    # like it guards float32 representability, but the block is assembled
-    # in float64 and only the quotient is cast, so it could only fail at
-    # |t| > 3.4e38 and is vacuous for every input this function accepts.
-    # A tail BOUND would be worse — a heavy tail is the point of
-    # Student-t, so any threshold is either unreachable or flaky. An
-    # earlier version of this test asserted both and tested neither.
-    out = _draw_uncorrelated((2, 500_000), "student-t", df, np.float32, np.random.default_rng(6))
+    # Note what is deliberately NOT asserted. An `isfinite` check reads like
+    # it guards float32 representability, but the block is assembled in
+    # float64 and only the quotient is cast, so it could only fail at
+    # |t| > 3.4e38 and is vacuous for every input this function accepts. A
+    # tail BOUND would be worse — a heavy tail is the point of Student-t, so
+    # any threshold is either unreachable or flaky. An earlier version of
+    # this test asserted both and tested neither.
+    out = _draw_uncorrelated(
+        (2, 500_000), "student-t", df, np.float32, np.random.default_rng(6), target_bytes=64 * 1024
+    )
     lo, hi = stats.t.ppf([0.25, 0.75], df)
     np.testing.assert_allclose(np.quantile(out, [0.25, 0.75]), [lo, hi], atol=0.02, rtol=0)
 
 
-def test_draw_uncorrelated_rejects_a_nonsense_df() -> None:
+@pytest.mark.parametrize(
+    "bad",
+    [
+        0,  # ZeroDivisionError from 2.0 / df before the check existed
+        -3,  # "shape < 0" out of standard_gamma
+        float("inf"),  # standard_gamma(inf) -> inf -> 2/inf -> nan: a SILENTLY all-NaN panel
+        float("nan"),
+        True,  # an int subclass: would pass a naive check and draw t(1), Cauchy
+        "3",
+        None,
+    ],
+)
+def test_draw_uncorrelated_rejects_a_nonsense_df(bad) -> None:
     # scipy rejected a bad df with "Domain error in arguments". Drawing the
-    # t ourselves lost that, leaving ZeroDivisionError at df=0 and
-    # "shape < 0" at df<0 — loud, but not about the argument at fault.
-    for bad in (0, -3):
-        with pytest.raises(ValueError, match="df must be a positive number"):
-            parametric_mc(
-                mu=pd.Series([0.05], index=["AAA"]),
-                cov=pd.DataFrame([[0.04]], index=["AAA"], columns=["AAA"]),
-                iterations=2,
-                steps=2,
-                distribution="student-t",
-                df=bad,
-                seed=np.random.default_rng(0),
-            )
+    # t ourselves lost that, and the failures it left were loud but not
+    # about the argument at fault — or, for inf, not loud at all.
+    with pytest.raises(ValueError, match="df must be a finite positive number"):
+        _draw_uncorrelated((2, 16), "student-t", bad, np.float32, np.random.default_rng(0))
+
+
+@pytest.mark.parametrize("good", [3, 3.0, np.int64(3), np.float32(3.0), np.float64(3.0)])
+def test_draw_uncorrelated_accepts_numpy_scalar_df(good) -> None:
+    # A caller deriving df from a config frame or a Series.item() hands over
+    # a numpy scalar. `isinstance(x, (int, float))` is False for np.int64
+    # and np.float32, so a naive check would reject a perfectly valid
+    # argument that scipy always accepted.
+    out = _draw_uncorrelated((2, 16), "student-t", good, np.float32, np.random.default_rng(0))
+    assert out.shape == (2, 16)
+
+
+def test_draw_uncorrelated_rejects_an_unknown_distribution() -> None:
+    # Both branch points test == "normal" / != "normal", so before this
+    # check `distribution="gaussian"` silently produced Student-t with
+    # df=3 — three times the requested variance, no error, while
+    # `precision` one screen above raised on a bad value.
+    with pytest.raises(ValueError, match="distribution must be"):
+        _draw_uncorrelated((2, 16), "gaussian", 3, np.float32, np.random.default_rng(0))

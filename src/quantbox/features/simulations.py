@@ -3,7 +3,8 @@
 These are the two building blocks historically vendored into host projects
 (see e.g. robo's ``src/market/simulations.py``). They are pure numpy and
 pandas — the shocks are drawn from ``numpy.random.Generator`` directly, so
-they can be produced at the caller's precision without a float64 stage.
+they are produced at the caller's precision with any float64 intermediate
+bounded to one block rather than the whole panel.
 
 ``parametric_mc`` generates a GBM-style correlated simulation of asset
 returns; ``simulations_stats`` produces standard summary quantiles
@@ -21,31 +22,57 @@ a Generator narrowed that, and a ``RandomState`` now raises from
 
 from __future__ import annotations
 
+import numbers
+
 import numpy as np
 import pandas as pd
 
 
 def _draw_uncorrelated(size, distribution, df, dtype, seed, target_bytes=128 * 1024**2):
-    """Fill an ``(n_assets, n_cols)`` panel of iid shocks, natively at *dtype*.
+    """Fill an ``(n_assets, n_cols)`` panel of iid shocks at *dtype*.
+
+    Any float64 intermediate is bounded to ONE BLOCK rather than the whole
+    panel. That is the achievement, and it is deliberately weaker than "no
+    float64 stage": the Student-t path — robo's only production
+    configuration, at float32 — assembles each block in float64 and casts
+    on assignment.
 
     ``scipy.stats`` has no dtype argument, so ``norm.rvs`` / ``t.rvs``
-    always materialise float64 and a float32 caller then pays for a second
-    full-size array to downcast into. On a long horizon that is the single
-    largest allocation in ``parametric_mc``: a (4, 100_800_000) panel is
-    3.0 GiB in float64 to produce a 1.5 GiB float32 result, and it is what
-    a production batch died on (2026-09-09, MemoryError with ~10 GiB free).
+    always materialise float64 across the FULL panel, and a float32 caller
+    then pays for a second full-size array to downcast into. On a long
+    horizon that is the single largest allocation in ``parametric_mc``: a
+    (4, 100_800_000) panel is 3.0 GiB in float64 to produce a 1.5 GiB
+    float32 result, and it is what a production batch died on (2026-09-09,
+    MemoryError with ~10 GiB free).
 
     ``numpy``'s Generator does take a dtype — for ``standard_normal`` and
     ``standard_gamma``, though not for ``standard_t`` or ``chisquare`` — so
     Student-t is assembled from those two as ``Z / sqrt(X / df)`` with
-    ``X ~ chi2(df) = 2 * Gamma(df/2)``. Drawing in column blocks into one
-    preallocated panel keeps the transient cost to a block rather than a
-    second copy of the whole thing.
+    ``X ~ chi2(df) = 2 * Gamma(df/2)``.
 
     This changes the random stream: output is drawn from the same
     distributions with the same parameters, but the numbers differ, exactly
     as reseeding would. It is not a drop-in for a byte-identical rerun.
     """
+    # Validated here rather than in the caller: this is where the arguments
+    # are used, and the test suite — and any vendored copy — reaches this
+    # helper directly.
+    if distribution not in ("normal", "student-t"):
+        raise ValueError(f"distribution must be 'normal' or 'student-t', got {distribution!r}")
+    if distribution != "normal":
+        # `bool` is excluded deliberately: it is an int subclass, so df=True
+        # would otherwise pass and silently draw t(1) — Cauchy, the widest
+        # possible tail — from a plainly wrong argument. numpy scalars must
+        # pass, which rules out a bare isinstance(df, (int, float)): np.int64
+        # is neither. And `inf` must NOT pass — standard_gamma(inf) returns
+        # inf, 2/inf is nan, and the panel comes back silently all-NaN.
+        # `numbers.Real` rather than `float(df)`: coercing would accept the
+        # STRING "3", which passes a numeric check and then fails four lines
+        # later on `df / 2.0`. numpy registers its scalar types with the
+        # numbers ABCs, so np.int64 and np.float32 pass here.
+        if isinstance(df, bool) or not isinstance(df, numbers.Real) or not np.isfinite(float(df)) or float(df) <= 0:
+            raise ValueError(f"df must be a finite positive number, got {df!r}")
+
     rng = seed if isinstance(seed, np.random.Generator) else np.random.default_rng(seed)
     n_assets, n_cols = size
     out = np.empty(size, dtype=dtype)
@@ -56,7 +83,10 @@ def _draw_uncorrelated(size, distribution, df, dtype, seed, target_bytes=128 * 1
     # `target_bytes` is nominal in BOTH directions, so do not read the name
     # literally: the divisor is hard-coded at float64's 8 bytes, so the
     # Student-t path holds `z` and `g` at once and lives at 2x, while the
-    # normal float32 path writes straight through and lives at 0.5x.
+    # normal float32 path lives at 0.5x. (Not because it writes through —
+    # a column slice of a C-contiguous panel is non-contiguous, so `out=`
+    # is not usable and a block-sized float32 temporary is still allocated
+    # and copied. The ratio is right, the mechanism is just a cast.)
     block = max(1, int(target_bytes // max(1, n_assets * 8)))
 
     for start in range(0, n_cols, block):
@@ -88,11 +118,18 @@ def _draw_uncorrelated(size, distribution, df, dtype, seed, target_bytes=128 * 1
         # that appealed to "headroom before the result is representable"
         # was confusing significand digits with exponent range.
         #
-        # The honest reason is narrower than either: float64 buys rounding
-        # accuracy on the quotient — the one operation here that divides
-        # by a value free to get arbitrarily small — and the block is
-        # bounded, so it costs a temporary rather than a second panel. A
-        # cheap margin, not a fix, and it should not be dressed as one.
+        # Nor is it the division's own accuracy: IEEE division is correctly
+        # rounded to within half an ulp whatever the divisor's magnitude, so
+        # a small `g` does not degrade `z / g`.
+        #
+        # What float64 actually buys is UPSTREAM of the division —
+        # resolution of the gamma draw itself near zero. A float32
+        # `standard_gamma` at shape df/2 quantises in a region where float64
+        # still resolves the value, and can land on exactly 0.0, which is
+        # what would turn a finite t into `inf`. The block is bounded, so
+        # this costs a temporary rather than a second panel: a cheap margin
+        # on the one input that can be arbitrarily small, not a fix for
+        # anything observed.
         z = rng.standard_normal(shape)
         g = rng.standard_gamma(df / 2.0, shape)
         g *= 2.0 / df
@@ -182,13 +219,11 @@ def parametric_mc(
     # Convert precision string to numpy dtype
     if precision not in ["float32", "float64"]:
         raise ValueError(f"precision must be 'float32' or 'float64', got '{precision}'")
-    # scipy used to reject a bad `df` with "Domain error in arguments".
-    # Drawing the t ourselves lost that, and the failures it was hiding are
-    # unhelpful: df=0 raises ZeroDivisionError from `2.0 / df`, df<0 raises
-    # "shape < 0" out of `standard_gamma`. Validate it where `precision` is
-    # validated, so both knobs fail the same way.
-    if distribution != "normal" and not (isinstance(df, (int, float)) and df > 0):
-        raise ValueError(f"df must be a positive number for distribution='{distribution}', got {df!r}")
+    # `distribution` and `df` are validated in `_draw_uncorrelated`, where
+    # they are used — scipy used to reject a bad df with "Domain error in
+    # arguments" and drawing the t ourselves lost that. Putting the check
+    # there rather than here means the private helper is guarded too, which
+    # matters because the test suite and any vendored copy call it directly.
     dtype = getattr(np, precision)
 
     # Convert inputs to specified dtype for memory efficiency
