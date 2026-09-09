@@ -66,6 +66,15 @@ def _draw_uncorrelated(size, distribution, df, dtype, seed, target_bytes=128 * 1
         # pass, which rules out a bare isinstance(df, (int, float)): np.int64
         # is neither. And `inf` must NOT pass — standard_gamma(inf) returns
         # inf, 2/inf is nan, and the panel comes back silently all-NaN.
+        # (A too-SMALL df is silent garbage too, but there is no clean
+        # floor to pick, so that is caught after the draw instead.)
+        #
+        # This is not "restoring what scipy did", which an earlier version
+        # of this comment claimed. scipy raised its domain error only for
+        # 0, -3 and nan: `inf` returned NaN silently, True quietly drew
+        # t(1), and "3"/None raised type errors rather than domain ones.
+        # Four of the seven cases below are an improvement on scipy, not a
+        # restoration of it.
         # `numbers.Real` rather than `float(df)`: coercing would accept the
         # STRING "3", which passes a numeric check and then fails four lines
         # later on `df / 2.0`. numpy registers its scalar types with the
@@ -136,6 +145,29 @@ def _draw_uncorrelated(size, distribution, df, dtype, seed, target_bytes=128 * 1
         np.sqrt(g, out=g)
         z /= g
         out[:, start:stop] = z
+
+        # Check the property, rather than enumerating the arguments that
+        # violate it.
+        #
+        # A previous version rejected `df=inf` because it yields a silently
+        # all-NaN panel, and then accepted `df=0.1`, which yields 1105
+        # non-finite entries in 10M, and `df=1e-8`, which yields 99.99%
+        # of them — the same silent garbage, waved through. As df falls,
+        # `standard_gamma` concentrates near zero, and the quotient either
+        # overflows the panel's dtype on the cast or divides by an exact
+        # zero. There is no clean floor to pick: it depends on df, on
+        # dtype, and on how many values are drawn.
+        #
+        # So verify what actually matters. One pass over a bounded block,
+        # negligible against the draw that produced it, and it fails on the
+        # general case instead of the three arguments someone thought of.
+        if not np.isfinite(out[:, start:stop]).all():
+            raise ValueError(
+                f"Student-t draw produced non-finite values at df={df!r}, "
+                f"dtype={np.dtype(dtype).name}. The chi-square denominator "
+                f"reached zero or the quotient overflowed — df is too small "
+                f"to sample at this precision."
+            )
 
     return out
 

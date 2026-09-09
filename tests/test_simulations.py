@@ -384,8 +384,12 @@ def test_draw_uncorrelated_writes_every_column_across_many_blocks() -> None:
     # `stop = start + block - 1` slip leaves 1/4096 of columns unwritten and
     # is invisible at any tolerance at all.
     out = _draw_uncorrelated((2, 200_000), "normal", 3, np.float64, np.random.default_rng(4), target_bytes=64 * 1024)
+    # Only the exact-zero check earns its place. `assert isfinite(...)` was
+    # here too and could not fail — `standard_normal` never returns a
+    # non-finite value at either dtype, and this branch has no division.
+    # Removed rather than left as decoration, in a file whose other
+    # comments argue against exactly that.
     assert int((out == 0.0).sum()) == 0
-    assert np.isfinite(out).all()
 
 
 def test_draw_uncorrelated_student_t_matches_scipy_quantiles() -> None:
@@ -403,13 +407,14 @@ def test_student_t_draw_matches_the_distribution_across_df(df: int) -> None:
     # one — at the default it would be a single block and the comment would
     # be describing coverage the call does not have.
     #
-    # Note what is deliberately NOT asserted. An `isfinite` check reads like
-    # it guards float32 representability, but the block is assembled in
-    # float64 and only the quotient is cast, so it could only fail at
-    # |t| > 3.4e38 and is vacuous for every input this function accepts. A
-    # tail BOUND would be worse — a heavy tail is the point of Student-t, so
-    # any threshold is either unreachable or flaky. An earlier version of
-    # this test asserted both and tested neither.
+    # Note what is deliberately NOT asserted here. An `isfinite` check is
+    # vacuous AT THESE df VALUES — the block is assembled in float64 and
+    # only the quotient is cast, so at df in {1,2,3} it could only fail
+    # above |t| > 3.4e38. (It is NOT vacuous across the whole accepted
+    # domain: df=0.1 does overflow the float32 cast. That is why the draw
+    # itself now checks finiteness, and why it is tested separately rather
+    # than bolted on here.) A tail BOUND would be worse — a heavy tail is
+    # the point of Student-t, so any threshold is unreachable or flaky.
     out = _draw_uncorrelated(
         (2, 500_000), "student-t", df, np.float32, np.random.default_rng(6), target_bytes=64 * 1024
     )
@@ -430,11 +435,29 @@ def test_student_t_draw_matches_the_distribution_across_df(df: int) -> None:
     ],
 )
 def test_draw_uncorrelated_rejects_a_nonsense_df(bad) -> None:
-    # scipy rejected a bad df with "Domain error in arguments". Drawing the
-    # t ourselves lost that, and the failures it left were loud but not
-    # about the argument at fault — or, for inf, not loud at all.
+    # This is an IMPROVEMENT on scipy, not a restoration of it — measured,
+    # because an earlier version of this comment claimed the latter. scipy
+    # raised "Domain error in arguments" for 0, -3 and nan only. `inf`
+    # returned NaN silently, True quietly drew t(1), and "3"/None raised
+    # type errors rather than domain ones. Four of these seven cases scipy
+    # never caught.
     with pytest.raises(ValueError, match="df must be a finite positive number"):
         _draw_uncorrelated((2, 16), "student-t", bad, np.float32, np.random.default_rng(0))
+
+
+@pytest.mark.parametrize("tiny_df", [0.1, 1e-8])
+def test_draw_uncorrelated_raises_on_a_df_too_small_to_sample(tiny_df: float) -> None:
+    # The hole the `inf` rejection left open. A small-but-finite df passes
+    # every type and domain check and then produces a panel that is partly
+    # or almost entirely non-finite: at df=0.1 the float64 quotient
+    # overflows the float32 cast, and at df=1e-8 `standard_gamma` returns
+    # exact zeros and the division blows up. Rejecting `inf` for producing
+    # silent garbage while waving these through was the inconsistency.
+    #
+    # There is no clean floor to hard-code — it depends on df, dtype and
+    # how many values are drawn — so the draw checks the property instead.
+    with pytest.raises(ValueError, match="non-finite values"):
+        _draw_uncorrelated((2, 2_000_000), "student-t", tiny_df, np.float32, np.random.default_rng(0))
 
 
 @pytest.mark.parametrize("good", [3, 3.0, np.int64(3), np.float32(3.0), np.float64(3.0)])
