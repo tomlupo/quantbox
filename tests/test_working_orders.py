@@ -364,3 +364,26 @@ def test_a_ledger_write_failure_does_not_lose_the_resolution(tmp_path):
         store, _Broker({"OID1": {"status": "FILLED", "qty": 1.0, "price": 2.0}}), ledger=_BrokenLedger()
     )
     assert len(res.resolved) == 1  # still reported to the caller
+
+
+def test_expired_cuts_across_the_outcome_buckets_rather_than_being_a_fourth(tmp_path):
+    """An aged-out order is filed under the outcome the venue gave it AND under
+    `expired`. The docstring says so; this is what stops that claim drifting."""
+    store = _queued(tmp_path)
+    recs = store.load()
+    recs[0]["recorded_at"] = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    store.save(recs)
+
+    res = resolve_working_orders(store, _Broker({"OID1": {"status": "WORKING"}}))
+
+    assert len(res.expired) == 1
+    assert len(res.still_working) == 1  # counted in its outcome bucket TOO
+    assert res.expired[0]["order_id"] == res.still_working[0]["order_id"]
+    assert store.load() == []  # and it is the unresolved order that gets dropped
+
+
+def test_the_resolution_exposes_no_dropped_attribute(tmp_path):
+    """Pins the absence the docstring used to claim as a field. Documenting an
+    attribute that does not exist is a contract a caller cannot use."""
+    res = resolve_working_orders(WorkingOrderStore(book_key="book-a", root=tmp_path), _Broker({}))
+    assert not hasattr(res, "dropped")
