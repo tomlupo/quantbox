@@ -63,10 +63,6 @@ from scipy.stats import norm
 from quantbox.analysis.dsr import DEGENERATE_RTOL, expected_max_sr, sr_estimator_std
 from quantbox.contracts import PluginMeta
 
-# Degeneracy threshold: quantbox.analysis.dsr owns it (see DEGENERATE_RTOL there
-# for the derivation and the measurements behind 1e-12).
-_DEGENERATE_RTOL = DEGENERATE_RTOL
-
 
 class _UndefinedDSR(ValueError):
     """An input this plugin cannot compute a DSR from.
@@ -212,7 +208,7 @@ class DeflatedSharpeBLPValidation:
 
         std_period = float(np.std(rets, ddof=1))
         scale = float(np.mean(np.abs(rets)))
-        if std_period <= _DEGENERATE_RTOL * scale:
+        if std_period <= DEGENERATE_RTOL * scale:
             return self._undefined(
                 "degenerate_returns",
                 f"degenerate returns: standard deviation ({std_period!r}) is negligible against the "
@@ -244,7 +240,7 @@ class DeflatedSharpeBLPValidation:
             sr0_annual, sigma_sr, sigma_sr_source = _expected_max_sharpe(trial_sharpes, n_trials, se_annual)
         except _UndefinedDSR as exc:
             return self._undefined(exc.rule, exc.detail, partial_metrics)
-        except ValueError as exc:  # negative SR-estimator variance from pathological moments
+        except ValueError as exc:  # negative OR degenerate SR-estimator variance (see sr_estimator_std)
             return self._undefined("sr_variance_undefined", str(exc), partial_metrics)
 
         n_trials_used = len(trial_sharpes) if sigma_sr_source == "trial_sharpes" else _as_trial_count(n_trials)

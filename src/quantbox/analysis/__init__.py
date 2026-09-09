@@ -5,6 +5,7 @@ without being plugins themselves. Reusable across research projects.
 """
 
 from .dsr import (
+    DEGENERATE_RTOL,
     DSRResult,
     deflated_sharpe_ratio,
     deflated_sharpe_ratio_from_returns,
@@ -16,6 +17,7 @@ from .parameter_grid import DEFAULT_METRICS, load_parquet_market_data, plot_heat
 
 __all__ = [
     "DEFAULT_METRICS",
+    "DEGENERATE_RTOL",
     "DSRResult",
     "deflated_sharpe_ratio",
     "deflated_sharpe_ratio_from_returns",
