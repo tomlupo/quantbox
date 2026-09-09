@@ -464,7 +464,10 @@ def load_config(repo_root: Path):
     `hooks/git-workflow-guard.py`. That layer does not import this function —
     their failure behaviour differs on purpose (this one refuses the push, that
     one degrades loudly to the house defaults) — so what must not diverge is
-    which surfaces are consulted, in which order, and what counts as an opt-in.
+    which surfaces are consulted, in which order, and what counts as an opt-in —
+    with ONE deliberate exception: branch fields written at the TOP level of
+    `.qute/config.json` refuse here and are merely ignored there. That is
+    fork-only, and `main()` lists it among this copy's divergences.
     `branch_policy.py` DOES import this function, and is the reason the parser
     for the fields themselves lives here and only here.
     """

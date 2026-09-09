@@ -280,22 +280,30 @@ def test_exemption_symbols_are_absent_from_the_vendored_guard():
     )
 
 
-def test_the_other_fork_only_divergences_are_still_present():
-    """The exemption is not the only thing a straight re-vendor would drop.
+def test_the_refusal_names_the_config_surface_that_answered(tmp_path: Path):
+    """`source_path` is fork-only, so assert the BEHAVIOUR, not the string.
 
-    `source_path` (the refusal names the file that answered) and the misplaced
-    top-level-keys refusal are fork-only too, and the second is itself a
-    fail-open guard. Named here so a `cp` cannot quietly remove them either.
+    Grepping the source would pass a re-vendor that kept the name but dropped
+    the field from the returned dict; the refusal text cannot.
     """
-    source = GUARD.read_text(encoding="utf-8")
-    # `source_path` only: it is the one divergence no behavioural test covers.
-    # The misplaced-keys refusal is asserted end-to-end below, so pinning its
-    # local variable name here would just break on a rename.
-    for marker in ("source_path",):
-        assert marker in source, (
-            f"fork-only divergence {marker!r} is gone from {GUARD} — this looks "
-            "like a re-vendor from the upstream template."
-        )
+    consolidated = tmp_path / "consolidated"
+    consolidated.mkdir()
+    _git(consolidated, "init", "-q", "-b", "main", ".")
+    (consolidated / ".qute").mkdir()
+    (consolidated / ".qute" / "config.json").write_text('{"git": {"protected_branch": "main"}}', encoding="utf-8")
+
+    legacy = tmp_path / "legacyonly"
+    legacy.mkdir()
+    _git(legacy, "init", "-q", "-b", "main", ".")
+    (legacy / ".claude").mkdir()
+    (legacy / ".claude" / "git-guard.json").write_text('{"protected_branch": "main"}', encoding="utf-8")
+
+    line = "refs/heads/main aaaa refs/heads/main bbbb\n"
+    from_consolidated = _run(consolidated, line)
+    from_legacy = _run(legacy, line)
+
+    assert ".qute/config.json" in from_consolidated.stderr, from_consolidated.stderr
+    assert ".claude/git-guard.json" in from_legacy.stderr, from_legacy.stderr
 
 
 def test_flat_keys_refuse_even_when_a_valid_legacy_file_exists(tmp_path: Path):
