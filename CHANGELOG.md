@@ -29,6 +29,32 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.6.0 (2026-09-09)
+
+### BREAKING CHANGE
+
+- `parametric_mc` produces different numbers. Drawing natively
+at dtype, and assembling Student-t rather than calling `scipy.stats.t.rvs`,
+consume the random stream differently, so output is a different valid sample
+from the same distributions and is not comparable run-for-run with previous
+releases. Consumers must re-baseline, exactly as after a reseed. Verified as
+the same simulator: across 8 seeds, every panel quantile agrees within 3
+bootstrapped pooled standard errors (worst z = 2.12). The one path that does
+NOT move is (normal, float64), where scipy delegated to the same Generator.
+Three further narrowings: `numpy.random.RandomState` is no longer accepted;
+`seed=None` no longer honours `np.random.seed(...)` and now seeds from OS
+entropy, silently, so hosts relying on the global singleton must pass a
+Generator; and `distribution` is validated, where anything other than
+"normal" was previously treated as student-t.
+
+### Fix
+
+- **analysis**: detect degenerate returns relatively, not by exact float equality (#187)
+
+### Perf
+
+- **simulations**: draw shocks natively at dtype, removing the float64 panel (#186)
+
 ## v0.5.0 (2026-09-09)
 
 ### Feat
