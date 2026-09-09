@@ -172,12 +172,24 @@ def _draw_uncorrelated(size, distribution, df, dtype, seed, _target_bytes=_TARGE
         # to zero, so it returns exactly 0.0 there — and 0.0 turns a finite
         # t into `inf`.
         #
-        # The durable number is a RATE, not a count. A float32 uniform is
-        # exactly 0 with probability 2**-24 ~ 6e-8, and only the shape <= 1
-        # paths propagate that to an exact zero: the boost `U**(1/shape)`,
-        # and the shape == 1 exponential `-log(1 - U)`. Marsaglia-Tsang, used
-        # at shape > 1, does not. A float64 uniform would need 2**-53, which
-        # is why float64 never produces one.
+        # The durable number is a RATE, not a count, and it differs between
+        # the two shape <= 1 paths. Measured over 400M float32 draws, four
+        # seeds:
+        #
+        #     shape 0.5 (df=1)   18 zeros   4.5e-08   ~ 2**-24
+        #     shape 1.0 (df=2)   51 zeros   1.3e-07   ~ 2**-23
+        #     shape 1.5 (df=3)    0 zeros   0
+        #
+        # At shape < 1 numpy takes a boost path whose float32 uniform is
+        # exactly 0 with probability 2**-24 ~ 6e-8. At shape == 1 it returns
+        # the ziggurat `standard_exponential` — verified bit-identical to
+        # `default_rng(seed).standard_exponential(dtype=float32)` on the same
+        # seed — NOT inverse-CDF `-log(1 - U)`, which an earlier version of
+        # this comment claimed and which produces a visibly different stream.
+        # The ziggurat's rate is about twice the boost path's, which is why
+        # df=2 is the worst case here rather than df=1. At shape > 1
+        # Marsaglia-Tsang does not propagate a zero uniform at all. A float64
+        # uniform would need 2**-53, which is why float64 never produces one.
         #
         # An earlier version of this comment tabulated raw counts — "df=1: 2,
         # df=2: 2" per 20M draws. Those are single samples of a Poisson(~1.2)
