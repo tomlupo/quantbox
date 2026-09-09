@@ -167,45 +167,40 @@ def _draw_uncorrelated(size, distribution, df, dtype, seed, _target_bytes=_TARGE
         # Assembled in float64 even when the panel is float32, and the
         # reason is a MEASURED fault with a boundary, not a general
         # precaution. What float64 buys is upstream of the division:
-        # resolution of the gamma draw near zero. numpy's `standard_gamma`
-        # takes a boost path at shape <= 1 whose float32 uniform can round
-        # to zero, so it returns exactly 0.0 there — and 0.0 turns a finite
-        # t into `inf`.
+        # resolution of the gamma draw near zero. A float32 `standard_gamma`
+        # can return exactly 0.0, and 0.0 turns a finite t into `inf`.
         #
-        # The durable number is a RATE, not a count, and it differs between
-        # the two shape <= 1 paths. Measured over 400M float32 draws, four
-        # seeds:
+        # The durable figure is a RATE, not a count — a count is one sample
+        # of a Poisson and does not reproduce. Measured over 400M float32
+        # draws, four seeds:
         #
         #     shape 0.5 (df=1)   18 zeros   4.5e-08   ~ 2**-24
         #     shape 1.0 (df=2)   51 zeros   1.3e-07   ~ 2**-23
         #     shape 1.5 (df=3)    0 zeros   0
         #
-        # At shape < 1 numpy takes a boost path whose float32 uniform is
-        # exactly 0 with probability 2**-24 ~ 6e-8. At shape == 1 it returns
-        # the ziggurat `standard_exponential` — verified bit-identical to
-        # `default_rng(seed).standard_exponential(dtype=float32)` on the same
-        # seed — NOT inverse-CDF `-log(1 - U)`, which an earlier version of
-        # this comment claimed and which produces a visibly different stream.
-        # The ziggurat's rate is about twice the boost path's, which is why
-        # df=2 is the worst case here rather than df=1. At shape > 1
-        # Marsaglia-Tsang does not propagate a zero uniform at all. A float64
-        # uniform would need 2**-53, which is why float64 never produces one.
+        # Three code paths, three behaviours, and the middle one is the
+        # worst:
         #
-        # An earlier version of this comment tabulated raw counts — "df=1: 2,
-        # df=2: 2" per 20M draws. Those are single samples of a Poisson(~1.2)
-        # and do not reproduce: re-measured across four seeds they range 0-2
-        # at df=1 and 2-4 at df=2. Quoting them as if they were properties is
-        # the mistake this file has already made twice, so the rate is what
-        # is written down and the counts are left as what they are.
+        #   shape < 1   the boost path, whose float32 uniform is exactly 0
+        #               with probability 2**-24 ~ 6e-8.
+        #   shape == 1  the ziggurat `standard_exponential` — verified
+        #               bit-identical to `standard_exponential(dtype=float32)`
+        #               on the same seed. Its rate is about twice the boost
+        #               path's, so df=2 is the worst case here, not df=1.
+        #   shape > 1   Marsaglia-Tsang, which does not propagate a zero
+        #               uniform at all.
+        #
+        # A float64 uniform would need 2**-53, which is why float64 produces
+        # none at any shape.
         #
         # So this matters at df <= 2 and is not reachable in practice at
         # df=3, which is robo's production setting — do not read the block
         # below as something df=3 depends on. "Not in practice" is an
         # empirical bound, not a proof: 0 zeros in 400M draws across four
-        # seeds, with the smallest value seen ~1e-06, against the ~1e-38
-        # underflow it would take. The block is kept because df is
-        # caller-supplied and df=2 is a plausible ask, and because a bounded
-        # block makes it cost a temporary rather than a second panel.
+        # seeds, smallest value seen ~1e-06, against the ~1e-38 underflow it
+        # would take. The block is kept because df is caller-supplied and
+        # df=2 is a plausible ask, and because a bounded block makes it cost
+        # a temporary rather than a second panel.
         #
         # Two explanations that are NOT the reason, recorded because both
         # were asserted here before and both are false. Overflow: a float32
