@@ -240,9 +240,9 @@ only unreviewed route onto `main`. `/ship` does not need it: it sets
 `CLAUDE_GUARD_BRANCH_PUSH=0`, which is per-invocation and loud. The hook's own
 `main()` carries the full rationale.
 
-It said `null` until 2026-09-09, meaning "dev is cheap, push freely". That
-reading is only half of what the field does: `/ship` reads the SAME key to
-decide whether a repo is two-stage, and `null` there does not mean "unguarded",
+`integration_branch` said `null` until 2026-09-09, meaning "dev is cheap, push
+freely". That reading is only half of what the field does: `/ship` reads the
+SAME key to decide whether a repo is two-stage, and `null` there does not mean "unguarded",
 it means **this repo has no integration branch at all** — so `/ship` refused on
 `dev` and sent the caller to release from `main`, which is the opposite of
 [`## Shipping cycle`](#shipping-cycle) and how v0.4.4 ended up with a hand-cut

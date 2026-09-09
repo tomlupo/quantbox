@@ -27,6 +27,12 @@ restore it — and with it the only unreviewed route onto `main` in a repo with 
 server-side branch protection. The full rationale is in `main()`; read it before
 overwriting this file. `/ship` needs no exemption: `CLAUDE_GUARD_BRANCH_PUSH=0`.
 
+A `cp` is not the only way back: if this file goes missing, `.git/hooks/`'s
+dispatcher falls back to the plugin's CACHED template — exemption included —
+and only prints a "re-run the installer" note. So the divergence is enforced by
+`tests/test_pre_push_guard_fork.py` rather than by this paragraph: it asserts
+that a release-SHAPED push to `main` is still refused, and runs in CI.
+
 `git push --no-verify` skips every local hook, including this one. That is not
 a defect; it is the contract of a client-side hook, and it is what makes this
 guard safe to install: it catches the accidental push and yields to the
@@ -373,10 +379,12 @@ def _branch_field(repo_root: Path, raw: dict, key: str, allow_null: bool):
 #: This hook is installed into `.git/hooks` and runs standalone, so it cannot
 #: import `scripts/qute_config.py` the way every other consumer does. It
 #: therefore reimplements the two-step lookup — and stays the SINGLE parser for
-#: this section anyway, because `branch_policy.py` imports THIS function rather
-#: than reading the fields itself. A second parser would be a second set of
-#: defaults. (The agent-side `git-workflow` guard is the one exception and
-#: carries its own copy of the lookup — see `load_config` below.)
+#: this section anyway: in the plugin, `branch_policy.py` imports the template
+#: version of this function rather than reading the fields itself, and a second
+#: parser would be a second set of defaults. (The agent-side `git-workflow`
+#: guard is the one exception and carries its own copy of the lookup — see
+#: `load_config` below. Neither file lives in THIS repo; both are named so a
+#: reader knows which layers must agree.)
 CONFIG_CANDIDATES = (
     ((".qute", "config.json"), "git"),
     ((".claude", "git-guard.json"), None),
