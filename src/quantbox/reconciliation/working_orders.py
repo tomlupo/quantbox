@@ -141,18 +141,27 @@ DEFAULT_MAX_AGE_DAYS = 7
 
 @dataclass
 class WorkingOrderResolution:
-    """What one resolution pass learned. Every queued order lands in exactly one
-    bucket, so a caller can tell the three outcomes apart:
+    """What one resolution pass learned.
+
+    Every queued order lands in exactly one of the three OUTCOME buckets, which
+    is what lets a caller tell the outcomes apart:
 
     * ``resolved`` — the venue gave a terminal answer; booked and dequeued.
+      Holds the built result entries, not the queue records.
     * ``still_working`` — the venue answered "still on the book". A fact, not a
-      failure.
+      failure. Holds the queue records, which stay queued.
     * ``unreadable`` — the venue could NOT be read. This is the bucket that
       separates "checked and found nothing" from "did not manage to check", and
-      a caller that collapses it into either of the other two is lying.
+      a caller that collapses it into either of the other two is lying. Holds
+      the queue records, which stay queued.
 
-    ``dropped`` lists the records removed from the queue this pass, whether
-    booked or aged out; ``expired`` is the loud subset that aged out unresolved.
+    ``expired`` cuts ACROSS the last two rather than being a fourth bucket: an
+    order past ``max_age_days`` is filed under whichever of them the venue put
+    it in AND listed here, and is the only unresolved order dropped from the
+    queue. A caller counting total records must not add ``expired`` in.
+
+    ``queued`` is how many records the pass started with. ``checked`` says
+    whether resolution was attempted at all — see :func:`resolve_working_orders`.
     """
 
     queued: int = 0
@@ -224,9 +233,11 @@ def resolve_working_orders(
     answer is recorded in ``ledger`` against the carried ``order_ref`` and
     dropped. Past ``max_age_days`` an unresolved order is dropped LOUDLY.
 
-    Returns a :class:`WorkingOrderResolution`. ``checked`` is False when no
-    resolution was even attempted (nothing queued, or a broker that cannot
-    resolve) — a caller reporting "clean" must consult it.
+    Returns a :class:`WorkingOrderResolution`. ``checked`` is False in exactly
+    one case: the broker cannot resolve orders at all, so the queue was never
+    looked at. An EMPTY queue is ``checked=True`` — there was nothing to look
+    at, which is a complete answer, not a blind one. A caller reporting "clean"
+    must consult both ``checked`` and ``unreadable``.
     """
     queued = store.load()
     result = WorkingOrderResolution(queued=len(queued))
