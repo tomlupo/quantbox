@@ -514,31 +514,40 @@ def load_config(repo_root: Path):
                 continue
             raise
         if key is not None:
+            # Branch fields at the TOP level are a mistake in every arrangement,
+            # so this is checked BEFORE the section lookup rather than only when
+            # the section is missing.
+            #
+            #   * no `git` section: the flat legacy object was written into the
+            #     consolidated file and the wrapper forgotten. Falling through
+            #     would mean "not opted in", i.e. every push to a guarded branch
+            #     waved past, on a file whose author plainly believed they were
+            #     configuring this guard.
+            #   * `git` section present as well: the top-level copy is then read
+            #     by NOTHING — the section wins, the house defaults may well
+            #     guard a different branch than the one named up top, and the
+            #     push that the author thinks is refused exits 0 in silence.
+            #
+            # Both are the "looks guarded, isn't" state, so both refuse. BRANCH
+            # fields only: `release_tool` is guidance text with no security
+            # meaning, and refusing every push in the repo over a stray string
+            # is a guard that costs more than it protects.
+            misplaced = sorted(set(data) & {"protected_branch", "integration_branch"})
+            if misplaced:
+                where = (
+                    f"no '{key}' section — those fields belong inside"
+                    if key not in data
+                    else f"a '{key}' section as well, which is what is READ; "
+                    "the top-level copy configures nothing. Keep one copy, inside"
+                )
+                raise ConfigError(
+                    f"{candidate} has {', '.join(misplaced)} at the TOP level "
+                    f"but {where} "
+                    f'"{key}": {{ … }}.' + _SCHEMA_HELP
+                )
             if key not in data:
                 # The consolidated file exists but says nothing about git.
                 # A file's existence is not itself an opt-in — fall through.
-                #
-                # UNLESS the git fields are sitting at the TOP level, which is
-                # the one shape that is certainly a mistake rather than
-                # silence: someone wrote the flat legacy object into the
-                # consolidated file and forgot the `"git"` wrapper. Falling
-                # through there means "not opted in", i.e. every push to a
-                # guarded branch waved past, on a file whose author plainly
-                # believed they were configuring this guard. That is the
-                # "looks guarded, isn't" state, so it refuses instead.
-                # BRANCH fields only. `release_tool` is guidance text with no
-                # security meaning, and refusing every push in the repo over a
-                # stray string is a guard that costs more than it protects.
-                misplaced = sorted(
-                    set(data) & {"protected_branch", "integration_branch"}
-                )
-                if misplaced:
-                    raise ConfigError(
-                        f"{candidate} has {', '.join(misplaced)} at the TOP "
-                        f"level but no '{key}' section — those fields belong "
-                        f'inside "{key}": {{ … }}, and as written they '
-                        "configure nothing." + _SCHEMA_HELP
-                    )
                 continue
             section = data[key]
             if not isinstance(section, dict):

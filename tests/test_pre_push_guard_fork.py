@@ -288,7 +288,10 @@ def test_the_other_fork_only_divergences_are_still_present():
     fail-open guard. Named here so a `cp` cannot quietly remove them either.
     """
     source = GUARD.read_text(encoding="utf-8")
-    for marker in ("source_path", "misplaced"):
+    # `source_path` only: it is the one divergence no behavioural test covers.
+    # The misplaced-keys refusal is asserted end-to-end below, so pinning its
+    # local variable name here would just break on a rename.
+    for marker in ("source_path",):
         assert marker in source, (
             f"fork-only divergence {marker!r} is gone from {GUARD} — this looks "
             "like a re-vendor from the upstream template."
@@ -316,3 +319,25 @@ def test_flat_keys_refuse_even_when_a_valid_legacy_file_exists(tmp_path: Path):
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert "TOP" in result.stderr
+
+
+def test_stray_top_level_keys_beside_a_git_section_also_refuse(tmp_path: Path):
+    """A top-level copy next to a real section is read by NOTHING.
+
+    The section wins, so the guard may protect a different branch than the one
+    named up top and the push the author believes is refused exits 0 in
+    silence. Same "looks guarded, isn't" state as the forgotten wrapper.
+    """
+    repo = tmp_path / "duplicated"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main", ".")
+    (repo / ".qute").mkdir()
+    (repo / ".qute" / "config.json").write_text(
+        '{"git": {}, "protected_branch": "release", "integration_branch": "dev"}',
+        encoding="utf-8",
+    )
+
+    result = _run(repo, "refs/heads/release aaaa refs/heads/release bbbb\n")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "TOP level" in result.stderr
