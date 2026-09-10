@@ -29,6 +29,12 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.6.2 (2026-09-10)
+
+### Fix
+
+- **deps**: bump pillow to 12.3.0 and pygments to 2.21.0 for security advisories (#192)
+
 ## v0.6.1 (2026-09-10)
 
 ### Fix
