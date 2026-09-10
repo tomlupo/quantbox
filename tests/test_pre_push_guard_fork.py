@@ -10,7 +10,7 @@ nothing left to diverge on.
 
 The property still needs an enforcer, because nothing about it is self-enforcing
 here: vendoring an older template, or a `.git/hooks` dispatcher falling back to
-a pre-11.0 plugin cache, brings the exemption back. This file is that enforcer.
+a 10.4–10.6 plugin cache, brings the exemption back. This file is that enforcer.
 
 Two design rules, both learned from review:
 
@@ -36,7 +36,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 GUARD = REPO_ROOT / ".claude" / "hooks" / "pre-push-branch-guard"
 
 #: Names that exist ONLY in the release exemption. Any of them reappearing means
-#: a pre-11.0 template was vendored.
+#: a 10.4–10.6 template was vendored.
 EXEMPTION_SYMBOLS = (
     "_is_release_commit",
     "_range_is_only_release_commits",
@@ -115,7 +115,7 @@ def _git(cwd: Path, *args: str) -> str:
 def guarded_repo(tmp_path: Path) -> Path:
     """A repo that opts into the guard and carries one release-shaped commit.
 
-    The commit is what the upstream exemption is built to wave through: subject
+    The commit is what the old exemption (10.4.0–10.6.0) waved through: subject
     `bump: version …`, touching `pyproject.toml` and `CHANGELOG.md` and nothing
     else. Built here rather than mined from history so the test is identical in
     a shallow CI checkout.
@@ -146,7 +146,8 @@ def test_the_vendored_guard_is_present():
     """
     assert GUARD.exists(), (
         f"{GUARD} is missing. The .git/hooks dispatcher then resolves the guard "
-        "from the plugin's cached template — release exemption included."
+        "from the plugin's newest cached template, which carries the release "
+        "exemption if that cache is qute-essentials 10.4.0–10.6.0."
     )
 
 
@@ -159,7 +160,7 @@ def test_a_release_shaped_push_to_main_is_refused(guarded_repo: Path):
 
     assert result.returncode == 1, (
         "a release-shaped push to `main` was ALLOWED — the release exemption is "
-        "back, probably via a pre-11.0 qute-essentials template.\n"
+        "back, probably via a qute-essentials 10.4–10.6 template.\n"
         f"stdout={result.stdout!r} stderr={result.stderr!r}"
     )
     # Wording unique to the BRANCH refusal: the unusable-config refusal also
@@ -301,7 +302,7 @@ def test_exemption_symbols_are_absent_from_the_vendored_guard():
     present = [name for name in EXEMPTION_SYMBOLS if name in source]
     assert not present, (
         f"the release exemption is back in {GUARD}: {present}. It was removed in "
-        "qute-essentials 11.0.0, so a pre-11.0 template was vendored; see `main()`."
+        "qute-essentials 11.0.0, so a 10.4–10.6 template was vendored; see `main()`."
     )
 
 

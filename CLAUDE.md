@@ -239,7 +239,7 @@ template, vendored unmodified since 11.0.1 (TOM-977): the exemption this repo
 once deleted by hand — it let commits that merely look like releases onto
 `main` unreviewed — was removed upstream in 11.0.0 (qute-plugins ADR-0002).
 `/ship` does not need it: it sets `CLAUDE_GUARD_BRANCH_PUSH=0` inline, which is
-per-invocation and loud. `tests/test_pre_push_guard_fork.py` fails if a pre-11.0
+per-invocation and loud. `tests/test_pre_push_guard_fork.py` fails if a 10.4–10.6
 template ever brings the exemption back; re-vendor with the plugin's
 `install_pre_push_guard.py`.
 
