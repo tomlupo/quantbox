@@ -29,6 +29,12 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.6.1 (2026-09-10)
+
+### Fix
+
+- **guards**: stop the pre-push config help from teaching the shape that disarms the guard (#190)
+
 ## v0.6.0 (2026-09-09)
 
 ### BREAKING CHANGE

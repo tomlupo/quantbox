@@ -4,9 +4,33 @@
     "Sections are namespaced; an ABSENT section means 'this repo says nothing' and",
     "the caller applies its own derived default — absence is never 'off'.",
     "",
-    "The `git` section is deliberately NOT here: this repo's .claude/git-guard.json",
-    "is still what the in-tree pre-push hook reads."
+    "`git` and `worktree` moved here from .claude/git-guard.json and",
+    ".claude/worktree.json. The in-tree pre-push hook was re-vendored in the SAME",
+    "change: the older copy read .claude/git-guard.json ONLY, so folding the",
+    "section without replacing the hook would have made it see 'repo not opted in'",
+    "and wave every push to `main` through silently.",
+    "",
+    "On the `git` section (it carries no $comment of its own: the guard warns",
+    "about any field it does not recognise). One key, two consumers — the",
+    "pre-push guard reads `integration_branch` as 'this branch is guarded too',",
+    "and /ship reads it to decide the repo is two-stage. It is declared for the",
+    "stricter reading; see CLAUDE.md '## Git workflow'. `protected_branch` is",
+    "left unset because the guard's default is `main`, which is what this repo",
+    "means."
   ],
+
+  "git": {
+    "integration_branch": "dev",
+    "release_tool": "commitizen (/ship)"
+  },
+
+  "worktree": {
+    "base_path": "$HOME/workspace/projects/.worktrees/{project}-{slug}",
+    "branch_pattern": "{type}/{slug}",
+    "default_type": "feat",
+    "venv_setup": "uv",
+    "base_branch": "dev"
+  },
 
   "ship": {
     "$comment": [
