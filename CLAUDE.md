@@ -234,11 +234,14 @@ fallback, so the fold and the hook re-vendor had to land together: the older
 vendored hook knew only the legacy path, and with that file gone it would have
 read "repo not opted in" and allowed every push to `main` silently.
 
-The vendored hook deliberately has **no release exemption** — the upstream
-template exempts pushes whose commits look like releases, and that would be the
-only unreviewed route onto `main`. `/ship` does not need it: it sets
-`CLAUDE_GUARD_BRANCH_PUSH=0`, which is per-invocation and loud. The hook's own
-`main()` carries the full rationale.
+The vendored hook has **no release exemption**. It is the qute-essentials
+template, vendored unmodified since 11.0.1 (TOM-977): the exemption this repo
+once deleted by hand — it let commits that merely look like releases onto
+`main` unreviewed — was removed upstream in 11.0.0 (qute-plugins ADR-0002).
+`/ship` does not need it: it sets `CLAUDE_GUARD_BRANCH_PUSH=0` inline, which is
+per-invocation and loud. `tests/test_pre_push_guard_fork.py` fails if a pre-11.0
+template ever brings the exemption back; re-vendor with the plugin's
+`install_pre_push_guard.py`.
 
 `integration_branch` said `null` until 2026-09-09, meaning "dev is cheap, push
 freely". That reading is only half of what the field does: `/ship` reads the

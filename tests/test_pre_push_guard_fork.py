@@ -1,14 +1,16 @@
 """The vendored pre-push guard must keep refusing release-shaped pushes to `main`.
 
-`.claude/hooks/pre-push-branch-guard` is a FORK of the qute-essentials template
-with the template's "release exemption" deleted. That exemption lets a push whose
-commits merely LOOK like releases land on a guarded branch without a PR — which
-in this repo would be the only unreviewed route onto `main`, the branch
-quantbox-live pins.
+`.claude/hooks/pre-push-branch-guard` is the qute-essentials template, vendored
+unmodified since 11.0.1 (TOM-977). It used to be a FORK with the template's
+"release exemption" deleted: that exemption let a push whose commits merely LOOK
+like releases land on a guarded branch without a PR — in this repo the only
+unreviewed route onto `main`, the branch quantbox-live pins. qute-essentials
+11.0.0 removed the exemption upstream (qute-plugins ADR-0002), so the fork had
+nothing left to diverge on.
 
-Re-vendoring the hook is a `cp`, and if the file goes missing the `.git/hooks`
-dispatcher falls back to the plugin's CACHED template — exemption included. So
-nothing about the divergence is self-enforcing, and this file is the enforcer.
+The property still needs an enforcer, because nothing about it is self-enforcing
+here: vendoring an older template, or a `.git/hooks` dispatcher falling back to
+a pre-11.0 plugin cache, brings the exemption back. This file is that enforcer.
 
 Two design rules, both learned from review:
 
@@ -34,7 +36,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 GUARD = REPO_ROOT / ".claude" / "hooks" / "pre-push-branch-guard"
 
 #: Names that exist ONLY in the release exemption. Any of them reappearing means
-#: the fork was overwritten by the upstream template.
+#: a pre-11.0 template was vendored.
 EXEMPTION_SYMBOLS = (
     "_is_release_commit",
     "_range_is_only_release_commits",
@@ -149,7 +151,7 @@ def test_the_vendored_guard_is_present():
 
 
 def test_a_release_shaped_push_to_main_is_refused(guarded_repo: Path):
-    """The whole point of the fork: looking like a release earns no exemption."""
+    """The whole point of this suite: looking like a release earns no exemption."""
     tip = _git(guarded_repo, "rev-parse", "HEAD")
     parent = _git(guarded_repo, "rev-parse", "HEAD~1")
 
@@ -157,7 +159,7 @@ def test_a_release_shaped_push_to_main_is_refused(guarded_repo: Path):
 
     assert result.returncode == 1, (
         "a release-shaped push to `main` was ALLOWED — the release exemption is "
-        "back, probably via a re-vendor from the upstream template.\n"
+        "back, probably via a pre-11.0 qute-essentials template.\n"
         f"stdout={result.stdout!r} stderr={result.stderr!r}"
     )
     # Wording unique to the BRANCH refusal: the unusable-config refusal also
@@ -298,13 +300,13 @@ def test_exemption_symbols_are_absent_from_the_vendored_guard():
     source = GUARD.read_text(encoding="utf-8")
     present = [name for name in EXEMPTION_SYMBOLS if name in source]
     assert not present, (
-        f"the release exemption is back in {GUARD}: {present}. This fork drops it "
-        "deliberately — see the file's header docstring and `main()`."
+        f"the release exemption is back in {GUARD}: {present}. It was removed in "
+        "qute-essentials 11.0.0, so a pre-11.0 template was vendored; see `main()`."
     )
 
 
 def test_the_refusal_names_the_config_surface_that_answered(tmp_path: Path):
-    """`source_path` is fork-only, so assert the BEHAVIOUR, not the string.
+    """Assert the BEHAVIOUR (the refusal names `source_path`), not the string.
 
     Grepping the source would pass a re-vendor that kept the name but dropped
     the field from the returned dict; the refusal text cannot.
