@@ -123,7 +123,7 @@ def test_default_a_decision_one_bar_earlier_earns_the_jump(tmp_path, branch):
 
 @pytest.mark.parametrize("branch", BRANCHES)
 def test_lag_zero_reproduces_the_historical_same_bar_behaviour_exactly(tmp_path, branch):
-    """PINNED back-compat: `lag_bars: 0` is the pre-change engine, bit for bit.
+    """PINNED back-compat: `lag_bars: 0` reproduces the pre-change RETURNS and hands the engine the decided weights unshifted.
 
     Same-bar, the J-1 decision buys at close[J-1] and earns the whole jump, and
     the engine receives the decided weights unshifted.
@@ -476,3 +476,118 @@ def test_live_trading_path_never_touches_the_backtest_execution_lag(module):
         n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)
     }
     assert not names & {"apply_execution_lag", "resolve_lag_bars", "lag_bars", "_align_for_engine"}
+
+
+# ----------------------------------------------------------------------
+# Mid-series NaN weight rows: saved/measured book == the book the engine traded
+# ----------------------------------------------------------------------
+
+
+class _NanGapWeights(_FixedWeights):
+    """Fully in `A` from bar 0, with NaN weight ROWS on bars 15..20 (strategy emitted nothing)."""
+
+    def run(self, data: Any, params: Any = None) -> dict[str, Any]:
+        w = _weights_decided_on(0)
+        w.iloc[15:21] = np.nan
+        return {"weights": w}
+
+
+def _run_nan_gap(tmp_path, engine: str):
+    store = FileArtifactStore(str(tmp_path), "run")
+    result = BacktestPipeline().run(
+        mode="backtest",
+        asof="2024-02-09",
+        params={"fees": 0.0, "engine": engine, "strategies": [{"name": "strategy.fixed.v1", "weight": 1.0}]},
+        data=_Data(),
+        store=store,
+        broker=None,
+        risk=[],
+        strategies=[_NanGapWeights()],
+    )
+    return result, store.read_parquet("traded_weights").set_index("date")
+
+
+def test_mid_series_nan_rows_vectorbt_saved_book_is_the_held_book(tmp_path):
+    """vectorbt forward-fills a NaN weight row (holds the last target). The saved
+    and measured book must say the same: NOT flat on those bars."""
+    result, traded = _run_nan_gap(tmp_path, "vectorbt")
+    assert not traded.isna().any().any()
+    assert (traded["A"].iloc[16:22] == 1.0).all()  # gap rows 15..20, lagged one bar: held, not flat
+    # Only the lag's leading bar is flat; one entry trade in N bars.
+    assert result.metrics["traded_flat_bar_share"] == pytest.approx(1 / N)
+    assert result.metrics["traded_mean_turnover"] == pytest.approx(1 / N)
+    # The engine agrees: it held `A` across the jump on bar J=20, inside the gap.
+    assert result.metrics["total_return"] == pytest.approx(JUMP, abs=1e-9)
+
+
+def test_mid_series_nan_rows_rsims_saved_book_is_the_flat_book(tmp_path):
+    """rsims treats a NaN weight as 0 (goes flat). Known engine disagreement,
+    pre-existing; the saved book materialises what THIS engine did."""
+    result, traded = _run_nan_gap(tmp_path, "rsims")
+    assert not traded.isna().any().any()
+    assert (traded["A"].iloc[16:22] == 0.0).all()
+    assert result.metrics["traded_flat_bar_share"] == pytest.approx(7 / N)
+    assert result.metrics["traded_mean_turnover"] == pytest.approx(3 / N)  # in, out, back in
+    # The engine agrees: flat across the jump.
+    assert result.metrics["total_return"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_materialising_the_nan_policy_does_not_change_vectorbt_numbers():
+    """The engine receives the materialised frame; its result must equal the raw-NaN frame's."""
+    from quantbox.plugins.backtesting import run_vectorbt
+
+    w = _weights_decided_on(0)
+    w.iloc[15:21] = np.nan
+    prices = _prices()
+    raw_prices, raw = BacktestPipeline._align_for_engine(prices, w, 1, engine=None)
+    _, materialised = BacktestPipeline._align_for_engine(prices, w, 1, engine="vectorbt")
+    assert raw.isna().any().any() and not materialised.isna().any().any()
+    a = run_vectorbt(raw_prices, raw, fees=0.001).value()
+    b = run_vectorbt(raw_prices, materialised, fees=0.001).value()
+    pd.testing.assert_frame_equal(pd.DataFrame(a), pd.DataFrame(b))
+
+
+# ----------------------------------------------------------------------
+# `quantbox sweep` CLI: the execution BLOCK goes through the same resolver
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("block", "message"),
+    [({"lag_bar": 0}, "unknown key"), (0, "must be a mapping"), ({"lag_bars": "0"}, "must be an integer")],
+)
+def test_sweep_cli_refuses_a_malformed_execution_block_before_any_work(tmp_path, block, message):
+    import yaml
+    from typer.testing import CliRunner
+
+    from quantbox.cli import app
+
+    cfg = tmp_path / "sweep.yaml"
+    # strategy and data root do not exist: if the block were not checked FIRST the
+    # failure would be PluginNotFoundError / a missing file, not the resolver's ValueError.
+    cfg.write_text(yaml.safe_dump({"strategy": "strategy.nope.v1", "data": {"root": "./nope"}, "execution": block}))
+    result = CliRunner().invoke(app, ["sweep", "-c", str(cfg)])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ValueError), repr(result.exception)
+    assert message in str(result.exception)
+
+
+def test_sweep_cli_passes_a_valid_execution_block_through(tmp_path, monkeypatch):
+    import yaml
+    from typer.testing import CliRunner
+
+    import quantbox.analysis as analysis
+    from quantbox.cli import app
+
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(analysis, "load_parquet_market_data", lambda *a, **k: {"prices": _prices()})
+    monkeypatch.setattr(analysis, "run_grid", lambda **k: seen.update(k) or pd.DataFrame())
+    cfg = tmp_path / "sweep.yaml"
+    cfg.write_text(
+        yaml.safe_dump(
+            {"strategy": "strategy.cross_asset_momentum.v1", "data": {"root": "."}, "execution": {"lag_bars": 0}}
+        )
+    )
+    result = CliRunner().invoke(app, ["sweep", "-c", str(cfg)])
+    assert result.exit_code == 0, repr(result.exception)
+    assert seen["lag_bars"] == 0

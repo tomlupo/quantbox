@@ -167,6 +167,20 @@ lagged twice — remove that shift rather than setting `lag_bars: 0`.
 masthead and the reproducibility appendix, and the CLI prints `EXECUTION: …`
 under `METRICS:`. Sweep grids carry a `lag_bars` column.
 
+**NaN weight rows — one saved book per engine, and the engines disagree.** A
+NaN weight cell mid-series means "the strategy said nothing for this bar". The
+engines have always answered that differently: **vectorbt forward-fills** (holds
+the last target; leading NaN → 0) while **rsims treats NaN as 0** (goes flat).
+This pipeline does not change either engine's numbers; it materialises the
+policy the chosen engine already applies into the frame it hands over
+(`quantbox.execution.materialise_nan_policy`), so `traded_weights` and the
+`traded_*` metrics describe the book that engine actually traded — and never
+contain NaN. The disagreement itself is a **known issue**: the same config with
+mid-series NaN weights gives different books on the two engines. Emit explicit
+weights for every bar to avoid depending on it. (The sweep path hands vectorbt
+the raw frame, so it holds through NaN rows like any vectorbt run; it saves no
+weights.)
+
 **Shorts are never silent.** Whatever the config says, every run measures
 `target_short_gross_share` (the strategy's targets) and
 `traded_short_gross_share` (the book the engine received) and logs a `VENUE —`
@@ -180,10 +194,25 @@ reach the `DatasetManifest`, so the venue has to be declared in the config.
 > release `quantbox run -c` handed strategy weights to the engine unshifted,
 > while `quantbox sweep` shifted them by one bar. **Every historical backtest
 > number produced by `quantbox run -c` was same-bar.** To reproduce an old
-> number, set `execution.lag_bars: 0`; `cookbook/canonical/expected_same_bar/`
-> pins that this reproduces the pre-change goldens. `sweep`'s `shift_signal`
-> (Python kwarg and `backtest.shift_signal` in sweep YAML) still works as a
-> deprecated alias of `execution.lag_bars`; sweep numbers are unchanged.
+> number, set `execution.lag_bars: 0`. What that reproduces, precisely: the
+> **historical metric keys** (`total_return`, `cagr`, `sharpe`, … — the 12 keys
+> `metrics.json` carried before) and the returns / equity series, pinned by the
+> frozen goldens in `cookbook/canonical/expected_same_bar/`. It does **not** make
+> the run directory byte-identical to an old one: `metrics.json` gains the
+> `execution_lag_bars` / `traded_*` / `target_*` keys, a `traded_weights`
+> artifact appears, and the report is built from the traded weights. `sweep`'s
+> `shift_signal` (Python kwarg and `backtest.shift_signal` in sweep YAML) still
+> works as a deprecated alias of `execution.lag_bars`; sweep numbers are unchanged.
+>
+> **Do not quote an old-vs-new delta as "the size of the look-ahead".** The lag
+> sets the first `lag_bars` rows flat, and with an integer `rebalancing_freq`
+> N > 1 row 0 *is* the first rebalance bar — so the book enters at bar N, not
+> bar 1, and sits flat for N bars. On a short window that lost first period is
+> mixed into the delta: the regenerated `momentum` canonical golden (30 bars,
+> `rebalancing_freq: 5`, total return +6.85% → −13.88%) contains both effects.
+> On the reviewer's toy the split was: same-bar −0.1792, next-bar −0.1589,
+> same-bar with only the first rebalance zeroed −0.1553 — there the lost first
+> period ALONE moves the number by more than the whole same-bar → next-bar delta.
 
 ## Outputs
 

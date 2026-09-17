@@ -68,6 +68,7 @@ from quantbox.execution import (
     describe_execution,
     execution_record,
     exposure_metrics,
+    materialise_nan_policy,
     resolve_allow_shorts,
     resolve_lag_bars,
     warn_if_same_bar,
@@ -397,7 +398,7 @@ class BacktestPipeline:
         weights_history = self._apply_venue_and_risk(weights_history, risk_cfg, allow_shorts, venue_declared)
 
         # --- Stage 5: Execution lag, then run backtest engine ---
-        bt_prices, bt_weights = self._align_for_engine(prices_wide, weights_history, lag_bars)
+        bt_prices, bt_weights = self._align_for_engine(prices_wide, weights_history, lag_bars, engine=engine)
         common_cols = [c for c in weights_history.columns if c in prices_wide.columns]
         a_traded = store.put_parquet("traded_weights", bt_weights.rename_axis("date").reset_index())
 
@@ -782,7 +783,7 @@ class BacktestPipeline:
 
             # Stage 5: execution lag + align, then engine
             try:
-                bt_p, bt_w = self._align_for_engine(prices_wide, wh, lag_bars)
+                bt_p, bt_w = self._align_for_engine(prices_wide, wh, lag_bars, engine=engine)
             except ValueError as exc:
                 raise ValueError(f"Variant {vname!r}: {exc}") from exc
 
@@ -1004,6 +1005,8 @@ class BacktestPipeline:
         prices_wide: pd.DataFrame,
         weights: pd.DataFrame,
         lag_bars: int,
+        *,
+        engine: str | None = "vectorbt",
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Align prices/weights for the engine and apply the execution lag.
 
@@ -1014,6 +1017,11 @@ class BacktestPipeline:
 
         The lag is applied BEFORE the missing-price mask, so a lagged weight can
         never land on a bar where the asset has no price.
+
+        Last, the NaN policy the chosen ``engine`` already applies to mid-series
+        NaN weight cells is materialised (:func:`materialise_nan_policy`), so
+        the frame returned here is at once what the engine receives, what is
+        saved as ``traded_weights`` and what the ``traded_*`` metrics measure.
         """
         common_idx = prices_wide.index.intersection(weights.index)
         common_cols = [c for c in weights.columns if c in prices_wide.columns]
@@ -1042,7 +1050,7 @@ class BacktestPipeline:
         all_nan_rows = bt_prices.isna().all(axis=1)
         bt_weights = bt_weights.where(bt_prices.notna(), 0.0)
         bt_prices = bt_prices.ffill().bfill()
-        return bt_prices.loc[~all_nan_rows], bt_weights.loc[~all_nan_rows]
+        return bt_prices.loc[~all_nan_rows], materialise_nan_policy(bt_weights.loc[~all_nan_rows], engine)
 
     @staticmethod
     def _book_metrics(

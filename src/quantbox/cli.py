@@ -384,6 +384,13 @@ def sweep(
     with config_path.open(encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
+    # The `execution:` BLOCK goes through the same resolver as `quantbox run`,
+    # before any work: a typo (`lag_bar: 0`, `execution: 0`) is refused, never
+    # defaulted. Absent block -> None -> run_grid resolves the default / alias.
+    from .execution import resolve_lag_bars
+
+    sweep_lag_bars = resolve_lag_bars(cfg["execution"]) if "execution" in cfg else None
+
     reg = PluginRegistry.discover()
     strategy_name = cfg["strategy"]
     if strategy_name not in reg.strategies:
@@ -415,7 +422,7 @@ def sweep(
         metrics=tuple(heatmap.get("metrics") or DEFAULT_METRICS),
         fees=float(backtest.get("fees", 0.005)),
         rebalancing_freq=backtest.get("rebalancing_freq", "1D"),
-        lag_bars=(cfg.get("execution") or {}).get("lag_bars"),
+        lag_bars=sweep_lag_bars,
         shift_signal=backtest.get("shift_signal"),  # deprecated alias of execution.lag_bars
     )
     print(f"SWEEP: {len(grid)} rows  ->  {output_dir}")

@@ -144,6 +144,31 @@ def apply_execution_lag(
     return lagged
 
 
+def materialise_nan_policy(weights: pd.DataFrame, engine: str | None) -> pd.DataFrame:
+    """Make the NaN policy an engine ALREADY applies explicit in the frame it is handed.
+
+    A NaN weight cell means "the strategy said nothing for this bar". The two
+    engines answer that differently, and did before this module existed:
+
+    - ``vectorbt``: forward-fills (HOLDS the last target), leading NaN -> 0
+      (``vectorbt_engine.run``: ``weights_df.reindex(index).ffill().fillna(0)``).
+    - ``rsims``: NaN -> 0 (goes FLAT) (``rsims_engine``: ``target_weights.fillna(0)``).
+
+    Both operations are idempotent, so handing the engine the materialised frame
+    changes no engine number; it only makes the saved ``traded_weights`` and the
+    ``traded_*`` metrics describe the book that engine actually traded. The
+    disagreement between the engines is a known, pre-existing issue and is NOT
+    resolved here. ``engine=None`` returns the frame untouched.
+    """
+    if engine is None:
+        return weights
+    if engine == "vectorbt":
+        return weights.ffill().fillna(0.0)
+    if engine == "rsims":
+        return weights.fillna(0.0)
+    raise ValueError(f"Unknown engine: {engine!r}. Use 'vectorbt' or 'rsims'.")
+
+
 def describe_execution(lag_bars: int) -> str:
     """The execution timing in words — for logs, summary.md, the report header."""
     if lag_bars == 0:
