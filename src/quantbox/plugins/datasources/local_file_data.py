@@ -9,7 +9,7 @@ Replaces the old ``DuckDBParquetData`` stub with a real implementation that:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -135,6 +135,28 @@ def _read_via_pandas(path: str, ext: str, asof: str | None, symbols: list[str] |
     return df
 
 
+def _load_pinned_dataset(name: str) -> Any:
+    """A quantbox-datasets Dataset, served at the build pinned in the nearest ``datasets.lock``."""
+    try:
+        from quantbox_datasets.lock import load
+    except ImportError as exc:
+        raise ImportError(
+            f"dataset={name!r} needs quantbox-datasets with quantbox_datasets.lock (>= 8d2cdae) installed"
+        ) from exc
+    return load(name)
+
+
+def _clip_frame(df: pd.DataFrame, asof: str | None) -> pd.DataFrame:
+    """Give a dataset frame the same UTC date index and ``<= asof`` cut as ``_read_file``."""
+    if df.empty or not isinstance(df.index, pd.DatetimeIndex):
+        return df
+    df = df.copy()
+    df.index = (df.index.tz_localize("UTC") if df.index.tz is None else df.index.tz_convert("UTC")).normalize()
+    if asof:
+        df = df[df.index <= pd.Timestamp(asof, tz="UTC")]
+    return df
+
+
 def _pivot_long_to_wide(df: pd.DataFrame) -> pd.DataFrame:
     """Pivot long-format (date, symbol, value) to wide (date index, symbol columns).
 
@@ -170,6 +192,13 @@ class LocalFileDataPlugin:
             params_init:
               prices_path: ./data/prices.parquet
               volume_path: ./data/volume.parquet
+
+    Or, for a quantbox-datasets dataset, by name — served at the build pinned in the
+    consumer's ``datasets.lock`` (``quantbox-datasets pin <name>``); the ``*_path``
+    params are then ignored::
+
+            params_init:
+              dataset: etf-daily
     """
 
     meta = PluginMeta(
@@ -188,9 +217,14 @@ class LocalFileDataPlugin:
     universe_path: str | None = None
     funding_rates_path: str | None = None
     fx_path: str | None = None
-    dataset_root: str | None = None
     dataset: str | None = None
     mode: str | None = None
+    _dataset: Any = field(default=None, init=False, repr=False)
+
+    def _pinned(self) -> Any:
+        if self._dataset is None:
+            self._dataset = _load_pinned_dataset(self.dataset)
+        return self._dataset
 
     def load_universe(self, params: dict[str, Any]) -> pd.DataFrame:
         """Load trading universe from file or params.
@@ -203,6 +237,12 @@ class LocalFileDataPlugin:
         symbols = params.get("symbols")
         if symbols:
             return pd.DataFrame({"symbol": symbols})
+
+        if self.dataset:
+            df = self._pinned().universe
+            if "symbol" in df.columns:
+                return df[["symbol"]].drop_duplicates().reset_index(drop=True)
+            return pd.DataFrame({"symbol": list(self._pinned().prices.columns)})
 
         path = params.get("path") or self.universe_path
         if path and Path(path).exists():
@@ -242,6 +282,13 @@ class LocalFileDataPlugin:
                 available = [s for s in symbols if s in df.columns]
                 return df[available]
             return df
+
+        if self.dataset:
+            ds = self._pinned()
+            return {
+                key: _select_cols(_clip_frame(getattr(ds, key), asof))
+                for key in ("prices", "volume", "market_cap", "funding_rates")
+            }
 
         result: dict[str, pd.DataFrame] = {}
 

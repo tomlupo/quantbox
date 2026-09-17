@@ -45,6 +45,4 @@ plugins:
   data:
     name: "local_file_data"
     params_init:
-      prices_path: "../quantbox-datasets/datasets/etf-daily/prices.parquet"
-      volume_path: "../quantbox-datasets/datasets/etf-daily/volume.parquet"
-      universe_path: "../quantbox-datasets/datasets/etf-daily/universe.parquet"
+      dataset: etf-daily  # pinned in datasets.lock at the repo root

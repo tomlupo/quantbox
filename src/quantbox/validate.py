@@ -16,11 +16,13 @@ class ValidationFinding:
 def _check_legacy_dataset_params(cfg: dict) -> None:
     data = (cfg.get("plugins") or {}).get("data") or {}
     params = data.get("params_init") or {}
-    has_legacy = "dataset_root" in params or "dataset" in params
+    # A bare ``dataset`` name is current (loaded by name, pinned by datasets.lock);
+    # only the filesystem root is legacy.
+    has_legacy = "dataset_root" in params
     has_new = "dataset_id" in params
     if has_legacy and not has_new:
         warnings.warn(
-            "config uses legacy dataset_root/dataset params; switch to dataset_id "
+            "config uses legacy dataset_root param; switch to dataset_id or a pinned dataset name "
             "(see quantbox-qute/docs/decisions/0004-quantbox-dataset-plugin-tiers.md)",
             DeprecationWarning,
             stacklevel=2,

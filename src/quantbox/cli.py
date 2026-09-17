@@ -353,11 +353,12 @@ def sweep(
     combination through the vbt backtest engine, and saves heatmap PNGs +
     grid.parquet to the configured output directory.
 
-    Expected YAML schema (relative paths resolve from the config file):
+    Expected YAML schema (relative paths resolve from the config file; the dataset
+    is loaded by name at the build pinned in the ``datasets.lock`` nearest the config):
 
         strategy: strategy.crypto_regime_trend.v1
         data:
-          root: ../../quantbox-datasets/datasets/crypto-spot-daily
+          dataset: crypto-spot-daily
           frames: [prices, volume, market_cap]
           align_to: prices
         base_params: { ... strategy kwargs ... }
@@ -372,7 +373,8 @@ def sweep(
           rebalancing_freq: 1D
         output_dir: heatmaps
     """
-    from .analysis import DEFAULT_METRICS, load_parquet_market_data, run_grid
+    from .analysis import DEFAULT_METRICS, run_grid
+    from .analysis.parameter_grid import align_market_data
 
     config_path = Path(config).resolve()
     with config_path.open(encoding="utf-8") as f:
@@ -386,12 +388,15 @@ def sweep(
 
     config_dir = config_path.parent
     data_cfg = cfg.get("data", {}) or {}
-    data_root = (config_dir / data_cfg["root"]).resolve()
-    market_data = load_parquet_market_data(
-        data_root,
-        names=tuple(data_cfg.get("frames", ["prices", "volume", "market_cap"])),
-        align_to=data_cfg.get("align_to", "prices"),
-    )
+    if "dataset" not in data_cfg:
+        raise typer.BadParameter("sweep config needs data.dataset: <quantbox-datasets name>")
+    from quantbox_datasets.lock import find_lock, load
+
+    # The lock nearest the config wins; with none there, load() searches from cwd.
+    dataset = load(data_cfg["dataset"], lock=find_lock(config_dir))
+    align_to = data_cfg.get("align_to", "prices")
+    names = [*data_cfg.get("frames", ["prices", "volume", "market_cap"]), align_to]
+    market_data = align_market_data({name: dataset._read(name) for name in dict.fromkeys(names)}, align_to)
 
     output_dir = (config_dir / cfg.get("output_dir", "heatmaps")).resolve()
     heatmap = cfg.get("heatmap", {}) or {}
