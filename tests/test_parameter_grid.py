@@ -43,7 +43,7 @@ def test_sweep_vol_matched_btc() -> None:
         data={"prices": prices},
         backtest_kwargs={"fees": 0.0, "rebalancing_freq": 1},
         metrics=["sharpe_ratio", "annualized_volatility"],
-        shift_signal=1,
+        lag_bars=1,
     )
     assert len(grid) == 3
     assert "target_annual_vol" in grid.columns

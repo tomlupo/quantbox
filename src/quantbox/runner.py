@@ -575,6 +575,11 @@ def run_from_config(
         "metrics": result.metrics,
         "warnings": [],
     }
+    # Backtest pipelines state their execution timing and venue; a reader of
+    # the manifest must never have to infer either (quantbox.execution).
+    for block in ("execution", "venue"):
+        if block in (result.notes or {}):
+            manifest[block] = result.notes[block]
 
     # Validate artifacts against JSON schemas when available (best-effort)
     from importlib.resources import files as _res_files

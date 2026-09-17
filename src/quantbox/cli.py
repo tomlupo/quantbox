@@ -326,6 +326,9 @@ def run(
     print("RUN_ID:", result.run_id)
     print("PIPELINE:", result.pipeline_name)
     print("METRICS:", result.metrics)
+    execution = (result.notes or {}).get("execution")
+    if execution:
+        print("EXECUTION:", execution["description"])
 
     # Dead-man detection (quantbox#120): a rebalancer freeze (every intended
     # order suppressed, book stuck on stale positions) previously exited 0 --
@@ -370,6 +373,9 @@ def sweep(
         backtest:
           fees: 0.005
           rebalancing_freq: 1D
+        execution:
+          lag_bars: 1        # default; same convention as `quantbox run`
+                             # (backtest.shift_signal is a deprecated alias)
         output_dir: heatmaps
     """
     from .analysis import DEFAULT_METRICS, load_parquet_market_data, run_grid
@@ -409,7 +415,8 @@ def sweep(
         metrics=tuple(heatmap.get("metrics") or DEFAULT_METRICS),
         fees=float(backtest.get("fees", 0.005)),
         rebalancing_freq=backtest.get("rebalancing_freq", "1D"),
-        shift_signal=int(backtest.get("shift_signal", 1)),
+        lag_bars=(cfg.get("execution") or {}).get("lag_bars"),
+        shift_signal=backtest.get("shift_signal"),  # deprecated alias of execution.lag_bars
     )
     print(f"SWEEP: {len(grid)} rows  ->  {output_dir}")
 

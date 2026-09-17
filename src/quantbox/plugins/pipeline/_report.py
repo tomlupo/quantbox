@@ -46,6 +46,7 @@ def generate_summary_md(
     strategy_names: list[str],
     period_start: str,
     period_end: str,
+    execution: str = "",
 ) -> str:
     m = metrics
     strategies_str = ", ".join(strategy_names) if strategy_names else "—"
@@ -63,6 +64,15 @@ def generate_summary_md(
         ("VaR 95%", _pct(m.get("var_95", 0))),
         ("CVaR 95%", _pct(m.get("cvar_95", 0))),
     ]
+    if "traded_mean_gross_exposure" in m:
+        rows += [
+            ("Traded gross exposure (mean)", _f2(m.get("traded_mean_gross_exposure", 0))),
+            ("Traded net exposure (mean)", _f2(m.get("traded_mean_net_exposure", 0))),
+            ("Traded short share of gross", _pct(m.get("traded_short_gross_share", 0))),
+            ("Target short share of gross", _pct(m.get("target_short_gross_share", 0))),
+            ("Traded turnover per bar (mean)", _f2(m.get("traded_mean_turnover", 0))),
+            ("Flat bars", _pct(m.get("traded_flat_bar_share", 0))),
+        ]
     table = "\n".join(f"| {name} | {val} |" for name, val in rows)
     n_assets = int(m.get("n_assets", 0))
     n_dates = int(m.get("n_dates", 0))
@@ -72,6 +82,7 @@ def generate_summary_md(
 **As of:** {asof}
 **Period:** {period_start} → {period_end}
 **Strategies:** {strategies_str}
+**Execution timing:** {execution or "not recorded"}
 
 ## Performance
 
@@ -1313,6 +1324,7 @@ def build_reproducibility(
     period_start: str,
     period_end: str,
     variant_results: dict[str, dict[str, Any]] | None = None,
+    execution: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the reproducibility appendix payload from in-process run state.
 
@@ -1351,6 +1363,8 @@ def build_reproducibility(
             "threshold": params.get("threshold"),
             "trading_days": params.get("trading_days"),
             "risk": params.get("risk"),
+            "execution": execution,
+            "venue": params.get("venue"),
         },
         "data": params.get("data") or {},
         "universe": params.get("universe") or {},
@@ -1377,6 +1391,7 @@ def generate_report_data(
     variant_results: dict[str, dict[str, Any]] | None = None,
     narrative: dict[str, str] | None = None,
     reproducibility: dict[str, Any] | None = None,
+    execution: str = "",
 ) -> dict[str, Any]:
     charts: dict[str, Any] = {}
     vr = variant_results or {}
@@ -1520,6 +1535,7 @@ def generate_report_data(
         "asof": asof,
         "period_start": period_start,
         "period_end": period_end,
+        "execution": execution,
         "strategies": strategy_names,
         "metrics": metrics,
         "variant_metrics": variant_metrics,
