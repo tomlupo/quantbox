@@ -19,10 +19,13 @@ well-formed but WRONG sha256 passes it. Stage 3 is the tier that catches that on
 and it runs where the data is: a box with $QUANTBOX_DATASETS_ROOT set and a
 quantbox-datasets new enough to expose ``quantbox_datasets.lock``.
 
-Datasets the catalog declares ``in_git: false`` (e.g. crypto-spot-hourly) live only
-under ``$QUANTBOX_DATASETS_ROOT`` and cannot be restored from git history, so a pin on
-one is verified when the artifact is on disk and reported as unverifiable otherwise —
-never a failure.
+Every pin is loaded, and a failure is a violation — EXCEPT where a good pin could not
+have resolved either: a dataset the catalog declares ``in_git: false`` (e.g.
+crypto-spot-hourly) lives only under ``$QUANTBOX_DATASETS_ROOT`` and cannot be restored
+from git history, so with no artifact under the root it is reported UNVERIFIABLE rather
+than failed. With no catalog to say which kind a dataset is, an absent artifact is
+UNVERIFIABLE too. An ``in_git: true`` dataset is never excused: its build is restorable
+from history, so a pin that will not resolve is a bad pin.
 
 The mode actually run is always printed, and the final line names the stages that ran:
 "could not check" never passes silently, and never as the sentence a full run prints.
@@ -121,6 +124,21 @@ def check_syntax(path: Path) -> tuple[dict[str, str], list[str]]:
     return pins, errors
 
 
+def _catalog_entries(path: Path) -> dict[str, Any]:
+    """The ``datasets:`` mapping of a catalog file, or {} for anything that is not one.
+
+    The CI copy is FETCHED, so it can be any body an HTTP 200 carries. A file that is
+    not the shape a catalog has must read as "no catalog", which --require-catalog then
+    turns into a failure — never as a traceback.
+    """
+    try:
+        parsed = yaml.safe_load(path.read_text())
+    except (OSError, yaml.YAMLError):
+        return {}
+    entries = parsed.get("datasets") if isinstance(parsed, dict) else None
+    return entries if isinstance(entries, dict) else {}
+
+
 def load_catalog() -> tuple[dict[str, Any] | None, str]:
     """quantbox-datasets' catalog entries and where they came from, or (None, why)."""
     explicit = os.environ.get("QUANTBOX_DATASETS_CATALOG", "")
@@ -128,7 +146,7 @@ def load_catalog() -> tuple[dict[str, Any] | None, str]:
         path = Path(explicit)
         if not path.is_file():
             return None, f"QUANTBOX_DATASETS_CATALOG={explicit} does not exist"
-        entries = (yaml.safe_load(path.read_text()) or {}).get("datasets") or {}
+        entries = _catalog_entries(path)
         return (entries, str(path)) if entries else (None, f"{path} lists no datasets")
 
     try:  # an editable install or a clone on sys.path carries catalog.yaml
@@ -143,7 +161,7 @@ def load_catalog() -> tuple[dict[str, Any] | None, str]:
     root = datasets_root()
     if root is not None and (root.parent / "catalog.yaml").is_file():
         path = root.parent / "catalog.yaml"
-        entries = (yaml.safe_load(path.read_text()) or {}).get("datasets") or {}
+        entries = _catalog_entries(path)
         if entries:
             return entries, str(path)
     return None, "no catalog.yaml reachable (set QUANTBOX_DATASETS_CATALOG)"
@@ -219,20 +237,25 @@ def main(argv: list[str] | None = None) -> int:
         skipped.append("pins")
     else:
         print(f"  pins:  resolved against {root}")
-        not_in_git = {name for name, entry in (catalog or {}).items() if entry.get("in_git") is False}
+        # `in_git: false` in the catalog we could reach. quantbox-datasets owns this rule
+        # (catalog.not_in_git); it is re-read here because our catalog may be a fetched
+        # file rather than that package.
+        not_in_git = {
+            name for name, entry in (catalog or {}).items() if isinstance(entry, dict) and entry.get("in_git") is False
+        }
         for lock, pins in pins_by_lock.items():
             for name, sha in sorted(pins.items()):
-                if not (root / name).is_dir():
-                    # A dataset absent from this root cannot be verified here. For an
-                    # `in_git: false` one that is the whole story — its artifact is never
-                    # committed, so no commit can restore it — and this does not depend on
-                    # the catalog being reachable to say so.
-                    why = "in_git: false" if name in not_in_git else "not built here"
-                    print(f"         - {name}: UNVERIFIABLE — {why}, no artifact under {root}")
-                    continue
                 try:
                     load_dataset(name, root=root, sha256=sha)
                 except Exception as exc:  # noqa: BLE001 — DataPinMismatch and friends
+                    # A failure is evidence of a bad pin ONLY where a good pin could have
+                    # resolved. With no artifact under this root it is not: an
+                    # `in_git: false` dataset is never committed, so no commit can restore
+                    # it — and with no catalog reachable we cannot tell which kind this is.
+                    if not (root / name).is_dir() and (name in not_in_git or catalog is None):
+                        why = "in_git: false" if name in not_in_git else "no catalog to say whether it is in git"
+                        print(f"         - {name}: UNVERIFIABLE — {why}, no artifact under {root}")
+                        continue
                     errors.append(f"{lock.relative_to(ROOT)}: pin for {name} does not resolve: {exc}")
                 else:
                     print(f"         - {name}: ok")

@@ -59,8 +59,13 @@ def test_real_repo_passes_its_own_locks() -> None:
     """Whatever mode it runs in, this repo's committed locks must pass."""
     result = subprocess.run([sys.executable, str(SCRIPT)], cwd=REPO_ROOT, capture_output=True, text=True, check=False)
     assert result.returncode == 0, f"check failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
-    # Whatever mode it chose, it must SAY which one — and it must have read some locks.
-    assert "names:" in result.stdout and "pins:" in result.stdout
+    # Whatever mode it chose, it must SAY which one, and the summary must agree with the
+    # stage lines: a run that skipped a stage may not report it as checked, and vice
+    # versa. Asserting only that the words appear would pass on a wholly skipped run.
+    checked = result.stdout.rsplit("PASS — checked:", 1)[1].split(".")[0]
+    for stage in ("names", "pins"):
+        line = next(ln for ln in result.stdout.splitlines() if ln.strip().startswith(f"{stage}:"))
+        assert ("SKIPPED" not in line) == (stage in checked), result.stdout
 
 
 def test_good_lock_passes(tmp_path: Path) -> None:
@@ -281,3 +286,22 @@ def test_discovery_reads_the_index_not_the_disk(tmp_path: Path) -> None:
     result = _run_with(repo, env)
     assert "1 lock file(s)" in result.stdout, result.stdout
     assert result.returncode == 0, result.stdout
+
+
+def test_an_absent_in_git_true_artifact_is_a_pin_failure(tmp_path: Path) -> None:
+    """A dataset the catalog says IS committed must resolve — absent, that is a bad pin."""
+    repo = _sandbox(tmp_path, f"etf-daily: {GOOD_SHA}\n")
+    result = _run_with(repo, _with_stub_datasets(repo, {}))
+    assert result.returncode == 1, result.stdout
+    assert "does not resolve" in result.stdout
+
+
+def test_a_catalog_that_is_not_a_catalog_reads_as_no_catalog(tmp_path: Path) -> None:
+    """CI FETCHES the catalog, so any HTTP 200 body must degrade, never traceback."""
+    repo = _sandbox(tmp_path, f"crypto-spot-hourly: {GOOD_SHA}\n")
+    (repo / "catalog.yaml").write_text("<html>not a catalog</html>\n")
+    result = _run(repo)
+    assert result.returncode == 0, result.stdout
+    assert "names: SKIPPED" in result.stdout
+    assert "Traceback" not in result.stderr
+    assert _run(repo, args=("--require-catalog",)).returncode == 1
