@@ -39,14 +39,14 @@ def _sandbox(tmp_path: Path, lock_body: str) -> Path:
     return tmp_path
 
 
-def _run(repo: Path, *, root: str | None = None) -> subprocess.CompletedProcess:
+def _run(repo: Path, *, root: str | None = None, args: tuple[str, ...] = ()) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env["QUANTBOX_DATASETS_CATALOG"] = str(repo / "catalog.yaml")
     # A path that does not exist means "no root reachable" — deterministic whether or
     # not the machine running the tests happens to have a quantbox-datasets clone.
     env["QUANTBOX_DATASETS_ROOT"] = root if root is not None else str(repo / "no-such-root")
     return subprocess.run(
-        [sys.executable, str(repo / "scripts" / "check_datasets_lock.py")],
+        [sys.executable, str(repo / "scripts" / "check_datasets_lock.py"), *args],
         cwd=repo,
         env=env,
         capture_output=True,
@@ -67,7 +67,7 @@ def test_good_lock_passes(tmp_path: Path) -> None:
     repo = _sandbox(tmp_path, f"crypto-spot-hourly: {GOOD_SHA}\n")
     result = _run(repo)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "All committed datasets.lock files pass." in result.stdout
+    assert "PASS — checked: syntax, names." in result.stdout
 
 
 def test_no_root_mode_is_announced_and_passes(tmp_path: Path) -> None:
@@ -217,3 +217,67 @@ def test_finding_no_locks_is_a_failure(tmp_path: Path) -> None:
     result = _run(tmp_path)
     assert result.returncode == 1
     assert "0 lock file(s)" in result.stdout
+
+
+def test_a_skipped_stage_never_reads_as_a_full_pass(tmp_path: Path) -> None:
+    """The summary names what ran, so a partial run cannot be mistaken for a clean one."""
+    repo = _sandbox(tmp_path, f"crypto-spot-hourly: {GOOD_SHA}\n")
+    (repo / "catalog.yaml").unlink()
+    result = _run(repo)
+    assert result.returncode == 0
+    assert "NOT checked: names, pins" in result.stdout
+    assert "All committed datasets.lock files pass" not in result.stdout
+
+
+def test_require_catalog_fails_when_the_catalog_is_unreachable(tmp_path: Path) -> None:
+    """CI fetches the catalog on purpose, so an unreachable one there is a broken check."""
+    repo = _sandbox(tmp_path, f"crypto-spot-hourly: {GOOD_SHA}\n")
+    (repo / "catalog.yaml").unlink()
+    result = _run(repo, args=("--require-catalog",))
+    assert result.returncode == 1
+    assert "--require-catalog" in result.stdout
+
+
+def test_require_catalog_still_passes_with_a_catalog(tmp_path: Path) -> None:
+    repo = _sandbox(tmp_path, f"crypto-spot-hourly: {GOOD_SHA}\n")
+    result = _run(repo, args=("--require-catalog",))
+    assert result.returncode == 0, result.stdout
+
+
+def test_discovery_reads_the_index_not_the_disk(tmp_path: Path) -> None:
+    """Under a git hook GIT_INDEX_FILE/GIT_DIR are exported; stripped, git reads THIS tree.
+
+    The sandbox is a real repo with one COMMITTED lock and one UNTRACKED broken lock: a
+    discovery that honours the ambient GIT_* (or falls back to walking the disk) picks up
+    the untracked file and fails, which is what binds the stripping itself.
+    """
+    repo = _sandbox(tmp_path, f"crypto-spot-hourly: {GOOD_SHA}\n")
+    # A clean git env: run from a hook, the ambient GIT_* would point these at the
+    # real repo, and its hooksPath would run this repo's pre-commit inside the sandbox.
+    git_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(repo), "-c", "core.hooksPath=", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=git_env,
+        ).stdout
+
+    git("init", "-q")
+    # Prove the sandbox owns this git BEFORE writing to an index: an escaped `add -A`
+    # writes into whatever repo the ambient GIT_* names, which is not a test any more.
+    assert Path(git("rev-parse", "--show-toplevel").strip()).resolve() == repo.resolve()
+    git("add", "-A")
+    git("commit", "-qm", "x")
+    (repo / "research" / "untracked").mkdir()
+    (repo / "research" / "untracked" / "datasets.lock").write_text("crypto-spot-hourly: not-a-sha\n")
+    env = dict(os.environ)
+    env["QUANTBOX_DATASETS_CATALOG"] = str(repo / "catalog.yaml")
+    env["QUANTBOX_DATASETS_ROOT"] = str(repo / "no-such-root")
+    env["GIT_DIR"] = str(REPO_ROOT / ".git")
+    env["GIT_INDEX_FILE"] = str(REPO_ROOT / ".git" / "index")
+    result = _run_with(repo, env)
+    assert "1 lock file(s)" in result.stdout, result.stdout
+    assert result.returncode == 0, result.stdout

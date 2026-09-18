@@ -70,6 +70,10 @@ jobs:
       - run: uv run pytest tests/canonical_reproductions/ -m canonical_reproduction -v
 
   datasets-lock-check:
+    # Least privilege, as the sibling workflows declare it: this job consumes a
+    # secret, and ci.yml as a whole declares no permissions.
+    permissions:
+      contents: read
     # A PR that only touches datasets.lock is the trivial rigor tier and skips the
     # review gate, so this is the only thing that reads the file it changed. The
     # catalog is fetched (not cloned): it is the one file the name check needs, and
@@ -82,7 +86,11 @@ jobs:
         with:
           python-version: '3.11'
       - run: uv sync
+      # Fork and Dependabot PRs get an empty secret. Rather than a hard red on a PR
+      # that could never have fetched it, the catalog is fetched only when the token
+      # is there, and the step below says loudly which mode it therefore ran in.
       - name: Fetch quantbox-datasets catalog
+        if: ${{ secrets.GH_DEPS_PAT != '' }}
         run: |
           set -euo pipefail
           curl -sSfL --retry 3 --retry-all-errors \
@@ -93,6 +101,13 @@ jobs:
         env:
           GH_DEPS_PAT: ${{ secrets.GH_DEPS_PAT }}
       - name: datasets.lock check
-        run: uv run python scripts/check_datasets_lock.py
+        run: |
+          set -euo pipefail
+          if [ -f "$QUANTBOX_DATASETS_CATALOG" ]; then
+            uv run python scripts/check_datasets_lock.py --require-catalog
+          else
+            echo "::warning::No catalog fetched (no GH_DEPS_PAT on this PR) — the name stage will report SKIPPED and only the lock syntax is checked."
+            uv run python scripts/check_datasets_lock.py
+          fi
         env:
           QUANTBOX_DATASETS_CATALOG: ${{ runner.temp }}/quantbox-datasets-catalog.yaml

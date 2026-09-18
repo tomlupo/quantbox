@@ -24,10 +24,16 @@ under ``$QUANTBOX_DATASETS_ROOT`` and cannot be restored from git history, so a 
 one is verified when the artifact is on disk and reported as unverifiable otherwise —
 never a failure.
 
-The mode actually run is always printed: "could not check" never passes silently.
+The mode actually run is always printed, and the final line names the stages that ran:
+"could not check" never passes silently, and never as the sentence a full run prints.
 
 USAGE:
-    python scripts/check_datasets_lock.py
+    uv run python scripts/check_datasets_lock.py [--require-catalog]
+
+    --require-catalog           fail when no catalog is reachable instead of skipping
+                                the name stage. CI passes it: there the catalog is
+                                fetched deliberately, so an unreachable one means the
+                                fetch is broken, not that the check may run partially.
 
     QUANTBOX_DATASETS_CATALOG   path to quantbox-datasets' catalog.yaml (CI fetches it)
     QUANTBOX_DATASETS_ROOT      the datasets/ directory of a quantbox-datasets clone
@@ -157,7 +163,13 @@ def datasets_root() -> Path | None:
     return root if root.is_dir() else None
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    # --require-catalog: the caller states the name stage MUST run. CI passes it, because
+    # there the catalog is fetched deliberately and an unreachable one means the fetch,
+    # not the environment, is broken — and a stage that silently stopped running is how a
+    # check goes green having read nothing.
+    require_catalog = "--require-catalog" in (argv if argv is not None else sys.argv[1:])
+
     locks = find_locks()
     print(f"datasets.lock check — {len(locks)} lock file(s) under {ROOT}")
     if not locks:
@@ -175,8 +187,12 @@ def main() -> int:
         errors.extend(lock_errors)
 
     catalog, catalog_source = load_catalog()
+    skipped: list[str] = []
     if catalog is None:
         print(f"  names: SKIPPED — {catalog_source}")
+        skipped.append("names")
+        if require_catalog:
+            errors.append(f"--require-catalog was given and no catalog was reachable: {catalog_source}")
     else:
         print(f"  names: checked against {catalog_source} ({len(catalog)} datasets)")
         for lock, pins in pins_by_lock.items():
@@ -194,9 +210,13 @@ def main() -> int:
         load_dataset = None  # type: ignore[assignment]
 
     if root is None:
-        print("  pins:  SKIPPED — no datasets root reachable (set QUANTBOX_DATASETS_ROOT)")
+        env_root = os.environ.get("QUANTBOX_DATASETS_ROOT", "")
+        why = f"QUANTBOX_DATASETS_ROOT={env_root} is not a directory" if env_root else "no datasets root reachable"
+        print(f"  pins:  SKIPPED — {why} (set QUANTBOX_DATASETS_ROOT)")
+        skipped.append("pins")
     elif load_dataset is None:
         print(f"  pins:  SKIPPED — quantbox_datasets is not importable (root {root} is reachable)")
+        skipped.append("pins")
     else:
         print(f"  pins:  resolved against {root}")
         not_in_git = {name for name, entry in (catalog or {}).items() if entry.get("in_git") is False}
@@ -223,7 +243,13 @@ def main() -> int:
             print(f"  - {error}")
         print()
         return 1
-    print("\nAll committed datasets.lock files pass.")
+    # Never the same sentence over a run that skipped a stage: the summary says what
+    # was actually checked, so a partial run cannot be mistaken for a full one.
+    ran = [stage for stage in ("syntax", "names", "pins") if stage not in skipped]
+    summary = f"\nPASS — checked: {', '.join(ran)}."
+    if skipped:
+        summary += f" NOT checked: {', '.join(skipped)} (see the SKIPPED lines above)."
+    print(summary)
     return 0
 
 
