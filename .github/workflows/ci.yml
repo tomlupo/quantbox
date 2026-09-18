@@ -91,13 +91,15 @@ jobs:
         with:
           python-version: '3.11'
       - run: uv sync
-      # Fork and Dependabot PRs get an empty secret. Rather than a hard red on a PR
-      # that could never have fetched it, the catalog is fetched only when the token
-      # is there, and the step below says loudly which mode it therefore ran in.
+      # Best-effort: fork and Dependabot PRs have no secret at all, and a token that
+      # has expired or lost access to quantbox-datasets 401s (it does today, which is
+      # why this does not hard-fail: an unrelated PR must not go red over a secret
+      # rotation). Whether it landed decides the mode, and the step below says which.
       - name: Fetch quantbox-datasets catalog
         if: env.HAS_DEPS_PAT == 'true'
+        continue-on-error: true
         run: |
-          set -euo pipefail
+          set -uo pipefail
           curl -sSfL --retry 3 --retry-all-errors \
             -H "Authorization: token $GH_DEPS_PAT" \
             -H "Accept: application/vnd.github.raw" \
@@ -111,7 +113,7 @@ jobs:
           if [ -f "$QUANTBOX_DATASETS_CATALOG" ]; then
             uv run python scripts/check_datasets_lock.py --require-catalog
           else
-            echo "::warning::No catalog fetched (no GH_DEPS_PAT on this PR) — the name stage will report SKIPPED and only the lock syntax is checked."
+            echo "::warning::No catalog fetched (no GH_DEPS_PAT on this PR, or the token cannot read tomlupo/quantbox-datasets) — the name stage will report SKIPPED and only the lock syntax is checked. Refresh GH_DEPS_PAT to turn the name stage back on."
             uv run python scripts/check_datasets_lock.py
           fi
         env:
