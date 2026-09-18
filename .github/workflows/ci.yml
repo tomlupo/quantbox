@@ -68,3 +68,53 @@ jobs:
           python-version: '3.11'
       - run: uv sync --extra full
       - run: uv run pytest tests/canonical_reproductions/ -m canonical_reproduction -v
+
+  datasets-lock-check:
+    # Least privilege, as the sibling workflows declare it: this job consumes a
+    # secret, and ci.yml as a whole declares no permissions.
+    permissions:
+      contents: read
+    # `secrets` is NOT available in a step-level `if`, and using it there fails the
+    # whole workflow's parse — so the token is lifted into a job-level env var and the
+    # steps below condition on that.
+    env:
+      HAS_DEPS_PAT: ${{ secrets.GH_DEPS_PAT != '' }}
+    # A PR that only touches datasets.lock is the trivial rigor tier and skips the
+    # review gate, so this is the only thing that reads the file it changed. The
+    # catalog is fetched (not cloned): it is the one file the name check needs, and
+    # the datasets themselves are far too large to pull on every PR — so the check
+    # runs in its no-root mode here and says so in its output.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.11'
+      - run: uv sync
+      # Best-effort: fork and Dependabot PRs have no secret at all, and a token that
+      # has expired or lost access to quantbox-datasets 401s (it does today, which is
+      # why this does not hard-fail: an unrelated PR must not go red over a secret
+      # rotation). Whether it landed decides the mode, and the step below says which.
+      - name: Fetch quantbox-datasets catalog
+        if: env.HAS_DEPS_PAT == 'true'
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          curl -sSfL --retry 3 --retry-all-errors \
+            -H "Authorization: token $GH_DEPS_PAT" \
+            -H "Accept: application/vnd.github.raw" \
+            -o "$RUNNER_TEMP/quantbox-datasets-catalog.yaml" \
+            https://api.github.com/repos/tomlupo/quantbox-datasets/contents/catalog.yaml
+        env:
+          GH_DEPS_PAT: ${{ secrets.GH_DEPS_PAT }}
+      - name: datasets.lock check
+        run: |
+          set -euo pipefail
+          if [ -f "$QUANTBOX_DATASETS_CATALOG" ]; then
+            uv run python scripts/check_datasets_lock.py --require-catalog
+          else
+            echo "::warning::No catalog fetched (no GH_DEPS_PAT on this PR, or the token cannot read tomlupo/quantbox-datasets) — the name stage will report SKIPPED and only the lock syntax is checked. Refresh GH_DEPS_PAT to turn the name stage back on."
+            uv run python scripts/check_datasets_lock.py
+          fi
+        env:
+          QUANTBOX_DATASETS_CATALOG: ${{ runner.temp }}/quantbox-datasets-catalog.yaml
