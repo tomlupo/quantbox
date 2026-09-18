@@ -63,6 +63,36 @@ jobs:
               exit 0
               ;;
           esac
+
+          # ── dataset-wiring exemption (twin of conductor.yml classify.trivial_globs) ──
+          # A PR whose EVERY changed path is a `datasets.lock` re-pin needs no
+          # independent review (Tom, 2026-09-18). Decided PATH-BY-PATH and
+          # deliberately label-independent: a `data-refresh`-style label can be added
+          # by anyone with write access, so a label alone would let a code PR wear it
+          # past the gate — the same reason quantbox-datasets checks the diff and not
+          # just the label. Never grants the exemption on a doubt: one path outside
+          # the lock set, or an empty list, falls through to the review requirement
+          # below, and a failing `gh api` aborts the step under `bash -e` (red, never
+          # a pass). It carries no line budget, unlike the conductor's
+          # `trivial_max_lines` — path-only is the whole check here.
+          FILES=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename')
+          if [ -n "$FILES" ]; then
+            TOTAL=$(printf '%s\n' "$FILES" | wc -l)
+            # COUNT THE MATCHES, don't grep for the complement: `grep -v … || true`
+            # swallows grep's exit 2 (a grep ERROR) exactly like its exit 1 (no
+            # lines), and an empty "outside" list then reads as "all paths are
+            # locks" — a could-not-check granting the exemption. Counting instead
+            # means a grep error leaves MATCHED non-numeric, which the guard below
+            # turns into -1, and -1 never equals TOTAL.
+            MATCHED=$(printf '%s\n' "$FILES" | grep -c -E '(^|/)datasets\.lock$' || true)
+            case "$MATCHED" in ''|*[!0-9]*) MATCHED=-1 ;; esac
+            if [ "$MATCHED" -eq "$TOTAL" ]; then
+              echo "dataset wiring only — all $TOTAL changed paths are datasets.lock. No independent review required. Gate passes."
+              exit 0
+            fi
+            echo "not dataset-wiring-only ($MATCHED of $TOTAL paths are datasets.lock) — an independent review is still required."
+          fi
+
           COUNT=$(gh api "repos/$REPO/pulls/$PR/reviews" \
             | jq --arg a "$AUTHOR" '[.[] | select((.state=="COMMENTED" or .state=="APPROVED" or .state=="CHANGES_REQUESTED") and .user.login != $a)] | length')
           echo "Independent (non-author) review objects on PR #$PR: $COUNT"
