@@ -9,8 +9,15 @@ Three parts, in order:
    64-hex sha256. Empty values, duplicate keys, non-hex digests and nested blocks
    are all errors.
 2. NAMES — every pinned dataset exists in quantbox-datasets' catalog.
-3. PINS — with a datasets root reachable, each pinned sha256 resolves (the pin
-   loads). Without one, this part is SKIPPED and said so out loud.
+3. PINS — with a datasets root reachable AND a quantbox_datasets that carries
+   ``lock`` importable, each pinned sha256 resolves (the pin loads). Without
+   either, this part is SKIPPED and said so out loud.
+
+Know what that buys and what it does not. CI has no datasets root — the artifacts
+are far too large to pull on every PR — so there it runs stages 1 and 2 only, and a
+well-formed but WRONG sha256 passes it. Stage 3 is the tier that catches that one,
+and it runs where the data is: a box with $QUANTBOX_DATASETS_ROOT set and a
+quantbox-datasets new enough to expose ``quantbox_datasets.lock``.
 
 Datasets the catalog declares ``in_git: false`` (e.g. crypto-spot-hourly) live only
 under ``$QUANTBOX_DATASETS_ROOT`` and cannot be restored from git history, so a pin on
@@ -189,9 +196,13 @@ def main() -> int:
         not_in_git = {name for name, entry in (catalog or {}).items() if entry.get("in_git") is False}
         for lock, pins in pins_by_lock.items():
             for name, sha in sorted(pins.items()):
-                if name in not_in_git and not (root / name).is_dir():
-                    # Its artifact is never committed, so no commit can restore it.
-                    print(f"         - {name}: UNVERIFIABLE — in_git: false and not present under {root}")
+                if not (root / name).is_dir():
+                    # A dataset absent from this root cannot be verified here. For an
+                    # `in_git: false` one that is the whole story — its artifact is never
+                    # committed, so no commit can restore it — and this does not depend on
+                    # the catalog being reachable to say so.
+                    why = "in_git: false" if name in not_in_git else "not built here"
+                    print(f"         - {name}: UNVERIFIABLE — {why}, no artifact under {root}")
                     continue
                 try:
                     load_dataset(name, root=root, sha256=sha)
