@@ -563,31 +563,85 @@ def test_sweep_cli_refuses_a_malformed_execution_block_before_any_work(tmp_path,
     from quantbox.cli import app
 
     cfg = tmp_path / "sweep.yaml"
-    # strategy and data root do not exist: if the block were not checked FIRST the
-    # failure would be PluginNotFoundError / a missing file, not the resolver's ValueError.
-    cfg.write_text(yaml.safe_dump({"strategy": "strategy.nope.v1", "data": {"root": "./nope"}, "execution": block}))
+    # Everything ELSE in this config is invalid too (no such strategy, no data
+    # block): if the execution block were not resolved FIRST, the run would die
+    # of one of those instead of the resolver's ValueError.
+    cfg.write_text(yaml.safe_dump({"strategy": "strategy.nope.v1", "data": {}, "execution": block}))
     result = CliRunner().invoke(app, ["sweep", "-c", str(cfg)])
     assert result.exit_code != 0
-    assert isinstance(result.exception, ValueError), repr(result.exception)
+    assert isinstance(result.exception, ValueError), (repr(result.exception), result.output)
     assert message in str(result.exception)
 
 
-def test_sweep_cli_passes_a_valid_execution_block_through(tmp_path, monkeypatch):
+def test_sweep_cli_resolves_the_whole_execution_block_before_any_other_work(tmp_path, monkeypatch):
+    """A VALID block reaches `resolve_lag_bars` as a block, and the run gets past it.
+
+    Deliberately says nothing about what the command does AFTERWARDS: the data
+    plumbing of `quantbox sweep` (parquet root vs pinned dataset name) is owned
+    elsewhere and has changed under this branch once already. What this test
+    owns is that the whole `execution:` mapping — not `.get("lag_bars")` — is
+    handed to the shared resolver, before the strategy or the data is touched.
+    """
     import yaml
     from typer.testing import CliRunner
 
-    import quantbox.analysis as analysis
+    import quantbox.execution as execution
     from quantbox.cli import app
 
-    seen: dict[str, Any] = {}
-    monkeypatch.setattr(analysis, "load_parquet_market_data", lambda *a, **k: {"prices": _prices()})
-    monkeypatch.setattr(analysis, "run_grid", lambda **k: seen.update(k) or pd.DataFrame())
+    seen: list[tuple[Any, int]] = []
+    real = execution.resolve_lag_bars
+
+    def spy(block):
+        out = real(block)
+        seen.append((block, out))
+        return out
+
+    monkeypatch.setattr(execution, "resolve_lag_bars", spy)
     cfg = tmp_path / "sweep.yaml"
-    cfg.write_text(
-        yaml.safe_dump(
-            {"strategy": "strategy.cross_asset_momentum.v1", "data": {"root": "."}, "execution": {"lag_bars": 0}}
-        )
+    cfg.write_text(yaml.safe_dump({"strategy": "strategy.nope.v1", "data": {}, "execution": {"lag_bars": 0}}))
+    CliRunner().invoke(app, ["sweep", "-c", str(cfg)])
+    assert seen == [({"lag_bars": 0}, 0)]
+
+
+def test_sweep_cli_hands_the_resolved_lag_to_run_grid():
+    """The value the resolver returned is what `run_grid` is called with.
+
+    Asked of the AST rather than of a full CLI run, for the same reason as the
+    test above: driving the command to completion would couple this assertion to
+    the sweep data contract. The runtime proof that `run_grid`/`sweep` HONOUR
+    `lag_bars` is `test_the_sweep_path_agrees_with_the_pipeline_on_the_same_toy`.
+    """
+    import ast
+    import inspect
+
+    from quantbox import cli
+
+    tree = ast.parse(inspect.getsource(cli.sweep))
+
+    assigns = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Assign)
+        and len(n.targets) == 1
+        and isinstance(n.targets[0], ast.Name)
+        and n.targets[0].id == "sweep_lag_bars"
+    ]
+    assert len(assigns) == 1, "expected exactly one `sweep_lag_bars = ...` in cli.sweep"
+    resolver_calls = [
+        n
+        for n in ast.walk(assigns[0].value)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "resolve_lag_bars"
+    ]
+    assert resolver_calls, "sweep_lag_bars must come from resolve_lag_bars(), not from a raw .get()"
+
+    run_grid_calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "run_grid"
+    ]
+    assert len(run_grid_calls) == 1, "expected exactly one run_grid(...) call in cli.sweep"
+    passed = {k.arg: k.value for k in run_grid_calls[0].keywords}
+    assert "lag_bars" in passed, "cli.sweep must pass lag_bars= to run_grid"
+    assert isinstance(passed["lag_bars"], ast.Name) and passed["lag_bars"].id == "sweep_lag_bars", (
+        "run_grid must receive the RESOLVED lag, not a literal or another name"
     )
-    result = CliRunner().invoke(app, ["sweep", "-c", str(cfg)])
-    assert result.exit_code == 0, repr(result.exception)
-    assert seen["lag_bars"] == 0
