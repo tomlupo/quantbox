@@ -59,6 +59,8 @@ def test_real_repo_passes_its_own_locks() -> None:
     """Whatever mode it runs in, this repo's committed locks must pass."""
     result = subprocess.run([sys.executable, str(SCRIPT)], cwd=REPO_ROOT, capture_output=True, text=True, check=False)
     assert result.returncode == 0, f"check failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    # Whatever mode it chose, it must SAY which one — and it must have read some locks.
+    assert "names:" in result.stdout and "pins:" in result.stdout
 
 
 def test_good_lock_passes(tmp_path: Path) -> None:
@@ -88,6 +90,7 @@ def test_malformed_lock_fails(tmp_path: Path) -> None:
     assert "must be a 64-char hex sha256" in result.stdout
     assert "duplicate entry" in result.stdout
     assert "empty or non-string sha256" in result.stdout
+    assert "maps to a nested block" in result.stdout
 
 
 def test_unknown_dataset_name_fails(tmp_path: Path) -> None:
@@ -204,3 +207,13 @@ def test_an_absent_artifact_is_unverifiable_without_the_catalog(tmp_path: Path) 
     result = _run_with(repo, env)
     assert result.returncode == 0, result.stdout
     assert "UNVERIFIABLE" in result.stdout
+
+
+def test_finding_no_locks_is_a_failure(tmp_path: Path) -> None:
+    """A check that read nothing must not exit like a clean one."""
+    (tmp_path / "scripts").mkdir()
+    shutil.copy(SCRIPT, tmp_path / "scripts" / "check_datasets_lock.py")
+    (tmp_path / "catalog.yaml").write_text(CATALOG)
+    result = _run(tmp_path)
+    assert result.returncode == 1
+    assert "0 lock file(s)" in result.stdout

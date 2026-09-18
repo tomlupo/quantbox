@@ -78,10 +78,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: astral-sh/setup-uv@v7
         with:
           python-version: '3.11'
-      - run: pip install pyyaml
+      - run: uv sync
       - name: Fetch quantbox-datasets catalog
         run: |
           set -euo pipefail
@@ -93,6 +93,6 @@ jobs:
         env:
           GH_DEPS_PAT: ${{ secrets.GH_DEPS_PAT }}
       - name: datasets.lock check
-        run: python scripts/check_datasets_lock.py
+        run: uv run python scripts/check_datasets_lock.py
         env:
           QUANTBOX_DATASETS_CATALOG: ${{ runner.temp }}/quantbox-datasets-catalog.yaml

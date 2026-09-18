@@ -160,6 +160,12 @@ def datasets_root() -> Path | None:
 def main() -> int:
     locks = find_locks()
     print(f"datasets.lock check — {len(locks)} lock file(s) under {ROOT}")
+    if not locks:
+        # A check that read nothing must not exit like a clean one: this repo commits
+        # locks, so finding none means discovery is looking in the wrong place (or the
+        # locks were deleted), never that everything is fine.
+        print(f"\nFound no {LOCK_NAME} to check — this repo commits them, so this is a defect.\n")
+        return 1
 
     errors: list[str] = []
     pins_by_lock: dict[Path, dict[str, str]] = {}
