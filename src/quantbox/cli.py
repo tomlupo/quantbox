@@ -327,6 +327,9 @@ def run(
     print("RUN_ID:", result.run_id)
     print("PIPELINE:", result.pipeline_name)
     print("METRICS:", result.metrics)
+    execution = (result.notes or {}).get("execution")
+    if execution:
+        print("EXECUTION:", execution["description"])
 
     # Dead-man detection (quantbox#120): a rebalancer freeze (every intended
     # order suppressed, book stuck on stale positions) previously exited 0 --
@@ -381,6 +384,9 @@ def sweep(
         backtest:
           fees: 0.005
           rebalancing_freq: 1D
+        execution:
+          lag_bars: 1        # default; same convention as `quantbox run`
+                             # (backtest.shift_signal is a deprecated alias)
         output_dir: heatmaps
     """
     from .analysis import DEFAULT_METRICS, run_grid
@@ -389,6 +395,13 @@ def sweep(
     config_path = Path(config).resolve()
     with config_path.open(encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+
+    # The `execution:` BLOCK goes through the same resolver as `quantbox run`,
+    # before any work: a typo (`lag_bar: 0`, `execution: 0`) is refused, never
+    # defaulted. Absent block -> None -> run_grid resolves the default / alias.
+    from .execution import resolve_lag_bars
+
+    sweep_lag_bars = resolve_lag_bars(cfg["execution"]) if "execution" in cfg else None
 
     reg = PluginRegistry.discover()
     strategy_name = cfg["strategy"]
@@ -430,7 +443,8 @@ def sweep(
         metrics=tuple(heatmap.get("metrics") or DEFAULT_METRICS),
         fees=float(backtest.get("fees", 0.005)),
         rebalancing_freq=backtest.get("rebalancing_freq", "1D"),
-        shift_signal=int(backtest.get("shift_signal", 1)),
+        lag_bars=sweep_lag_bars,
+        shift_signal=backtest.get("shift_signal"),  # deprecated alias of execution.lag_bars
     )
     print(f"SWEEP: {len(grid)} rows  ->  {output_dir}")
 

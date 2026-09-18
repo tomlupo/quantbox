@@ -42,6 +42,7 @@ from typing import Any
 
 import pandas as pd
 
+from quantbox.execution import apply_execution_lag, resolve_sweep_lag_bars, warn_if_same_bar
 from quantbox.parquet_io import read_parquet
 from quantbox.plugins.backtesting.vectorbt_engine import run as _run_backtest
 
@@ -86,7 +87,8 @@ def sweep(
     data: Mapping[str, pd.DataFrame],
     backtest_kwargs: Mapping[str, Any] | None = None,
     metrics: Sequence[str] = DEFAULT_METRICS,
-    shift_signal: int = 1,
+    shift_signal: int | None = None,
+    lag_bars: int | None = None,
 ) -> pd.DataFrame:
     """Run a strategy across a Cartesian product of parameter values.
 
@@ -111,9 +113,13 @@ def sweep(
         Forwarded to ``vectorbt_engine.run`` (fees, threshold, etc.).
     metrics
         vbt stats column names to collect.
+    lag_bars
+        Execution lag in bars — the SAME convention as ``execution.lag_bars``
+        in ``quantbox run`` (:mod:`quantbox.execution`). Default 1: weights
+        decided on bar t fill at the close of bar t+1. 0 = same-bar, logged
+        as a warning.
     shift_signal
-        Lag applied to weights before backtest (default 1 = use yesterday's
-        signal for today's allocation; matches notebook convention).
+        DEPRECATED alias of ``lag_bars`` (emits ``DeprecationWarning``).
 
     Returns
     -------
@@ -124,6 +130,8 @@ def sweep(
     """
     prices = data["prices"]
     backtest_kwargs = dict(backtest_kwargs or {})
+    lag = resolve_sweep_lag_bars(lag_bars, shift_signal)
+    warn_if_same_bar(lag, where="parameter_grid.sweep")
 
     # Defensive: strip index.freq so vbt's wrapper.freq lookup doesn't trip on
     # a `<Day>` offset (vbt + recent pandas can't convert it to a Timedelta).
@@ -149,8 +157,9 @@ def sweep(
         strat = strategy_cls(**params)
         out = strat.run(data)
         weights = out["weights"]
-        if shift_signal:
-            weights = weights.shift(shift_signal)
+        # Leading rows stay NaN (not 0) so the dropna below trims them, as the
+        # sweep always has.
+        weights = apply_execution_lag(weights, lag, fill_leading=None)
 
         # Align to common date range
         common_idx = weights.dropna(how="all").index.intersection(prices.index)
@@ -365,9 +374,10 @@ def run_grid(
     metrics: Sequence[str] = DEFAULT_METRICS,
     fees: float = 0.005,
     rebalancing_freq: int | str = "1D",
-    shift_signal: int = 1,
+    shift_signal: int | None = None,
     cmap: str = "RdYlGn",
     fmt: str = ".3f",
+    lag_bars: int | None = None,
 ) -> pd.DataFrame:
     """Orchestrate a parameter-grid sweep across rebalancing bands.
 
@@ -383,6 +393,7 @@ def run_grid(
     output = Path(output_dir) if output_dir is not None else None
     if output is not None:
         output.mkdir(parents=True, exist_ok=True)
+    lag = resolve_sweep_lag_bars(lag_bars, shift_signal)
 
     all_grids: list[pd.DataFrame] = []
     for band in bands:
@@ -394,9 +405,10 @@ def run_grid(
             data=market_data,
             backtest_kwargs={"fees": fees, "threshold": band, "rebalancing_freq": rebalancing_freq},
             metrics=metrics,
-            shift_signal=shift_signal,
+            lag_bars=lag,
         )
         grid["bands"] = f"{int(band * 100)}%"
+        grid["lag_bars"] = lag  # execution timing travels with the numbers
         all_grids.append(grid)
 
         if output is not None and heatmap_index is not None and heatmap_columns is not None:

@@ -58,4 +58,29 @@ def validate_config(cfg: dict[str, Any]) -> list[ValidationFinding]:
                 else:
                     if "pipeline" not in prof or "data" not in prof:
                         findings.append(ValidationFinding("error", f"profile_missing_required_plugins:{profile}"))
+        findings.extend(_check_backtest_execution(plugins))
+    return findings
+
+
+def _check_backtest_execution(plugins: dict[str, Any]) -> list[ValidationFinding]:
+    """Validate ``execution:`` / ``venue:`` for backtest pipelines with the pipeline's own resolver."""
+    from .execution import resolve_allow_shorts, resolve_lag_bars
+
+    pipeline = plugins.get("pipeline")
+    if not isinstance(pipeline, dict) or not str(pipeline.get("name", "")).startswith("backtest.pipeline."):
+        return []
+    params = pipeline.get("params") or {}
+    findings: list[ValidationFinding] = []
+    try:
+        if resolve_lag_bars(params.get("execution")) == 0:
+            findings.append(
+                ValidationFinding(
+                    "warning",
+                    "execution.lag_bars=0: SAME-BAR fills (look-ahead for close-based signals); "
+                    "use only to reproduce a historical number",
+                )
+            )
+        resolve_allow_shorts(params.get("venue"), params.get("risk"))
+    except ValueError as exc:
+        findings.append(ValidationFinding("error", str(exc)))
     return findings

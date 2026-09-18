@@ -9,10 +9,15 @@ Workflow
 1. Load universe & market data (same as TradingPipeline)
 2. Run strategies → full weights time series
 3. Aggregate across strategies (same logic)
-4. Apply risk transforms (tranching, leverage cap)
-5. Run backtest engine over full history
-6. Compute performance metrics
-7. Save artifacts (weights, returns, metrics, portfolio_daily)
+4. Apply venue constraint (``venue.allow_shorts``) then risk transforms
+   (tranching, leverage cap)
+5. Apply the execution lag (``execution.lag_bars``, default 1 = next-bar) —
+   the ONE place decided weights become traded weights; see
+   :mod:`quantbox.execution`
+6. Run backtest engine over full history
+7. Compute performance + traded-book metrics
+8. Save artifacts (weights_history = decided targets, traded_weights = what
+   the engine received, returns, metrics, portfolio_daily)
 
 Usage
 -----
@@ -54,6 +59,20 @@ from quantbox.contracts import (
     RiskPlugin,
     RunResult,
     StrategyPlugin,
+)
+from quantbox.execution import (
+    EXECUTION_SCHEMA,
+    VENUE_SCHEMA,
+    apply_execution_lag,
+    clip_shorts,
+    describe_execution,
+    execution_record,
+    exposure_metrics,
+    materialise_nan_policy,
+    resolve_allow_shorts,
+    resolve_lag_bars,
+    warn_if_same_bar,
+    warn_on_shorts,
 )
 from quantbox.frequency import Frequency
 from quantbox.plugins.datasources._utils import interval_step, normalize_data_frequency
@@ -174,6 +193,8 @@ class BacktestPipeline:
                     "items": {"type": "object"},
                     "description": "Strategy configs (same as TradingPipeline).",
                 },
+                "execution": EXECUTION_SCHEMA,
+                "venue": VENUE_SCHEMA,
             },
         },
         inputs=(),
@@ -181,6 +202,7 @@ class BacktestPipeline:
             "strategy_weights",
             "aggregated_weights",
             "weights_history",
+            "traded_weights",
             "portfolio_daily",
             "returns",
             "metrics",
@@ -217,6 +239,14 @@ class BacktestPipeline:
         slippage_val = float(params.get("slippage", 0.0))
         rebalancing_freq = params.get("rebalancing_freq", 1)
         threshold = params.get("threshold")
+
+        # Execution timing + venue: resolved (and refused if malformed) BEFORE
+        # any data is loaded, so a typo costs nothing and never runs same-bar
+        # by accident.
+        lag_bars = resolve_lag_bars(params.get("execution"))
+        allow_shorts, venue_declared = resolve_allow_shorts(params.get("venue"), params.get("risk"))
+        warn_if_same_bar(lag_bars, where=f"{self.meta.name} run {store.run_id}")
+        logger.info("Execution timing: %s", describe_execution(lag_bars))
 
         # --- Stage 1: Universe & Market Data ---
         universe_params = params.get("universe", {})
@@ -316,6 +346,9 @@ class BacktestPipeline:
                 threshold=threshold,
                 trading_days=trading_days,
                 bars_per_year=bars_per_year,
+                lag_bars=lag_bars,
+                allow_shorts=allow_shorts,
+                venue_declared=venue_declared,
             )
 
         # --- Stage 2: Strategy Execution ---
@@ -359,41 +392,15 @@ class BacktestPipeline:
         wh_save.index.name = "date"
         a_wh = store.put_parquet("weights_history", wh_save.reset_index())
 
-        # --- Stage 4: Risk transforms on the full time series ---
+        # --- Stage 4: Venue constraint + risk transforms on the full time series ---
         risk_cfg = params.get("risk", {})
-        weights_history = self._apply_risk_transforms_ts(weights_history, risk_cfg)
+        target_stats = exposure_metrics(weights_history, "target")
+        weights_history = self._apply_venue_and_risk(weights_history, risk_cfg, allow_shorts, venue_declared)
 
-        # --- Stage 5: Run backtest engine ---
-        # Align prices and weights to the same index & columns
-        common_idx = prices_wide.index.intersection(weights_history.index)
+        # --- Stage 5: Execution lag, then run backtest engine ---
+        bt_prices, bt_weights = self._align_for_engine(prices_wide, weights_history, lag_bars, engine=engine)
         common_cols = [c for c in weights_history.columns if c in prices_wide.columns]
-        if not common_cols:
-            raise ValueError("No overlapping tickers between prices and weights")
-
-        bt_prices = prices_wide.loc[common_idx, common_cols]
-        bt_weights = weights_history.loc[common_idx, common_cols]
-
-        # Drop columns with < 50% non-null prices first so a newly-listed coin
-        # doesn't truncate the entire simulation window to its listing date.
-        min_obs = max(30, int(len(bt_prices) * 0.5))
-        sufficient_cols = bt_prices.columns[bt_prices.notna().sum() >= min_obs].tolist()
-        dropped = [c for c in bt_prices.columns if c not in sufficient_cols]
-        if dropped:
-            logger.info("Dropped %d short-history columns: %s", len(dropped), dropped)
-        bt_prices = bt_prices[sufficient_cols]
-        bt_weights = bt_weights[sufficient_cols]
-
-        # Where a coin has no price yet (not yet listed), force weight to 0 so
-        # the backtest doesn't try to hold it, then forward-fill prices for
-        # simulation continuity.  This allows a broad dynamic pool where
-        # individual coins enter the universe at different dates without
-        # truncating the entire simulation window to the latest listing date.
-        # Any row that is ALL NaN (before any coin was available) is still dropped.
-        all_nan_rows = bt_prices.isna().all(axis=1)
-        bt_weights = bt_weights.where(bt_prices.notna(), 0.0)
-        bt_prices = bt_prices.ffill().bfill()
-        bt_prices = bt_prices.loc[~all_nan_rows]
-        bt_weights = bt_weights.loc[~all_nan_rows]
+        a_traded = store.put_parquet("traded_weights", bt_weights.rename_axis("date").reset_index())
 
         logger.info(
             "Backtest window: %d dates x %d assets, engine=%s",
@@ -437,7 +444,10 @@ class BacktestPipeline:
 
         # --- Stage 6: Save artifacts ---
         returns_series = result_data["returns"]
-        metrics = result_data["metrics"]
+        metrics = {
+            **result_data["metrics"],
+            **self._book_metrics(target_stats, bt_weights, lag_bars, allow_shorts, venue_declared, "single run"),
+        }
         portfolio_daily = result_data["portfolio_daily"]
 
         a_returns = store.put_parquet("returns", returns_series.to_frame("returns").reset_index())
@@ -470,6 +480,7 @@ class BacktestPipeline:
             params=params,
             period_start=period_start,
             period_end=period_end,
+            execution=execution_record(lag_bars),
         )
 
         store.put_text(
@@ -481,6 +492,7 @@ class BacktestPipeline:
                 strategy_names=report_strategy_names,
                 period_start=period_start,
                 period_end=period_end,
+                execution=describe_execution(lag_bars),
             ),
         )
         try:
@@ -490,7 +502,11 @@ class BacktestPipeline:
                 metrics=report_metrics,
                 portfolio_daily=portfolio_daily,
                 returns=returns_series,
-                weights_history=wh_save,
+                # The report describes the TRADED book (post venue/risk/lag):
+                # its attribution is `w.shift(1) * ret` — "held at the close
+                # of t, earns t+1" — which is only true of what the engine
+                # actually filled.
+                weights_history=bt_weights,
                 bt_prices=bt_prices,
                 strategy_names=report_strategy_names,
                 period_start=period_start,
@@ -499,6 +515,7 @@ class BacktestPipeline:
                 strategy_details=strategy_details,
                 narrative=narrative,
                 reproducibility=reproducibility,
+                execution=describe_execution(lag_bars),
             )
             store.put_text("report_data.json", report_data_to_json(rd))
             store.put_text("report.html", generate_html_report(rd))
@@ -530,6 +547,7 @@ class BacktestPipeline:
                 "strategy_weights": a_strat_w,
                 "aggregated_weights": a_agg_w,
                 "weights_history": a_wh,
+                "traded_weights": a_traded,
                 "portfolio_daily": a_port,
                 "returns": a_returns,
                 "metrics": a_metrics,
@@ -543,6 +561,8 @@ class BacktestPipeline:
             notes={
                 "kind": "backtest",
                 "engine": engine,
+                "execution": execution_record(lag_bars),
+                "venue": {"declared": venue_declared, "allow_shorts": allow_shorts},
                 "risk_findings": risk_findings,
             },
         )
@@ -694,6 +714,9 @@ class BacktestPipeline:
         threshold: Any,
         trading_days: int,
         bars_per_year: float,
+        lag_bars: int,
+        allow_shorts: bool,
+        venue_declared: bool,
     ) -> RunResult:
         """Run N independent variants and emit a combined report.
 
@@ -721,6 +744,18 @@ class BacktestPipeline:
 
             # Per-variant overrides
             ov = dict(v.get("overrides", {}) or {})
+            # Execution timing and venue are properties of the RUN, not of a
+            # variant: variants that differ in timing are not comparable, and
+            # a silently ignored override is worse than a refusal.
+            for run_level in ("execution", "venue"):
+                if run_level in ov or run_level in v:
+                    raise ValueError(
+                        f"Variant {vname!r}: '{run_level}' is run-level — declare it once in the pipeline params"
+                    )
+            if "allow_short" in (ov.get("risk") or {}) and venue_declared:
+                raise ValueError(
+                    f"Variant {vname!r}: overrides.risk.allow_short conflicts with the run-level `venue` block"
+                )
             v_fees = float(ov.get("fees", fees))
             v_fixed = float(ov.get("fixed_fees", fixed_fees))
             v_slip = float(ov.get("slippage", slippage_val))
@@ -741,24 +776,16 @@ class BacktestPipeline:
             # Stage 3: aggregate (trivial for single strategy)
             wh = self._aggregate_weights_history(s_results, {"_strategies_cfg": v_strategies_cfg})
 
-            # Stage 4: risk transforms
-            wh = self._apply_risk_transforms_ts(wh, v_risk_cfg)
+            # Stage 4: venue constraint + risk transforms
+            v_allow_shorts = allow_shorts if venue_declared else bool(v_risk_cfg.get("allow_short", False))
+            v_target_stats = exposure_metrics(wh, "target")
+            wh = self._apply_venue_and_risk(wh, v_risk_cfg, v_allow_shorts, venue_declared)
 
-            # Stage 5: align + engine
-            common_idx = prices_wide.index.intersection(wh.index)
-            common_cols = [c for c in wh.columns if c in prices_wide.columns]
-            if not common_cols:
-                raise ValueError(f"Variant {vname!r}: no overlapping tickers")
-            bt_p = prices_wide.loc[common_idx, common_cols]
-            bt_w = wh.loc[common_idx, common_cols]
-            min_obs = max(30, int(len(bt_p) * 0.5))
-            sufficient_cols = bt_p.columns[bt_p.notna().sum() >= min_obs].tolist()
-            bt_p = bt_p[sufficient_cols]
-            bt_w = bt_w[sufficient_cols]
-            all_nan = bt_p.isna().all(axis=1)
-            bt_w = bt_w.where(bt_p.notna(), 0.0)
-            bt_p = bt_p.ffill().bfill().loc[~all_nan]
-            bt_w = bt_w.loc[~all_nan]
+            # Stage 5: execution lag + align, then engine
+            try:
+                bt_p, bt_w = self._align_for_engine(prices_wide, wh, lag_bars, engine=engine)
+            except ValueError as exc:
+                raise ValueError(f"Variant {vname!r}: {exc}") from exc
 
             if engine != "vectorbt":
                 raise ValueError(f"Variants flow currently supports engine='vectorbt' only (got {engine!r})")
@@ -781,10 +808,16 @@ class BacktestPipeline:
                 "name": vname,
                 "strategy_name": sname,
                 "returns": res["returns"],
-                "metrics": res["metrics"],
+                "metrics": {
+                    **res["metrics"],
+                    **self._book_metrics(
+                        v_target_stats, bt_w, lag_bars, v_allow_shorts, venue_declared, f"variant {vname!r}"
+                    ),
+                },
                 "portfolio_daily": res["portfolio_daily"],
                 "vbt_portfolio": res.get("vbt_portfolio"),
-                "weights_history": wh,
+                # TRADED weights (post venue/risk/lag) — what the engine filled.
+                "weights_history": bt_w,
                 "bt_prices": bt_p,
                 "strategy_details": details_by_strategy,
                 "config": {
@@ -818,6 +851,7 @@ class BacktestPipeline:
         a_returns = store.put_parquet("returns", primary["returns"].to_frame("returns").reset_index())
         a_port = store.put_parquet("portfolio_daily", primary["portfolio_daily"].reset_index())
         a_metrics = store.put_json("metrics", primary["metrics"])
+        a_traded = store.put_parquet("traded_weights", primary["weights_history"].rename_axis("date").reset_index())
 
         # Per-variant metrics table
         metric_rows = []
@@ -858,6 +892,7 @@ class BacktestPipeline:
                 period_start=period_start,
                 period_end=period_end,
                 variant_results=variant_results,
+                execution=execution_record(lag_bars),
             )
             store.put_text(
                 "summary.md",
@@ -868,6 +903,7 @@ class BacktestPipeline:
                     strategy_names=list(variant_results.keys()),
                     period_start=period_start,
                     period_end=period_end,
+                    execution=describe_execution(lag_bars),
                 ),
             )
             rd = generate_report_data(
@@ -889,6 +925,7 @@ class BacktestPipeline:
                 variant_results=variant_results,
                 narrative=narrative,
                 reproducibility=reproducibility,
+                execution=describe_execution(lag_bars),
             )
             store.put_text("report_data.json", report_data_to_json(rd))
             store.put_text("report.html", generate_html_report(rd))
@@ -906,6 +943,7 @@ class BacktestPipeline:
                 logger.warning("Risk check failed: %s", exc)
 
         flat_metrics: dict[str, float] = {
+            "execution_lag_bars": float(lag_bars),
             "n_variants": float(len(variant_results)),
             "n_dates": float(len(primary["returns"])),
         }
@@ -923,12 +961,15 @@ class BacktestPipeline:
                 "returns": a_returns,
                 "portfolio_daily": a_port,
                 "metrics": a_metrics,
+                "traded_weights": a_traded,
                 "variant_metrics": a_var_metrics,
             },
             metrics=flat_metrics,
             notes={
                 "kind": "backtest-variants",
                 "engine": engine,
+                "execution": execution_record(lag_bars),
+                "venue": {"declared": venue_declared, "allow_shorts": allow_shorts},
                 "variants": list(variant_results.keys()),
                 "risk_findings": risk_findings,
             },
@@ -937,16 +978,119 @@ class BacktestPipeline:
     # ==================================================================
     # Stage 4: Risk transforms on full time series
     # ==================================================================
+    def _apply_venue_and_risk(
+        self,
+        weights: pd.DataFrame,
+        risk_cfg: dict[str, Any],
+        allow_shorts: bool,
+        venue_declared: bool,
+    ) -> pd.DataFrame:
+        """Venue constraint FIRST, then the risk transforms.
+
+        With a declared ``venue.allow_shorts: false``, negative TARGET weights
+        are clipped to 0 before tranching and the leverage cap, so no transform
+        ever averages or scales a position the venue cannot hold. The long side
+        is not re-normalised: the leverage cap only ever scales DOWN, so a
+        clipped book carries less gross rather than re-levered longs.
+
+        Without a ``venue`` block the legacy order is kept bit-for-bit
+        (``risk.allow_short`` clips AFTER tranching) so old numbers reproduce.
+        """
+        if venue_declared and not allow_shorts:
+            weights = clip_shorts(weights)
+        return self._apply_risk_transforms_ts(weights, risk_cfg, allow_short=allow_shorts)
+
+    @staticmethod
+    def _align_for_engine(
+        prices_wide: pd.DataFrame,
+        weights: pd.DataFrame,
+        lag_bars: int,
+        *,
+        engine: str | None = "vectorbt",
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Align prices/weights for the engine and apply the execution lag.
+
+        This is the ONLY place decided weights become traded weights, shared by
+        the single-run and variants flows and therefore by every engine branch
+        (vectorbt from_orders, vectorbt order-func/threshold, rsims): all three
+        are same-bar primitives that fill row ``t`` at ``close[t]``.
+
+        The lag is applied BEFORE the missing-price mask, so a lagged weight can
+        never land on a bar where the asset has no price.
+
+        Last, the NaN policy the chosen ``engine`` already applies to mid-series
+        NaN weight cells is materialised (:func:`materialise_nan_policy`), so
+        the frame returned here is at once what the engine receives, what is
+        saved as ``traded_weights`` and what the ``traded_*`` metrics measure.
+        """
+        common_idx = prices_wide.index.intersection(weights.index)
+        common_cols = [c for c in weights.columns if c in prices_wide.columns]
+        if not common_cols:
+            raise ValueError("No overlapping tickers between prices and weights")
+
+        bt_prices = prices_wide.loc[common_idx, common_cols]
+        bt_weights = apply_execution_lag(weights.loc[common_idx, common_cols], lag_bars)
+
+        # Drop columns with < 50% non-null prices first so a newly-listed coin
+        # doesn't truncate the entire simulation window to its listing date.
+        min_obs = max(30, int(len(bt_prices) * 0.5))
+        sufficient_cols = bt_prices.columns[bt_prices.notna().sum() >= min_obs].tolist()
+        dropped = [c for c in bt_prices.columns if c not in sufficient_cols]
+        if dropped:
+            logger.info("Dropped %d short-history columns: %s", len(dropped), dropped)
+        bt_prices = bt_prices[sufficient_cols]
+        bt_weights = bt_weights[sufficient_cols]
+
+        # Where a coin has no price yet (not yet listed), force weight to 0 so
+        # the backtest doesn't try to hold it, then forward-fill prices for
+        # simulation continuity.  This allows a broad dynamic pool where
+        # individual coins enter the universe at different dates without
+        # truncating the entire simulation window to the latest listing date.
+        # Any row that is ALL NaN (before any coin was available) is still dropped.
+        all_nan_rows = bt_prices.isna().all(axis=1)
+        bt_weights = bt_weights.where(bt_prices.notna(), 0.0)
+        bt_prices = bt_prices.ffill().bfill()
+        return bt_prices.loc[~all_nan_rows], materialise_nan_policy(bt_weights.loc[~all_nan_rows], engine)
+
+    @staticmethod
+    def _book_metrics(
+        target_stats: dict[str, float],
+        traded_weights: pd.DataFrame,
+        lag_bars: int,
+        allow_shorts: bool,
+        venue_declared: bool,
+        where: str,
+    ) -> dict[str, float]:
+        """Traded-book metrics (from what the engine received) + the shorts alarm."""
+        traded = exposure_metrics(traded_weights, "traded")
+        warn_on_shorts(
+            target_short_share=target_stats["target_short_gross_share"],
+            traded_short_share=traded["traded_short_gross_share"],
+            venue_declared=venue_declared,
+            allow_shorts=allow_shorts,
+            where=where,
+        )
+        return {
+            "execution_lag_bars": float(lag_bars),
+            **traded,
+            "target_short_gross_share": target_stats["target_short_gross_share"],
+            "target_mean_net_exposure": target_stats["target_mean_net_exposure"],
+        }
+
     def _apply_risk_transforms_ts(
         self,
         weights: pd.DataFrame,
         risk_cfg: dict[str, Any],
+        *,
+        allow_short: bool | None = None,
     ) -> pd.DataFrame:
         """Apply tranching, leverage cap, and short clamping to the full
-        weights time series."""
+        weights time series. ``allow_short`` (resolved venue) overrides
+        ``risk.allow_short`` when given."""
         tranches = int(risk_cfg.get("tranches", 1))
         max_leverage = float(risk_cfg.get("max_leverage", 99))
-        allow_short = bool(risk_cfg.get("allow_short", False))
+        if allow_short is None:
+            allow_short = bool(risk_cfg.get("allow_short", False))
 
         w = weights.copy()
 

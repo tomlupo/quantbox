@@ -956,6 +956,8 @@
   metaItem('Run', D.run_id);
   metaItem('As of', D.asof);
   if (D.period_start) metaItem('Period', D.period_start + ' → ' + D.period_end);
+  // Execution timing is stated, never inferred (quantbox.execution).
+  metaItem('Execution', D.execution || 'timing not recorded (run predates execution.lag_bars)');
 
   // ───────────────────────────────────────────────────────────
   // Narrative
