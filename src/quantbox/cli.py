@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from importlib.resources import files as _res_files
 from pathlib import Path
+from typing import Any
 
 import typer
 import yaml
@@ -342,6 +343,15 @@ def run(
         raise SystemExit(1)
 
 
+def _dataset_frame(dataset: Any, name: str) -> Any:
+    """One wide frame of a quantbox-datasets Dataset: the public property when it has one
+    (prices, volume, market_cap, funding_rates), else its reader (high, low, ...)."""
+    try:
+        return getattr(dataset, name)
+    except AttributeError:
+        return dataset._read(name)
+
+
 @app.command()
 def sweep(
     config: str = typer.Option(..., "-c", "--config", help="Path to sweep config YAML"),
@@ -390,13 +400,19 @@ def sweep(
     data_cfg = cfg.get("data", {}) or {}
     if "dataset" not in data_cfg:
         raise typer.BadParameter("sweep config needs data.dataset: <quantbox-datasets name>")
-    from quantbox_datasets.lock import find_lock, load
+    try:
+        from quantbox_datasets.lock import find_lock, load
+    except ImportError as exc:  # quantbox does not depend on quantbox-datasets
+        raise typer.BadParameter(
+            "sweep needs quantbox-datasets installed (it carries quantbox_datasets.lock); "
+            "install it from its clone and point QUANTBOX_DATASETS_ROOT at <clone>/datasets"
+        ) from exc
 
     # The lock nearest the config wins; with none there, load() searches from cwd.
     dataset = load(data_cfg["dataset"], lock=find_lock(config_dir))
     align_to = data_cfg.get("align_to", "prices")
     names = [*data_cfg.get("frames", ["prices", "volume", "market_cap"]), align_to]
-    market_data = align_market_data({name: dataset._read(name) for name in dict.fromkeys(names)}, align_to)
+    market_data = align_market_data({name: _dataset_frame(dataset, name) for name in dict.fromkeys(names)}, align_to)
 
     output_dir = (config_dir / cfg.get("output_dir", "heatmaps")).resolve()
     heatmap = cfg.get("heatmap", {}) or {}

@@ -42,7 +42,16 @@ def fake_lock(monkeypatch):
         return _FakeDataset()
 
     module.load = load
-    module.find_lock = lambda start=None: Path(start) / "datasets.lock" if start else None
+
+    # Same semantics as the real find_lock: the nearest EXISTING lock, else None.
+    def find_lock(start=None):
+        here = Path(start or Path.cwd()).resolve()
+        for directory in (here, *here.parents):
+            if (directory / "datasets.lock").is_file():
+                return directory / "datasets.lock"
+        return None
+
+    module.find_lock = find_lock
     monkeypatch.setitem(sys.modules, "quantbox_datasets", types.ModuleType("quantbox_datasets"))
     monkeypatch.setitem(sys.modules, "quantbox_datasets.lock", module)
     return calls
@@ -81,6 +90,7 @@ def test_sweep_loads_dataset_with_the_lock_next_to_the_config(fake_lock, monkeyp
         return pd.DataFrame()
 
     monkeypatch.setattr(quantbox.analysis, "run_grid", fake_run_grid)
+    (tmp_path / "datasets.lock").write_text("crypto-spot-daily: abc123\n")
     config = tmp_path / "sweep.yaml"
     config.write_text(
         yaml.safe_dump(

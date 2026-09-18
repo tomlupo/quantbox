@@ -141,7 +141,9 @@ def _load_pinned_dataset(name: str) -> Any:
         from quantbox_datasets.lock import load
     except ImportError as exc:
         raise ImportError(
-            f"dataset={name!r} needs quantbox-datasets with quantbox_datasets.lock (>= 8d2cdae) installed"
+            f"dataset={name!r} needs quantbox-datasets installed (it carries quantbox_datasets.lock); "
+            "quantbox does not depend on it — install it from its clone and point "
+            "QUANTBOX_DATASETS_ROOT at <clone>/datasets"
         ) from exc
     return load(name)
 
