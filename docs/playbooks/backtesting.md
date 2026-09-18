@@ -105,6 +105,26 @@ plugins:
       quote_asset: USDT
 ```
 
+### Reading a curated dataset
+
+Datasets from `quantbox-datasets` are read **by name**, never by a sibling path:
+
+```yaml
+  data:
+    name: "local_file_data"
+    params_init:
+      dataset: etf-daily
+```
+
+The build served is the one pinned for that name in `datasets.lock` at this repo's
+root; re-pin with `quantbox-datasets pin <name> --lock <quantbox>/datasets.lock`, and
+commit the lock. `quantbox sweep` takes the same name as `data.dataset`.
+
+quantbox does **not** depend on `quantbox-datasets` (it is a private repo, and the
+dependency would point the wrong way): install it from its clone, and set
+`QUANTBOX_DATASETS_ROOT` to `<clone>/datasets` when it is not installed from one.
+Reading a dataset without it raises an ImportError naming both.
+
 ### Parameters reference
 
 | Parameter | Default | Description |

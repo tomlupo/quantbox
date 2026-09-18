@@ -334,14 +334,19 @@ def load_parquet_market_data(
     misaligned columns). Returns a dict keyed by the supplied ``names``.
     """
     root = Path(root)
-    anchor = read_parquet(root / f"{align_to}.parquet")
+    return align_market_data(
+        {name: read_parquet(root / f"{name}.parquet") for name in dict.fromkeys([*names, align_to])}, align_to
+    )
+
+
+def align_market_data(frames: Mapping[str, pd.DataFrame], align_to: str = "prices") -> dict[str, pd.DataFrame]:
+    """Align every frame to the index + columns of ``frames[align_to]``, keeping only the
+    columns present in all of them."""
+    anchor = frames[align_to]
     out: dict[str, pd.DataFrame] = {align_to: anchor}
-    for name in names:
-        if name == align_to:
-            continue
-        df = read_parquet(root / f"{name}.parquet")
-        out[name] = df.reindex(index=anchor.index, columns=anchor.columns)
-    # Restrict the anchor to columns present in every loaded frame.
+    for name, df in frames.items():
+        if name != align_to:
+            out[name] = df.reindex(index=anchor.index, columns=anchor.columns)
     common_cols = anchor.columns
     for df in out.values():
         common_cols = common_cols.intersection(df.columns)
