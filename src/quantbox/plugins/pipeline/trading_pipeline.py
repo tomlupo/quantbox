@@ -38,6 +38,7 @@ from quantbox.portfolio_value import (
     BASIS_MARK,
     DEFAULT_RECONCILIATION_TOLERANCE,
     PortfolioValuation,
+    PortfolioValuationError,
     resolve_portfolio_value,
     value_holdings,
 )
@@ -447,6 +448,38 @@ def _to_fee(value: Any) -> float | None:
     return None if f != f else f  # NaN is not a measurement
 
 
+#: The orders artifact's columns. One definition, because an "empty orders"
+#: frame that disagrees with the real one makes every downstream reader raise
+#: KeyError on exactly the runs that produced no orders.
+ORDER_COLUMNS: tuple[str, ...] = (
+    "Asset",
+    "Symbol",
+    "Action",
+    "Raw Quantity",
+    "Adjusted Quantity",
+    "Price",
+    "Notional Value",
+    "Min Notional",
+    "Min Qty",
+    "Step Size",
+    "Scaling Factor",
+    "Order Status",
+    "Reason",
+    "Executable",
+)
+
+
+def _empty_order_result() -> dict[str, Any]:
+    """What a cycle that refused to size anything produces: no orders, no plan,
+    zero notional. Shaped exactly like a real ``generate_orders`` result so every
+    reader below (`rebalancing`/`orders`/`total_value`) keeps working."""
+    return {
+        "rebalancing": pd.DataFrame(),
+        "orders": pd.DataFrame(columns=list(ORDER_COLUMNS)),
+        "total_value": 0.0,
+    }
+
+
 @dataclass
 class TradingPipeline:
     meta = PluginMeta(
@@ -584,6 +617,10 @@ class TradingPipeline:
         # API errors caught (but survived) during the run. Data-staleness and
         # pipeline-failure are derived later from the feed + the run completing.
         api_errors: list[dict[str, Any]] = []
+        # Set when a refused portfolio valuation cost us this cycle's orders. It
+        # is NOT a clean run: `pipeline_ok` below reads it, so the Tier-2
+        # pipeline-failure alert fires even though run() returned normally.
+        valuation_refusal: PortfolioValuationError | None = None
 
         # Resolve strategies config: from injected plugins or from pipeline params
         strategies_cfg = params.get("_strategies_cfg", params.get("strategies", []))
@@ -735,12 +772,32 @@ class TradingPipeline:
                 strategy_results=strategy_results,
                 mode=mode,
             )
-            order_result = rebalancer.generate_orders(
-                weights=final_weights,
-                broker=broker,
-                params=rebal_params,
-            )
-            final_weights = order_result.get("weights", final_weights)
+            try:
+                order_result = rebalancer.generate_orders(
+                    weights=final_weights,
+                    broker=broker,
+                    params=rebal_params,
+                )
+                final_weights = order_result.get("weights", final_weights)
+            except PortfolioValuationError as exc:
+                # A refused valuation means we must not SIZE anything -- that is
+                # the whole point of the gate. It must not mean the run dies
+                # here: Stage 6c (resolving orders a previous cycle left WORKING)
+                # and Stage 7b (recon-state persist) both sit BELOW this line,
+                # and 6c's own guard cannot catch a raise that never reaches it.
+                # A live book whose limit order filled overnight would then never
+                # book the fill, and working_orders.DEFAULT_MAX_AGE_DAYS drops the
+                # record after 7 days -- losing a real fill, which that queue
+                # exists to prevent.
+                #
+                # So: no orders, loudly, and the rest of the cycle still runs.
+                valuation_refusal = exc
+                api_errors.append({"stage": "portfolio_valuation", "error": str(exc)})
+                logger.error(
+                    "Portfolio valuation REFUSED (%s) -- sizing nothing this cycle; bookkeeping stages still run",
+                    exc,
+                )
+                order_result = _empty_order_result()
         else:
             # Fallback: use internal risk transforms
             final_weights = self._apply_risk_transforms(final_weights, strategy_results, params)
@@ -787,14 +844,23 @@ class TradingPipeline:
             # Already ran rebalancer above; reuse result
             pass
         else:
-            order_result = self._generate_orders(
-                broker=broker,
-                weights=final_weights,
-                capital_at_risk=capital_at_risk,
-                stable_coin=stable_coin,
-                params=params,
-                mode=mode,
-            )
+            try:
+                order_result = self._generate_orders(
+                    broker=broker,
+                    weights=final_weights,
+                    capital_at_risk=capital_at_risk,
+                    stable_coin=stable_coin,
+                    params=params,
+                    mode=mode,
+                )
+            except PortfolioValuationError as exc:  # see the rebalancer arm above
+                valuation_refusal = exc
+                api_errors.append({"stage": "portfolio_valuation", "error": str(exc)})
+                logger.error(
+                    "Portfolio valuation REFUSED (%s) -- sizing nothing this cycle; bookkeeping stages still run",
+                    exc,
+                )
+                order_result = _empty_order_result()
         rebalancing_df = order_result["rebalancing"]
         orders_df = order_result["orders"]
         total_value = order_result["total_value"]
@@ -1102,7 +1168,7 @@ class TradingPipeline:
             and data_age_seconds > staleness_factor * bar_interval_seconds
         )
         exception_signals: dict[str, Any] = {
-            "pipeline_ok": True,
+            "pipeline_ok": valuation_refusal is None,
             "data_age_seconds": data_age_seconds,
             "bar_interval_seconds": bar_interval_seconds,
             "staleness_factor": staleness_factor,
@@ -1691,24 +1757,7 @@ class TradingPipeline:
         Uses ``broker.get_market_snapshot()`` for symbol info where available.
         """
         if rebalancing_df.empty:
-            return pd.DataFrame(
-                columns=[
-                    "Asset",
-                    "Symbol",
-                    "Action",
-                    "Raw Quantity",
-                    "Adjusted Quantity",
-                    "Price",
-                    "Notional Value",
-                    "Min Notional",
-                    "Min Qty",
-                    "Step Size",
-                    "Scaling Factor",
-                    "Order Status",
-                    "Reason",
-                    "Executable",
-                ]
-            )
+            return pd.DataFrame(columns=list(ORDER_COLUMNS))
 
         order_records: list[dict[str, Any]] = []
 
