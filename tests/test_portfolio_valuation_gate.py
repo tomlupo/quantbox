@@ -1283,6 +1283,49 @@ def test_a_nan_equity_does_not_leak_into_an_ungated_run():
     assert v.value == pytest.approx(CASH)
 
 
+def test_the_reconciliation_knobs_reach_an_injected_rebalancer():
+    """Round 1: both keys are declared in THIS pipeline's config schema and read
+    by the rebalancers off `params`, but `_rebalancer_params` never threaded the
+    pipeline's copy — so on the production path (`crypto_trend_kraken.yaml`
+    injects a rebalancer) a tolerance declared where the schema documents it was
+    inert and the built-in default silently won.
+
+    Branch: reached with the keys on the PIPELINE params and absent from the
+    rebalancer config, which is the arrangement the schema describes.
+    """
+    from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
+
+    resolved = TradingPipeline()._rebalancer_params(
+        rebalancer_cfg={"params": {}},
+        params={"equity_reconciliation_tolerance": 0.02, "require_equity_reconciliation": False},
+        strategy_results={},
+        mode="live",
+    )
+
+    assert resolved["equity_reconciliation_tolerance"] == 0.02
+    assert resolved["require_equity_reconciliation"] is False
+
+
+def test_the_reconciliation_knobs_still_prefer_the_rebalancers_own_config():
+    """Positive control: threaded as a DEFAULT, not as an assignment.
+
+    `mode` is the one key the pipeline overrides (a config saying `paper` under a
+    live run would ungate a live book). These two are not that, so a value on the
+    rebalancer itself must still win — otherwise the fix above would quietly
+    become a second `mode`.
+    """
+    from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
+
+    resolved = TradingPipeline()._rebalancer_params(
+        rebalancer_cfg={"params": {"equity_reconciliation_tolerance": 0.001}},
+        params={"equity_reconciliation_tolerance": 0.02},
+        strategy_results={},
+        mode="live",
+    )
+
+    assert resolved["equity_reconciliation_tolerance"] == 0.001
+
+
 def test_the_other_rebalancer_params_stay_config_overridable():
     """Positive control: `mode` is the exception, not a new blanket rule.
 

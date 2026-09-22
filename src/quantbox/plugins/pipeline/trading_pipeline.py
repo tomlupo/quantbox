@@ -931,13 +931,17 @@ class TradingPipeline:
         portfolio_value_post = total_value
         cash_usd_post = 0.0
         try:
+            # CASH FIRST, on both arms. `get_equity()` now RAISES on a book it
+            # cannot fully mark, and this whole block is best-effort — so
+            # reading equity first left `cash_usd_post` at its 0.0 initialiser
+            # and wrote that false zero to `portfolio_daily`, where nothing
+            # downstream can tell it from a genuinely empty account.
+            # `alloc2orders` was reordered for exactly this; this twin was not.
+            cash2 = broker.get_cash() or {}
+            cash_usd_post = sum(float(v) for v in cash2.values())
             if hasattr(broker, "get_equity"):
                 portfolio_value_post = float(broker.get_equity())
-                cash2 = broker.get_cash() or {}
-                cash_usd_post = sum(float(v) for v in cash2.values())
             else:
-                cash2 = broker.get_cash() or {}
-                cash_usd_post = sum(float(v) for v in cash2.values())
                 pos2 = broker.get_positions()
                 if pos2 is not None and len(pos2) > 0:
                     snap = broker.get_market_snapshot(pos2["symbol"].tolist())
@@ -1445,6 +1449,20 @@ class TradingPipeline:
         rebal_params.setdefault("stable_coin_symbol", params.get("stable_coin_symbol", DEFAULT_STABLE_COIN))
         rebal_params.setdefault("exclusions", params.get("exclusions", []))
         rebal_params.setdefault("strategy_weights", params.get("strategy_weights", {}))
+        # Threaded like every other pipeline-level default. Both keys are
+        # declared in this pipeline's OWN config schema, and both are read by
+        # the rebalancers off `params` -- but an injected rebalancer (the
+        # production path: `crypto_trend_kraken.yaml` names one) never saw the
+        # pipeline's copy, so a tolerance declared where the schema documents it
+        # was inert and the built-in default silently won.
+        rebal_params.setdefault(
+            "equity_reconciliation_tolerance",
+            params.get("equity_reconciliation_tolerance", DEFAULT_RECONCILIATION_TOLERANCE),
+        )
+        rebal_params.setdefault(
+            "require_equity_reconciliation",
+            params.get("require_equity_reconciliation", True),
+        )
         rebal_params["mode"] = mode
         return rebal_params
 

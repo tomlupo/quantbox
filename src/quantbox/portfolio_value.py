@@ -493,11 +493,43 @@ def resolve_portfolio_value(
             if not math.isfinite(candidate):
                 raise ValueError(f"get_equity() returned {candidate!r}")
             broker_equity = candidate
-        except PortfolioValuationError:
-            # The broker refused to value its own book (e.g. an unmarkable
-            # holding). Propagate it: it is the same refusal, raised closer to
-            # the data.
-            raise
+        except PortfolioValuationError as exc:
+            # The broker refused to value its own book. Where that refusal is
+            # about THIS book and this mode gates, propagate it unchanged: it is
+            # the same refusal raised closer to the data, and its reason names
+            # the asset where ours would not.
+            #
+            # It used to propagate UNCONDITIONALLY, and that was wrong twice,
+            # each time by sitting ABOVE something that was built to handle it:
+            #
+            #  * A broker marks every balance the account holds and knows
+            #    nothing about `exclusions`. On a MARKED venue holding an
+            #    excluded asset its refusal may be entirely about a name this
+            #    run does not trade, while the tradable mark is complete.
+            #    `_resolve_marked` already skips the cross-check for exactly
+            #    that reason (`has_excluded_holdings`) — this re-raise made that
+            #    branch unreachable in the one case it was built for.
+            #  * Ungated modes do not refuse on an incomplete mark (see
+            #    `_resolve_marked`), and this module's header promises paper and
+            #    backtest keep working, LOUDLY. Propagating here killed them.
+            #
+            # On live, with no excluded holding, nothing changes: it still
+            # refuses, still with the broker's own reason.
+            about_a_different_book = basis == BASIS_MARK and valuation.has_excluded_holdings
+            if gated and not about_a_different_book:
+                raise
+            logger.warning(
+                "Broker refused to value its own book (%r). %s Tradable mark is %.2f; "
+                "continuing WITHOUT a broker cross-check.",
+                exc,
+                (
+                    "This book holds an EXCLUDED asset that the broker counts and this mark does "
+                    "not, so the refusal may be about a name this run does not trade."
+                    if about_a_different_book
+                    else f"{mode} mode does not gate on this."
+                ),
+                valuation.value,
+            )
         except Exception as exc:
             if gated:
                 raise PortfolioValuationError(
@@ -633,14 +665,19 @@ def _resolve_marked(
                 valuation.value,
             )
         else:
-            _reconcile_or_raise(
+            # The RETURN VALUE, not the mere fact that the call came back.
+            # Ungated, `_reconcile_or_raise` only warns on a real disagreement,
+            # so setting this True unconditionally stamped a 60%-apart run as
+            # `source='computed_reconciled'`, `reconciled=1.0` — a failed
+            # cross-check recorded as a passed one, which is exactly the
+            # blindness this module exists to remove.
+            reconciled = _reconcile_or_raise(
                 computed=valuation.value,
                 broker_equity=broker_equity,
                 tolerance=tolerance,
                 gated=gated,
                 unpriced=valuation.unpriced,
             )
-            reconciled = True
 
     return replace(
         valuation,
@@ -658,13 +695,18 @@ def _reconcile_or_raise(
     tolerance: float,
     gated: bool,
     unpriced: tuple[str, ...],
-) -> None:
-    """Compare the two views of the same book and refuse on a real disagreement."""
+) -> bool:
+    """Compare the two views of the same book and refuse on a real disagreement.
+
+    Returns True when the two views AGREE (so the caller may record the value as
+    reconciled), False when they did not and this mode only warned. It never
+    returns False in a gated mode — there it raises instead.
+    """
     denominator = max(abs(broker_equity), abs(computed))
     if denominator <= 0:
         # Both views say the book is worth nothing. That agrees, and the
         # zero-value guard downstream is what acts on it.
-        return
+        return True
     drift = abs(broker_equity - computed) / denominator
     if drift <= float(tolerance):
         logger.info(
@@ -674,7 +716,7 @@ def _reconcile_or_raise(
             drift * 100,
             float(tolerance) * 100,
         )
-        return
+        return True
 
     message = (
         f"Pre-trade reconciliation FAILED: pipeline valuation {computed:.2f} vs "
@@ -690,6 +732,7 @@ def _reconcile_or_raise(
             broker_equity=broker_equity,
         )
     logger.warning("%s Not gated in this mode.", message)
+    return False
 
 
 def _is_finite_positive(value: float) -> bool:

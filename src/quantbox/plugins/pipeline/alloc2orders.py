@@ -549,6 +549,16 @@ class AllocationsToOrdersPipeline:
                     pos2["symbol"] = pos2["symbol"].astype(str)
                     pos2["qty"] = pos2["qty"].astype(float)
 
+                    # BEFORE the merge, exactly as the pre-trade path does and
+                    # as `_summed_holdings`' own docstring requires. Summing
+                    # AFTER a left-merge with `alloc` double-counts a position
+                    # whenever the allocations file carries a duplicated symbol
+                    # — the merge fans one position out into several rows each
+                    # holding the full quantity — and nothing in this pipeline
+                    # de-duplicates `alloc`. That overstates the NAV written to
+                    # `portfolio_daily` by a multiple of the held quantity.
+                    post_holdings = _summed_holdings(pos2)
+
                     pos2 = pos2.merge(alloc[["symbol", "price", "multiplier", "currency"]], on="symbol", how="left")
                     # NOT `fillna(0.0)`: that is the defect this change exists to
                     # remove. A holding with no price is worth an UNKNOWN amount,
@@ -563,7 +573,7 @@ class AllocationsToOrdersPipeline:
                     post_marks = _usd_marks(pos2)
                     post_valuation = value_holdings(
                         cash=cash_usd_post,
-                        holdings=_summed_holdings(pos2),
+                        holdings=post_holdings,
                         get_price=lambda s: post_marks.get(s),
                     )
                     portfolio_value_usd_post = float(post_valuation.value)

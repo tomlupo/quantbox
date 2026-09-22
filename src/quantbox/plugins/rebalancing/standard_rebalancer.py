@@ -316,6 +316,14 @@ class StandardRebalancer:
             "orders": orders_df,
             "rebalancing": rebalancing_df,
             "total_value": total_value,
+            # Carried on the SUCCESS exit too, not only on the zero-value one
+            # above. `trading_pipeline` reads `order_result.get("valuation")`,
+            # so dropping it here made every HEALTHY run record
+            # `portfolio_valuation_state='unknown'` and seven None metrics --
+            # this repo's "could not be MEASURED" signal -- while a broken run
+            # recorded a state. That inverts the property this change exists to
+            # establish. `FuturesRebalancer` already carries it on both.
+            "valuation": valuation,
         }
 
     # ------------------------------------------------------------------

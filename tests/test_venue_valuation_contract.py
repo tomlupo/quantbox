@@ -803,25 +803,119 @@ class TestBrokerEquityAndReconciliation:
         assert v.broker_equity is None
         assert any("Broker equity unavailable" in r.getMessage() for r in caplog.records)
 
-    def test_a_brokers_own_valuation_refusal_propagates_unchanged_even_off_live(self):
+    def test_a_brokers_own_valuation_refusal_propagates_unchanged_on_live(self):
         """Stated: "the same refusal, raised closer to the data".
 
-        This must NOT be swallowed by the ungated arm: the broker already
-        applied the rule, and its reason is more specific than ours.
+        On a GATED mode the broker already applied the rule, and its reason is
+        more specific than ours, so it must survive intact rather than be
+        relabelled `broker_equity_failed` by the generic arm.
         """
         inner = PortfolioValuationError("cannot mark XBT", reason=REASON_UNPRICED, unpriced=("XBT",))
-        for mode in ("live", "paper"):
-            with pytest.raises(PortfolioValuationError) as exc:
-                resolve_portfolio_value(
-                    broker=self._spot(equity_error=inner),
-                    mode=mode,
-                    cash=92.0,
-                    holdings={},
-                    get_price=_price_fn({}),
-                    fallback_basis=BASIS_MARK,
-                )
-            assert exc.value is inner, f"mode={mode}: the broker's own reason must survive"
-            assert exc.value.reason == REASON_UNPRICED
+        with pytest.raises(PortfolioValuationError) as exc:
+            resolve_portfolio_value(
+                broker=self._spot(equity_error=inner),
+                mode="live",
+                cash=92.0,
+                holdings={},
+                get_price=_price_fn({}),
+                fallback_basis=BASIS_MARK,
+            )
+        assert exc.value is inner, "the broker's own reason must survive"
+        assert exc.value.reason == REASON_UNPRICED
+
+    def test_a_brokers_refusal_does_not_kill_an_ungated_run(self, caplog):
+        """Both review axes, round 1: this used to propagate in EVERY mode.
+
+        The module header promises paper and backtest keep working, LOUDLY, and
+        `_resolve_marked` gates its own completeness check on `gated` — so
+        re-raising here sat above that and killed the ungated arm outright. The
+        broker's equity is only a CROSS-CHECK on a marked venue; losing it is a
+        warning, not a stop, exactly as an unreadable `get_equity()` already was.
+        """
+        inner = PortfolioValuationError("cannot mark XBT", reason=REASON_UNPRICED, unpriced=("XBT",))
+        with caplog.at_level(logging.WARNING, logger="quantbox.portfolio_value"):
+            v = resolve_portfolio_value(
+                broker=self._spot(equity_error=inner),
+                mode="paper",
+                cash=92.0,
+                holdings={},
+                get_price=_price_fn({}),
+                fallback_basis=BASIS_MARK,
+            )
+        assert v.value == pytest.approx(92.0)
+        assert v.broker_equity is None
+        assert v.reconciled is False
+        assert any("refused to value its own book" in r.getMessage() for r in caplog.records)
+
+    def test_a_brokers_refusal_about_an_EXCLUDED_name_does_not_halt_live(self, caplog):
+        """Both review axes, round 1 — the sharper half, and it is a LIVE path.
+
+        A broker marks every balance the account holds and knows nothing about
+        `exclusions`, so its refusal may be entirely about a name this run does
+        not trade while the tradable mark is complete. `_resolve_marked` already
+        skips the cross-check for that reason (`has_excluded_holdings`); the
+        unconditional re-raise made that branch unreachable in the one case it
+        was built for, halting the live Kraken book it was meant to let through.
+
+        Positive control is the test above it: with NO excluded holding, live
+        still refuses.
+        """
+        inner = PortfolioValuationError("cannot mark LOCKED", reason=REASON_UNPRICED, unpriced=("LOCKED",))
+        with caplog.at_level(logging.WARNING, logger="quantbox.portfolio_value"):
+            v = resolve_portfolio_value(
+                broker=self._spot(equity_error=inner),
+                mode="live",
+                cash=92.0,
+                holdings={"BTC": 0.001, "LOCKED": 5.0},
+                get_price=_price_fn({"BTC": 32000.0}),
+                fallback_basis=BASIS_MARK,
+                exclusions=["LOCKED"],
+            )
+        assert v.value == pytest.approx(124.0)
+        assert v.has_excluded_holdings is True
+        assert v.broker_equity is None
+        assert any("EXCLUDED" in r.getMessage() for r in caplog.records)
+
+    def test_an_ungated_reconciliation_mismatch_is_not_recorded_as_reconciled(self):
+        """Round 1: `reconciled = True` was set from the CALL, not its result.
+
+        Ungated, `_reconcile_or_raise` only warns on a real disagreement — so a
+        wildly-apart run was stamped `source='computed_reconciled'` and
+        `portfolio_value_reconciled=1.0`: a failed cross-check recorded as a
+        passed one.
+        """
+        v = resolve_portfolio_value(
+            broker=self._spot(equity=1_000.0),
+            mode="paper",
+            cash=92.0,
+            holdings={"BTC": 0.001},
+            get_price=_price_fn({"BTC": 32000.0}),
+            fallback_basis=BASIS_MARK,
+            tolerance=0.005,
+        )
+        assert v.value == pytest.approx(124.0)
+        assert v.broker_equity == pytest.approx(1_000.0)
+        assert v.reconciled is False, "the two views were 87% apart"
+        assert v.source == "computed"
+        assert v.as_metrics()["portfolio_value_reconciled"] == 0.0
+
+    def test_an_ungated_reconciliation_AGREEMENT_is_still_recorded(self):
+        """Positive control for the test above: `reconciled` must still go True.
+
+        Without this, returning a hard `False` from `_reconcile_or_raise` would
+        satisfy the mismatch test and silently stop recording every good run.
+        """
+        v = resolve_portfolio_value(
+            broker=self._spot(equity=124.0),
+            mode="paper",
+            cash=92.0,
+            holdings={"BTC": 0.001},
+            get_price=_price_fn({"BTC": 32000.0}),
+            fallback_basis=BASIS_MARK,
+            tolerance=0.005,
+        )
+        assert v.reconciled is True
+        assert v.source == "computed_reconciled"
 
 
 # ======================================================================
@@ -1151,37 +1245,35 @@ class TestStandardRebalancerGate:
         res = self._orders(broker, mode="paper")
         assert res["total_value"] == pytest.approx(_EQUITY)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "FINDING (defect, not a habit): StandardRebalancer returns `valuation` on its "
-            "zero-value early exit but DROPS it from the success return, while "
-            "FuturesRebalancer carries it on both. trading_pipeline reads "
-            "`order_result.get('valuation')`, so for `rebalancing.standard.v1` every HEALTHY "
-            "run records portfolio_valuation_state='unknown' and seven None metrics -- the "
-            "repo's own 'could not be MEASURED' signal -- while the broken run records a "
-            "state. That inverts the property this change exists to establish. "
-            "Fix: add 'valuation': valuation to the final return dict in "
-            "standard_rebalancer.py::_generate_orders, then delete this xfail."
-        ),
-    )
     def test_the_valuation_survives_a_successful_standard_rebalance(self):
+        """Was a strict xfail: the success return DROPPED `valuation`.
+
+        `FuturesRebalancer` carried it on both exits; `StandardRebalancer`
+        carried it only on the zero-value one. Fixed by adding the key to the
+        final return dict in ``standard_rebalancer.py``; this is now a plain
+        assertion, and the seam-level consequence is pinned below.
+        """
         broker = self._book(BASIS_MARK, positions={"BTC": _BTC_QTY, "PEPE": 1.0})
         res = self._orders(broker, mode="paper")
         assert res["valuation"].unpriced == ("PEPE",)
 
-    def test_a_successful_standard_rebalance_currently_reports_as_unmeasured(self):
-        """The CONSEQUENCE of the xfail above, asserted at the seam that matters.
+    def test_a_successful_standard_rebalance_reports_as_MEASURED(self):
+        """The CONSEQUENCE of the fix above, asserted at the seam that matters.
 
-        This is what the run record says today for a healthy spot book.
+        Positive control on the run record itself: a healthy spot book must not
+        reach ``portfolio_daily`` wearing this repo's "could not be MEASURED"
+        signal. Delete the ``"valuation"`` key from the rebalancer's success
+        return and this goes red.
         """
         broker = self._book(BASIS_MARK)
         res = self._orders(broker, mode="paper")
         assert res["total_value"] == pytest.approx(_EQUITY), "the book WAS valued..."
         metrics = _valuation_metrics(res.get("valuation"))
         notes = _valuation_notes(res.get("valuation"))
-        assert all(v is None for v in metrics.values()), "...but the run record says unmeasured"
-        assert notes["portfolio_valuation_state"] == "unknown"
+        assert not all(v is None for v in metrics.values()), "...and the run record must say so"
+        assert notes["portfolio_valuation_state"] != "unknown"
+        assert metrics["portfolio_value_n_unpriced"] == 0.0
+        assert metrics["portfolio_valuation_complete"] == 1.0
 
     def test_a_zero_value_book_returns_the_valuation_rather_than_dropping_it(self):
         """The empty-orders exit must still carry WHY the value was zero."""
