@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+from quantbox.portfolio_value import BASIS_MARK
 
 try:
     from binance.client import Client
@@ -29,6 +30,12 @@ class BinanceBroker:
     api_secret_env: str = "BINANCE_API_SECRET"
     testnet: bool = False
     readonly: bool = False
+
+    # How this VENUE values a book. Read by quantbox.portfolio_value, which
+    # derives the pre-trade valuation rule from the BROKER rather than from
+    # whichever rebalancer a config happened to name. Spot balances: the book is
+    # worth its cash plus its holdings.
+    valuation_basis = BASIS_MARK
 
     meta = PluginMeta(
         name="binance.live.v1",

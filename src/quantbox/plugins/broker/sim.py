@@ -11,12 +11,19 @@ from typing import Any
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+from quantbox.portfolio_value import BASIS_MARK
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class SimPaperBroker:
+    # How this VENUE values a book. Read by quantbox.portfolio_value, which
+    # derives the pre-trade valuation rule from the BROKER rather than from
+    # whichever rebalancer a config happened to name. Spot paper simulator:
+    # cash plus holdings.
+    valuation_basis = BASIS_MARK
+
     meta = PluginMeta(
         name="sim.paper.v1",
         kind="broker",

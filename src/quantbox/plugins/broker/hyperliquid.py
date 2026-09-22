@@ -58,6 +58,7 @@ import pandas as pd
 
 from quantbox.contracts import PluginMeta
 from quantbox.exceptions import BrokerExecutionError
+from quantbox.portfolio_value import BASIS_MARGIN
 from quantbox.retry import with_retry
 
 from ._fills import STATUS_WORKING, resolve_fill, trade_fee, trade_fee_currency
@@ -165,6 +166,14 @@ class HyperliquidBroker:
     2. Generate an API Wallet
     3. Use main wallet address + API wallet private key
     """
+
+    # How this VENUE values a book. Read by quantbox.portfolio_value, which
+    # derives the pre-trade valuation rule from the BROKER rather than from
+    # whichever rebalancer a config happened to name. Perps: equity is the
+    # margin balance plus unrealised PnL, which is what BOTH `get_equity()` and
+    # `get_cash()` here return (get_cash deliberately reports the total, not
+    # withdrawable cash, because the futures rebalancer sizes off it).
+    valuation_basis = BASIS_MARGIN
 
     meta = PluginMeta(
         name="hyperliquid.perps.v1",

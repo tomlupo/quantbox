@@ -34,10 +34,45 @@ from quantbox.contracts import (
     RunResult,
     StrategyPlugin,
 )
+from quantbox.portfolio_value import (
+    BASIS_MARK,
+    DEFAULT_RECONCILIATION_TOLERANCE,
+    PortfolioValuation,
+    resolve_portfolio_value,
+)
 from quantbox.reconciliation.ledger import EXEC_STATUS_TO_LEDGER
 from quantbox.reconciliation.working_orders import DEFAULT_MAX_AGE_DAYS
 
 logger = logging.getLogger(__name__)
+
+
+def _valuation_metrics(valuation: PortfolioValuation | None) -> dict[str, float | None]:
+    """Valuation metrics for the run record.
+
+    A missing valuation is reported as ``None`` (this repo's "could not be
+    MEASURED" convention, #92) rather than omitted or zeroed: a metric that
+    disappears reads as "fine" to every consumer downstream, and "not measured"
+    must not look like "measured and clean".
+    """
+    if valuation is None:
+        return {
+            "portfolio_value_cash_usd": None,
+            "portfolio_value_marked_usd": None,
+            "portfolio_value_n_holdings": None,
+            "portfolio_value_n_unpriced": None,
+            "portfolio_valuation_complete": None,
+            "portfolio_value_broker_equity_usd": None,
+            "portfolio_value_reconciled": None,
+        }
+    return dict(valuation.as_metrics())
+
+
+def _valuation_notes(valuation: PortfolioValuation | None) -> dict[str, Any]:
+    """The readable half of the valuation, for the run's notes."""
+    if valuation is None:
+        return {"portfolio_valuation_state": "unknown"}
+    return dict(valuation.as_notes())
+
 
 # ---------------------------------------------------------------------------
 # Constants (from quantlab orders.py)
@@ -453,6 +488,26 @@ class TradingPipeline:
                     "default": 1.0,
                 },
                 "stable_coin_symbol": {"type": "string", "default": "USDC"},
+                "equity_reconciliation_tolerance": {
+                    "type": "number",
+                    "default": DEFAULT_RECONCILIATION_TOLERANCE,
+                    "description": (
+                        "Relative tolerance for the LIVE pre-trade reconciliation between the "
+                        "pipeline's own valuation and the broker's get_equity(). A live run whose "
+                        "two views of the book disagree by more than this REFUSES to trade. "
+                        "Default 0.005 (0.5%) absorbs bid/ask and timing drift between two reads "
+                        "of the same book, but not a missing position."
+                    ),
+                },
+                "require_equity_reconciliation": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": (
+                        "Whether a long-only spot book must reconcile against broker equity before "
+                        "trading. Turning this off does NOT disable the completeness gate: an "
+                        "unmarkable holding still fails a live run."
+                    ),
+                },
                 "risk": {
                     "type": "object",
                     "properties": {
@@ -679,6 +734,10 @@ class TradingPipeline:
             rebal_params.setdefault("stable_coin_symbol", params.get("stable_coin_symbol", DEFAULT_STABLE_COIN))
             rebal_params.setdefault("exclusions", params.get("exclusions", []))
             rebal_params.setdefault("strategy_weights", params.get("strategy_weights", {}))
+            # The rebalancer owns the pre-trade valuation on this path, so it
+            # needs the run mode to know whether an unmarkable book is fatal.
+            # Not `setdefault`: the actual run mode always wins over config.
+            rebal_params["mode"] = mode
             order_result = rebalancer.generate_orders(
                 weights=final_weights,
                 broker=broker,
@@ -737,6 +796,7 @@ class TradingPipeline:
                 capital_at_risk=capital_at_risk,
                 stable_coin=stable_coin,
                 params=params,
+                mode=mode,
             )
         rebalancing_df = order_result["rebalancing"]
         orders_df = order_result["orders"]
@@ -1018,6 +1078,10 @@ class TradingPipeline:
             "n_assets": float(len(final_weights)),
             "portfolio_value_usd_pre": float(total_value),
             "portfolio_value_usd_post": float(portfolio_value_post),
+            # Keeps "nothing held", "fully marked" and "could not price" apart
+            # in the run record. Before this, all three produced the same
+            # number and nothing said which one had happened.
+            **_valuation_metrics(order_result.get("valuation")),
             "n_orders": float(len(orders_df)),
             "n_fills": float(len(fills)),
             "total_executed": float(execution_report.get("summary", {}).get("total_executed", 0)),
@@ -1061,6 +1125,7 @@ class TradingPipeline:
                 "kind": "trading",
                 "risk_findings": risk_findings,
                 "artifact_payload": artifact_payload,
+                **_valuation_notes(order_result.get("valuation")),
                 "rebalance_frozen": bool(execution_report.get("frozen", False)),
                 "freeze_reasons": execution_report.get("freeze_reasons", {}),
                 # Per-order freeze detail (symbol/side/notional/min/shortfall).
@@ -1330,10 +1395,15 @@ class TradingPipeline:
         capital_at_risk: float,
         stable_coin: str,
         params: dict[str, Any],
+        mode: Mode = "paper",
     ) -> dict[str, Any]:
         """Generate rebalancing DataFrame and executable orders.
 
         Ported from quantlab ``orders.py:generate_portfolio_orders()``.
+
+        ``mode`` drives the pre-trade valuation gate: in ``live`` a book that
+        cannot be fully marked refuses instead of sizing off an understated
+        portfolio value.
         """
         min_notional_cfg = float(params.get("min_notional", DEFAULT_MIN_NOTIONAL))
         min_trade_size = float(params.get("min_trade_size", DEFAULT_MIN_TRADE_SIZE))
@@ -1369,32 +1439,54 @@ class TradingPipeline:
                         mid = row.get("mid")
                         if mid is not None and not (isinstance(mid, float) and np.isnan(mid)):
                             price_map[sym] = float(mid)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Previously `pass`. A swallowed snapshot error left `price_map`
+                # empty, and the valuation loop below then added exactly zero
+                # for every held position -- collapsing the portfolio value to
+                # cash with nothing in the log to say so.
+                logger.error(
+                    "Market snapshot failed for %d symbol(s): %r — held positions may be unmarkable",
+                    len(all_symbols),
+                    exc,
+                )
 
         def get_price(asset: str) -> float | None:
             return price_map.get(asset)
 
-        # Portfolio value -- prefer broker.get_equity() for derivatives
-        # brokers where cash + sum(qty * price) is wrong for shorts.
-        if hasattr(broker, "get_equity"):
-            total_value = float(broker.get_equity())
-        else:
-            total_value = max(0, cash_available)
-            for asset, qty in current_holdings.items():
-                if asset == stable_coin:
-                    total_value += max(0, qty)
-                elif asset not in exclusions:
-                    p = get_price(asset)
-                    if p is not None and qty > 0:
-                        total_value += qty * p
+        # Portfolio value. `broker.get_equity()` is preferred where the broker
+        # has one (for derivatives, cash + sum(qty * price) is wrong for
+        # shorts); otherwise the book is marked here. Either way an unmarkable
+        # holding is a REFUSAL in live mode, never a silently smaller number --
+        # see quantbox.portfolio_value.
+        valuation = resolve_portfolio_value(
+            broker=broker,
+            mode=mode,
+            cash=cash_available,
+            holdings=current_holdings,
+            get_price=get_price,
+            # This path marks a spot/cash book, so an undeclared broker in a
+            # SIMULATION keeps being valued the way it always was here. On live
+            # an undeclared broker refuses.
+            fallback_basis=BASIS_MARK,
+            stable_coin=stable_coin,
+            exclusions=exclusions,
+            tolerance=float(params.get("equity_reconciliation_tolerance", DEFAULT_RECONCILIATION_TOLERANCE)),
+            require_reconciliation=bool(params.get("require_equity_reconciliation", True)),
+        )
+        total_value = valuation.value
 
         if total_value <= 0:
-            logger.error("Portfolio value is zero or negative")
+            logger.error(
+                "Portfolio value is zero or negative (cash=%.2f, %d holding(s), state=%s)",
+                valuation.cash,
+                valuation.n_holdings,
+                valuation.state,
+            )
             return {
                 "orders": pd.DataFrame(),
                 "rebalancing": pd.DataFrame(),
                 "total_value": 0.0,
+                "valuation": valuation,
             }
 
         # Apply capital-at-risk
@@ -1432,6 +1524,7 @@ class TradingPipeline:
             "orders": orders_df,
             "rebalancing": rebalancing_df,
             "total_value": total_value,
+            "valuation": valuation,
         }
 
     # ------------------------------------------------------------------

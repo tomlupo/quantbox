@@ -22,6 +22,7 @@ from typing import Any
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+from quantbox.portfolio_value import BASIS_MARGIN
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,12 @@ class FuturesPaperBroker:
     Portfolio value equals ``margin_balance`` (the account equity);
     positions are leveraged and do not add to the equity calculation.
     """
+
+    # How this VENUE values a book. Read by quantbox.portfolio_value, which
+    # derives the pre-trade valuation rule from the BROKER rather than from
+    # whichever rebalancer a config happened to name. Perps paper broker:
+    # portfolio value IS `margin_balance` by construction (class docstring).
+    valuation_basis = BASIS_MARGIN
 
     meta = PluginMeta(
         name="sim.futures_paper.v1",

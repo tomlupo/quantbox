@@ -12,6 +12,7 @@ import yaml
 
 from quantbox.contracts import ArtifactStore, BrokerPlugin, DataPlugin, Mode, PluginMeta, RiskPlugin, RunResult
 from quantbox.parquet_io import read_parquet
+from quantbox.portfolio_value import BASIS_MARK, DEFAULT_RECONCILIATION_TOLERANCE, resolve_portfolio_value
 from quantbox.run_history import resolve_latest_artifact
 
 logger = logging.getLogger(__name__)
@@ -178,6 +179,23 @@ class AllocationsToOrdersPipeline:
                 "min_abs_qty": {"type": "number", "minimum": 0, "default": 0.0},
                 "allow_short": {"type": "boolean", "default": False},
                 "cash_fallback_usd": {"type": "number", "default": 100000.0},
+                "equity_reconciliation_tolerance": {
+                    "type": "number",
+                    "default": DEFAULT_RECONCILIATION_TOLERANCE,
+                    "description": (
+                        "Relative tolerance for the LIVE pre-trade reconciliation between this "
+                        "pipeline's valuation and the broker's get_equity(). Beyond it, a live "
+                        "run refuses to trade. Default 0.005 (0.5%)."
+                    ),
+                },
+                "require_equity_reconciliation": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": (
+                        "Whether a long-only spot book must reconcile against broker equity "
+                        "before trading. Does NOT disable the completeness gate."
+                    ),
+                },
                 "max_adv_participation": {
                     "type": ["number", "null"],
                     "minimum": 0,
@@ -297,19 +315,49 @@ class AllocationsToOrdersPipeline:
         pos["qty"] = pos["qty"].astype(float)
 
         pos = pos.merge(alloc[["symbol", "price", "multiplier", "currency"]], on="symbol", how="left")
-        pos["price"] = pos["price"].fillna(0.0).astype(float)
+        # A held symbol that is not in today's allocations has NO price here.
+        # `fillna(0.0)` used to turn that into a position worth nothing, which
+        # is why an unpriceable book and an empty one produced the same
+        # portfolio value. Keep the NaN so the valuation can tell them apart;
+        # the downstream order maths still needs the 0.0, so fill it there.
+        pos["price"] = pos["price"].astype(float)
         pos["multiplier"] = pos["multiplier"].fillna(1.0).astype(float)
         pos["currency"] = pos["currency"].fillna("USD").astype(str)
         pos["fx_to_usd"] = pos["currency"].apply(lambda c: _fx_rate_to_usd(fx, c)).astype(float)
-        pos["value_usd"] = pos["qty"] * pos["price"] * pos["multiplier"] * pos["fx_to_usd"]
-        current_value_usd = float(pos["value_usd"].sum())
 
-        # Prefer broker.get_equity() for derivatives brokers where
-        # cash + sum(qty * price) is wrong for short positions.
-        if broker is not None and hasattr(broker, "get_equity"):
-            portfolio_value_usd_pre = float(broker.get_equity())
-        else:
-            portfolio_value_usd_pre = float(cash_usd + current_value_usd)
+        # Per-unit USD mark for each held symbol, NaN where unknown.
+        pos_price_usd = dict(
+            zip(
+                pos["symbol"],
+                (pos["price"] * pos["multiplier"] * pos["fx_to_usd"]).astype(float),
+                strict=False,
+            )
+        )
+        holdings = dict(zip(pos["symbol"], pos["qty"].astype(float), strict=False))
+
+        def _held_price(symbol: str) -> float | None:
+            px = pos_price_usd.get(symbol)
+            return None if px is None or not np.isfinite(px) else float(px)
+
+        valuation = resolve_portfolio_value(
+            broker=broker,
+            mode=mode,
+            cash=cash_usd,
+            holdings=holdings,
+            get_price=_held_price,
+            # Allocations carry a per-unit USD mark (price * multiplier * fx), so
+            # this path is mark-to-market. That stays the answer for a SIMULATION
+            # against an undeclared broker; on live an undeclared broker refuses.
+            fallback_basis=BASIS_MARK,
+            tolerance=float(params.get("equity_reconciliation_tolerance", DEFAULT_RECONCILIATION_TOLERANCE)),
+            require_reconciliation=bool(params.get("require_equity_reconciliation", True)),
+        )
+        portfolio_value_usd_pre = float(valuation.value)
+
+        # `current_value_usd` used to be computed here and added to cash. It is
+        # gone: the marked value now comes from the valuation above, which knows
+        # which positions it FAILED to mark. Nothing downstream reads pos'
+        # price or value columns (only symbol/qty, at the orders merge below).
 
         # targets
         alloc["fx_to_usd"] = alloc["currency"].apply(lambda c: _fx_rate_to_usd(fx, c))
@@ -473,6 +521,8 @@ class AllocationsToOrdersPipeline:
 - mode: {mode}
 - portfolio_value_usd_pre: {portfolio_value_usd_pre:.2f}
 - portfolio_value_usd_post: {portfolio_value_usd_post:.2f}
+- portfolio_valuation: {valuation.state} (source={valuation.source}, \
+{valuation.n_holdings} holding(s), {len(valuation.unpriced)} unpriced)
 - orders: {len(orders)}
 - fills: {len(fills)}
 - fx_loaded: {fx is not None}
@@ -487,6 +537,9 @@ class AllocationsToOrdersPipeline:
             "portfolio_value_usd_post": float(portfolio_value_usd_post),
             "n_orders": float(len(orders)),
             "n_fills": float(len(fills)),
+            # "nothing held", "fully marked" and "could not price" must stay
+            # distinguishable in the run record, not collapse to one number.
+            **valuation.as_metrics(),
         }
 
         return RunResult(
@@ -504,6 +557,7 @@ class AllocationsToOrdersPipeline:
             notes={
                 "kind": "trading",
                 "risk_findings": findings,
+                **valuation.as_notes(),
                 "extra_artifacts": [
                     "targets_ext.parquet",
                     "llm_notes.json",

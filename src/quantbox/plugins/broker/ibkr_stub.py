@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+from quantbox.portfolio_value import BASIS_MARK
 
 
 @dataclass
@@ -17,6 +18,12 @@ class PaperBrokerStub:
 
     Replace this with real API integration later.
     """
+
+    # How this VENUE values a book. Read by quantbox.portfolio_value, which
+    # derives the pre-trade valuation rule from the BROKER rather than from
+    # whichever rebalancer a config happened to name. Cash-account paper stub:
+    # cash plus holdings.
+    valuation_basis = BASIS_MARK
 
     meta = PluginMeta(
         name="ibkr.paper.stub.v1",

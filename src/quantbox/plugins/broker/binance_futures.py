@@ -54,6 +54,7 @@ from typing import Any
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+from quantbox.portfolio_value import BASIS_MARGIN
 from quantbox.retry import with_retry
 
 from ._fills import trade_fee, trade_fee_currency
@@ -171,6 +172,12 @@ class BinanceFuturesBroker:
     broker.rebalance_to_weights({"BTC": 0.5, "ETH": -0.3})
     ```
     """
+
+    # How this VENUE values a book. Read by quantbox.portfolio_value, which
+    # derives the pre-trade valuation rule from the BROKER rather than from
+    # whichever rebalancer a config happened to name. Perps: equity is the
+    # margin balance plus unrealised PnL; leveraged positions do not add to it.
+    valuation_basis = BASIS_MARGIN
 
     meta = PluginMeta(
         name="binance.futures.v1",
