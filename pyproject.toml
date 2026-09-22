@@ -23,24 +23,24 @@ dependencies = [
 [project.optional-dependencies]
 ibkr = ["ib_insync"]
 binance = ["python-binance"]
-ccxt = ["ccxt>=4.5.77"]
+ccxt = ["ccxt>=4.5.81"]
 ml = ["scikit-learn>=1.7.2"]
 simulation = ["arch>=8.0"]
 viz = ["matplotlib>=3.10.9", "seaborn>=0.13.2"]
-full = ["python-binance", "ccxt>=4.5.77", "ib_insync", "scikit-learn>=1.7.2", "arch>=8.0"]
+full = ["python-binance", "ccxt>=4.5.81", "ib_insync", "scikit-learn>=1.7.2", "arch>=8.0"]
 
 [project.scripts]
 quantbox = "quantbox.cli:main"
 
 [build-system]
-requires = ["uv_build>=0.12.10,<0.13.0"]
+requires = ["uv_build>=0.12.17,<0.13.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "commitizen>=4.18.0",
+    "commitizen>=4.18.1",
     "pytest>=9.1.1",
-    "ruff>=0.16.6",
+    "ruff>=0.16.8",
 ]
 
 [tool.uv_build]
