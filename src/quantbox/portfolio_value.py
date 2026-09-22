@@ -513,19 +513,32 @@ def resolve_portfolio_value(
             #    `_resolve_marked`), and this module's header promises paper and
             #    backtest keep working, LOUDLY. Propagating here killed them.
             #
-            # On live, with no excluded holding, nothing changes: it still
-            # refuses, still with the broker's own reason.
-            about_a_different_book = basis == BASIS_MARK and valuation.has_excluded_holdings
-            if gated and not about_a_different_book:
+            # On live, nothing changes unless the refusal is provably about
+            # names this run does not trade: it still refuses, still with the
+            # broker's own reason.
+            #
+            # The test is WHAT THE BROKER REFUSED ABOUT, never merely whether
+            # this book happens to hold an excluded name. Asking the weaker
+            # question (round 1 did) discards a `broker_equity_failed` from a
+            # total venue outage on a LIVE run because the book holds one
+            # excluded dust coin — trading with no cross-check at all, while
+            # emitting a warning that asserts something false. `exc.unpriced`
+            # is carried for exactly this.
+            refused_names = frozenset(getattr(exc, "unpriced", ()) or ())
+            not_traded_here = frozenset(exclusions or ()) | ({stable_coin} if stable_coin else frozenset())
+            refusal_is_only_about_names_we_do_not_trade = (
+                basis == BASIS_MARK and bool(refused_names) and refused_names <= not_traded_here
+            )
+            if gated and not refusal_is_only_about_names_we_do_not_trade:
                 raise
             logger.warning(
                 "Broker refused to value its own book (%r). %s Tradable mark is %.2f; "
                 "continuing WITHOUT a broker cross-check.",
                 exc,
                 (
-                    "This book holds an EXCLUDED asset that the broker counts and this mark does "
-                    "not, so the refusal may be about a name this run does not trade."
-                    if about_a_different_book
+                    f"Every name it could not mark ({', '.join(sorted(refused_names))}) is one this "
+                    "run does not trade, and this mark does not count them."
+                    if refusal_is_only_about_names_we_do_not_trade
                     else f"{mode} mode does not gate on this."
                 ),
                 valuation.value,

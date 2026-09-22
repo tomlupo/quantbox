@@ -946,19 +946,30 @@ class TradingPipeline:
                 if pos2 is not None and len(pos2) > 0:
                     snap = broker.get_market_snapshot(pos2["symbol"].tolist())
                     if snap is not None and "mid" in snap.columns:
+                        pos2 = pos2.copy()
+                        pos2["symbol"] = pos2["symbol"].astype(str)
+                        pos2["qty"] = pos2["qty"].astype(float)
+                        # Summed, not `dict(zip(...))` -- that keeps only the
+                        # last row where the `(qty * mid).sum()` it replaced
+                        # added them -- and summed BEFORE the merge.
+                        # `get_market_snapshot` emits one row per REQUESTED
+                        # element (sim.py, binance_live.py) and the request is
+                        # `pos2["symbol"].tolist()`, so a position reported on
+                        # two lots fans the left-merge out and summing
+                        # afterwards DOUBLES it -- into the `portfolio_daily`
+                        # equity curve and into `_run_reconciliation`, which
+                        # drives NORMAL -> DEGRADED -> HALT. Same rule, same
+                        # reason, as the alloc2orders twin. `min_count=1` keeps
+                        # an all-NaN quantity NaN rather than 0.0, so it still
+                        # reads as unmarkable.
+                        post_qty = pos2.groupby("symbol", as_index=False)["qty"].sum(min_count=1)
+
                         merged = pos2.merge(snap[["symbol", "mid"]], on="symbol", how="left")
                         # NOT `fillna(0)`: an unmarkable holding is worth an
                         # UNKNOWN amount, not nothing, and this number is the NAV
                         # written to portfolio_daily. Zero-filling here is the
                         # same understatement the pre-trade path just stopped.
                         merged["mid"] = merged["mid"].astype(float)
-                        merged["qty"] = merged["qty"].astype(float)
-                        merged["symbol"] = merged["symbol"].astype(str)
-                        # Summed, not `dict(zip(...))`: that keeps only the last
-                        # row where the `(qty * mid).sum()` it replaced added
-                        # them. `min_count=1` keeps an all-NaN quantity NaN
-                        # rather than 0.0, so it still reads as unmarkable.
-                        post_qty = merged.groupby("symbol", as_index=False)["qty"].sum(min_count=1)
                         post_snapshot = value_holdings(
                             cash=cash_usd_post,
                             holdings=dict(zip(post_qty["symbol"], post_qty["qty"], strict=False)),

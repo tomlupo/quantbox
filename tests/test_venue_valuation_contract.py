@@ -874,7 +874,54 @@ class TestBrokerEquityAndReconciliation:
         assert v.value == pytest.approx(124.0)
         assert v.has_excluded_holdings is True
         assert v.broker_equity is None
-        assert any("EXCLUDED" in r.getMessage() for r in caplog.records)
+        # The warning must NAME what the broker could not mark, so a reader can
+        # check the claim rather than take it: round 1's text asserted only
+        # that the book "holds an excluded asset", which was true of the venue
+        # outages it was wrongly waving through.
+        assert any("LOCKED" in r.getMessage() and "does not trade" in r.getMessage() for r in caplog.records)
+
+    def test_a_venue_OUTAGE_still_halts_live_even_with_an_excluded_holding(self):
+        """Round 2, on round 1's own fix: it asked the WRONG QUESTION.
+
+        Round 1 gated the escape on "does this book hold an excluded name",
+        which discards a total-venue-outage refusal on a LIVE run because the
+        book happens to hold one excluded dust coin — trading with no
+        cross-check at all. The question is what the broker REFUSED ABOUT.
+
+        Here the refusal names nothing (an outage), so live must still halt.
+        """
+        inner = PortfolioValuationError("kraken timeout", reason=REASON_BROKER_EQUITY_FAILED)
+        with pytest.raises(PortfolioValuationError) as exc:
+            resolve_portfolio_value(
+                broker=self._spot(equity_error=inner),
+                mode="live",
+                cash=92.0,
+                holdings={"BTC": 0.001, "LOCKED": 5.0},
+                get_price=_price_fn({"BTC": 32000.0}),
+                fallback_basis=BASIS_MARK,
+                exclusions=["LOCKED"],
+            )
+        assert exc.value is inner
+
+    def test_a_refusal_naming_a_TRADED_name_still_halts_live_with_exclusions_present(self):
+        """The other half of the same question, and the sharper one.
+
+        The book holds an excluded name AND the broker's refusal names a name
+        this run DOES trade. Round 1's predicate waved this through on live.
+        """
+        inner = PortfolioValuationError("cannot mark BTC", reason=REASON_UNPRICED, unpriced=("BTC",))
+        with pytest.raises(PortfolioValuationError) as exc:
+            resolve_portfolio_value(
+                broker=self._spot(equity_error=inner),
+                mode="live",
+                cash=92.0,
+                holdings={"BTC": 0.001, "LOCKED": 5.0},
+                get_price=_price_fn({"BTC": 32000.0}),
+                fallback_basis=BASIS_MARK,
+                exclusions=["LOCKED"],
+            )
+        assert exc.value is inner
+        assert exc.value.unpriced == ("BTC",)
 
     def test_an_ungated_reconciliation_mismatch_is_not_recorded_as_reconciled(self):
         """Round 1: `reconciled = True` was set from the CALL, not its result.
