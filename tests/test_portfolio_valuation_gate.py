@@ -1084,13 +1084,18 @@ def test_an_excluded_holding_does_not_inflate_the_sizing_base():
     value with the broker's number therefore sized targets off capital that
     cannot be raised by trading the book.
 
-    Branch: the excluded name IS markable, so `excluded_complete` stays True and
-    the reconciliation arm runs; the assertion is on the number that survives it.
+    Branch: reached through `_resolve_marked` with an excluded holding present,
+    so reconciliation is SKIPPED and the assertion lands on the value itself
+    rather than on a reconciliation outcome.
+
+    The price map deliberately carries NO price for the excluded name: every
+    caller that passes `exclusions` also strips those symbols from the market
+    snapshot it requests (`trading_pipeline.py:1492` and the two rebalancers),
+    so in production no price for them exists. A fixture that supplied one would
+    be lending the test a fact the real process cannot.
 
     Mutation target: `value=broker_equity` in `_resolve_marked`.
     """
-    holdings = {"BTC": 1.0, "FROZEN": 100.0}
-    prices = {"BTC": 100.0, "FROZEN": 10.0}
     # The broker marks BOTH: 50 cash + 100 BTC + 1000 FROZEN.
     broker_equity = 50.0 + 100.0 + 1000.0
 
@@ -1098,42 +1103,63 @@ def test_an_excluded_holding_does_not_inflate_the_sizing_base():
         broker=_SpotBroker(equity=broker_equity),
         mode="live",
         cash=50.0,
-        holdings=holdings,
-        get_price=_price_map(prices),
+        holdings={"BTC": 1.0, "FROZEN": 100.0},
+        get_price=_price_map({"BTC": 100.0}),
         fallback_basis=BASIS_MARK,
         exclusions=["FROZEN"],
     )
 
-    # Sizing base is the TRADABLE book only: 50 cash + 100 BTC.
+    # Sizing base is the TRADABLE book only: 50 cash + 100 BTC. Sizing off the
+    # broker's 1150 would target capital no trade in this book can raise.
     assert v.value == pytest.approx(150.0)
-    # ...and the excluded 1000 is carried so the two sides still reconcile.
-    assert v.excluded_value == pytest.approx(1000.0)
-    assert v.reconciled
-    assert "FROZEN" not in v.unpriced
+    assert v.broker_equity == pytest.approx(broker_equity)
+    assert "FROZEN" not in v.unpriced  # excluded names are never a refusal
 
 
-def test_an_unmarkable_excluded_holding_skips_reconciliation_without_refusing():
-    """An asset nobody trades must not halt a live run, and must not fake a match.
+def test_an_excluded_holding_skips_reconciliation_instead_of_refusing():
+    """The two views stop measuring the same book, so comparing them is a false alarm.
 
-    Branch: `excluded_complete` is False, so `_reconcile_or_raise` is never
+    Branch: `has_excluded_holdings` is True, so `_reconcile_or_raise` is never
     reached -- which is why this asserts `reconciled is False` rather than just
-    "no exception". Without that flag the two sides would differ by the whole
-    unmarkable position and refuse every live run.
+    "no exception". Without the flag the two sides differ by the whole excluded
+    position (here 1000 vs a 0.5% tolerance) and every live run would refuse.
+
+    Mutation target: `if valuation.has_excluded_holdings:` -> `if False:`.
     """
     v = resolve_portfolio_value(
-        broker=_SpotBroker(equity=5000.0),
+        broker=_SpotBroker(equity=1150.0),
         mode="live",
         cash=50.0,
         holdings={"BTC": 1.0, "FROZEN": 100.0},
-        get_price=_price_map({"BTC": 100.0}),  # no price for FROZEN
+        get_price=_price_map({"BTC": 100.0}),
         fallback_basis=BASIS_MARK,
         exclusions=["FROZEN"],
     )
 
-    assert v.value == pytest.approx(150.0)
-    assert v.unpriced == ()  # excluded names are never a refusal
-    assert v.excluded_complete is False
+    assert v.has_excluded_holdings is True
     assert v.reconciled is False
+    assert v.value == pytest.approx(150.0)
+
+
+def test_a_book_with_no_exclusions_still_actually_reconciles():
+    """Positive control: the skip above must not quietly disable the gate for everyone.
+
+    Branch: no excluded holding, so this reaches `_reconcile_or_raise` and
+    `reconciled` proves it ran. Without this, deleting the whole reconciliation
+    call would still leave the test above green.
+    """
+    v = resolve_portfolio_value(
+        broker=_SpotBroker(equity=150.0),
+        mode="live",
+        cash=50.0,
+        holdings={"BTC": 1.0},
+        get_price=_price_map({"BTC": 100.0}),
+        fallback_basis=BASIS_MARK,
+        exclusions=["FROZEN"],  # declared, but NOT held
+    )
+
+    assert v.has_excluded_holdings is False
+    assert v.reconciled is True
 
 
 def test_a_nan_broker_equity_is_a_refusal_not_a_nan_target():
@@ -1207,6 +1233,54 @@ def test_a_symbol_held_across_two_rows_is_summed_not_overwritten():
     assert _summed_holdings(pos) == {"BTC": 4.0, "ETH": 10.0}
     # A per-unit PRICE, unlike a quantity, does not accumulate.
     assert _usd_marks(pos)["BTC"] == pytest.approx(100.0)
+
+
+def test_an_unreadable_quantity_survives_summing():
+    """A bare `.sum()` returns 0.0 for an all-NaN group — a position worth nothing.
+
+    That would hide the holding from `value_holdings`' non-finite branch, so a
+    quantity nobody could read would be silently valued at zero instead of
+    refusing a live run. This is the understatement the whole change exists to
+    stop, re-entering through the aggregation added to fix a different one.
+
+    Mutation target: drop `min_count=1` in `_summed_holdings`.
+    """
+    from quantbox.plugins.pipeline.alloc2orders import _summed_holdings
+
+    pos = pd.DataFrame({"symbol": ["GHOST", "GHOST"], "qty": [float("nan"), float("nan")]})
+
+    assert math.isnan(_summed_holdings(pos)["GHOST"])
+
+    # ...and that NaN must still read as unmarkable, not as an empty book.
+    v = value_holdings(cash=100.0, holdings=_summed_holdings(pos), get_price=_price_map({}))
+    assert v.unpriced == ("GHOST",)
+    assert v.state == REASON_UNPRICED
+
+
+def test_a_nan_equity_does_not_leak_into_an_ungated_run():
+    """The finiteness guard must not protect live while handing paper a NaN.
+
+    Assigning `broker_equity` before raising leaves the NaN in place for the
+    ungated arm, which only warns — so the value would carry NaN into
+    `_resolve_margined` and out, invisible to every `total_value <= 0` guard.
+
+    Branch: `mode="paper"`, so the refusal is NOT taken and the assertion lands
+    on the value that a degraded run actually proceeds with.
+
+    Mutation target: assign `broker_equity` first, validate second.
+    """
+    v = resolve_portfolio_value(
+        broker=_PerpsBroker(equity=float("nan")),
+        mode="paper",
+        cash=CASH,
+        holdings={},
+        get_price=_price_map({}),
+        fallback_basis=BASIS_MARGIN,
+    )
+
+    assert v.broker_equity is None, "a NaN equity must never be published"
+    assert math.isfinite(v.value)
+    assert v.value == pytest.approx(CASH)
 
 
 def test_the_other_rebalancer_params_stay_config_overridable():

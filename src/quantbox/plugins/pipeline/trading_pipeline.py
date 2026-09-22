@@ -949,22 +949,22 @@ class TradingPipeline:
                         # same understatement the pre-trade path just stopped.
                         merged["mid"] = merged["mid"].astype(float)
                         merged["qty"] = merged["qty"].astype(float)
+                        merged["symbol"] = merged["symbol"].astype(str)
+                        # Summed, not `dict(zip(...))`: that keeps only the last
+                        # row where the `(qty * mid).sum()` it replaced added
+                        # them. `min_count=1` keeps an all-NaN quantity NaN
+                        # rather than 0.0, so it still reads as unmarkable.
+                        post_qty = merged.groupby("symbol", as_index=False)["qty"].sum(min_count=1)
                         post_snapshot = value_holdings(
                             cash=cash_usd_post,
-                            holdings=dict(
-                                zip(
-                                    merged["symbol"].astype(str),
-                                    merged["qty"],
-                                    strict=False,
-                                )
-                            ),
-                            get_price=dict(
-                                zip(
-                                    merged["symbol"].astype(str),
-                                    merged["mid"],
-                                    strict=False,
-                                )
-                            ).get,
+                            holdings=dict(zip(post_qty["symbol"], post_qty["qty"], strict=False)),
+                            get_price=dict(zip(merged["symbol"], merged["mid"], strict=False)).get,
+                            # Same two arguments as the PRE-trade call. Without
+                            # them the stable coin and every excluded asset read
+                            # as unmarkable, and a healthy run would log an
+                            # understatement and push an api_error every time.
+                            stable_coin=stable_coin,
+                            exclusions=list(params.get("exclusions", [])),
                         )
                         portfolio_value_post = post_snapshot.value
                         if post_snapshot.unpriced:

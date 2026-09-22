@@ -129,8 +129,17 @@ def _summed_holdings(pos: pd.DataFrame) -> dict[str, float]:
     sum this replaced added them — so a position reported across two rows (two
     accounts, two lots) silently lost all but one, understating the book. That
     is the same defect class this module exists to close, so it is summed here.
+
+    ``min_count=1`` is load bearing: a bare ``.sum()`` returns **0.0** for an
+    all-NaN group, which would turn a quantity nobody could read into a position
+    worth nothing and hide it from ``value_holdings``' non-finite branch. With
+    it the NaN survives, reaches that branch, and refuses a live run.
+
+    Call this on the POSITIONS frame, before any merge with allocations: a
+    duplicated symbol on the allocations side fans a left-merge out and summing
+    afterwards double-counts the position.
     """
-    grouped = pos.groupby("symbol", as_index=False)["qty"].sum()
+    grouped = pos.groupby("symbol", as_index=False)["qty"].sum(min_count=1)
     return dict(zip(grouped["symbol"], grouped["qty"].astype(float), strict=False))
 
 
@@ -347,6 +356,13 @@ class AllocationsToOrdersPipeline:
         pos["symbol"] = pos["symbol"].astype(str)
         pos["qty"] = pos["qty"].astype(float)
 
+        # Quantities are summed from the POSITIONS frame, before the merge
+        # below. A duplicated symbol in the ALLOCATIONS file fans the left-merge
+        # out into several rows carrying the same position, and summing after
+        # that double-counts it -- overstating NAV and oversizing live targets,
+        # which is worse than the under-count this summing exists to fix.
+        holdings = _summed_holdings(pos)
+
         pos = pos.merge(alloc[["symbol", "price", "multiplier", "currency"]], on="symbol", how="left")
         # A held symbol that is not in today's allocations has NO price here.
         # `fillna(0.0)` used to turn that into a position worth nothing, which
@@ -359,7 +375,6 @@ class AllocationsToOrdersPipeline:
         pos["fx_to_usd"] = pos["currency"].apply(lambda c: _fx_rate_to_usd(fx, c)).astype(float)
 
         pos_price_usd = _usd_marks(pos)
-        holdings = _summed_holdings(pos)
 
         def _held_price(symbol: str) -> float | None:
             px = pos_price_usd.get(symbol)

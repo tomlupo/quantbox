@@ -195,16 +195,19 @@ class PortfolioValuation:
     source: str = "computed"
     broker_equity: float | None = None
     reconciled: bool = False
-    #: Marked value of holdings the caller EXCLUDED from the tradable book.
-    #: Never part of :attr:`value` — sizing off it would target capital that
-    #: cannot be raised by trading. It exists so the broker reconciliation can
-    #: compare like with like: a broker's ``get_equity()`` marks every balance
-    #: the account holds and knows nothing about the caller's exclusions.
-    excluded_value: float = 0.0
-    #: False when an excluded holding could not be marked, which makes
-    #: :attr:`excluded_value` an understatement and the reconciliation
-    #: meaningless. Not a refusal: an excluded name is not traded.
-    excluded_complete: bool = True
+    #: True when the book holds something the caller EXCLUDED from trading.
+    #:
+    #: Such a holding is never part of :attr:`value` — sizing off it would
+    #: target capital that cannot be raised by trading the book. But a broker's
+    #: ``get_equity()`` DOES count it and knows nothing about exclusions, so
+    #: whenever this is True the two views are measuring different books and
+    #: reconciling them would be a guaranteed false alarm.
+    #:
+    #: It is a flag rather than a value on purpose: the callers that pass
+    #: ``exclusions`` also strip those symbols from the market snapshot they
+    #: request, so no price for them exists anywhere in the process and a
+    #: marked "excluded value" could only ever have been zero.
+    has_excluded_holdings: bool = False
     #: Which venue rule produced :attr:`value` — see :data:`BASIS_MARK` /
     #: :data:`BASIS_MARGIN`. ``""`` when only :func:`value_holdings` ran, which
     #: marks a book without deciding what the mark MEANS for this venue.
@@ -290,9 +293,9 @@ def value_holdings(
 
     Symbols in ``exclusions`` are not part of the tradable book, so they never
     enter :attr:`PortfolioValuation.value` and are never reported as unpriced —
-    an asset nobody will trade must not halt a live run. They are marked into
-    :attr:`PortfolioValuation.excluded_value` purely so a caller reconciling
-    against a broker's ``get_equity()`` can compare like with like.
+    an asset nobody will trade must not halt a live run. Holding one is recorded
+    as :attr:`PortfolioValuation.has_excluded_holdings`, which tells a caller
+    that a broker's ``get_equity()`` is no longer measuring the same book.
 
     ``cash`` is taken SIGNED. A margin debit is real and reduces the book; the
     old ``max(0, cash)`` belonged to the margin-balance rule and now lives
@@ -305,8 +308,7 @@ def value_holdings(
     priced: list[str] = []
     unpriced: list[str] = []
     counted = 0
-    excluded_marked = 0.0
-    excluded_complete = True
+    has_excluded_holdings = False
 
     for asset, raw_qty in holdings.items():
         try:
@@ -317,18 +319,10 @@ def value_holdings(
         is_stable = stable_coin is not None and asset == stable_coin
 
         if not is_stable and asset in excluded:
-            # Outside the tradable book. Marked only for the reconciliation;
-            # an unmarkable one makes that comparison unusable, not the run.
-            if not math.isfinite(qty):
-                excluded_complete = False
-                continue
-            if qty == 0:
-                continue
-            price = get_price(asset)
-            if price is None or not _is_finite_positive(price):
-                excluded_complete = False
-                continue
-            excluded_marked += qty * float(price)
+            # Outside the tradable book: never valued, never a refusal. Only
+            # recorded, because a broker's equity still counts it.
+            if not math.isfinite(qty) or qty != 0:
+                has_excluded_holdings = True
             continue
 
         if not math.isfinite(qty):
@@ -363,8 +357,7 @@ def value_holdings(
         unpriced=tuple(sorted(unpriced)),
         n_holdings=counted,
         source="computed",
-        excluded_value=excluded_marked,
-        excluded_complete=excluded_complete,
+        has_excluded_holdings=has_excluded_holdings,
     )
 
 
@@ -490,13 +483,16 @@ def resolve_portfolio_value(
     broker_equity: float | None = None
     if declared and broker is not None and hasattr(broker, "get_equity"):
         try:
-            broker_equity = float(broker.get_equity())
-            if not math.isfinite(broker_equity):
-                # NaN is not a number this book can be sized off, and it is
-                # INVISIBLE to every downstream `if total_value <= 0` guard —
-                # `nan <= 0` is False, so a NaN equity would sail through and
-                # produce NaN targets on a live venue.
-                raise ValueError(f"get_equity() returned {broker_equity!r}")
+            # Validated into a LOCAL before it is published. Assigning first and
+            # raising second leaves the NaN in `broker_equity` for the ungated
+            # arm below, which only warns — so the guard would protect live and
+            # quietly hand paper a NaN. NaN is invisible to every downstream
+            # `if total_value <= 0` guard (`nan <= 0` is False), so it would
+            # sail through and produce NaN targets.
+            candidate = float(broker.get_equity())
+            if not math.isfinite(candidate):
+                raise ValueError(f"get_equity() returned {candidate!r}")
+            broker_equity = candidate
         except PortfolioValuationError:
             # The broker refused to value its own book (e.g. an unmarkable
             # holding). Propagate it: it is the same refusal, raised closer to
@@ -627,19 +623,18 @@ def _resolve_marked(
     # was approved, which is `cash + holdings`, not the venue's all-in total.
     reconciled = False
     if require_reconciliation:
-        if not valuation.excluded_complete:
+        if valuation.has_excluded_holdings:
             logger.warning(
-                "Skipping broker reconciliation: an EXCLUDED holding could not be marked, so "
-                "the pipeline's %.2f and the broker's %.2f are not measuring the same book. "
-                "The tradable book is fully marked, so this does not stop the run.",
-                valuation.value,
+                "Skipping broker reconciliation: the book holds an EXCLUDED asset, which the "
+                "broker's equity (%.2f) counts and this tradable mark (%.2f) does not, so the "
+                "two are not measuring the same book. The tradable book is fully marked, so "
+                "this does not stop the run.",
                 broker_equity,
+                valuation.value,
             )
         else:
-            # Add back what the broker counts and the tradable book does not,
-            # so the two sides of the comparison cover the same assets.
             _reconcile_or_raise(
-                computed=valuation.value + valuation.excluded_value,
+                computed=valuation.value,
                 broker_equity=broker_equity,
                 tolerance=tolerance,
                 gated=gated,
