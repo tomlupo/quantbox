@@ -27,6 +27,7 @@ from __future__ import annotations
 import pandas as pd
 
 from quantbox.plugins.rebalancing.futures_rebalancer import FuturesRebalancer
+from quantbox.portfolio_value import BASIS_MARK
 
 # Prices chosen so ordermin * price matches the task's stated per-pair notionals.
 _PRICES = {
@@ -56,7 +57,14 @@ class _FakeBroker:
 
     ``get_market_snapshot`` returns the same schema as ``KrakenBroker``:
     ``symbol, mid, min_qty, step_size, min_notional``.
+
+    It also declares the same ``valuation_basis`` as ``KrakenBroker``: Kraken is
+    a SPOT venue, so the book is worth cash plus marked holdings. A stand-in that
+    omitted the declaration would be valued by a different rule than the broker
+    it stands for, and these per-pair floor cases are all sized off that value.
     """
+
+    valuation_basis = BASIS_MARK
 
     def __init__(self, cash: float, holdings: dict[str, float]):
         self._cash = cash
@@ -106,11 +114,18 @@ def test_small_deltas_clear_perpair_min_not_flat_ten():
     # delta) and AT target for ADA/DOGE (no delta), mirroring a near-balanced
     # book that only needs small top-ups.
     holdings = {}
+    invested = 0.0
     for s in _PRICES:
         cur_val = target_val if s in ("ADA", "DOGE") else target_val - 5.0
         holdings[s] = cur_val / _PRICES[s]
+        invested += cur_val
 
-    broker = _FakeBroker(cash=total, holdings=holdings)
+    # Cash is the REMAINDER of the book, not the whole of it. This fixture used
+    # to pass `cash=total` while also holding ~$258 of positions -- coherent only
+    # while the rebalancer valued a spot book at its cash balance alone. Under
+    # the venue-derived rule the book would have been worth ~$536 and every
+    # target would double, so the $5 top-ups this test is about became $48.
+    broker = _FakeBroker(cash=total - invested, holdings=holdings)
     reb = FuturesRebalancer()
     result = reb.generate_orders(
         weights=weights,

@@ -1,0 +1,3 @@
+# quantbox-datasets pins: dataset -> sha256 of prices.parquet. Written by `quantbox-datasets pin`.
+crypto-spot-daily: b9f545d483fb02b0a22051100abf00956b1471cddeedcee9a487b7ce5565dfe6
+etf-daily: 11b34ccb3949dba391af2ba5bb122011bd8c158414fbce1ebd52a9ac7fb4d3f4

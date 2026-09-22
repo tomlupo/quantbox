@@ -29,6 +29,24 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.7.0 (2026-09-22)
+
+### BREAKING CHANGE
+
+- the default execution timing of `quantbox run -c` changed
+from same-bar to next-bar. Every historical backtest number produced by
+`quantbox run -c` was same-bar; to reproduce an old number set
+`execution.lag_bars: 0`.
+
+### Feat
+
+- **backtest**: one execution-timing convention (default next-bar), venue constraints, traded weights (#201)
+- **data**: read quantbox-datasets by name, pinned by datasets.lock (TOM-993) (#199)
+
+### Fix
+
+- **valuation**: derive portfolio valuation from the venue, not the rebalancer plugin (#204)
+
 ## v0.6.3 (2026-09-11)
 
 ### Fix

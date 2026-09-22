@@ -12,6 +12,13 @@ import yaml
 
 from quantbox.contracts import ArtifactStore, BrokerPlugin, DataPlugin, Mode, PluginMeta, RiskPlugin, RunResult
 from quantbox.parquet_io import read_parquet
+from quantbox.portfolio_value import (
+    BASIS_MARK,
+    DEFAULT_RECONCILIATION_TOLERANCE,
+    PortfolioValuation,
+    resolve_portfolio_value,
+    value_holdings,
+)
 from quantbox.run_history import resolve_latest_artifact
 
 logger = logging.getLogger(__name__)
@@ -100,6 +107,42 @@ def _read_instrument_map(path: str | None) -> pd.DataFrame:
     return df
 
 
+def _usd_marks(pos: pd.DataFrame) -> dict[str, float]:
+    """Per-unit USD mark per symbol, NaN where the price is unknown.
+
+    A duplicated symbol keeps the LAST row's mark, which is correct: a per-unit
+    price does not accumulate. Quantities do — see :func:`_summed_holdings`.
+    """
+    return dict(
+        zip(
+            pos["symbol"],
+            (pos["price"] * pos["multiplier"] * pos["fx_to_usd"]).astype(float),
+            strict=False,
+        )
+    )
+
+
+def _summed_holdings(pos: pd.DataFrame) -> dict[str, float]:
+    """Total quantity per symbol, ADDING duplicate rows.
+
+    A plain ``dict(zip(...))`` keeps only the last row, where the ``value_usd``
+    sum this replaced added them — so a position reported across two rows (two
+    accounts, two lots) silently lost all but one, understating the book. That
+    is the same defect class this module exists to close, so it is summed here.
+
+    ``min_count=1`` is load bearing: a bare ``.sum()`` returns **0.0** for an
+    all-NaN group, which would turn a quantity nobody could read into a position
+    worth nothing and hide it from ``value_holdings``' non-finite branch. With
+    it the NaN survives, reaches that branch, and refuses a live run.
+
+    Call this on the POSITIONS frame, before any merge with allocations: a
+    duplicated symbol on the allocations side fans a left-merge out and summing
+    afterwards double-counts the position.
+    """
+    grouped = pos.groupby("symbol", as_index=False)["qty"].sum(min_count=1)
+    return dict(zip(grouped["symbol"], grouped["qty"].astype(float), strict=False))
+
+
 def _fx_rate_to_usd(fx: pd.DataFrame | None, ccy: str) -> float:
     if ccy.upper() == "USD":
         return 1.0
@@ -178,6 +221,23 @@ class AllocationsToOrdersPipeline:
                 "min_abs_qty": {"type": "number", "minimum": 0, "default": 0.0},
                 "allow_short": {"type": "boolean", "default": False},
                 "cash_fallback_usd": {"type": "number", "default": 100000.0},
+                "equity_reconciliation_tolerance": {
+                    "type": "number",
+                    "default": DEFAULT_RECONCILIATION_TOLERANCE,
+                    "description": (
+                        "Relative tolerance for the LIVE pre-trade reconciliation between this "
+                        "pipeline's valuation and the broker's get_equity(). Beyond it, a live "
+                        "run refuses to trade. Default 0.005 (0.5%)."
+                    ),
+                },
+                "require_equity_reconciliation": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": (
+                        "Whether a long-only spot book must reconcile against broker equity "
+                        "before trading. Does NOT disable the completeness gate."
+                    ),
+                },
                 "max_adv_participation": {
                     "type": ["number", "null"],
                     "minimum": 0,
@@ -296,20 +356,59 @@ class AllocationsToOrdersPipeline:
         pos["symbol"] = pos["symbol"].astype(str)
         pos["qty"] = pos["qty"].astype(float)
 
+        # Quantities are summed from the POSITIONS frame, before the merge
+        # below. A duplicated symbol in the ALLOCATIONS file fans the left-merge
+        # out into several rows carrying the same position, and summing after
+        # that double-counts it -- overstating NAV and oversizing live targets,
+        # which is worse than the under-count this summing exists to fix.
+        holdings = _summed_holdings(pos)
+
         pos = pos.merge(alloc[["symbol", "price", "multiplier", "currency"]], on="symbol", how="left")
-        pos["price"] = pos["price"].fillna(0.0).astype(float)
+        # A held symbol that is not in today's allocations has NO price here.
+        # `fillna(0.0)` used to turn that into a position worth nothing, which
+        # is why an unpriceable book and an empty one produced the same
+        # portfolio value. The NaN is kept so the valuation can tell them apart;
+        # it reaches nothing else (see the note at the orders merge below).
+        pos["price"] = pos["price"].astype(float)
         pos["multiplier"] = pos["multiplier"].fillna(1.0).astype(float)
         pos["currency"] = pos["currency"].fillna("USD").astype(str)
         pos["fx_to_usd"] = pos["currency"].apply(lambda c: _fx_rate_to_usd(fx, c)).astype(float)
-        pos["value_usd"] = pos["qty"] * pos["price"] * pos["multiplier"] * pos["fx_to_usd"]
-        current_value_usd = float(pos["value_usd"].sum())
 
-        # Prefer broker.get_equity() for derivatives brokers where
-        # cash + sum(qty * price) is wrong for short positions.
-        if broker is not None and hasattr(broker, "get_equity"):
-            portfolio_value_usd_pre = float(broker.get_equity())
-        else:
-            portfolio_value_usd_pre = float(cash_usd + current_value_usd)
+        pos_price_usd = _usd_marks(pos)
+
+        def _held_price(symbol: str) -> float | None:
+            px = pos_price_usd.get(symbol)
+            return None if px is None or not np.isfinite(px) else float(px)
+
+        valuation = resolve_portfolio_value(
+            broker=broker,
+            mode=mode,
+            cash=cash_usd,
+            holdings=holdings,
+            get_price=_held_price,
+            # Allocations carry a per-unit USD mark (price * multiplier * fx), so
+            # this path is mark-to-market. That stays the answer for a SIMULATION
+            # against an undeclared broker; on live an undeclared broker refuses.
+            fallback_basis=BASIS_MARK,
+            # No `stable_coin=` / `exclusions=` here, unlike the three crypto
+            # call sites: this pipeline has neither concept. Cash is already
+            # multi-currency and converted to USD above, so there is no quote
+            # token sitting in the positions table, and it exposes no exclusions
+            # parameter. Consequence worth knowing: a held symbol absent from
+            # TODAY'S allocations has no mark, so it is `unpriced` and refuses a
+            # live run — correct (the NAV really is unknown), but the remedy is
+            # to carry that symbol in the allocations file with a price, since
+            # targets are built from `alloc` alone and the book cannot otherwise
+            # sell it.
+            tolerance=float(params.get("equity_reconciliation_tolerance", DEFAULT_RECONCILIATION_TOLERANCE)),
+            require_reconciliation=bool(params.get("require_equity_reconciliation", True)),
+        )
+        portfolio_value_usd_pre = float(valuation.value)
+
+        # `current_value_usd` used to be computed here and added to cash. It is
+        # gone: the marked value now comes from the valuation above, which knows
+        # which positions it FAILED to mark. Nothing downstream reads pos'
+        # price or value columns (only symbol/qty, at the orders merge below).
 
         # targets
         alloc["fx_to_usd"] = alloc["currency"].apply(lambda c: _fx_rate_to_usd(fx, c))
@@ -423,38 +522,79 @@ class AllocationsToOrdersPipeline:
                 fills = broker.place_orders(orders[["symbol", "side", "qty", "price"]])
         a_fills = store.put_parquet("fills", fills)
 
-        # after snapshot -- prefer broker.get_equity() for derivatives
-        # brokers where cash + sum(qty * price) is wrong for short positions.
+        # After-snapshot. This runs AFTER place_orders, so it is best-effort by
+        # construction: a venue hiccup here must not kill a run whose orders
+        # already executed, or the fills go unrecorded. `KrakenBroker.get_equity`
+        # now RAISES rather than understating, which makes the try/except load
+        # bearing rather than decorative. (`trading_pipeline` has always wrapped
+        # its twin of this call; the two pipelines used to disagree.)
         portfolio_value_usd_post = portfolio_value_usd_pre
         cash_usd_post = cash_usd
+        post_valuation: PortfolioValuation | None = None
 
         if broker is not None and mode in ("paper", "live"):
-            if hasattr(broker, "get_equity"):
-                portfolio_value_usd_post = float(broker.get_equity())
-                cash2 = broker.get_cash() or {}
-                cash_usd_post = 0.0
-                for ccy, amt in cash2.items():
-                    cash_usd_post += float(amt) * _fx_rate_to_usd(fx, str(ccy))
-            else:
+            try:
                 cash2 = broker.get_cash() or {}
                 cash_usd_post = 0.0
                 for ccy, amt in cash2.items():
                     cash_usd_post += float(amt) * _fx_rate_to_usd(fx, str(ccy))
 
-                pos2 = broker.get_positions()
-                if pos2 is None or len(pos2) == 0:
-                    pos2 = pd.DataFrame({"symbol": [], "qty": []})
-                pos2 = pos2.copy()
-                pos2["symbol"] = pos2["symbol"].astype(str)
-                pos2["qty"] = pos2["qty"].astype(float)
+                if hasattr(broker, "get_equity"):
+                    portfolio_value_usd_post = float(broker.get_equity())
+                else:
+                    pos2 = broker.get_positions()
+                    if pos2 is None or len(pos2) == 0:
+                        pos2 = pd.DataFrame({"symbol": [], "qty": []})
+                    pos2 = pos2.copy()
+                    pos2["symbol"] = pos2["symbol"].astype(str)
+                    pos2["qty"] = pos2["qty"].astype(float)
 
-                pos2 = pos2.merge(alloc[["symbol", "price", "multiplier", "currency"]], on="symbol", how="left")
-                pos2["price"] = pos2["price"].fillna(0.0).astype(float)
-                pos2["multiplier"] = pos2["multiplier"].fillna(1.0).astype(float)
-                pos2["currency"] = pos2["currency"].fillna("USD").astype(str)
-                pos2["fx_to_usd"] = pos2["currency"].apply(lambda c: _fx_rate_to_usd(fx, c)).astype(float)
-                pos2["value_usd"] = pos2["qty"] * pos2["price"] * pos2["multiplier"] * pos2["fx_to_usd"]
-                portfolio_value_usd_post = float(cash_usd_post + pos2["value_usd"].sum())
+                    # BEFORE the merge, exactly as the pre-trade path does and
+                    # as `_summed_holdings`' own docstring requires. Summing
+                    # AFTER a left-merge with `alloc` double-counts a position
+                    # whenever the allocations file carries a duplicated symbol
+                    # — the merge fans one position out into several rows each
+                    # holding the full quantity — and nothing in this pipeline
+                    # de-duplicates `alloc`. That overstates the NAV written to
+                    # `portfolio_daily` by a multiple of the held quantity.
+                    post_holdings = _summed_holdings(pos2)
+
+                    pos2 = pos2.merge(alloc[["symbol", "price", "multiplier", "currency"]], on="symbol", how="left")
+                    # NOT `fillna(0.0)`: that is the defect this change exists to
+                    # remove. A holding with no price is worth an UNKNOWN amount,
+                    # not zero, and this number is the NAV written to
+                    # portfolio_daily -- a book recorded at cash because a ticker
+                    # was missing is how the original understatement hid.
+                    pos2["price"] = pos2["price"].astype(float)
+                    pos2["multiplier"] = pos2["multiplier"].fillna(1.0).astype(float)
+                    pos2["currency"] = pos2["currency"].fillna("USD").astype(str)
+                    pos2["fx_to_usd"] = pos2["currency"].apply(lambda c: _fx_rate_to_usd(fx, c)).astype(float)
+
+                    post_marks = _usd_marks(pos2)
+                    post_valuation = value_holdings(
+                        cash=cash_usd_post,
+                        holdings=post_holdings,
+                        get_price=lambda s: post_marks.get(s),
+                    )
+                    portfolio_value_usd_post = float(post_valuation.value)
+                    if post_valuation.unpriced:
+                        logger.error(
+                            "Post-trade NAV is UNDERSTATED: %d of %d holding(s) could not be marked (%s). "
+                            "portfolio_daily records the marked part only.",
+                            len(post_valuation.unpriced),
+                            post_valuation.n_holdings,
+                            ", ".join(post_valuation.unpriced),
+                        )
+            except Exception as exc:
+                # Deliberately broad: the orders are already placed.
+                logger.error(
+                    "Post-trade snapshot failed (%r); reporting the pre-trade value %.2f instead. "
+                    "Orders were already executed and ARE recorded in fills.",
+                    exc,
+                    portfolio_value_usd_pre,
+                )
+                portfolio_value_usd_post = portfolio_value_usd_pre
+                cash_usd_post = cash_usd
 
         portfolio_daily = pd.DataFrame(
             [
@@ -473,6 +613,8 @@ class AllocationsToOrdersPipeline:
 - mode: {mode}
 - portfolio_value_usd_pre: {portfolio_value_usd_pre:.2f}
 - portfolio_value_usd_post: {portfolio_value_usd_post:.2f}
+- portfolio_valuation: {valuation.state} (source={valuation.source}, \
+{valuation.n_holdings} holding(s), {len(valuation.unpriced)} unpriced)
 - orders: {len(orders)}
 - fills: {len(fills)}
 - fx_loaded: {fx is not None}
@@ -487,6 +629,9 @@ class AllocationsToOrdersPipeline:
             "portfolio_value_usd_post": float(portfolio_value_usd_post),
             "n_orders": float(len(orders)),
             "n_fills": float(len(fills)),
+            # "nothing held", "fully marked" and "could not price" must stay
+            # distinguishable in the run record, not collapse to one number.
+            **valuation.as_metrics(),
         }
 
         return RunResult(
@@ -504,6 +649,7 @@ class AllocationsToOrdersPipeline:
             notes={
                 "kind": "trading",
                 "risk_findings": findings,
+                **valuation.as_notes(),
                 "extra_artifacts": [
                     "targets_ext.parquet",
                     "llm_notes.json",

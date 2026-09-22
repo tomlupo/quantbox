@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from importlib.resources import files as _res_files
 from pathlib import Path
+from typing import Any
 
 import typer
 import yaml
@@ -326,6 +327,9 @@ def run(
     print("RUN_ID:", result.run_id)
     print("PIPELINE:", result.pipeline_name)
     print("METRICS:", result.metrics)
+    execution = (result.notes or {}).get("execution")
+    if execution:
+        print("EXECUTION:", execution["description"])
 
     # Dead-man detection (quantbox#120): a rebalancer freeze (every intended
     # order suppressed, book stuck on stale positions) previously exited 0 --
@@ -342,6 +346,15 @@ def run(
         raise SystemExit(1)
 
 
+def _dataset_frame(dataset: Any, name: str) -> Any:
+    """One wide frame of a quantbox-datasets Dataset: the public property when it has one
+    (prices, volume, market_cap, funding_rates), else its reader (high, low, ...)."""
+    try:
+        return getattr(dataset, name)
+    except AttributeError:
+        return dataset._read(name)
+
+
 @app.command()
 def sweep(
     config: str = typer.Option(..., "-c", "--config", help="Path to sweep config YAML"),
@@ -353,11 +366,12 @@ def sweep(
     combination through the vbt backtest engine, and saves heatmap PNGs +
     grid.parquet to the configured output directory.
 
-    Expected YAML schema (relative paths resolve from the config file):
+    Expected YAML schema (relative paths resolve from the config file; the dataset
+    is loaded by name at the build pinned in the ``datasets.lock`` nearest the config):
 
         strategy: strategy.crypto_regime_trend.v1
         data:
-          root: ../../quantbox-datasets/datasets/crypto-spot-daily
+          dataset: crypto-spot-daily
           frames: [prices, volume, market_cap]
           align_to: prices
         base_params: { ... strategy kwargs ... }
@@ -370,13 +384,24 @@ def sweep(
         backtest:
           fees: 0.005
           rebalancing_freq: 1D
+        execution:
+          lag_bars: 1        # default; same convention as `quantbox run`
+                             # (backtest.shift_signal is a deprecated alias)
         output_dir: heatmaps
     """
-    from .analysis import DEFAULT_METRICS, load_parquet_market_data, run_grid
+    from .analysis import DEFAULT_METRICS, run_grid
+    from .analysis.parameter_grid import align_market_data
 
     config_path = Path(config).resolve()
     with config_path.open(encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+
+    # The `execution:` BLOCK goes through the same resolver as `quantbox run`,
+    # before any work: a typo (`lag_bar: 0`, `execution: 0`) is refused, never
+    # defaulted. Absent block -> None -> run_grid resolves the default / alias.
+    from .execution import resolve_lag_bars
+
+    sweep_lag_bars = resolve_lag_bars(cfg["execution"]) if "execution" in cfg else None
 
     reg = PluginRegistry.discover()
     strategy_name = cfg["strategy"]
@@ -386,12 +411,21 @@ def sweep(
 
     config_dir = config_path.parent
     data_cfg = cfg.get("data", {}) or {}
-    data_root = (config_dir / data_cfg["root"]).resolve()
-    market_data = load_parquet_market_data(
-        data_root,
-        names=tuple(data_cfg.get("frames", ["prices", "volume", "market_cap"])),
-        align_to=data_cfg.get("align_to", "prices"),
-    )
+    if "dataset" not in data_cfg:
+        raise typer.BadParameter("sweep config needs data.dataset: <quantbox-datasets name>")
+    try:
+        from quantbox_datasets.lock import find_lock, load
+    except ImportError as exc:  # quantbox does not depend on quantbox-datasets
+        raise typer.BadParameter(
+            "sweep needs quantbox-datasets installed (it carries quantbox_datasets.lock); "
+            "install it from its clone and point QUANTBOX_DATASETS_ROOT at <clone>/datasets"
+        ) from exc
+
+    # The lock nearest the config wins; with none there, load() searches from cwd.
+    dataset = load(data_cfg["dataset"], lock=find_lock(config_dir))
+    align_to = data_cfg.get("align_to", "prices")
+    names = [*data_cfg.get("frames", ["prices", "volume", "market_cap"]), align_to]
+    market_data = align_market_data({name: _dataset_frame(dataset, name) for name in dict.fromkeys(names)}, align_to)
 
     output_dir = (config_dir / cfg.get("output_dir", "heatmaps")).resolve()
     heatmap = cfg.get("heatmap", {}) or {}
@@ -409,7 +443,8 @@ def sweep(
         metrics=tuple(heatmap.get("metrics") or DEFAULT_METRICS),
         fees=float(backtest.get("fees", 0.005)),
         rebalancing_freq=backtest.get("rebalancing_freq", "1D"),
-        shift_signal=int(backtest.get("shift_signal", 1)),
+        lag_bars=sweep_lag_bars,
+        shift_signal=backtest.get("shift_signal"),  # deprecated alias of execution.lag_bars
     )
     print(f"SWEEP: {len(grid)} rows  ->  {output_dir}")
 

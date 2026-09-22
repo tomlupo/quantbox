@@ -214,6 +214,32 @@ class BrokerPlugin(Protocol):
             this is the authoritative portfolio value (margin + unrealized PnL).
             Pipelines prefer this over cash + sum(qty * price) when available,
             since the latter is incorrect for short/futures positions.
+
+            An implementation MUST raise rather than return a value that omits
+            a held position it could not price. Equity feeds live position
+            sizing, so an understated figure under-sizes every target silently;
+            "could not value" has to exit differently from "the book is small".
+            See :mod:`quantbox.portfolio_value`.
+
+    Class attributes:
+        valuation_basis: HOW THIS VENUE VALUES A BOOK — the one declaration that
+            decides pre-trade sizing. ``"mark_to_market"`` for a spot/cash venue
+            (value is cash + sum(qty * price), so every held position must be
+            markable); ``"margin_balance"`` for a derivatives venue (value is
+            the margin balance plus unrealised PnL, and leveraged positions do
+            not add to it). Use the :data:`~quantbox.portfolio_value.BASIS_MARK`
+            / :data:`~quantbox.portfolio_value.BASIS_MARGIN` constants.
+
+            It is a plain class attribute, not a ``describe()`` key: reading it
+            must be free of API calls and must not vary with account state.
+
+            A broker that declares neither cannot be valued, and a LIVE run
+            refuses rather than guessing. That is not defensive
+            over-engineering — the live ``crypto-trend-kraken`` book sized every
+            target off cash because its config named ``rebalancing.futures.v1``
+            against a spot broker, and the margin-balance rule was applied
+            faithfully to a book where it is wrong by the whole value of the
+            positions held.
     """
 
     meta: PluginMeta

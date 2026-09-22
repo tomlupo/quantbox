@@ -74,7 +74,8 @@ turns:
 # rebalancing (weights → orders) — plus the runner/registry core and the
 # artifact store.
 classify:
-  trivial_globs: ["**/*.md", "docs/**", "**/CHANGELOG*"]
+  # `datasets.lock` is trivial per Tom, 2026-09-18: a lock-only re-pin is dataset wiring, not code (twin: .github/workflows/review-gate.yml).
+  trivial_globs: ["**/*.md", "docs/**", "**/CHANGELOG*", "datasets.lock", "**/datasets.lock"]
   complex_globs:
     - "src/quantbox/plugins/broker/**"
     - "src/quantbox/plugins/risk/**"

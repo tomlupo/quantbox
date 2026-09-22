@@ -160,7 +160,7 @@ shared `ctx`:
 ctx = {
     "returns": pd.Series,  # strategy daily returns
     "portfolio_daily": pd.DataFrame,  # value column + index
-    "weights_history": pd.DataFrame,  # per-day per-ticker weights
+    "weights_history": pd.DataFrame,  # per-day per-ticker TRADED weights (post venue/risk/execution lag — the `traded_weights` artifact)
     "bt_prices": pd.DataFrame,  # backtest universe prices
     "variant_results": dict,  # only in multi-variant mode
 }

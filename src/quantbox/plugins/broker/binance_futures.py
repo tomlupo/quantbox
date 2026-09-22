@@ -54,6 +54,7 @@ from typing import Any
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+from quantbox.portfolio_value import BASIS_MARGIN
 from quantbox.retry import with_retry
 
 from ._fills import trade_fee, trade_fee_currency
@@ -171,6 +172,23 @@ class BinanceFuturesBroker:
     broker.rebalance_to_weights({"BTC": 0.5, "ETH": -0.3})
     ```
     """
+
+    # The venue's valuation basis -- see BrokerPlugin.valuation_basis. Perps:
+    # equity is the margin balance plus unrealised PnL; leveraged positions do
+    # not add to it.
+    #
+    # KNOWN GAP, deliberately not closed here (it would change sizing on a live
+    # venue outside the incident this change was approved for): this broker
+    # implements no `get_equity()`, so `_resolve_margined` falls back to
+    # `max(0, get_cash())` -- and `get_cash()` below reports Binance's FREE
+    # margin, not the margin balance plus uPnL that this line names. Free margin
+    # falls as positions are opened, so this venue still shows the "targets
+    # shrink as the book fills" pathology, with the SAME arithmetic it had
+    # before this module existed (`total_value = max(0, cash_available)`). This
+    # declaration is therefore honest about the venue and optimistic about this
+    # class. Closing it means a `get_equity()` returning total wallet balance +
+    # unrealised PnL, as HyperliquidBroker does.
+    valuation_basis = BASIS_MARGIN
 
     meta = PluginMeta(
         name="binance.futures.v1",
