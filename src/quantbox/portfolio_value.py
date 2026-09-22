@@ -383,10 +383,18 @@ def resolve_portfolio_value(
        be marked. This runs on every venue: on a margined one the marks do not
        feed equity, but an unmarkable name still loses its target, and that
        belongs in the record.
-    3. Ask the broker for its own view (``get_equity``), when it has one. A
-       broker that cannot value its own book RAISES; that is a refusal, not a
-       reason to fall back to the pipeline's number — falling back is how the
-       original defect stayed invisible.
+    3. Ask the broker for its own view (``get_equity``), when it has one **and
+       it declared its venue**. A broker that cannot value its own book RAISES;
+       that is a refusal, not a reason to fall back to the pipeline's number —
+       falling back is how the original defect stayed invisible.
+
+       An UNDECLARED broker is not asked, even though it may answer. Its
+       ``get_equity()`` is a number whose meaning is exactly the thing that was
+       not declared: margin balance or marked value, and those differ by the
+       whole value of the positions held. Reading it would also make
+       ``fallback_basis`` unobservable — both bases would end at the broker's
+       number — so the argument the call site passed to describe its historic
+       behaviour would silently stop applying.
     4. Apply the venue's rule:
 
        * :data:`BASIS_MARK` — value is the mark. In a gated mode an incomplete
@@ -410,6 +418,7 @@ def resolve_portfolio_value(
         raise ValueError(f"fallback_basis must be one of {sorted(VALID_BASES)}, got {fallback_basis!r}")
 
     basis = venue_valuation_basis(broker)
+    declared = basis is not None
     if basis is None:
         if gated:
             raise PortfolioValuationError(
@@ -437,7 +446,7 @@ def resolve_portfolio_value(
     )
 
     broker_equity: float | None = None
-    if broker is not None and hasattr(broker, "get_equity"):
+    if declared and broker is not None and hasattr(broker, "get_equity"):
         try:
             broker_equity = float(broker.get_equity())
         except PortfolioValuationError:

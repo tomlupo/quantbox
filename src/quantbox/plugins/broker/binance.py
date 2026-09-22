@@ -31,10 +31,8 @@ class BinanceBroker:
     testnet: bool = False
     readonly: bool = False
 
-    # How this VENUE values a book. Read by quantbox.portfolio_value, which
-    # derives the pre-trade valuation rule from the BROKER rather than from
-    # whichever rebalancer a config happened to name. Spot balances: the book is
-    # worth its cash plus its holdings.
+    # The venue's valuation basis -- see BrokerPlugin.valuation_basis.
+    # Spot balances: the book is worth its cash plus its holdings.
     valuation_basis = BASIS_MARK
 
     meta = PluginMeta(

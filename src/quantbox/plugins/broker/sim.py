@@ -18,10 +18,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SimPaperBroker:
-    # How this VENUE values a book. Read by quantbox.portfolio_value, which
-    # derives the pre-trade valuation rule from the BROKER rather than from
-    # whichever rebalancer a config happened to name. Spot paper simulator:
-    # cash plus holdings.
+    # The venue's valuation basis -- see BrokerPlugin.valuation_basis.
+    # Spot paper simulator: cash plus holdings.
     valuation_basis = BASIS_MARK
 
     meta = PluginMeta(

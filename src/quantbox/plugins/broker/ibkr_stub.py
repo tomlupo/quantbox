@@ -19,10 +19,8 @@ class PaperBrokerStub:
     Replace this with real API integration later.
     """
 
-    # How this VENUE values a book. Read by quantbox.portfolio_value, which
-    # derives the pre-trade valuation rule from the BROKER rather than from
-    # whichever rebalancer a config happened to name. Cash-account paper stub:
-    # cash plus holdings.
+    # The venue's valuation basis -- see BrokerPlugin.valuation_basis.
+    # Cash-account paper stub: cash plus holdings.
     valuation_basis = BASIS_MARK
 
     meta = PluginMeta(

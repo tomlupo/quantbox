@@ -37,11 +37,10 @@ class IBKRBroker:
     account: str | None = None
     readonly: bool = False  # set True to block order placement
 
-    # How this VENUE values a book. Read by quantbox.portfolio_value, which
-    # derives the pre-trade valuation rule from the BROKER rather than from
-    # whichever rebalancer a config happened to name. Cash-account equities
-    # scaffold: net liquidation is cash plus positions. The futures extension
-    # this docstring contemplates (multiplier, margin) would have to revisit it.
+    # The venue's valuation basis -- see BrokerPlugin.valuation_basis.
+    # Cash-account equities scaffold: net liquidation is cash plus positions.
+    # The futures extension this docstring contemplates (multiplier, margin)
+    # would have to revisit it.
     valuation_basis = BASIS_MARK
 
     meta = PluginMeta(

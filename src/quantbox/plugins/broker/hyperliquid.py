@@ -167,12 +167,11 @@ class HyperliquidBroker:
     3. Use main wallet address + API wallet private key
     """
 
-    # How this VENUE values a book. Read by quantbox.portfolio_value, which
-    # derives the pre-trade valuation rule from the BROKER rather than from
-    # whichever rebalancer a config happened to name. Perps: equity is the
-    # margin balance plus unrealised PnL, which is what BOTH `get_equity()` and
-    # `get_cash()` here return (get_cash deliberately reports the total, not
-    # withdrawable cash, because the futures rebalancer sizes off it).
+    # The venue's valuation basis -- see BrokerPlugin.valuation_basis. Perps:
+    # equity is the margin balance plus unrealised PnL, which is what BOTH
+    # `get_equity()` and `get_cash()` here return (get_cash deliberately reports
+    # the total, not withdrawable cash, because the futures rebalancer sizes off
+    # it).
     valuation_basis = BASIS_MARGIN
 
     meta = PluginMeta(

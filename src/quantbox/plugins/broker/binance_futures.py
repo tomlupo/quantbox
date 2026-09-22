@@ -173,10 +173,9 @@ class BinanceFuturesBroker:
     ```
     """
 
-    # How this VENUE values a book. Read by quantbox.portfolio_value, which
-    # derives the pre-trade valuation rule from the BROKER rather than from
-    # whichever rebalancer a config happened to name. Perps: equity is the
-    # margin balance plus unrealised PnL; leveraged positions do not add to it.
+    # The venue's valuation basis -- see BrokerPlugin.valuation_basis. Perps:
+    # equity is the margin balance plus unrealised PnL; leveraged positions do
+    # not add to it.
     valuation_basis = BASIS_MARGIN
 
     meta = PluginMeta(

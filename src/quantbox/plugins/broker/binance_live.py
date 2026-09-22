@@ -408,13 +408,11 @@ class BinanceLiveBroker:
     _client: Any = field(default=None, repr=False)
     _price_cache: PriceCache = field(default=None, repr=False)
 
-    # How this VENUE values a book. Read by quantbox.portfolio_value, which
-    # derives the pre-trade valuation rule from the BROKER rather than from
-    # whichever rebalancer a config happened to name. Spot balances: the book is
-    # worth its cash plus its holdings. Note this is a CLASS attribute and a
-    # plain constant on purpose -- unlike `describe()` below, which returns a
-    # live account snapshot and costs API calls, a valuation rule must be free
-    # to read and must not vary with account state.
+    # The venue's valuation basis -- see BrokerPlugin.valuation_basis. Spot
+    # balances: the book is worth its cash plus its holdings. Note this is a
+    # CLASS attribute and a plain constant on purpose -- unlike `describe()`
+    # below, which returns a live account snapshot and costs API calls, a
+    # valuation rule must be free to read and must not vary with account state.
     valuation_basis = BASIS_MARK
 
     meta = PluginMeta(

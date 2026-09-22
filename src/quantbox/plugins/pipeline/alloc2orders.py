@@ -318,8 +318,8 @@ class AllocationsToOrdersPipeline:
         # A held symbol that is not in today's allocations has NO price here.
         # `fillna(0.0)` used to turn that into a position worth nothing, which
         # is why an unpriceable book and an empty one produced the same
-        # portfolio value. Keep the NaN so the valuation can tell them apart;
-        # the downstream order maths still needs the 0.0, so fill it there.
+        # portfolio value. The NaN is kept so the valuation can tell them apart;
+        # it reaches nothing else (see the note at the orders merge below).
         pos["price"] = pos["price"].astype(float)
         pos["multiplier"] = pos["multiplier"].fillna(1.0).astype(float)
         pos["currency"] = pos["currency"].fillna("USD").astype(str)

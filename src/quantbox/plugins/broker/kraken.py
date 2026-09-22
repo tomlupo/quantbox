@@ -158,12 +158,11 @@ class KrakenBroker:
     - ``fetch_fills``: trade history since a timestamp
     """
 
-    # How this VENUE values a book. Read by quantbox.portfolio_value, which
-    # derives the pre-trade valuation rule from the BROKER rather than from
-    # whichever rebalancer a config happened to name -- the live config for this
-    # book named `rebalancing.futures.v1`, whose valuation is the margin balance
-    # by design, and the code honoured it. A spot book is worth its cash PLUS
-    # its holdings, and that is a fact about Kraken, not about a YAML file.
+    # The venue's valuation basis -- see BrokerPlugin.valuation_basis. This is
+    # the broker the incident was on: the live config named
+    # `rebalancing.futures.v1`, whose valuation is the margin balance by design,
+    # and the code honoured it. A spot book is worth its cash PLUS its holdings,
+    # and that is a fact about Kraken, not about a YAML file.
     valuation_basis = BASIS_MARK
 
     meta = PluginMeta(

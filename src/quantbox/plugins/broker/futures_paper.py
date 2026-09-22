@@ -62,10 +62,9 @@ class FuturesPaperBroker:
     positions are leveraged and do not add to the equity calculation.
     """
 
-    # How this VENUE values a book. Read by quantbox.portfolio_value, which
-    # derives the pre-trade valuation rule from the BROKER rather than from
-    # whichever rebalancer a config happened to name. Perps paper broker:
-    # portfolio value IS `margin_balance` by construction (class docstring).
+    # The venue's valuation basis -- see BrokerPlugin.valuation_basis. Perps
+    # paper broker: portfolio value IS `margin_balance` by construction (see the
+    # class docstring above).
     valuation_basis = BASIS_MARGIN
 
     meta = PluginMeta(

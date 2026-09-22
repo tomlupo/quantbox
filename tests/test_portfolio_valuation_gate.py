@@ -1007,3 +1007,63 @@ def test_every_broker_in_this_repo_declares_a_valuation_basis():
     candidates = {f"registry:{k}": v for k, v in registered.items()} | {f"export:{k}": v for k, v in exported.items()}
     undeclared = sorted(name for name, cls in candidates.items() if venue_valuation_basis(cls) is None)
     assert not undeclared, f"brokers with no usable valuation_basis declaration: {undeclared}"
+
+
+# ---------------------------------------------------------------------------
+# The pipeline's own threading of `mode` to an injected rebalancer
+# ---------------------------------------------------------------------------
+
+
+def _rebal_params(mode, cfg_params=None):
+    from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
+
+    return TradingPipeline()._rebalancer_params(
+        rebalancer_cfg={"params": dict(cfg_params or {})},
+        params={},
+        strategy_results={},
+        mode=mode,
+    )
+
+
+def test_the_pipeline_hands_the_rebalancer_the_real_run_mode():
+    """Without this the rebalancer cannot tell a live book from a paper one.
+
+    Branch: reached with NO `mode` in the rebalancer config, so the assertion is
+    made on the assignment itself rather than on an override.
+
+    Mutation target: drop the `rebal_params["mode"] = mode` line. The rebalancer
+    would then see no mode, and `is_gated("")` would gate every PAPER run -- the
+    safe direction, but still a break.
+    """
+    assert _rebal_params("live")["mode"] == "live"
+    assert _rebal_params("paper")["mode"] == "paper"
+
+
+def test_a_config_supplied_mode_cannot_outrank_the_real_run_mode():
+    """A config saying `mode: paper` must not ungate a LIVE book.
+
+    This is the incident's own shape -- a declaration honoured from the wrong
+    source -- pointed at the gate built to stop it, so this is the one key here
+    that must not be `setdefault`.
+
+    Branch: the config DOES carry a conflicting `mode`, so this reaches the
+    assignment through the collision path, which the test above cannot.
+
+    Mutation target: `rebal_params["mode"] = mode` -> `.setdefault(...)`.
+    """
+    resolved = _rebal_params("live", {"mode": "paper"})
+
+    assert resolved["mode"] == "live"
+    assert is_gated(resolved["mode"]) is True
+
+
+def test_the_other_rebalancer_params_stay_config_overridable():
+    """Positive control: `mode` is the exception, not a new blanket rule.
+
+    If every key became an assignment this goes red, which is what stops the
+    test above from being read as "the pipeline overrides everything".
+    """
+    resolved = _rebal_params("paper", {"capital_at_risk": 0.25, "stable_coin_symbol": "USDT"})
+
+    assert resolved["capital_at_risk"] == 0.25
+    assert resolved["stable_coin_symbol"] == "USDT"

@@ -728,16 +728,12 @@ class TradingPipeline:
         # --- Stage 4: Risk Transforms + Stage 5: Order Generation ---
         if rebalancer is not None and mode not in ("backtest",) and broker is not None:
             # Use injected rebalancer for risk transforms + order generation
-            rebal_params = dict(rebalancer_cfg.get("params", {}))
-            rebal_params["strategy_results"] = strategy_results
-            rebal_params.setdefault("capital_at_risk", params.get("capital_at_risk", DEFAULT_CAPITAL_AT_RISK))
-            rebal_params.setdefault("stable_coin_symbol", params.get("stable_coin_symbol", DEFAULT_STABLE_COIN))
-            rebal_params.setdefault("exclusions", params.get("exclusions", []))
-            rebal_params.setdefault("strategy_weights", params.get("strategy_weights", {}))
-            # The rebalancer owns the pre-trade valuation on this path, so it
-            # needs the run mode to know whether an unmarkable book is fatal.
-            # Not `setdefault`: the actual run mode always wins over config.
-            rebal_params["mode"] = mode
+            rebal_params = self._rebalancer_params(
+                rebalancer_cfg=rebalancer_cfg,
+                params=params,
+                strategy_results=strategy_results,
+                mode=mode,
+            )
             order_result = rebalancer.generate_orders(
                 weights=final_weights,
                 broker=broker,
@@ -1388,6 +1384,35 @@ class TradingPipeline:
     # ==================================================================
     # Stage 5: Order generation
     # ==================================================================
+    def _rebalancer_params(
+        self,
+        *,
+        rebalancer_cfg: dict[str, Any],
+        params: dict[str, Any],
+        strategy_results: Any,
+        mode: Mode,
+    ) -> dict[str, Any]:
+        """Build the params handed to an INJECTED rebalancer plugin.
+
+        Extracted from ``run()`` so the one rule here that is not a default can
+        be tested: ``mode`` is ASSIGNED, never ``setdefault``-ed. The rebalancer
+        owns the pre-trade valuation, and it decides from ``mode`` whether an
+        unmarkable book is fatal -- so a config that says ``mode: paper`` under a
+        live run would ungate a live book. That is the incident's own shape: a
+        declaration honoured from the wrong source. The real run mode wins.
+
+        Everything else stays ``setdefault``: those are defaults a config is
+        entitled to override.
+        """
+        rebal_params = dict(rebalancer_cfg.get("params", {}))
+        rebal_params["strategy_results"] = strategy_results
+        rebal_params.setdefault("capital_at_risk", params.get("capital_at_risk", DEFAULT_CAPITAL_AT_RISK))
+        rebal_params.setdefault("stable_coin_symbol", params.get("stable_coin_symbol", DEFAULT_STABLE_COIN))
+        rebal_params.setdefault("exclusions", params.get("exclusions", []))
+        rebal_params.setdefault("strategy_weights", params.get("strategy_weights", {}))
+        rebal_params["mode"] = mode
+        return rebal_params
+
     def _generate_orders(
         self,
         broker: BrokerPlugin,
@@ -1395,7 +1420,7 @@ class TradingPipeline:
         capital_at_risk: float,
         stable_coin: str,
         params: dict[str, Any],
-        mode: Mode = "paper",
+        mode: Mode,
     ) -> dict[str, Any]:
         """Generate rebalancing DataFrame and executable orders.
 
@@ -1403,7 +1428,9 @@ class TradingPipeline:
 
         ``mode`` drives the pre-trade valuation gate: in ``live`` a book that
         cannot be fully marked refuses instead of sizing off an understated
-        portfolio value.
+        portfolio value. It is REQUIRED rather than defaulting to ``"paper"``:
+        a default would let a future caller ungate a live book by forgetting an
+        argument, and forgetting is not a declaration that this is a simulation.
         """
         min_notional_cfg = float(params.get("min_notional", DEFAULT_MIN_NOTIONAL))
         min_trade_size = float(params.get("min_trade_size", DEFAULT_MIN_TRADE_SIZE))
