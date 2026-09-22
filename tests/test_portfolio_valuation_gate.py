@@ -38,6 +38,7 @@ from quantbox.portfolio_value import (
     BASIS_MARGIN,
     BASIS_MARK,
     DEFAULT_RECONCILIATION_TOLERANCE,
+    REASON_BROKER_EQUITY_FAILED,
     REASON_MISMATCH,
     REASON_UNKNOWN_BASIS,
     REASON_UNPRICED,
@@ -341,8 +342,19 @@ def test_live_refuses_when_broker_equity_disagrees_beyond_tolerance():
     assert exc.value.broker_equity == pytest.approx(computed * 1.10)
 
 
-def test_reconciliation_passes_within_tolerance_and_prefers_broker_equity():
-    """Positive control on the reconciliation path, both sides of the threshold."""
+def test_reconciliation_passes_within_tolerance_and_sizes_off_the_mark():
+    """Positive control on the reconciliation path, and on WHICH number survives it.
+
+    The broker's equity is a CROSS-CHECK, not the sizing number. It used to
+    replace `value`, and that was wrong in the dangerous direction: a broker
+    marks every balance the account holds and knows nothing about `exclusions`,
+    so sizing off it targets capital that cannot be raised by trading -- see
+    `test_an_excluded_holding_does_not_inflate_the_sizing_base`.
+
+    Branch: fully marked and within tolerance, so this is the SUCCESS arm of
+    `_reconcile_or_raise`; `reconciled` is what proves the check actually ran
+    rather than being skipped.
+    """
     computed = CASH + MARKED
     broker_equity = computed * (1 + DEFAULT_RECONCILIATION_TOLERANCE / 2)
 
@@ -356,8 +368,10 @@ def test_reconciliation_passes_within_tolerance_and_prefers_broker_equity():
     )
 
     assert v.reconciled
-    assert v.source == "broker_equity"
-    assert v.value == pytest.approx(broker_equity)
+    assert v.source == "computed_reconciled"
+    assert v.broker_equity == pytest.approx(broker_equity)
+    # The mark, NOT the broker's number, even though they agree here.
+    assert v.value == pytest.approx(computed)
 
 
 def test_tolerance_is_configurable_and_actually_applied():
@@ -385,7 +399,11 @@ def test_tolerance_is_configurable_and_actually_applied():
         fallback_basis=BASIS_MARK,
         tolerance=0.05,
     )
-    assert v.value == pytest.approx(broker_equity)
+    # The looser tolerance lets the run PROCEED; it does not change the number
+    # it proceeds with, which is always the mark.
+    assert v.reconciled
+    assert v.value == pytest.approx(computed)
+    assert v.broker_equity == pytest.approx(broker_equity)
 
 
 def test_derivatives_equity_is_used_without_a_false_reconciliation_alarm():
@@ -1055,6 +1073,140 @@ def test_a_config_supplied_mode_cannot_outrank_the_real_run_mode():
 
     assert resolved["mode"] == "live"
     assert is_gated(resolved["mode"]) is True
+
+
+def test_an_excluded_holding_does_not_inflate_the_sizing_base():
+    """The review BLOCKER: a broker's equity includes what the caller excluded.
+
+    `trading_pipeline` builds `exclusions = params.exclusions + [stable_coin]`,
+    so it is never empty, and `KrakenBroker.get_equity()` marks every balance
+    `get_positions` returns -- it knows nothing about exclusions. Replacing the
+    value with the broker's number therefore sized targets off capital that
+    cannot be raised by trading the book.
+
+    Branch: the excluded name IS markable, so `excluded_complete` stays True and
+    the reconciliation arm runs; the assertion is on the number that survives it.
+
+    Mutation target: `value=broker_equity` in `_resolve_marked`.
+    """
+    holdings = {"BTC": 1.0, "FROZEN": 100.0}
+    prices = {"BTC": 100.0, "FROZEN": 10.0}
+    # The broker marks BOTH: 50 cash + 100 BTC + 1000 FROZEN.
+    broker_equity = 50.0 + 100.0 + 1000.0
+
+    v = resolve_portfolio_value(
+        broker=_SpotBroker(equity=broker_equity),
+        mode="live",
+        cash=50.0,
+        holdings=holdings,
+        get_price=_price_map(prices),
+        fallback_basis=BASIS_MARK,
+        exclusions=["FROZEN"],
+    )
+
+    # Sizing base is the TRADABLE book only: 50 cash + 100 BTC.
+    assert v.value == pytest.approx(150.0)
+    # ...and the excluded 1000 is carried so the two sides still reconcile.
+    assert v.excluded_value == pytest.approx(1000.0)
+    assert v.reconciled
+    assert "FROZEN" not in v.unpriced
+
+
+def test_an_unmarkable_excluded_holding_skips_reconciliation_without_refusing():
+    """An asset nobody trades must not halt a live run, and must not fake a match.
+
+    Branch: `excluded_complete` is False, so `_reconcile_or_raise` is never
+    reached -- which is why this asserts `reconciled is False` rather than just
+    "no exception". Without that flag the two sides would differ by the whole
+    unmarkable position and refuse every live run.
+    """
+    v = resolve_portfolio_value(
+        broker=_SpotBroker(equity=5000.0),
+        mode="live",
+        cash=50.0,
+        holdings={"BTC": 1.0, "FROZEN": 100.0},
+        get_price=_price_map({"BTC": 100.0}),  # no price for FROZEN
+        fallback_basis=BASIS_MARK,
+        exclusions=["FROZEN"],
+    )
+
+    assert v.value == pytest.approx(150.0)
+    assert v.unpriced == ()  # excluded names are never a refusal
+    assert v.excluded_complete is False
+    assert v.reconciled is False
+
+
+def test_a_nan_broker_equity_is_a_refusal_not_a_nan_target():
+    """`nan <= 0` is False, so every downstream zero-guard would wave it through.
+
+    Branch: reached through the `except Exception` arm after the finiteness
+    check, so the reason is BROKER_EQUITY_FAILED rather than a mismatch.
+    """
+    with pytest.raises(PortfolioValuationError) as exc:
+        resolve_portfolio_value(
+            broker=_PerpsBroker(equity=float("nan")),
+            mode="live",
+            cash=CASH,
+            holdings=HOLDINGS,
+            get_price=_price_map(PRICES),
+            fallback_basis=BASIS_MARGIN,
+        )
+
+    assert exc.value.reason == REASON_BROKER_EQUITY_FAILED
+
+
+def test_a_debit_cash_balance_reduces_a_marked_book_but_not_a_margin_balance():
+    """`max(0, cash)` is the MARGIN rule and must not silently pad a spot book.
+
+    A margin debit is real money owed: on a mark-to-market venue it reduces the
+    book, and clamping it to zero overstates equity by the whole debt -- the
+    too-large direction. On the margin path the clamp is the historic behaviour
+    and is kept.
+
+    Mutation target: `cash_value = max(0.0, float(cash))` in `value_holdings`.
+    """
+    marked = value_holdings(
+        cash=-40.0,
+        holdings={"BTC": 1.0},
+        get_price=_price_map({"BTC": 100.0}),
+    )
+    assert marked.value == pytest.approx(60.0)
+
+    margined = resolve_portfolio_value(
+        broker=_MarginNoEquityBroker(),
+        mode="live",
+        cash=-40.0,
+        holdings={"BTC": 1.0},
+        get_price=_price_map({"BTC": 100.0}),
+        fallback_basis=BASIS_MARGIN,
+    )
+    assert margined.value == pytest.approx(0.0)
+
+
+def test_a_symbol_held_across_two_rows_is_summed_not_overwritten():
+    """`dict(zip(...))` keeps the LAST row; the `value_usd.sum()` it replaced added them.
+
+    A position reported across two rows (two accounts, two lots) would otherwise
+    lose all but one -- an understatement, which is the same defect class this
+    module exists to close.
+
+    Mutation target: `.sum()` -> `.last()` in `_summed_holdings`.
+    """
+    from quantbox.plugins.pipeline.alloc2orders import _summed_holdings, _usd_marks
+
+    pos = pd.DataFrame(
+        {
+            "symbol": ["BTC", "BTC", "ETH"],
+            "qty": [1.5, 2.5, 10.0],
+            "price": [100.0, 100.0, 5.0],
+            "multiplier": [1.0, 1.0, 1.0],
+            "fx_to_usd": [1.0, 1.0, 1.0],
+        }
+    )
+
+    assert _summed_holdings(pos) == {"BTC": 4.0, "ETH": 10.0}
+    # A per-unit PRICE, unlike a quantity, does not accumulate.
+    assert _usd_marks(pos)["BTC"] == pytest.approx(100.0)
 
 
 def test_the_other_rebalancer_params_stay_config_overridable():

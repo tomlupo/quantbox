@@ -65,7 +65,10 @@ logs:
 ``empty_book``
     Nothing held. A legitimate state; the value is the cash balance.
 ``unpriced_holdings``
-    At least one held position could not be marked. Refusal.
+    At least one held position could not be marked. A refusal on a
+    ``mark_to_market`` venue, where it understates the book; on a
+    ``margin_balance`` venue equity is unaffected, so it is logged and those
+    names simply lose their target (see :func:`_resolve_margined`).
 ``reconciliation_mismatch``
     The pipeline's valuation and the broker's own view disagree by more than
     the configured tolerance. Refusal.
@@ -192,6 +195,16 @@ class PortfolioValuation:
     source: str = "computed"
     broker_equity: float | None = None
     reconciled: bool = False
+    #: Marked value of holdings the caller EXCLUDED from the tradable book.
+    #: Never part of :attr:`value` — sizing off it would target capital that
+    #: cannot be raised by trading. It exists so the broker reconciliation can
+    #: compare like with like: a broker's ``get_equity()`` marks every balance
+    #: the account holds and knows nothing about the caller's exclusions.
+    excluded_value: float = 0.0
+    #: False when an excluded holding could not be marked, which makes
+    #: :attr:`excluded_value` an understatement and the reconciliation
+    #: meaningless. Not a refusal: an excluded name is not traded.
+    excluded_complete: bool = True
     #: Which venue rule produced :attr:`value` — see :data:`BASIS_MARK` /
     #: :data:`BASIS_MARGIN`. ``""`` when only :func:`value_holdings` ran, which
     #: marks a book without deciding what the mark MEANS for this venue.
@@ -272,23 +285,52 @@ def value_holdings(
     decides on its behalf.
 
     ``stable_coin`` is counted at par (it is the quote currency sitting in the
-    positions table rather than the cash table). Symbols in ``exclusions`` are
-    not part of the tradable book and are ignored entirely — they are neither
-    marked nor reported as unpriced.
+    positions table rather than the cash table) and WINS over ``exclusions``:
+    every caller puts the stable coin in both, and it is cash, not a position.
+
+    Symbols in ``exclusions`` are not part of the tradable book, so they never
+    enter :attr:`PortfolioValuation.value` and are never reported as unpriced —
+    an asset nobody will trade must not halt a live run. They are marked into
+    :attr:`PortfolioValuation.excluded_value` purely so a caller reconciling
+    against a broker's ``get_equity()`` can compare like with like.
+
+    ``cash`` is taken SIGNED. A margin debit is real and reduces the book; the
+    old ``max(0, cash)`` belonged to the margin-balance rule and now lives
+    there, in :func:`_resolve_margined`.
     """
     excluded = set(exclusions)
-    cash_value = max(0.0, float(cash))
+    cash_value = float(cash)
 
     marked = 0.0
     priced: list[str] = []
     unpriced: list[str] = []
     counted = 0
+    excluded_marked = 0.0
+    excluded_complete = True
 
     for asset, raw_qty in holdings.items():
         try:
             qty = float(raw_qty)
         except (TypeError, ValueError):
             qty = float("nan")
+
+        is_stable = stable_coin is not None and asset == stable_coin
+
+        if not is_stable and asset in excluded:
+            # Outside the tradable book. Marked only for the reconciliation;
+            # an unmarkable one makes that comparison unusable, not the run.
+            if not math.isfinite(qty):
+                excluded_complete = False
+                continue
+            if qty == 0:
+                continue
+            price = get_price(asset)
+            if price is None or not _is_finite_positive(price):
+                excluded_complete = False
+                continue
+            excluded_marked += qty * float(price)
+            continue
+
         if not math.isfinite(qty):
             # A quantity we cannot read is not a quantity of zero. Marking it
             # would poison the total with NaN; skipping it would understate the
@@ -298,13 +340,11 @@ def value_holdings(
             continue
         if qty == 0:
             continue
-        if stable_coin is not None and asset == stable_coin:
+        if is_stable:
             # Quote currency held as a "position" is cash at par, not a mark.
             marked += max(0.0, qty)
             priced.append(asset)
             counted += 1
-            continue
-        if asset in excluded:
             continue
 
         counted += 1
@@ -323,6 +363,8 @@ def value_holdings(
         unpriced=tuple(sorted(unpriced)),
         n_holdings=counted,
         source="computed",
+        excluded_value=excluded_marked,
+        excluded_complete=excluded_complete,
     )
 
 
@@ -449,6 +491,12 @@ def resolve_portfolio_value(
     if declared and broker is not None and hasattr(broker, "get_equity"):
         try:
             broker_equity = float(broker.get_equity())
+            if not math.isfinite(broker_equity):
+                # NaN is not a number this book can be sized off, and it is
+                # INVISIBLE to every downstream `if total_value <= 0` guard —
+                # `nan <= 0` is False, so a NaN equity would sail through and
+                # produce NaN targets on a live venue.
+                raise ValueError(f"get_equity() returned {broker_equity!r}")
         except PortfolioValuationError:
             # The broker refused to value its own book (e.g. an unmarkable
             # holding). Propagate it: it is the same refusal, raised closer to
@@ -514,12 +562,17 @@ def _resolve_margined(
         )
 
     if broker_equity is None:
+        # `max(0, cash)` is the margin-balance rule, and it lives HERE rather
+        # than in value_holdings: on a marked venue a debit balance is real and
+        # must reduce the book, while a negative margin balance is not a
+        # tradable equity. This is the number these call sites used before.
+        margin_balance = max(0.0, valuation.cash)
         logger.info(
             "Margined venue with no get_equity(): valuing the book at its margin balance %.2f (%s mode).",
-            valuation.cash,
+            margin_balance,
             mode,
         )
-        return replace(valuation, value=valuation.cash, source="margin_balance", basis=BASIS_MARGIN)
+        return replace(valuation, value=margin_balance, source="margin_balance", basis=BASIS_MARGIN)
     return replace(
         valuation,
         value=broker_equity,
@@ -564,21 +617,39 @@ def _resolve_marked(
     if broker_equity is None:
         return replace(valuation, basis=BASIS_MARK)
 
+    # The broker's equity is a CROSS-CHECK, not the sizing number.
+    #
+    # It used to replace `value`, and that was wrong in the dangerous
+    # direction: a broker marks every balance the account holds and knows
+    # nothing about `exclusions`, so sizing off it targets capital that cannot
+    # be raised by trading the book. The pipeline's own mark is the tradable
+    # book -- and it is also the number behind the ~28-35% Kraken growth that
+    # was approved, which is `cash + holdings`, not the venue's all-in total.
     reconciled = False
     if require_reconciliation:
-        _reconcile_or_raise(
-            computed=valuation.value,
-            broker_equity=broker_equity,
-            tolerance=tolerance,
-            gated=gated,
-            unpriced=valuation.unpriced,
-        )
-        reconciled = True
+        if not valuation.excluded_complete:
+            logger.warning(
+                "Skipping broker reconciliation: an EXCLUDED holding could not be marked, so "
+                "the pipeline's %.2f and the broker's %.2f are not measuring the same book. "
+                "The tradable book is fully marked, so this does not stop the run.",
+                valuation.value,
+                broker_equity,
+            )
+        else:
+            # Add back what the broker counts and the tradable book does not,
+            # so the two sides of the comparison cover the same assets.
+            _reconcile_or_raise(
+                computed=valuation.value + valuation.excluded_value,
+                broker_equity=broker_equity,
+                tolerance=tolerance,
+                gated=gated,
+                unpriced=valuation.unpriced,
+            )
+            reconciled = True
 
     return replace(
         valuation,
-        value=broker_equity,
-        source="broker_equity",
+        source="computed_reconciled" if reconciled else "computed",
         broker_equity=broker_equity,
         reconciled=reconciled,
         basis=BASIS_MARK,

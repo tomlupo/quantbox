@@ -39,6 +39,7 @@ from quantbox.portfolio_value import (
     DEFAULT_RECONCILIATION_TOLERANCE,
     PortfolioValuation,
     resolve_portfolio_value,
+    value_holdings,
 )
 from quantbox.reconciliation.ledger import EXEC_STATUS_TO_LEDGER
 from quantbox.reconciliation.working_orders import DEFAULT_MAX_AGE_DAYS
@@ -942,9 +943,43 @@ class TradingPipeline:
                     snap = broker.get_market_snapshot(pos2["symbol"].tolist())
                     if snap is not None and "mid" in snap.columns:
                         merged = pos2.merge(snap[["symbol", "mid"]], on="symbol", how="left")
-                        merged["mid"] = merged["mid"].fillna(0).astype(float)
+                        # NOT `fillna(0)`: an unmarkable holding is worth an
+                        # UNKNOWN amount, not nothing, and this number is the NAV
+                        # written to portfolio_daily. Zero-filling here is the
+                        # same understatement the pre-trade path just stopped.
+                        merged["mid"] = merged["mid"].astype(float)
                         merged["qty"] = merged["qty"].astype(float)
-                        portfolio_value_post = cash_usd_post + (merged["qty"] * merged["mid"]).sum()
+                        post_snapshot = value_holdings(
+                            cash=cash_usd_post,
+                            holdings=dict(
+                                zip(
+                                    merged["symbol"].astype(str),
+                                    merged["qty"],
+                                    strict=False,
+                                )
+                            ),
+                            get_price=dict(
+                                zip(
+                                    merged["symbol"].astype(str),
+                                    merged["mid"],
+                                    strict=False,
+                                )
+                            ).get,
+                        )
+                        portfolio_value_post = post_snapshot.value
+                        if post_snapshot.unpriced:
+                            logger.error(
+                                "Post-trade NAV is UNDERSTATED: %d of %d holding(s) unmarkable (%s).",
+                                len(post_snapshot.unpriced),
+                                post_snapshot.n_holdings,
+                                ", ".join(post_snapshot.unpriced),
+                            )
+                            api_errors.append(
+                                {
+                                    "stage": "portfolio_snapshot",
+                                    "error": f"unmarkable holdings: {', '.join(post_snapshot.unpriced)}",
+                                }
+                            )
                     else:
                         portfolio_value_post = cash_usd_post
                 else:

@@ -312,7 +312,17 @@ class KrakenBroker:
         return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["symbol", "qty"])
 
     def get_equity(self) -> float:
-        """Total account value in USD: cash + every held position at its venue mid.
+        """Total account value in USD: quote cash + every LIQUIDATABLE position at its mid.
+
+        "Liquidatable" is the honest qualifier, and it is what ``get_positions``
+        returns: staking/earn sub-balances and quote-pegged stablecoin dust are
+        both excluded there, and the quote balance itself comes from
+        ``get_cash``. A quote-pegged stablecoin residue is therefore in NEITHER
+        term and is missing from this number — understating the book, so it is
+        safe for sizing, and it is missing identically from the pipeline's own
+        mark, so the two still reconcile. Counting it belongs in ``get_cash``
+        (where both readers would see it) and is deliberately not done here.
+
 
         This is the number live sizing must use. Sizing off ``get_cash()``
         alone understates a book that holds anything, and because buying moves
