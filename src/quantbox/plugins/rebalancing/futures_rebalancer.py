@@ -6,6 +6,18 @@ Handles order generation for perpetual-futures accounts where:
 - Leverage cap applies to gross exposure (sum of abs weights)
 - No short clamping: negative weights are respected
 - Symbols use base asset names (broker handles exchange-specific formatting)
+
+**The margin-balance valuation is no longer this plugin's to assume.** It used
+to be, as a bare ``total_value = max(0, cash_available)`` justified by the file's
+own first paragraph — and that is how the live ``crypto-trend-kraken`` book came
+to size every target off cash: its config named ``rebalancing.futures.v1`` while
+its broker was ``kraken.spot.v1``, a SPOT venue, and the code applied the futures
+rule faithfully to a book where it is wrong by the whole value of the positions
+held. Whether margin balance is equity is a fact about the VENUE, so it is asked
+of the broker (``valuation_basis``) rather than assumed from this plugin's own
+identity. Against a perps broker the answer is the same number as before; against
+a spot broker it is now cash + holdings, and a live run against a broker that
+does not say refuses rather than guessing. See :mod:`quantbox.portfolio_value`.
 """
 
 from __future__ import annotations
@@ -19,6 +31,11 @@ import numpy as np
 import pandas as pd
 
 from quantbox.contracts import BrokerPlugin, PluginMeta
+from quantbox.portfolio_value import (
+    BASIS_MARGIN,
+    DEFAULT_RECONCILIATION_TOLERANCE,
+    resolve_portfolio_value,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -170,10 +187,10 @@ class FuturesRebalancer:
         positions_df = broker.get_positions()
         cash = broker.get_cash() or {}
 
-        # For futures, portfolio value = margin balance (cash), not cash + positions
+        # The margin/cash balance. Whether it IS the portfolio value is the
+        # venue's answer, not this plugin's — resolved below, once prices exist.
         quote = stable_coin
         cash_available = float(cash.get(quote, cash.get("USD", cash.get("USDC", cash.get("USDT", 0.0)))))
-        total_value = max(0, cash_available)
 
         # Current holdings: signed qty
         current_holdings: dict[str, float] = {}
@@ -211,15 +228,46 @@ class FuturesRebalancer:
                         mq = row.get("min_qty")
                         if mq is not None and not _is_nan(float(mq)) and float(mq) > 0:
                             min_qty_map[sym] = float(mq)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Previously `pass`. On a MARGINED venue an empty price map does
+                # not understate equity, but it silently drops every target; on a
+                # spot venue -- which this plugin can be pointed at, and was --
+                # it also collapses the portfolio value to cash. Either way the
+                # cause belongs in the log rather than being swallowed.
+                logger.error(
+                    "Market snapshot failed for %d symbol(s): %r — targets will be dropped for unpriced names",
+                    len(all_symbols),
+                    exc,
+                )
 
         def get_price(asset: str) -> float | None:
             return price_map.get(asset)
 
+        # Portfolio value, per the VENUE's rule rather than this plugin's name.
+        # `mode` is threaded by `trade.full_pipeline.v1`; a caller that omits it
+        # is gated, so a forgotten mode fails closed (portfolio_value.is_gated).
+        mode = str(params.get("mode") or "")
+        valuation = resolve_portfolio_value(
+            broker=broker,
+            mode=mode,
+            cash=cash_available,
+            holdings=current_holdings,
+            get_price=get_price,
+            # Before venue declarations existed this call site always used the
+            # margin balance. That stays the answer for a SIMULATION against an
+            # undeclared broker; on live an undeclared broker refuses.
+            fallback_basis=BASIS_MARGIN,
+            stable_coin=stable_coin,
+            exclusions=exclusions,
+            tolerance=float(params.get("equity_reconciliation_tolerance", DEFAULT_RECONCILIATION_TOLERANCE)),
+            require_reconciliation=bool(params.get("require_equity_reconciliation", True)),
+        )
+        total_value = valuation.value
+
         if total_value <= 0:
             raise RuntimeError(
-                f"Portfolio value is zero or negative (broker.get_cash() returned {cash_available!r}). "
+                f"Portfolio value is zero or negative (cash={cash_available!r}, "
+                f"{valuation.n_holdings} holding(s), basis={valuation.basis}, state={valuation.state}). "
                 "Check broker connectivity and account balance."
             )
 
@@ -254,6 +302,9 @@ class FuturesRebalancer:
             "orders": orders_df,
             "rebalancing": rebalancing_df,
             "total_value": total_value,
+            # Carried so the run record can say WHICH rule valued this book and
+            # what it could not mark, rather than only the resulting number.
+            "valuation": valuation,
         }
 
     # ------------------------------------------------------------------

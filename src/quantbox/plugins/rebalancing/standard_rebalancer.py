@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from quantbox.contracts import BrokerPlugin, PluginMeta
+from quantbox.portfolio_value import BASIS_MARK, DEFAULT_RECONCILIATION_TOLERANCE, resolve_portfolio_value
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +221,14 @@ class StandardRebalancer:
         all_symbols = sorted(set(list(weights.keys()) + list(current_holdings.keys())))
         all_symbols = [s for s in all_symbols if s not in exclusions]
 
+        # The run mode drives the pre-trade valuation gate. The production
+        # caller (`trade.full_pipeline.v1`) always threads it through. A caller
+        # that omits it is GATED, not treated as paper: only a run that
+        # positively declares itself a simulation is exempt, so a forgotten
+        # `mode` fails closed rather than quietly ungating a live book. See
+        # quantbox.portfolio_value.UNGATED_MODES.
+        mode = str(params.get("mode") or "")
+
         price_map: dict[str, float | None] = {}
         if all_symbols:
             try:
@@ -230,27 +239,50 @@ class StandardRebalancer:
                         mid = row.get("mid")
                         if mid is not None and not (isinstance(mid, float) and np.isnan(mid)):
                             price_map[sym] = float(mid)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Previously `pass`. A swallowed snapshot error left `price_map`
+                # empty, which made the portfolio value collapse to cash with
+                # nothing in the log to say so. The valuation below now refuses
+                # on the resulting unmarkable holdings, but the cause belongs in
+                # the log either way.
+                logger.error(
+                    "Market snapshot failed for %d symbol(s): %r — held positions may be unmarkable",
+                    len(all_symbols),
+                    exc,
+                )
 
         def get_price(asset: str) -> float | None:
             return price_map.get(asset)
 
-        total_value = max(0, cash_available)
-        for asset, qty in current_holdings.items():
-            if asset == stable_coin:
-                total_value += max(0, qty)
-            elif asset not in exclusions:
-                p = get_price(asset)
-                if p is not None and qty > 0:
-                    total_value += qty * p
+        valuation = resolve_portfolio_value(
+            broker=broker,
+            mode=mode,
+            cash=cash_available,
+            holdings=current_holdings,
+            get_price=get_price,
+            # This rebalancer is the spot/cash path, so an undeclared broker in
+            # a SIMULATION keeps being marked the way this call site always
+            # marked it. On live an undeclared broker refuses instead.
+            fallback_basis=BASIS_MARK,
+            stable_coin=stable_coin,
+            exclusions=exclusions,
+            tolerance=float(params.get("equity_reconciliation_tolerance", DEFAULT_RECONCILIATION_TOLERANCE)),
+            require_reconciliation=bool(params.get("require_equity_reconciliation", True)),
+        )
+        total_value = valuation.value
 
         if total_value <= 0:
-            logger.error("Portfolio value is zero or negative")
+            logger.error(
+                "Portfolio value is zero or negative (cash=%.2f, %d holding(s), state=%s)",
+                valuation.cash,
+                valuation.n_holdings,
+                valuation.state,
+            )
             return {
                 "orders": pd.DataFrame(),
                 "rebalancing": pd.DataFrame(),
                 "total_value": 0.0,
+                "valuation": valuation,
             }
 
         adjusted_weights = {a: w * capital_at_risk for a, w in weights.items()}
@@ -284,6 +316,14 @@ class StandardRebalancer:
             "orders": orders_df,
             "rebalancing": rebalancing_df,
             "total_value": total_value,
+            # Carried on the SUCCESS exit too, not only on the zero-value one
+            # above. `trading_pipeline` reads `order_result.get("valuation")`,
+            # so dropping it here made every HEALTHY run record
+            # `portfolio_valuation_state='unknown'` and seven None metrics --
+            # this repo's "could not be MEASURED" signal -- while a broken run
+            # recorded a state. That inverts the property this change exists to
+            # establish. `FuturesRebalancer` already carries it on both.
+            "valuation": valuation,
         }
 
     # ------------------------------------------------------------------

@@ -4,10 +4,14 @@ Kraken Spot Broker Plugin
 Live **spot** trading on Kraken via ccxt (``ccxt.kraken`` handles HMAC-SHA512
 request signing and the monotonic nonce — no raw REST signing needed).
 
-Scope: spot, **long-only, no leverage**. There is no ``get_equity`` /
-signed-position / margin surface — ``get_positions`` reports current asset
-balances mapped to ``[symbol, qty]`` (always non-negative) and ``get_cash``
-reports the quote-currency balance.
+Scope: spot, **long-only, no leverage**. There is no signed-position / margin
+surface — ``get_positions`` reports current asset balances mapped to
+``[symbol, qty]`` (always non-negative) and ``get_cash`` reports the
+quote-currency balance.
+
+``get_equity`` marks the whole book (cash + every held position at its venue
+mid) and **raises** rather than returning an understated number when a holding
+cannot be marked — see :meth:`KrakenBroker.get_equity`.
 
 ## Authentication
 
@@ -39,6 +43,13 @@ from typing import Any
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+from quantbox.portfolio_value import (
+    BASIS_MARK,
+    REASON_BROKER_EQUITY_FAILED,
+    REASON_UNPRICED,
+    PortfolioValuationError,
+    value_holdings,
+)
 from quantbox.retry import with_retry
 
 from ..datasources.kraken_data import KRAKEN_BALANCE_SUFFIXES, normalize_kraken_asset
@@ -147,6 +158,13 @@ class KrakenBroker:
     - ``fetch_fills``: trade history since a timestamp
     """
 
+    # The venue's valuation basis -- see BrokerPlugin.valuation_basis. This is
+    # the broker the incident was on: the live config named
+    # `rebalancing.futures.v1`, whose valuation is the margin balance by design,
+    # and the code honoured it. A spot book is worth its cash PLUS its holdings,
+    # and that is a fact about Kraken, not about a YAML file.
+    valuation_basis = BASIS_MARK
+
     meta = PluginMeta(
         name="kraken.spot.v1",
         kind="broker",
@@ -221,16 +239,28 @@ class KrakenBroker:
     # Balances
     # ------------------------------------------------------------------
 
-    def _fetch_balances(self) -> dict[str, float]:
+    def _fetch_balances(self, *, strict: bool = False) -> dict[str, float]:
         """Total balance per canonical asset, earn/staking folded into spot.
 
         ccxt already normalises most Kraken codes, but we defensively normalise
         legacy codes (``XXBT``->``BTC``) and fold ``.S/.F/...`` earn balances
         into their spot asset.
+
+        A failed fetch normally degrades to ``{}`` so a transient venue error
+        cannot take the process down. That is fine for the reporting callers,
+        but it makes "the venue did not answer" look exactly like "the account
+        is empty" — which is the shape of the defect this module now guards
+        against. ``strict=True`` therefore raises instead, and is what
+        :meth:`get_equity` uses.
         """
         try:
             balance = self._exchange.fetch_balance()
         except Exception as e:  # pragma: no cover - network
+            if strict:
+                raise PortfolioValuationError(
+                    f"Kraken balance fetch failed ({e!r}); the account balance is UNKNOWN, not zero.",
+                    reason=REASON_BROKER_EQUITY_FAILED,
+                ) from e
             logger.error("Balance fetch failed: %s", e)
             return {}
 
@@ -248,15 +278,15 @@ class KrakenBroker:
             out[asset] = out.get(asset, 0.0) + qty
         return out
 
-    def get_cash(self) -> dict[str, float]:
+    def get_cash(self, _balances: dict[str, float] | None = None) -> dict[str, float]:
         """Quote-currency balance as ``{currency: amount}``."""
-        balances = self._fetch_balances()
+        balances = self._fetch_balances() if _balances is None else _balances
         quote = normalize_kraken_asset(self.quote_asset)
         return {quote: float(balances.get(quote, 0.0))}
 
-    def get_positions(self) -> pd.DataFrame:
+    def get_positions(self, _balances: dict[str, float] | None = None) -> pd.DataFrame:
         """Non-quote asset balances as ``[symbol, qty]`` (long-only, qty >= 0)."""
-        balances = self._fetch_balances()
+        balances = self._fetch_balances() if _balances is None else _balances
         quote = normalize_kraken_asset(self.quote_asset)
         # Only stables pegged to THIS book's quote are cash-equivalent dust; a
         # EUR-stable on a USD book (or a depegged token) stays liquidatable.
@@ -280,6 +310,99 @@ class KrakenBroker:
             if qty > 0:
                 rows.append({"symbol": asset, "qty": float(qty)})
         return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["symbol", "qty"])
+
+    def get_equity(self) -> float:
+        """Total account value in USD: quote cash + every LIQUIDATABLE position at its mid.
+
+        "Liquidatable" is the honest qualifier, and it is what ``get_positions``
+        returns: staking/earn sub-balances and quote-pegged stablecoin dust are
+        both excluded there, and the quote balance itself comes from
+        ``get_cash``. A quote-pegged stablecoin residue is therefore in NEITHER
+        term and is missing from this number — understating the book, so it is
+        safe for sizing, and it is missing identically from the pipeline's own
+        mark, so the two still reconcile. Counting it belongs in ``get_cash``
+        (where both readers would see it) and is deliberately not done here.
+
+
+        This is the number live sizing must use. Sizing off ``get_cash()``
+        alone understates a book that holds anything, and because buying moves
+        value out of cash into positions, the understatement grows with every
+        fill — targets shrink as the book fills, chasing their own tail. That
+        is exactly what the live Kraken book did from inception until this
+        method existed: the pipelines preferred ``broker.get_equity()``, only
+        the Hyperliquid broker implemented it, and the generic
+        ``cash + sum(qty * price)`` fallback silently skipped anything it could
+        not price.
+
+        **It raises rather than understating.** If even one held position
+        cannot be marked, there is no partial answer to return: a valuation
+        missing a position is not a smaller portfolio, it is an unknown one.
+        This mirrors ``quantbox-live``'s ``portfolio_snapshot.py``, which
+        refuses to write a snapshot for the same reason at the same venue.
+
+        Raises:
+            PortfolioValuationError: the balance fetch failed (balances are
+                UNKNOWN, not zero), or a held position has no usable mid.
+        """
+        balances = self._fetch_balances(strict=True)
+        cash = self.get_cash(balances)
+        positions = self.get_positions(balances)
+
+        holdings: dict[str, float] = {}
+        if positions is not None and not positions.empty:
+            for _, row in positions.iterrows():
+                qty = float(row.get("qty", 0.0) or 0.0)
+                if qty != 0:
+                    holdings[str(row.get("symbol", ""))] = qty
+
+        quote = normalize_kraken_asset(self.quote_asset)
+        cash_usd = float(cash.get(quote, 0.0))
+
+        if not holdings:
+            # Nothing held: the book IS the cash balance. This is a complete
+            # answer, and it must stay distinguishable from "could not price".
+            return cash_usd
+
+        symbols = sorted(holdings)
+        price_map: dict[str, float] = {}
+        try:
+            snap = self.get_market_snapshot(symbols)
+        except Exception as e:
+            raise PortfolioValuationError(
+                f"Kraken market snapshot failed while valuing {len(symbols)} held position(s) "
+                f"({e!r}); equity would be understated. Refusing to value.",
+                reason=REASON_BROKER_EQUITY_FAILED,
+                unpriced=symbols,
+            ) from e
+
+        if snap is not None and not snap.empty:
+            for _, row in snap.iterrows():
+                mid = row.get("mid")
+                if mid is None:
+                    continue
+                try:
+                    mid_f = float(mid)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(mid_f) and mid_f > 0:
+                    price_map[str(row.get("symbol", ""))] = mid_f
+
+        valuation = value_holdings(
+            cash=cash_usd,
+            holdings=holdings,
+            get_price=price_map.get,
+            stable_coin=quote,
+        )
+        if not valuation.is_complete:
+            raise PortfolioValuationError(
+                f"Cannot mark {len(valuation.unpriced)} of {valuation.n_holdings} held Kraken "
+                f"position(s) ({', '.join(valuation.unpriced)}); equity would be understated. "
+                "Refusing to value.",
+                reason=REASON_UNPRICED,
+                unpriced=valuation.unpriced,
+                computed=valuation.value,
+            )
+        return float(valuation.value)
 
     # ------------------------------------------------------------------
     # Market data

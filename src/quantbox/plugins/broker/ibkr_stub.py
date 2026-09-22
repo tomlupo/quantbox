@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+from quantbox.portfolio_value import BASIS_MARK
 
 
 @dataclass
@@ -17,6 +18,10 @@ class PaperBrokerStub:
 
     Replace this with real API integration later.
     """
+
+    # The venue's valuation basis -- see BrokerPlugin.valuation_basis.
+    # Cash-account paper stub: cash plus holdings.
+    valuation_basis = BASIS_MARK
 
     meta = PluginMeta(
         name="ibkr.paper.stub.v1",

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+from quantbox.portfolio_value import BASIS_MARK
 
 try:
     from ib_insync import IB, LimitOrder, MarketOrder, Stock
@@ -35,6 +36,12 @@ class IBKRBroker:
     client_id: int = 7
     account: str | None = None
     readonly: bool = False  # set True to block order placement
+
+    # The venue's valuation basis -- see BrokerPlugin.valuation_basis.
+    # Cash-account equities scaffold: net liquidation is cash plus positions.
+    # The futures extension this docstring contemplates (multiplier, margin)
+    # would have to revisit it.
+    valuation_basis = BASIS_MARK
 
     meta = PluginMeta(
         name="ibkr.live.v1",

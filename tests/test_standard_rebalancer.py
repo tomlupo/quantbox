@@ -14,6 +14,7 @@ import pytest
 
 from quantbox.contracts import PluginMeta
 from quantbox.plugins.rebalancing.standard_rebalancer import StandardRebalancer
+from quantbox.portfolio_value import BASIS_MARK
 
 # ---------------------------------------------------------------------------
 # Fake broker
@@ -22,7 +23,17 @@ from quantbox.plugins.rebalancing.standard_rebalancer import StandardRebalancer
 
 @dataclass
 class FakeBroker:
-    """Minimal BrokerPlugin stand-in for unit tests."""
+    """Minimal BrokerPlugin stand-in for unit tests.
+
+    Declares the SPOT valuation basis, because that is the venue every case in
+    this file describes: each expected number below is built as
+    ``cash + sum(qty * price)``. ``StandardRebalancer`` now asks the broker which
+    rule applies instead of assuming one, so a stand-in that declared nothing
+    would be refused on any non-simulation run -- which is the point of the
+    declaration, not a reason to exempt the tests from it.
+    """
+
+    valuation_basis = BASIS_MARK
 
     meta = PluginMeta(
         name="test.fake_broker.v1",

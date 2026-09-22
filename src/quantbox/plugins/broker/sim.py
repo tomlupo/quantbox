@@ -11,12 +11,17 @@ from typing import Any
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+from quantbox.portfolio_value import BASIS_MARK
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class SimPaperBroker:
+    # The venue's valuation basis -- see BrokerPlugin.valuation_basis.
+    # Spot paper simulator: cash plus holdings.
+    valuation_basis = BASIS_MARK
+
     meta = PluginMeta(
         name="sim.paper.v1",
         kind="broker",
