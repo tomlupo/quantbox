@@ -67,9 +67,10 @@ src/quantbox/              ← installable library (uv add quantbox)
   store.py                 Artifact storage (Parquet + JSON)
   parquet_io.py            Teardown-safe parquet reads (every pandas read routes here)
   schemas.py               Runtime schema validation
+  exceptions.py            QuantboxError hierarchy (see "Error handling")
   artifact_schemas/        JSON schemas for artifacts (bundled as package data)
   plugins/
-    manifest.yaml          Default plugin profiles (bundled as package data)
+    manifest.yaml          Builtin plugin list + profiles — THE catalogue (bundled as package data)
     builtins.py            Plugin registration map
     strategies/            Strategy plugins (compute target weights)
     pipeline/              Pipeline plugins (orchestrate full runs)
@@ -77,8 +78,12 @@ src/quantbox/              ← installable library (uv add quantbox)
     broker/                Broker plugins (paper + live execution)
     rebalancing/           Rebalancing plugins (weights → orders)
     risk/                  Risk plugins (pre-trade validation)
+    features/              Feature plugins (derived signals)
+    validation/            Validation plugins (walk-forward, DSR, benchmark, …)
+    monitor/               Monitor plugins (run anomaly alerts)
     publisher/             Publisher plugins (notifications)
     backtesting/           Backtest engines (vectorbt, rsims)
+    trading/               Trading helpers (token allow/deny policy)
 cookbook/
   configs/                 Example YAML pipeline configs (research, trading, paper, live)
   scripts/                 Runnable example scripts (quickstart, custom plugin, artifact inspection)
@@ -95,6 +100,14 @@ uv run quantbox run -c <config>             # run pipeline
 uv run quantbox run --dry-run -c <config>   # dry run
 uv run pytest -q                            # run tests
 ```
+
+- **Full CLI** (`plugins doctor`, `approve`, `sweep`, `warehouse`): `uv run quantbox --help`
+  is the authority; README § CLI reference and § Artifacts describe the run output.
+- **Plugin catalogue:** `quantbox plugins list`, declared in
+  `src/quantbox/plugins/manifest.yaml`. Never copy counts or ID lists into a doc — the
+  retired `quantbox-core` skill froze "v0.2.0, 44 plugins" and drifted.
+- **New config:** adapt the closest `cookbook/configs/run_*.yaml` (backtest, fund
+  selection, spot/futures paper, stress test, trade-from-allocations).
 
 ## Plugin architecture
 
@@ -115,6 +128,9 @@ uv run pytest -q                            # run tests
 | Rebalancing | `RebalancingPlugin` | `rebalance(targets, positions, params)` |
 | Risk | `RiskPlugin` | `check_targets(targets, params)`, `check_orders(orders, params)` |
 | Publisher | `PublisherPlugin` | `publish(result, params)` |
+| Feature | `FeaturePlugin` | `compute(data, params)` → DataFrame |
+| Validation | `ValidationPlugin` | `validate(returns, weights, benchmark, params)` |
+| Monitor | `MonitorPlugin` | `check(result, history, params)` → alerts |
 
 ## Data format
 
@@ -165,6 +181,10 @@ plugins:
       params: { ... }
 ```
 
+`plugins.profile: <name>` pulls a preset declared under `profiles:` in
+`manifest.yaml` (README § Plugin manifest and profiles); override only what differs.
+Secrets come from the environment variables below, never from YAML.
+
 ## Environment variables
 
 | Variable | Required for | Default |
@@ -204,6 +224,14 @@ Quantbox uses custom exceptions (see `quantbox.exceptions`):
   unit tests but isn't registered in `builtins.py` / `manifest.yaml` is a
   silent production break. Run `uv run pytest -m pipeline_smoke` before
   marking a PR ready for review (CI runs it as a separate job too).
+  A builtin is registered in three places — `plugins/<kind>/__init__.py`,
+  `builtins.py`, `manifest.yaml` — see
+  [`docs/playbooks/add-a-plugin.md`](docs/playbooks/add-a-plugin.md) step 3.
+- Run `uv run quantbox plugins doctor` after any structural change (registry,
+  manifest, schemas, entry points).
+- Broker work starts with `readonly: true` and `--dry-run`; a gated pipeline needs
+  `quantbox approve --run-dir artifacts/<run_id>` before live orders
+  ([`docs/playbooks/approval-gate.md`](docs/playbooks/approval-gate.md)).
 - See [`docs/architecture/principles.md`](docs/architecture/principles.md) for LLM-specific guidelines + anti-patterns
 
 **For any architectural change, the rules in [`docs/architecture/principles.md`](docs/architecture/principles.md) take precedence over this file.** Anti-patterns to refuse, decision rules for new features, and the layer-choice doctrine all live there.

@@ -113,6 +113,19 @@ Then `uv sync` and verify:
 quantbox plugins list | grep {slug}
 ```
 
+**Upstream builtin** — three places, all required. The three names differ per kind
+(directory `datasources`, `broker`, `strategies`…; manifest section `data`, `brokers`,
+`strategies`…), so copy where a sibling plugin of the same kind sits rather than
+deriving one name from another:
+
+1. Export the class from the kind's directory, `src/quantbox/plugins/<dir>/__init__.py`.
+2. Import it in `src/quantbox/plugins/builtins.py` and add it to that kind's map there.
+3. List its `meta.name` under the kind's section in `src/quantbox/plugins/manifest.yaml`
+   (`plugins.builtins.<section>`, the manifest's own key, e.g. `data` or `brokers`).
+
+Then `uv run quantbox plugins doctor` and `uv run pytest -m pipeline_smoke` — a builtin
+missing from any of the three is the silent break the smoke suite exists to catch.
+
 ### 4. Test
 
 `tests/plugins/test_{slug}.py`:
