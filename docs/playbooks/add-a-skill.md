@@ -10,7 +10,7 @@ Decide the category:
 
 | Category | Examples | Where it lives |
 |---|---|---|
-| Foundation | `quantbox-core`, `quantbox-config` | `quantbox/skills/` |
+| Foundation | `quantbox-config` | `quantbox/skills/` |
 | Capability | `quantbox-backtest`, `quantbox-research` | `quantbox/skills/` |
 | Authoring | `quantbox-strategy-author`, `quantbox-data-author` | `quantbox/skills/` |
 | Generic quant | `qrd`, `paper-reading`, `investment-research` | `quantbox/skills/` |

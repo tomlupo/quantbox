@@ -10,7 +10,6 @@ LLM-facing API. Skills produce YAML configs (or, when capability is missing, sca
 
 ```
 skills/
-├── quantbox-core/SKILL.md              # mental model — contracts, registry, runner, ArtifactStore
 ├── quantbox-cookbook/configs/SKILL.md            # YAML grammar + validation
 ├── quantbox-cli/SKILL.md               # quantbox plugins/validate/run/new
 ├── quantbox-research/SKILL.md          # capability — checks/composes/authors
@@ -18,7 +17,6 @@ skills/
 ├── quantbox-strategy-author/SKILL.md   # authoring — scaffolds StrategyPlugin
 ├── quantbox-data-author/SKILL.md       # authoring — scaffolds DataPlugin
 ├── quantbox-feature-author/SKILL.md    # authoring — scaffolds FeaturePlugin (catch-all)
-├── quantbox-autoresearch/SKILL.md      # capability — LLM-driven continuous improvement loop (stub, blocked on driver)
 ├── quantbox-promote/SKILL.md           # lifecycle — research → locked → production
 ├── quantbox-revalidate/SKILL.md        # lifecycle — drift checks against locked baseline
 │
@@ -35,6 +33,13 @@ The `quantbox-*` skills are foundation/capability/authoring/lifecycle — they d
 The non-prefixed skills are generic quant skills that ship with quantbox templates.
 
 Project-specific skills (e.g., `dm-evo-fund-selection`) live in the *project's* `.claude/skills/`, not here.
+
+**Nothing here is loaded by any harness** — there is no plugin manifest and no symlink
+into `.claude/skills`. Two skills that did exist were removed in TOM-1235:
+`quantbox-core` (its mental model is `CLAUDE.md`, which every session loads; its
+plugin catalogue had frozen at v0.2.0) and `quantbox-autoresearch` (a stub teaching a
+`quantbox autoresearch` command that does not exist; the design is
+[`docs/architecture/autoresearch.md`](../docs/architecture/autoresearch.md) + ADR-0003).
 
 ---
 
@@ -64,7 +69,7 @@ requires_quantbox_min: "0.2.0"
 
 | Category | Examples | Lives where |
 |---|---|---|
-| Foundation | `quantbox-core`, `quantbox-config`, `quantbox-cli` | here |
+| Foundation | `quantbox-config`, `quantbox-cli` | here |
 | Capability | `quantbox-research`, `quantbox-backtest` | here |
 | Authoring | `quantbox-strategy-author`, `quantbox-data-author` | here |
 | Lifecycle | `quantbox-promote`, `quantbox-revalidate` | here |
@@ -79,11 +84,10 @@ This directory is a **mount point** at the moment. Skills will be authored as th
 
 | Skill | Blocked on |
 |---|---|
-| `quantbox-core`, `quantbox-config` | nothing — can be authored now |
+| `quantbox-config` | nothing — can be authored now |
 | `quantbox-backtest` | L0/L1 surface (`quantbox.bt`, `adapters.vectorbt`) |
 | `quantbox-research` | local-source plugin loader + capability-gap branch in runner |
 | `quantbox-strategy-author` | `meta.status` field in `PluginMeta` |
-| `quantbox-autoresearch` | `AutoResearchDriver`, `VariantProposerPlugin` Protocol, adapters for optuna + anthropic, EXPERIMENTS.jsonl format |
 | `quantbox-promote` | lifecycle state transitions in registry |
 | `quantbox-revalidate` | revalidation cron + spec frontmatter parser |
 | Generic quant skills | (none — historical migration note removed) |
