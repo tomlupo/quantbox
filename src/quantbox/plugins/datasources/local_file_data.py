@@ -222,6 +222,10 @@ class LocalFileDataPlugin:
     dataset: str | None = None
     mode: str | None = None
     _dataset: Any = field(default=None, init=False, repr=False)
+    #: The file each key was ACTUALLY read from by the last ``load_market_data``
+    #: call — load-time ``params`` override the constructor paths, so these,
+    #: not the fields above, are what the run manifest hashes (TOM-1348).
+    loaded_paths: dict[str, str | None] = field(default_factory=dict, init=False, repr=False)
 
     def _pinned(self) -> Any:
         if self._dataset is None:
@@ -296,6 +300,11 @@ class LocalFileDataPlugin:
 
         # Prices
         ppath = params.get("prices_path") or params.get("path") or self.prices_path
+        fpath = params.get("funding_rates_path") or self.funding_rates_path
+        self.loaded_paths = {
+            "prices": str(ppath) if ppath else None,
+            "funding_rates": str(fpath) if fpath else None,
+        }
         if ppath:
             result["prices"] = _select_cols(_read_file(ppath, asof=asof, symbols=symbols))
         else:
@@ -316,7 +325,6 @@ class LocalFileDataPlugin:
             result["market_cap"] = pd.DataFrame()
 
         # Funding rates
-        fpath = params.get("funding_rates_path") or self.funding_rates_path
         if fpath:
             result["funding_rates"] = _select_cols(_read_file(fpath, asof=asof, symbols=symbols))
         else:

@@ -125,6 +125,40 @@ def test_manifest_records_engine_dataset_funding_execution_venue(tmp_path, engin
     assert isinstance(manifest["metrics"], dict) and manifest["metrics"]
 
 
+@pytest.mark.parametrize("engine", ["vectorbt", "rsims"])
+@pytest.mark.parametrize("path_key", ["prices_path", "path"])
+def test_manifest_hashes_the_files_actually_loaded_not_the_constructor_paths(tmp_path, engine, path_key):
+    """``plugins.pipeline.params.prices`` overrides the data plugin's constructor
+    paths at load time; the manifest must attribute the run to what was LOADED.
+    """
+    cfg = _config(tmp_path, engine)
+    real_prices, real_funding = tmp_path / "prices.parquet", tmp_path / "funding.parquet"
+    decoy_dir = tmp_path / "decoy"
+    decoy_dir.mkdir()
+    decoy_prices, decoy_funding = _write_inputs(decoy_dir)
+    pd.read_parquet(decoy_prices).assign(close=lambda d: d["close"] * 2).to_parquet(decoy_prices, index=False)
+    pd.read_parquet(decoy_funding).assign(rate=0.0).to_parquet(decoy_funding, index=False)
+    assert _sha256(decoy_prices) != _sha256(real_prices)
+    assert _sha256(decoy_funding) != _sha256(real_funding)
+    cfg["plugins"]["data"]["params_init"] = {
+        "prices_path": str(decoy_prices),
+        "funding_rates_path": str(decoy_funding),
+    }
+    cfg["plugins"]["pipeline"]["params"]["prices"] = {
+        path_key: str(real_prices),
+        "funding_rates_path": str(real_funding),
+    }
+
+    result = run_from_config(cfg, PluginRegistry.discover())
+    manifest = json.loads((tmp_path / "artifacts" / result.run_id / "run_manifest.json").read_text())
+
+    assert manifest["dataset"]["sha256"] == _sha256(real_prices)
+    assert manifest["dataset"]["name"] == real_prices.name
+    assert manifest["funding"]["source_path"] == str(real_funding)
+    assert manifest["funding"]["sha256"] == _sha256(real_funding)
+    assert validate_run_manifest(manifest) == []
+
+
 def _strict_loads(text: str):
     def refuse(token):
         raise ValueError(f"non-standard JSON token {token!r}")

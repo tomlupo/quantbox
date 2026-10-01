@@ -75,12 +75,27 @@ def engine_block(notes: dict[str, Any]) -> dict[str, Any] | None:
     return {"name": str(name), "version": version}
 
 
+def _effective_path(data: Any, key: str, attr: str) -> str | None:
+    """The file ``data`` actually read ``key`` from, else its constructor path.
+
+    Load-time params (``plugins.pipeline.params.prices``) override a data
+    plugin's constructor paths, so a plugin that records ``loaded_paths`` is
+    believed over its fields; hashing the field would attribute the run to a
+    file it never read.
+    """
+    loaded = getattr(data, "loaded_paths", None)
+    if isinstance(loaded, dict) and loaded:
+        return loaded.get(key)
+    return getattr(data, attr, None)
+
+
 def dataset_fields(data: Any, dataset_block: dict[str, Any]) -> dict[str, Any]:
     """``{name, sha256, source}`` from what the runner already knows about the data plugin.
 
     ``lock``: the plugin loaded a dataset by name (``params_init.dataset``).
     ``inline``: everything else — paths in the config, or a plugin. The sha256 is
-    the dataset plugin's manifest hash, else the prices file's content hash, else
+    the dataset plugin's manifest hash, else the content hash of the prices file
+    the plugin actually loaded, else
     null (a source the runner cannot hash, e.g. synthetic or an API).
     """
     pinned = getattr(data, "dataset", None)
@@ -89,7 +104,7 @@ def dataset_fields(data: Any, dataset_block: dict[str, Any]) -> dict[str, Any]:
     if dataset_block.get("tier") == "plugin":
         manifest = dataset_block.get("manifest") or {}
         return {"name": dataset_block.get("id"), "sha256": manifest.get("sha256"), "source": "inline"}
-    prices_path = getattr(data, "prices_path", None)
+    prices_path = _effective_path(data, "prices", "prices_path")
     if prices_path:
         return {"name": Path(prices_path).name, "sha256": _sha256_file(prices_path), "source": "inline"}
     meta = getattr(data, "meta", None)
@@ -97,7 +112,7 @@ def dataset_fields(data: Any, dataset_block: dict[str, Any]) -> dict[str, Any]:
 
 
 def funding_block(data: Any, notes: dict[str, Any]) -> dict[str, Any]:
-    path = getattr(data, "funding_rates_path", None)
+    path = _effective_path(data, "funding_rates", "funding_rates_path")
     return {
         "modelled": bool((notes.get("funding") or {}).get("modelled", False)),
         "source_path": str(path) if path else None,
