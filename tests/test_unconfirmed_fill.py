@@ -230,7 +230,8 @@ def test_pipeline_still_books_an_explicit_fill():
 # ---------------------------------------------------------------------------
 
 
-def test_working_order_resolver_keeps_an_unknown_outcome_queued(tmp_path):
+@pytest.mark.parametrize("late_status", [STATUS_UNKNOWN, None, ""], ids=["unknown", "none", "empty"])
+def test_working_order_resolver_keeps_an_unknown_outcome_queued(tmp_path, late_status):
     from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
     from quantbox.reconciliation.working_orders import WorkingOrderStore
 
@@ -239,7 +240,7 @@ def test_working_order_resolver_keeps_an_unknown_outcome_queued(tmp_path):
 
     class _B:
         def fetch_order_result(self, order_id, symbol):
-            return {"status": STATUS_UNKNOWN, "qty": 0.0, "price": 0.0, "error": "not confirmed"}
+            return {"status": late_status, "qty": 0.0, "price": 0.0, "error": "not confirmed"}
 
     resolved = TradingPipeline()._resolve_working_orders(store, _B())
     assert resolved == []

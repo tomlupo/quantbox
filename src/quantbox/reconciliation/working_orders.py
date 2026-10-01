@@ -280,7 +280,7 @@ def resolve_working_orders(
             )
             outcome = None
 
-        if outcome is not None and str(outcome.get("status", "")).strip().upper() in ("", "UNKNOWN"):
+        if outcome is not None and str(outcome.get("status") or "").strip().upper() in ("", "UNKNOWN"):
             # The venue answered but nothing in it classifies the order
             # (TOM-1336). That is not a terminal outcome — booking it would
             # record "no fill" for an order that may have filled — so it is
