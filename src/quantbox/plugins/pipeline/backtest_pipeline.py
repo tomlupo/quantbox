@@ -978,10 +978,17 @@ class BacktestPipeline:
                     row[k] = float(v_)
             metric_rows.append(row)
         a_var_metrics = store.put_parquet("variant_metrics", pd.DataFrame(metric_rows))
-        # Every arm's return series (date x variant): the finding-report export reads it.
+        # Every arm's return series, LONG (date, variant, returns) so a variant may be
+        # named anything ("date" included): the finding-report export reads it.
         a_var_returns = store.put_parquet(
             "variant_returns",
-            pd.DataFrame({n: r["returns"] for n, r in variant_results.items()}).rename_axis("date").reset_index(),
+            pd.concat(
+                [
+                    pd.DataFrame({"date": r["returns"].index, "variant": n, "returns": r["returns"].to_numpy()})
+                    for n, r in variant_results.items()
+                ],
+                ignore_index=True,
+            ),
         )
 
         period_start = str(primary["returns"].index[0])[:10] if len(primary["returns"]) else asof

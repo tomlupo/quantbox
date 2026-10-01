@@ -103,7 +103,8 @@ Each run writes to `artifacts/<run_id>/`:
   the engine's metrics, a per-arm calendar-year robustness grid and the manifest's provenance,
   as `qute-research/finding-report@1` data for the qute-research `/finding-report` page (which
   owns the page and the contract). `quantbox report export` writes the same for a run or a
-  directory of arms (one run each); a variants run's arms come from `variant_returns.parquet`.
+  directory of arms (each arm's newest run, by the timestamp that ends its run id); a variants
+  run's arms come from `variant_returns.parquet` (long: `date, variant, returns`).
 - `report.html` + `report_data.json` — the heavy HTML research report (tens of MB on a typical
   line), written only with `plugins.pipeline.params.full_report: true`.
 - `events.jsonl` — structured event log

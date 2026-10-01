@@ -169,7 +169,9 @@ def test_robustness_is_a_grid_of_arms_by_calendar_year(tmp_path):
     grid = payload["robustness"]
     assert grid["rows"] == ["all_a", "benchmark_5050"]
     assert grid["cols"] == ["2023", "2024"]
-    returns = pd.read_parquet(run_dir / "variant_returns.parquet").set_index("date")
+    long = pd.read_parquet(run_dir / "variant_returns.parquet")
+    assert list(long.columns) == ["date", "variant", "returns"]
+    returns = long.pivot(index="date", columns="variant", values="returns")
     cell = next(c for c in grid["cells"] if c["row"] == "all_a" and c["col"] == "2024")
     r = returns["all_a"]
     expected = float((1 + r[r.index.year == 2024].fillna(0)).prod() - 1)
@@ -202,10 +204,8 @@ def test_a_variants_run_exports_one_arm_per_variant(tmp_path):
 def test_a_directory_of_runs_is_one_arm_per_run(tmp_path):
     arms = tmp_path / "arms"
     shutil.copytree(GOLDEN, arms / "arm_a")
-    nested = arms / "arm_b" / "2024-02-09__older"
-    shutil.copytree(GOLDEN, nested)
-    newer = arms / "arm_b" / "2024-02-09__newer"
-    shutil.copytree(GOLDEN, newer)
+    shutil.copytree(GOLDEN, arms / "arm_b" / "2024-02-09__backtest_pipeline_v1__aaaa__20260101T000000Z")
+    shutil.copytree(GOLDEN, arms / "arm_b" / "2024-02-09__backtest_pipeline_v1__bbbb__20260102T000000Z")
     (arms / "not_a_run").mkdir()
 
     payload = export_finding_report(arms)
@@ -214,6 +214,73 @@ def test_a_directory_of_runs_is_one_arm_per_run(tmp_path):
     prov = next(t for t in payload["tables"] if t["title"] == "Run provenance")
     assert prov["columns"] == ["field", "arm_a", "arm_b"]
     assert "run_id" not in payload  # an arms export is not one run
+
+
+def _with_returns(src: Path, dst: Path, value: float) -> Path:
+    """A copy of the golden run whose returns are a constant ``value``."""
+    shutil.copytree(src, dst)
+    returns = pd.read_parquet(dst / "returns.parquet")
+    returns["returns"] = value
+    returns.to_parquet(dst / "returns.parquet", index=False)
+    return dst
+
+
+def test_the_latest_run_of_an_arm_is_chosen_by_its_timestamp_not_its_name(tmp_path):
+    """Run ids are ``asof__pipeline__cfghash__ts``: a name sort orders by the
+    config hash before the timestamp, so a newer run under a smaller hash would
+    lose to an older one."""
+    arm = tmp_path / "arms" / "arm_a"
+    # newer run, hash sorts FIRST by name
+    _with_returns(GOLDEN, arm / "2024-02-09__backtest_pipeline_v1__0000aaaa__20260301T120000Z", 0.001)
+    # older run, hash sorts LAST by name
+    _with_returns(GOLDEN, arm / "2024-02-09__backtest_pipeline_v1__ffffffff__20260101T120000Z", -0.001)
+    (line,) = export_finding_report(tmp_path / "arms")["series"]["lines"]
+    assert line["equity"][-1] > 1.0, "the older run (by timestamp) replaced the newer one"
+
+
+def test_the_latest_run_is_refused_when_it_cannot_be_told(tmp_path):
+    arm = tmp_path / "arms" / "arm_a"
+    shutil.copytree(GOLDEN, arm / "run_one")
+    shutil.copytree(GOLDEN, arm / "run_two")
+    with pytest.raises(ValueError, match="latest"):
+        export_finding_report(tmp_path / "arms")
+
+
+def test_run_started_at_parses_the_run_id_timestamp():
+    from datetime import datetime, timezone
+
+    from quantbox.run_history import run_started_at
+
+    assert run_started_at("2024-02-09__backtest_pipeline_v1__ccd90b192d7d__20261001T074159Z") == datetime(
+        2026, 10, 1, 7, 41, 59, tzinfo=timezone.utc
+    )
+    assert run_started_at("run_a") is None
+    assert run_started_at("x__y__z__notatime") is None
+
+
+def test_find_latest_run_orders_by_run_timestamp_not_mtime(tmp_path):
+    from quantbox.run_history import find_latest_run
+
+    newer = tmp_path / "2026-01-01__p_v1__0000aaaa__20260301T120000Z"
+    older = tmp_path / "2026-01-01__p_v1__ffffffff__20260101T120000Z"
+    for d in (newer, older):  # the OLDER run is written last: its mtime is newer
+        d.mkdir()
+        (d / "run_manifest.json").write_text(json.dumps({"pipeline": "p.v1"}))
+    os.utime(newer, (1, 1))
+    assert find_latest_run(tmp_path, "p.v1") == (newer.name, newer)
+
+
+def test_a_variant_named_date_round_trips(tmp_path):
+    """variant_returns is long (date, variant, returns): a variant may be named anything."""
+    variants = [
+        {"name": "date", "strategy": {"name": "strategy.static_weights.v1", "params_init": {"weights": {"A": 1.0}}}},
+        {"name": "other", "strategy": {"name": "strategy.static_weights.v1", "params_init": {"weights": {"B": 1.0}}}},
+    ]
+    run_dir = _run(tmp_path, {"variants": variants}, strategies=[])
+    assert (run_dir / "variant_returns.parquet").exists()
+    payload = export_finding_report(run_dir)
+    assert [ln["name"] for ln in payload["series"]["lines"]] == ["date", "other"]
+    assert json.loads((run_dir / "finding_report.json").read_text()) == payload
 
 
 def test_primary_picks_the_arm_the_hero_cards_report(tmp_path):

@@ -6,14 +6,14 @@ in qute-plugins — not restated here). This module is the adapter that contract
 says each lab must write, written once in quantbox so no lab writes its own.
 
 It reads runs through their ``quantbox/run@1`` manifest only (``files.returns``,
-``files.metrics``) plus, for a variants run, ``variant_returns.parquet`` and
-``variant_metrics.parquet``. An *arm* is one return series:
+``files.metrics``) plus, for a variants run, ``variant_returns.parquet`` (long:
+``date, variant, returns``) and ``variant_metrics.parquet``. An *arm* is one return series:
 
 * a run directory (holds ``run_manifest.json``) is one arm — or one arm per
   variant when it is a variants run;
 * any other directory is a directory of arms: each child that holds a run (or
-  runs: the last by name, run ids ending in a UTC timestamp) is one arm, named
-  after the child.
+  runs: the newest by the UTC start timestamp that ends each run id, never by
+  name) is one arm, named after the child.
 
 It never recomputes an engine metric: Sharpe, CAGR, drawdown in ``kpis`` and
 ``metrics`` are the engine's numbers. Equity, drawdown and the per-year returns
@@ -31,6 +31,7 @@ from typing import Any
 import pandas as pd
 
 from .parquet_io import read_parquet
+from .run_history import run_started_at
 from .run_manifest import SCHEMA_ID as RUN_SCHEMA_ID
 
 SCHEMA_ID = "qute-research/finding-report@1"
@@ -84,14 +85,15 @@ def _run_arms(run_dir: Path, name: str) -> list[Arm]:
     files = manifest.get("files") or {}
     variant_returns = run_dir / "variant_returns.parquet"
     if variant_returns.exists():
-        wide = read_parquet(variant_returns)
+        # long (date, variant, returns): a variant may be named anything, "date" included
+        long = read_parquet(variant_returns)
         metrics = read_parquet(run_dir / "variant_metrics.parquet").set_index("variant")
-        variants = [c for c in wide.columns if c != "date"]
+        variants = list(dict.fromkeys(long["variant"]))
         prefix = "" if name == "" else f"{name}/"
         return [
             Arm(
                 f"{prefix}{v}",
-                _series(wide, v),
+                _series(long[long["variant"] == v], "returns"),
                 {k: val for k, val in metrics.loc[v].items() if k != "strategy"},
                 manifest,
                 run_dir,
@@ -106,10 +108,25 @@ def _run_arms(run_dir: Path, name: str) -> list[Arm]:
 
 
 def _latest_run(directory: Path) -> Path | None:
+    """The run in ``directory``: itself, or its newest child run by the run id's start timestamp.
+
+    Never by name: a run id orders by config hash before its timestamp. Two or
+    more runs that cannot be told apart in time are refused, not guessed.
+    """
     if (directory / "run_manifest.json").is_file():
         return directory
     runs = sorted(p.parent for p in directory.glob("*/run_manifest.json"))
-    return runs[-1] if runs else None
+    if len(runs) <= 1:
+        return runs[0] if runs else None
+    started = {r: run_started_at(r.name) for r in runs}
+    undated = [r.name for r, ts in started.items() if ts is None]
+    if undated:
+        raise ValueError(f"{directory}: cannot tell the latest run, no start timestamp in run id(s) {undated}")
+    newest = max(started.values())
+    latest = [r for r, ts in started.items() if ts == newest]
+    if len(latest) > 1:
+        raise ValueError(f"{directory}: cannot tell the latest run, {[r.name for r in latest]} started together")
+    return latest[0]
 
 
 def load_arms(path: str | Path) -> list[Arm]:
