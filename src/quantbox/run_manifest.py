@@ -129,5 +129,14 @@ def json_safe(obj: Any) -> Any:
 
 
 def n_trials(cfg: dict[str, Any]) -> int | None:
+    """``run.n_trials`` — a positive integer, or None when the config does not state it.
+
+    Raises ``ValueError`` on anything else: the runner calls this BEFORE the
+    run, so a typo costs nothing rather than a whole backtest.
+    """
     value = (cfg.get("run") or {}).get("n_trials")
-    return int(value) if value is not None else None
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError(f"run.n_trials must be a positive integer, got {value!r}")
+    return value

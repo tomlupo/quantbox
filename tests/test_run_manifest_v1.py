@@ -156,6 +156,24 @@ def test_n_trials_is_recorded_when_the_config_states_it(tmp_path):
     assert validate_run_manifest(manifest) == []
 
 
+@pytest.mark.parametrize("bad", [0, -3, "many", True, 2.5])
+def test_a_malformed_n_trials_is_refused_before_the_run(tmp_path, bad):
+    cfg = _config(tmp_path, "vectorbt", n_trials=1)
+    cfg["run"]["n_trials"] = bad
+    with pytest.raises(ValueError, match="n_trials"):
+        run_from_config(cfg, PluginRegistry.discover())
+    assert not (tmp_path / "artifacts").exists() or not any((tmp_path / "artifacts").rglob("run_manifest.json"))
+
+
+def test_a_run_that_simulates_nothing_still_writes_a_valid_manifest(tmp_path):
+    cfg = yaml.safe_load(Path("cookbook/configs/run_fund_selection.yaml").read_text(encoding="utf-8"))
+    cfg["artifacts"]["root"] = str(tmp_path)
+    result = run_from_config(cfg, PluginRegistry.discover())
+    manifest = json.loads((tmp_path / result.run_id / "run_manifest.json").read_text())
+    assert manifest["engine"] is None
+    assert validate_run_manifest(manifest) == []
+
+
 def test_schema_ships_with_the_package_and_rejects_a_manifest_without_an_engine():
     schema = load_run_schema()
     jsonschema.Draft202012Validator.check_schema(schema)

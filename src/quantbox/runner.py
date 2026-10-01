@@ -357,6 +357,7 @@ def run_from_config(
     mode: Mode = run_cfg["mode"]
     asof: str = run_cfg["asof"]
     pipeline_key: str = run_cfg["pipeline"]
+    n_trials = _run_manifest.n_trials(cfg)  # refuses a malformed value before any work
 
     cfg_hash = _hash_config(cfg)
     cfg_hash_full = _hash_config_full(cfg)
@@ -567,7 +568,7 @@ def run_from_config(
         "engine": _run_manifest.engine_block(notes),
         "dataset": dataset,
         "funding": _run_manifest.funding_block(data, notes),
-        "n_trials": _run_manifest.n_trials(cfg),
+        "n_trials": n_trials,
         "capability_results": _run_capability_checks(data, run_ctx=None),
         "artifacts": result.artifacts,
         "files": _run_manifest.files_block(result.artifacts or {}, store.root),
