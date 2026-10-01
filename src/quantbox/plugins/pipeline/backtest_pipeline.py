@@ -81,6 +81,11 @@ from quantbox.plugins.datasources._utils import interval_step, normalize_data_fr
 logger = logging.getLogger(__name__)
 
 
+def _max_leverage(risk_cfg: dict[str, Any]) -> float:
+    """The gross cap the leverage transform applies — 99 (effectively none) when unset."""
+    return float(risk_cfg.get("max_leverage", 99))
+
+
 @dataclass
 class BacktestPipeline:
     meta = PluginMeta(
@@ -410,6 +415,7 @@ class BacktestPipeline:
             engine,
         )
 
+        funding_modelled = False
         if engine == "vectorbt":
             result_data = self._run_vectorbt(
                 bt_prices,
@@ -427,6 +433,7 @@ class BacktestPipeline:
                 bt_funding = pd.DataFrame(0.0, index=bt_prices.index, columns=bt_prices.columns)
             else:
                 bt_funding = funding_wide.reindex(index=bt_prices.index, columns=bt_prices.columns).fillna(0.0)
+                funding_modelled = True
 
             result_data = self._run_rsims(
                 bt_prices,
@@ -563,7 +570,12 @@ class BacktestPipeline:
                 "kind": "backtest",
                 "engine": engine,
                 "execution": execution_record(lag_bars),
-                "venue": {"declared": venue_declared, "allow_shorts": allow_shorts},
+                "venue": {
+                    "declared": venue_declared,
+                    "allow_shorts": allow_shorts,
+                    "max_leverage": _max_leverage(risk_cfg),
+                },
+                "funding": {"modelled": funding_modelled},
                 "risk_findings": risk_findings,
             },
         )
@@ -970,7 +982,13 @@ class BacktestPipeline:
                 "kind": "backtest-variants",
                 "engine": engine,
                 "execution": execution_record(lag_bars),
-                "venue": {"declared": venue_declared, "allow_shorts": allow_shorts},
+                # The run's files are the PRIMARY variant's book, so its cap is the one recorded.
+                "venue": {
+                    "declared": venue_declared,
+                    "allow_shorts": allow_shorts,
+                    "max_leverage": _max_leverage(primary["config"]["risk"]),
+                },
+                "funding": {"modelled": False},  # variants run vectorbt only, which charges no funding
                 "variants": list(variant_results.keys()),
                 "risk_findings": risk_findings,
             },
@@ -1089,7 +1107,7 @@ class BacktestPipeline:
         weights time series. ``allow_short`` (resolved venue) overrides
         ``risk.allow_short`` when given."""
         tranches = int(risk_cfg.get("tranches", 1))
-        max_leverage = float(risk_cfg.get("max_leverage", 99))
+        max_leverage = _max_leverage(risk_cfg)
         if allow_short is None:
             allow_short = bool(risk_cfg.get("allow_short", False))
 

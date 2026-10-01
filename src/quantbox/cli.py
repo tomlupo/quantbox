@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import sys
 from importlib.resources import files as _res_files
 from pathlib import Path
 from typing import Any
@@ -297,6 +299,10 @@ def validate(
 def run(
     config: str = typer.Option(..., "-c", "--config", help="Path to config YAML"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show plan without executing"),
+    as_json: bool = typer.Option(
+        False, "--json", help="Print only the run manifest (quantbox/run@1) on stdout; everything else goes to stderr"
+    ),
+    summary_out: str | None = typer.Option(None, "--summary-out", help="Also write the run manifest to this path"),
 ):
     """Run a trading pipeline from config."""
     import json as json_mod
@@ -322,14 +328,24 @@ def run(
         print(json_mod.dumps(plan, ensure_ascii=False, indent=2))
         return
 
-    reg = PluginRegistry.discover()
-    result = run_from_config(cfg, reg, config_path=config)
-    print("RUN_ID:", result.run_id)
-    print("PIPELINE:", result.pipeline_name)
-    print("METRICS:", result.metrics)
-    execution = (result.notes or {}).get("execution")
-    if execution:
-        print("EXECUTION:", execution["description"])
+    # --json: stdout carries ONE JSON document, so anything printed during the
+    # run (and every human line below) goes to stderr instead.
+    out = sys.stderr if as_json else sys.stdout
+    with contextlib.redirect_stdout(out):
+        result = run_from_config(cfg, PluginRegistry.discover(), config_path=config)
+
+    manifest_text = (Path(cfg["artifacts"]["root"]) / result.run_id / "run_manifest.json").read_text(encoding="utf-8")
+    if summary_out:
+        Path(summary_out).write_text(manifest_text, encoding="utf-8")
+    if as_json:
+        print(manifest_text)
+    else:
+        print("RUN_ID:", result.run_id)
+        print("PIPELINE:", result.pipeline_name)
+        print("METRICS:", result.metrics)
+        execution = (result.notes or {}).get("execution")
+        if execution:
+            print("EXECUTION:", execution["description"])
 
     # Dead-man detection (quantbox#120): a rebalancer freeze (every intended
     # order suppressed, book stuck on stale positions) previously exited 0 --
@@ -341,7 +357,8 @@ def run(
         print(
             "REBALANCER FROZEN: all intended orders were suppressed this run "
             "-- portfolio not rebalanced, holding stale positions. "
-            "See run notes['freeze_reasons'] for detail."
+            "See run notes['freeze_reasons'] for detail.",
+            file=out,
         )
         raise SystemExit(1)
 

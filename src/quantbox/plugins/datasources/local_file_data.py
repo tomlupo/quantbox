@@ -234,6 +234,10 @@ class LocalFileDataPlugin:
     dataset_lock: str | None = None
     mode: str | None = None
     _dataset: Any = field(default=None, init=False, repr=False)
+    #: The file each key was ACTUALLY read from by the last ``load_market_data``
+    #: call — load-time ``params`` override the constructor paths, so these,
+    #: not the fields above, are what the run manifest hashes (TOM-1348).
+    loaded_paths: dict[str, str | None] = field(default_factory=dict, init=False, repr=False)
     # What ``quantbox dataset resolve -c <config> --json`` reports; the runner records it in the manifest.
     dataset_resolution: dict[str, Any] | None = field(default=None, init=False, repr=False)
 
@@ -301,6 +305,14 @@ class LocalFileDataPlugin:
 
         if self.dataset:
             ds = self._pinned()
+            # The build actually served (possibly restored from git history), so the
+            # run manifest hashes those files, not the *_path params ignored here.
+            resolution = self.dataset_resolution or {}
+            served = resolution.get("path")
+            self.loaded_paths = {
+                "prices": str(Path(served) / "prices.parquet") if served else None,
+                "funding_rates": resolution.get("funding_rates"),
+            }
             return {
                 key: _select_cols(_clip_frame(getattr(ds, key), asof))
                 for key in ("prices", "volume", "market_cap", "funding_rates")
@@ -310,6 +322,11 @@ class LocalFileDataPlugin:
 
         # Prices
         ppath = params.get("prices_path") or params.get("path") or self.prices_path
+        fpath = params.get("funding_rates_path") or self.funding_rates_path
+        self.loaded_paths = {
+            "prices": str(ppath) if ppath else None,
+            "funding_rates": str(fpath) if fpath else None,
+        }
         if ppath:
             result["prices"] = _select_cols(_read_file(ppath, asof=asof, symbols=symbols))
         else:
@@ -330,7 +347,6 @@ class LocalFileDataPlugin:
             result["market_cap"] = pd.DataFrame()
 
         # Funding rates
-        fpath = params.get("funding_rates_path") or self.funding_rates_path
         if fpath:
             result["funding_rates"] = _select_cols(_read_file(fpath, asof=asof, symbols=symbols))
         else:
