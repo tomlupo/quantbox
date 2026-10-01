@@ -492,7 +492,7 @@ def test_missing_mark_is_unknown_drift_not_a_zero_holding(tmp_path, marks):
     broker = _SnapshotBroker([{"symbol": "DOGE", "qty": 500.0}], marks)
     notes = _recon(tmp_path, broker, {"DOGE": 0.5})
 
-    assert notes["unmarked"] == ["DOGE"]
+    assert notes["unpriced"] == ["DOGE"]
     assert _drift_breaks(notes, "DOGE") == []
     assert notes["to_state"] == "normal"
     assert notes["would_be_action"] == "normal"
@@ -506,7 +506,7 @@ def test_missing_mark_does_not_hide_drift_on_a_marked_symbol(tmp_path):
     )
     notes = _recon(tmp_path, broker, {"DOGE": 0.5, "ETH": 0.4})
 
-    assert notes["unmarked"] == ["DOGE"]
+    assert notes["unpriced"] == ["DOGE"]
     assert _drift_breaks(notes, "DOGE") == []
     assert len(_drift_breaks(notes, "ETH")) == 1
 
@@ -522,7 +522,7 @@ def test_two_lots_for_one_symbol_are_summed_before_marking(tmp_path):
     )
     notes = _recon(tmp_path, broker, {"DOGE": 0.5})
 
-    assert notes["unmarked"] == []
+    assert notes["unpriced"] == []
     assert _drift_breaks(notes, "DOGE") == []
     assert notes["to_state"] == "normal"
 

@@ -3246,7 +3246,7 @@ class TradingPipeline:
         # (TOM-1335). Reading a missing mid as 0 made a fully-held name a -100%
         # drift, a hard break that alone sends the book to FLATTEN. They are
         # kept out of `actual_wt` and out of the drift map, and reported.
-        unmarked: list[str] = []
+        unpriced: list[str] = []
         phantom: list[str] = []
         get_positions = getattr(broker, "get_positions", None)
         pv = float(portfolio_value) if portfolio_value else 0.0
@@ -3273,16 +3273,16 @@ class TradingPipeline:
                         if pd.notna(val):
                             actual_wt[sym] = float(val) / pv
                         elif sym != stable_coin:
-                            unmarked.append(sym)
+                            unpriced.append(sym)
             except Exception as exc:  # never let recon crash the run
                 logger.warning("Reconciliation position read failed: %s", exc)
-        unmarked.sort()
-        if unmarked:
+        unpriced.sort()
+        if unpriced:
             logger.warning(
                 "RECON [%s]: drift UNKNOWN for %d unmarkable holding(s): %s",
                 book_key,
-                len(unmarked),
-                ", ".join(unmarked),
+                len(unpriced),
+                ", ".join(unpriced),
             )
 
         # Drift must be FRACTIONAL (|actual - target| / |target|), because that is
@@ -3298,7 +3298,7 @@ class TradingPipeline:
         drift_floor = float(getattr(tol, "drift_notional_floor", 10.0))
         drifts: dict[str, float] = {}
         for sym in set(final_weights) | set(actual_wt):
-            if sym == stable_coin or sym in unmarked:
+            if sym == stable_coin or sym in unpriced:
                 continue
             actual = actual_wt.get(sym, 0.0)
             target = float(final_weights.get(sym, 0.0))
@@ -3450,7 +3450,7 @@ class TradingPipeline:
             ],
             "missed_fills": missed_fills,
             # Held symbols whose drift is UNKNOWN (no mark) — not breaks, not zero.
-            "unmarked": unmarked,
+            "unpriced": unpriced,
             "ledger_path": str(ledger.path),
         }
 
