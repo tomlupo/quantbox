@@ -96,8 +96,10 @@ class FileArtifactStore:
         since: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
+        from .run_history import run_started_at
+
         root_path = Path(root)
-        manifests = sorted(root_path.glob("*/run_manifest.json"), reverse=True)
+        manifests = sorted(root_path.glob("*/run_manifest.json"))
         runs: list[dict[str, Any]] = []
         for mp in manifests:
             try:
@@ -112,11 +114,16 @@ class FileArtifactStore:
                 continue
             data["_run_dir"] = str(mp.parent)
             runs.append(data)
-            if len(runs) >= limit:
-                break
-        # sort by asof descending
-        runs.sort(key=lambda r: r.get("asof", ""), reverse=True)
-        return runs
+
+        # Newest first: asof, then the run id's own start timestamp — never the
+        # name, which orders by config hash before the timestamp. The limit is
+        # applied AFTER the sort, so it keeps the newest runs.
+        def _key(r: dict[str, Any]) -> tuple[str, float]:
+            started = run_started_at(Path(r["_run_dir"]).name)
+            return (str(r.get("asof", "")), started.timestamp() if started else float("-inf"))
+
+        runs.sort(key=_key, reverse=True)
+        return runs[:limit]
 
     @classmethod
     def open_run(cls, root: str, run_id: str) -> FileArtifactStore:

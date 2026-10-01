@@ -28,6 +28,7 @@ from .contracts import (
 from .exceptions import ConfigValidationError, PluginNotFoundError
 from .llm_utils import event_line, load_schema, validate_table
 from .plugin_manifest import load_manifest, resolve_profile
+from .run_history import RUN_TS_FORMAT
 from .run_manifest import _sha256_file
 from .store import FileArtifactStore
 from .strict import get_capability
@@ -350,7 +351,7 @@ def _run_capability_checks(data: Any, run_ctx: Any) -> dict[str, dict[str, Any]]
 
 
 def _run_id(asof: str, pipeline_name: str, cfg_hash: str) -> str:
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(timezone.utc).strftime(RUN_TS_FORMAT)
     safe = pipeline_name.replace(".", "_")
     return f"{asof}__{safe}__{cfg_hash}__{ts}"
 
