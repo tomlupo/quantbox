@@ -135,16 +135,27 @@ def _read_via_pandas(path: str, ext: str, asof: str | None, symbols: list[str] |
     return df
 
 
-def _load_pinned_dataset(name: str, lock: str | None = None) -> tuple[Any, dict[str, Any]]:
-    """A quantbox-datasets Dataset and the resolution it was served from.
+def _resolve_pinned(name: str, lock: str | None = None) -> dict[str, Any]:
+    """Where a by-name dataset will be read from, refused when its bytes are not the pin.
 
-    Resolved by :func:`quantbox.dataset_lock.resolve_dataset` — the root from
-    ``$QUANTBOX_DATASETS_ROOT``, the pin from *lock* (default: the nearest ``datasets.lock``) —
-    and refused before any read when the bytes are not the pinned build.
+    :func:`quantbox.dataset_lock.resolve_dataset` — the root from ``$QUANTBOX_DATASETS_ROOT``,
+    the pin from *lock* (default: the nearest ``datasets.lock``).
     """
     from quantbox.dataset_lock import require_match, resolve_dataset
 
-    resolved = require_match(resolve_dataset(name, lock=lock))
+    return require_match(resolve_dataset(name, lock=lock))
+
+
+def _load_pinned_dataset(
+    name: str, lock: str | None = None, resolved: dict[str, Any] | None = None
+) -> tuple[Any, dict[str, Any]]:
+    """A quantbox-datasets Dataset and the resolution it was served from.
+
+    Resolved by :func:`_resolve_pinned` (unless *resolved* already is) and refused
+    before any read when the bytes are not the pinned build.
+    """
+    if resolved is None:
+        resolved = _resolve_pinned(name, lock)
     try:
         from quantbox_datasets.lock import load
     except ImportError as exc:
@@ -263,8 +274,31 @@ class LocalFileDataPlugin:
 
     def _pinned(self) -> Any:
         if self._dataset is None:
-            self._dataset, self.dataset_resolution = _load_pinned_dataset(self.dataset, self.dataset_lock)
+            self._dataset, self.dataset_resolution = _load_pinned_dataset(
+                self.dataset, self.dataset_lock, self.dataset_resolution
+            )
         return self._dataset
+
+    def planned_paths(self, params: dict[str, Any]) -> dict[str, str | None]:
+        """The file ``prices`` and ``funding_rates`` are read from for load *params* — nothing read.
+
+        :meth:`load_market_data` records exactly this as ``loaded_paths``, and
+        ``quantbox config explain`` asks for it before a run. A by-name dataset is
+        RESOLVED here (refused when its bytes are not the pin), never loaded: the
+        paths are the build actually served (possibly restored from git history),
+        and the ``*_path`` params are ignored.
+        """
+        if self.dataset:
+            if self.dataset_resolution is None:
+                self.dataset_resolution = _resolve_pinned(self.dataset, self.dataset_lock)
+            served = self.dataset_resolution.get("path")
+            return {
+                "prices": str(Path(served) / "prices.parquet") if served else None,
+                "funding_rates": self.dataset_resolution.get("funding_rates"),
+            }
+        ppath = params.get("prices_path") or params.get("path") or self.prices_path
+        fpath = params.get("funding_rates_path") or self.funding_rates_path
+        return {"prices": str(ppath) if ppath else None, "funding_rates": str(fpath) if fpath else None}
 
     def load_universe(self, params: dict[str, Any]) -> pd.DataFrame:
         """Load trading universe from file or params.
@@ -325,14 +359,7 @@ class LocalFileDataPlugin:
 
         if self.dataset:
             ds = self._pinned()
-            # The build actually served (possibly restored from git history), so the
-            # run manifest hashes those files, not the *_path params ignored here.
-            resolution = self.dataset_resolution or {}
-            served = resolution.get("path")
-            self.loaded_paths = {
-                "prices": str(Path(served) / "prices.parquet") if served else None,
-                "funding_rates": resolution.get("funding_rates"),
-            }
+            self.loaded_paths = self.planned_paths(params)
             return {
                 key: _select_cols(_clip_frame(getattr(ds, key), asof))
                 for key in ("prices", "volume", "market_cap", "funding_rates")
@@ -341,12 +368,8 @@ class LocalFileDataPlugin:
         result: dict[str, pd.DataFrame] = {}
 
         # Prices
-        ppath = params.get("prices_path") or params.get("path") or self.prices_path
-        fpath = params.get("funding_rates_path") or self.funding_rates_path
-        self.loaded_paths = {
-            "prices": str(ppath) if ppath else None,
-            "funding_rates": str(fpath) if fpath else None,
-        }
+        self.loaded_paths = self.planned_paths(params)
+        ppath, fpath = self.loaded_paths["prices"], self.loaded_paths["funding_rates"]
         if ppath:
             result["prices"] = _select_cols(_read_file(ppath, asof=asof, symbols=symbols))
         else:
