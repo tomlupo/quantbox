@@ -19,7 +19,6 @@ plugins:
         lookback_days: 5
       min_abs_qty: 0.0
       approval_required: true
-      approval_path: null
 
   data:
     name: "local_file_data"

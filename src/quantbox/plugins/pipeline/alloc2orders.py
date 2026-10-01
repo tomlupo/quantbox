@@ -226,10 +226,6 @@ class AllocationsToOrdersPipeline:
                     "default": {},
                     "description": "FX request passed to the data plugin's load_fx() for non-USD instruments.",
                 },
-                "approval_path": {
-                    "type": ["string", "null"],
-                    "description": "Path to approval JSON. If null, defaults to ./approvals/<orders_digest>.json",
-                },
                 "instrument_map": {"type": ["string", "null"], "description": "YAML/CSV with symbol metadata"},
                 "prices": {
                     "type": "object",

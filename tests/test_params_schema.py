@@ -57,6 +57,167 @@ def test_schema_covers_every_constructor_param_with_its_real_default(group, name
             assert declared[p.name]["default"] == real, f"{name}.{p.name}: schema default != constructor default"
 
 
+# --- the schema is exactly what the plugin accepts (round 3 of #218) ------------
+#
+# ``validate`` accepts a schema property under ``params_init`` when it is a
+# constructor parameter and under ``params`` always; so every property must be
+# either a constructor parameter or a key the plugin reads off ``params`` at run
+# time, and every constructor parameter must also be honoured at run time. A
+# property nothing reads is a knob a config can set and the run silently drops
+# (data.synthetic.v1 listed n_steps/model/... that only load_market_data's
+# per-call params carried, so ``params_init: {n_steps: 504}`` was refused with a
+# hint pointing at ``params``, which nothing reads either).
+#
+# "Reads" is read off the source: ``params.get("k")`` / ``params["k"]`` /
+# ``"k" in params`` / ``params.pop|setdefault("k")`` in the plugin's module, or
+# the override loop ``for k, v in params.items(): setattr(self, ...)`` that makes
+# every attribute (and every ``_PARAM_ALIASES`` key) a run-time key.
+
+# The runner never forwards these blocks' ``params`` (validate._UNREAD_PARAMS):
+# their schema is the constructor and nothing else.
+_INIT_ONLY_GROUPS = {"data", "broker"}
+# Keys a pipeline ASSIGNS into a plugin's params; a config's copy is overwritten.
+_PIPELINE_INJECTED = {"rebalancing": {"mode", "strategy_results"}}
+# Plugins whose module hands ``params`` to a reader elsewhere.
+_READ_ELSEWHERE = {"backtest.pipeline.v1": ("quantbox.frequency",)}
+
+
+def _ast_of(module_name: str):
+    import ast
+    import importlib
+    import inspect
+
+    return ast.parse(inspect.getsource(importlib.import_module(module_name)))
+
+
+def _keys_read_from_params(tree) -> set[str]:
+    import ast
+
+    def is_params(node) -> bool:
+        return isinstance(node, ast.Name) and node.id == "params"
+
+    def const(node):
+        return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+    keys: set[str] = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and is_params(n.func.value):
+            if n.func.attr in ("get", "pop", "setdefault") and n.args and const(n.args[0]):
+                keys.add(const(n.args[0]))
+        elif isinstance(n, ast.Subscript) and is_params(n.value) and const(n.slice):
+            keys.add(const(n.slice))
+        elif (
+            isinstance(n, ast.Compare)
+            and len(n.ops) == 1
+            and isinstance(n.ops[0], (ast.In, ast.NotIn))
+            and is_params(n.comparators[0])
+            and const(n.left)
+        ):
+            keys.add(const(n.left))
+    return keys
+
+
+def _copies_params_onto_attributes(tree) -> bool:
+    import ast
+
+    for n in ast.walk(tree):
+        it = n.iter if isinstance(n, ast.For) else None
+        if (
+            isinstance(it, ast.Call)
+            and isinstance(it.func, ast.Attribute)
+            and it.func.attr == "items"
+            and isinstance(it.func.value, ast.Name)
+            and it.func.value.id == "params"
+            and any(isinstance(m, ast.Call) and getattr(m.func, "id", None) == "setattr" for m in ast.walk(n))
+        ):
+            return True
+    return False
+
+
+def _param_aliases(tree) -> dict[str, str]:
+    import ast
+
+    out: dict[str, str] = {}
+    for n in ast.walk(tree):
+        targets = n.targets if isinstance(n, ast.Assign) else [n.target] if isinstance(n, ast.AnnAssign) else []
+        if not any(getattr(t, "id", getattr(t, "attr", None)) == "_PARAM_ALIASES" for t in targets) or n.value is None:
+            continue
+        for d in ast.walk(n.value):
+            if isinstance(d, ast.Dict):
+                out.update({k.value: v.value for k, v in zip(d.keys, d.values, strict=True)})
+    return out
+
+
+def _runtime_keys(name, cls) -> tuple[set[str], set[str], bool]:
+    """(keys read off ``params``, keys accepted at run time, whether the override loop is used)."""
+    tree = _ast_of(cls.__module__)
+    read = _keys_read_from_params(tree)
+    for mod in _READ_ELSEWHERE.get(name, ()):
+        read |= _keys_read_from_params(_ast_of(mod))
+    accepted = set(read)
+    loop = _copies_params_onto_attributes(tree)
+    if loop:
+        attrs = {p.name for p in config_fields(cls)} | {a for a in dir(cls) if not a.startswith("_")}
+        accepted |= attrs | {k for k, v in _param_aliases(tree).items() if v in attrs}
+    return read, accepted, loop
+
+
+@pytest.mark.parametrize(("group", "name", "cls"), ALL, ids=IDS)
+def test_every_schema_property_is_accepted_by_the_plugin(group, name, cls):
+    """A property is a constructor parameter (params_init) or a key run() reads (params)."""
+    schema = resolve_params_schema(cls) or {"properties": {}}
+    init = {p.name for p in config_fields(cls)}
+    runtime = set() if group in _INIT_ONLY_GROUPS else _runtime_keys(name, cls)[1]
+    unread = sorted(set(schema["properties"]) - init - runtime)
+    where = "is not a constructor parameter" + (
+        " (its `params` block is never read)" if group in _INIT_ONLY_GROUPS else " and nothing reads it off params"
+    )
+    assert not unread, f"{name}: schema properties {unread} {where}"
+
+
+@pytest.mark.parametrize(
+    ("group", "name", "cls"),
+    [a for a in ALL if a[0] not in _INIT_ONLY_GROUPS],
+    ids=[i for i, a in zip(IDS, ALL, strict=True) if a[0] not in _INIT_ONLY_GROUPS],
+)
+def test_every_runtime_key_is_a_schema_property(group, name, cls):
+    """The reverse: a key run() reads that the schema omits is refused by validate yet honoured by the run."""
+    schema = resolve_params_schema(cls) or {"properties": {}}
+    read = _runtime_keys(name, cls)[0]
+    private = {k for k in read if k.startswith("_")}
+    missing = sorted(read - set(schema["properties"]) - private - _PIPELINE_INJECTED.get(group, set()))
+    assert not missing, f"{name}: reads {missing} off params but its schema does not declare them"
+
+
+@pytest.mark.parametrize(
+    ("group", "name", "cls"),
+    [a for a in ALL if a[0] not in _INIT_ONLY_GROUPS],
+    ids=[i for i, a in zip(IDS, ALL, strict=True) if a[0] not in _INIT_ONLY_GROUPS],
+)
+def test_every_constructor_param_is_honoured_at_run_time(group, name, cls):
+    """validate accepts a constructor parameter under ``params`` too, so run() must read it there."""
+    read, _, loop = _runtime_keys(name, cls)
+    if loop:
+        return  # the override loop sets every attribute from params
+    ignored = sorted({p.name for p in config_fields(cls)} - read)
+    assert not ignored, f"{name}: constructor params {ignored} are accepted under params but run() never reads them"
+
+
+def test_schema_accepted_check_catches_an_unread_property():
+    """The guard is not vacuous: a declared key no one reads is caught, a read one is not."""
+    import ast
+
+    tree = ast.parse("def run(self, data, params):\n    return params.get('window', 3)\n")
+    assert _keys_read_from_params(tree) == {"window"}
+    assert not _copies_params_onto_attributes(tree)
+    loop = ast.parse(
+        "_PARAM_ALIASES = {'lookback': 'window'}\n"
+        "def run(self, data, params):\n    for k, v in params.items():\n        setattr(self, k, v)\n"
+    )
+    assert _copies_params_onto_attributes(loop)
+    assert _param_aliases(loop) == {"lookback": "window"}
+
+
 def test_missing_schema_is_reported_as_missing():
     @dataclass
     class NoSchema:
@@ -199,6 +360,23 @@ def test_data_params_hint_names_where_load_params_go():
     cfg["plugins"]["data"] = {"name": "data.synthetic.v1", "params": {"n_steps": 504}}
     msgs = [f.message for f in validate_config(cfg, REG) if f.level == "error"]
     assert any("plugins.pipeline.params.universe" in m and "prices" in m for m in msgs), msgs
+
+
+def test_synthetic_params_init_validates_and_reaches_the_generator():
+    """round 3 of #218: ``params_init: {n_steps: 504}`` was refused ("set it under params",
+    which nothing reads) because n_steps was a schema property but no constructor parameter."""
+    from quantbox.plugins.datasources.synthetic_data import SyntheticDataPlugin
+
+    init = {"n_assets": 3, "n_steps": 504, "model": "jump_diffusion", "random_state": 7}
+    cfg = _config({})
+    cfg["plugins"]["data"] = {"name": "data.synthetic.v1", "params_init": init}
+    assert not [f.message for f in validate_config(cfg, REG) if f.level == "error"]
+
+    plugin = SyntheticDataPlugin(**init)
+    universe = plugin.load_universe({})
+    assert plugin.load_market_data(universe, "2026-01-31", {})["prices"].shape == (504 + 1, 3)
+    # the per-call params (pipeline.params.universe / .prices) still override the constructor
+    assert plugin.load_market_data(universe, "2026-01-31", {"n_steps": 10})["prices"].shape == (10 + 1, 3)
 
 
 def test_validate_unregistered_plugin_is_a_warning_not_an_error():

@@ -232,6 +232,9 @@ class LocalFileDataPlugin:
                 "dataset": {
                     "description": "quantbox-datasets name served at the build pinned in datasets.lock; *_path are then ignored."
                 },
+                "dataset_lock": {
+                    "description": "datasets.lock that pins `dataset`; the runner defaults it to the lock nearest the config."
+                },
                 "mode": {
                     "description": "Accepted for compatibility and unused: the run mode reaches the plugin per request."
                 },
