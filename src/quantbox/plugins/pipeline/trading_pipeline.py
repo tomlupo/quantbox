@@ -42,7 +42,7 @@ from quantbox.portfolio_value import (
     resolve_portfolio_value,
     value_holdings,
 )
-from quantbox.reconciliation.ledger import EXEC_STATUS_TO_LEDGER
+from quantbox.reconciliation.ledger import EXEC_STATUS_TO_LEDGER, NON_TERMINAL_RESULT_STATUSES
 from quantbox.reconciliation.working_orders import DEFAULT_MAX_AGE_DAYS
 
 logger = logging.getLogger(__name__)
@@ -2530,6 +2530,14 @@ class TradingPipeline:
                     order_id = "" if _oid is None or pd.isna(_oid) else str(_oid)
                     _err = fill_row.get("error")
                     _err = "" if _err is None or pd.isna(_err) else str(_err)
+                    # A QUEUED unconfirmed order is non-terminal `unknown` in the
+                    # ledger, the same rule as WORKING: the resolver books its real
+                    # outcome against this order_ref next cycle. Booking it terminal
+                    # `failed` let Stage 7b count it into the failure streak — one
+                    # unconfirmed order opened a consecutive_failed break, three
+                    # escalated to HALT. With no id or no queue nothing will ever
+                    # resolve it, so it stays terminal `failed` and loud.
+                    queued = bool(order_id) and working_store is not None
                     report["orders_details"].append(
                         {
                             "symbol": str(fill_row.get("symbol", "")),
@@ -2537,6 +2545,7 @@ class TradingPipeline:
                             "quantity": 0.0,
                             "status": "FAILED",
                             "fill_status": "UNKNOWN",
+                            "queued": queued,
                             "order_id": order_id,
                             "error": (
                                 f"fill UNCONFIRMED (broker status={_raw_status!r}); no fill booked"
@@ -2549,7 +2558,12 @@ class TradingPipeline:
                     intent_ref = _pool.pop(0) if _pool else None
                     if ledger is not None and cycle_id is not None and intent_ref:
                         try:
-                            ledger.record_result(order_ref=str(intent_ref), cycle_id=cycle_id, status="failed")
+                            if queued:
+                                ledger.record_result(
+                                    order_ref=str(intent_ref), cycle_id=cycle_id, status="unknown", order_id=order_id
+                                )
+                            else:
+                                ledger.record_result(order_ref=str(intent_ref), cycle_id=cycle_id, status="failed")
                         except Exception:  # noqa: BLE001 - ledger must not break the run
                             logger.exception(
                                 "Failed to record the unconfirmed result for %s", fill_row.get("symbol", "")
@@ -3215,12 +3229,14 @@ class TradingPipeline:
                 status = str(result.get("status")).lower() if result else None
                 if status in ("filled", "partial"):
                     filled_syms.add(sym)
-                elif status == "working":
-                    # Accepted and still live on the book. Not a fill (nothing
-                    # executed yet) and NOT a missed fill (nothing went wrong) --
-                    # so it must touch neither `filled_syms` nor the failure
-                    # streak. Stage 6c resolves it against the venue next cycle
-                    # and records the terminal result against this same ref.
+                elif status in NON_TERMINAL_RESULT_STATUSES:
+                    # `working`: accepted and still live on the book. `unknown`:
+                    # unconfirmed but queued for resolution (TOM-1336). Neither is
+                    # a fill (nothing confirmed executed) nor a missed fill
+                    # (nothing is known to have gone wrong) -- so it must touch
+                    # neither `filled_syms` nor the failure streak. Stage 6c
+                    # resolves it against the venue next cycle and records the
+                    # terminal result against this same ref.
                     continue
                 elif status in ("timeout", None):
                     # Submitted but no (real) result observed = missed fill.
@@ -3280,6 +3296,10 @@ class TradingPipeline:
                     match = pool.pop(0) if pool else None
                     if match is not None:
                         status = str(match.get("status", "failed")).upper()
+                        if str(match.get("fill_status", "")).upper() == "UNKNOWN" and match.get("queued"):
+                            # Unconfirmed but queued for next-cycle resolution: the
+                            # same non-terminal rule as the captured path (TOM-1336).
+                            status = "UNKNOWN"
                         ledger.record_result(
                             order_ref=order_ref,
                             cycle_id=cycle_id,
@@ -3289,11 +3309,13 @@ class TradingPipeline:
                         )
                         if status in ("FILLED", "PARTIAL"):
                             filled_syms.add(sym)
-                        elif status == "WORKING":
-                            # Accepted, still live on the book. Neither a fill nor
-                            # a failure — the same rule as the captured-intent path
-                            # above. Without this the reconstruction path would
-                            # count every resting limit order as a failed order.
+                        elif status.lower() in NON_TERMINAL_RESULT_STATUSES:
+                            # WORKING: accepted, still live on the book. UNKNOWN
+                            # (queued): unconfirmed, resolved next cycle. Neither a
+                            # fill nor a failure — the same rule as the captured-
+                            # intent path above. Without this the reconstruction
+                            # path would count every resting limit order, and every
+                            # queued unconfirmed one, as a failed order.
                             pass
                         else:  # FAILED / SKIPPED / anything non-fill
                             this_cycle_failed[sym] = this_cycle_failed.get(sym, 0) + 1

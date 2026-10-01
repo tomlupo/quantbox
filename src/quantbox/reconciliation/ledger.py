@@ -50,7 +50,14 @@ TERMINAL_RESULT_STATUSES = frozenset({"filled", "partial", "rejected", "failed",
 # "submitted and never heard about again" -- an absent result cannot say which.
 # A later cycle records the real outcome against the same order_ref, and
 # ``match_intents_to_results`` keeps the last result, so the terminal record wins.
-NON_TERMINAL_RESULT_STATUSES = frozenset({"working"})
+#
+# ``unknown`` is the same shape (TOM-1336): the broker could not confirm what
+# happened, but the order carries an id and is queued for the resolver, which
+# books the venue's real outcome against the same order_ref next cycle. Booking
+# it terminal ``failed`` instead counted it into the failure streak, so one
+# unconfirmed order opened a consecutive_failed break and three escalated to
+# HALT. An unconfirmed order with NO id cannot be resolved and stays ``failed``.
+NON_TERMINAL_RESULT_STATUSES = frozenset({"working", "unknown"})
 
 RESULT_STATUSES = TERMINAL_RESULT_STATUSES | NON_TERMINAL_RESULT_STATUSES
 
@@ -70,6 +77,8 @@ EXEC_STATUS_TO_LEDGER = {
     "PARTIAL": "partial",
     # Non-terminal: accepted, still on the book. See NON_TERMINAL_RESULT_STATUSES.
     "WORKING": "working",
+    # Non-terminal: unconfirmed, queued for next-cycle resolution.
+    "UNKNOWN": "unknown",
     "FAILED": "failed",
     "SKIPPED": "skipped",
     "REJECTED": "rejected",
