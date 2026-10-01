@@ -1,5 +1,10 @@
 # Autoresearch
 
+<!-- design-only: names modules that are not built (tests/test_docs_module_refs.py) -->
+> **Design only — not built.** No `autoresearch` module, proposer plugin or CLI
+> command exists (`uv run quantbox --help`). Every module path below is the
+> intended layout, not the code. ADR-0003 records the decision.
+
 LLM-driven continuous improvement loops over QuantBox strategies. Propose → run → evaluate → learn → iterate, with hard budget bounds and statistical gates that prevent the loop from p-hacking its way to false alpha.
 
 This doc defines the **architecture**. For step-by-step usage see [playbooks/run-an-autoresearch-loop.md](../playbooks/run-an-autoresearch-loop.md).

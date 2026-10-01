@@ -165,3 +165,81 @@ def test_unknown_plugin_raises_loudly(registry: PluginRegistry) -> None:
             "strategy",
             mode="backtest",
         )
+
+
+# ----------------------------------------------------------------------
+# The three registration places agree (TOM-1341)
+# ----------------------------------------------------------------------
+
+# builtins.py map key -> manifest.yaml section. The names differ per kind;
+# docs/playbooks/add-a-plugin.md step 3 is the human-facing statement.
+_BUILTINS_TO_MANIFEST = {
+    "pipeline": "pipelines",
+    "data": "data",
+    "broker": "brokers",
+    "publisher": "publishers",
+    "risk": "risk",
+    "strategy": "strategies",
+    "rebalancing": "rebalancing",
+    "feature": "features",
+    "monitor": "monitors",
+    "validation": "validation",
+}
+
+
+@pytest.mark.pipeline_smoke
+def test_every_exported_strategy_is_registered() -> None:
+    """Every plugin class the strategies package exports must be in builtins.py.
+
+    Catches: a class exported from ``plugins/strategies/__init__.py`` with a
+    ``meta`` but never wired into ``builtins.py`` — importable from Python,
+    unreachable from YAML (four sat like that until TOM-1341).
+    """
+    import quantbox.plugins.strategies as strategies_pkg
+    from quantbox.plugins.builtins import builtins as builtin_plugins
+
+    registered = set(builtin_plugins()["strategy"].values())
+    exported = {
+        name: obj
+        for name in strategies_pkg.__all__
+        if isinstance(obj := getattr(strategies_pkg, name), type) and isinstance(getattr(obj, "meta", None), PluginMeta)
+    }
+    assert exported, "no plugin classes found in strategies.__all__ — the check would be vacuous"
+    unregistered = sorted(name for name, cls in exported.items() if cls not in registered)
+    assert not unregistered, f"exported but not registered in builtins.py: {unregistered}"
+
+
+@pytest.mark.pipeline_smoke
+def test_manifest_lists_exactly_the_registered_builtins() -> None:
+    """``manifest.yaml`` ``plugins.builtins`` must equal the builtins.py map, kind by kind.
+
+    Catches: a plugin added to builtins.py but not to the manifest (three
+    were, until TOM-1341), a manifest entry naming a plugin that no longer
+    exists, and a kind present on one side only.
+    """
+    from importlib.resources import files
+
+    import yaml
+
+    from quantbox.plugins.builtins import builtins as builtin_plugins
+
+    manifest = yaml.safe_load(files("quantbox.plugins").joinpath("manifest.yaml").read_text(encoding="utf-8"))
+    sections = manifest["plugins"]["builtins"]
+    builtins = builtin_plugins()
+
+    assert set(builtins) == set(_BUILTINS_TO_MANIFEST), (
+        f"unmapped builtins kinds: {set(builtins) ^ set(_BUILTINS_TO_MANIFEST)}"
+    )
+    assert set(sections) == set(_BUILTINS_TO_MANIFEST.values()), (
+        f"manifest sections differ from kinds: {set(sections) ^ set(_BUILTINS_TO_MANIFEST.values())}"
+    )
+    disagreements = {}
+    for kind, section in _BUILTINS_TO_MANIFEST.items():
+        registered = set(builtins[kind])
+        listed = set(sections[section] or [])
+        if registered != listed:
+            disagreements[kind] = {
+                "not_in_manifest": sorted(registered - listed),
+                "not_registered": sorted(listed - registered),
+            }
+    assert not disagreements, f"registry and manifest disagree: {disagreements}"
