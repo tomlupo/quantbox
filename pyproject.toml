@@ -16,7 +16,7 @@ dependencies = [
   "typer>=0.27.2",
   # Declared, not borrowed: report blocks import plotly lazily, and until
   # TOM-1334 it only arrived transitively through vectorbt.
-  "plotly>=6.5.2",
+  "plotly>=7.1.0",
   "pandas-market-calendars>=5.4.0",
   "statsmodels>=0.15.0",
 ]
@@ -28,17 +28,17 @@ dependencies = [
 vectorbt = ["vectorbt>=1.0.0", "numba>=0.67.0"]
 ibkr = ["ib_insync"]
 binance = ["python-binance"]
-ccxt = ["ccxt>=4.5.81"]
+ccxt = ["ccxt>=4.5.84"]
 ml = ["scikit-learn>=1.7.2"]
 simulation = ["arch>=8.0"]
 viz = ["matplotlib>=3.10.9", "seaborn>=0.13.2"]
-full = ["vectorbt>=1.0.0", "numba>=0.67.0", "python-binance", "ccxt>=4.5.81", "ib_insync", "scikit-learn>=1.7.2", "arch>=8.0"]
+full = ["vectorbt>=1.0.0", "numba>=0.67.0", "python-binance", "ccxt>=4.5.84", "ib_insync", "scikit-learn>=1.7.2", "arch>=8.0"]
 
 [project.scripts]
 quantbox = "quantbox.cli:main"
 
 [build-system]
-requires = ["uv_build>=0.12.17,<0.13.0"]
+requires = ["uv_build>=0.12.19,<0.13.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
@@ -48,9 +48,9 @@ dev = [
     # tests/test_without_vectorbt.py and the ci.yml `no-vectorbt` job.
     "vectorbt>=1.0.0",
     "numba>=0.67.0",
-    "commitizen>=4.18.1",
+    "commitizen>=4.19.0",
     "pytest>=9.1.1",
-    "ruff>=0.16.8",
+    "ruff>=0.16.9",
 ]
 
 [tool.uv_build]
