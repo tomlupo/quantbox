@@ -182,7 +182,7 @@ lagged twice — remove that shift rather than setting `lag_bars: 0`.
 
 **Where it is recorded.** `run_manifest.json` carries
 `execution: {lag_bars, fill: "close", same_bar, description}` and
-`venue: {declared, allow_shorts}`; `metrics.json` carries `execution_lag_bars`;
+`venue: {declared, allow_shorts, max_leverage}`; `metrics.json` carries `execution_lag_bars`;
 `summary.md` has an **Execution timing** line, the HTML report states it in the
 masthead and the reproducibility appendix, and the CLI prints `EXECUTION: …`
 under `METRICS:`. Sweep grids carry a `lag_bars` column.

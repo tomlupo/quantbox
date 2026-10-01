@@ -135,6 +135,7 @@ quantbox plugins doctor            # health check: schemas, entry points, config
 quantbox validate -c <config>      # validate config without running
 quantbox run -c <config>           # run a pipeline
 quantbox run --dry-run -c <config> # dry run (no side effects)
+quantbox run --json -c <config>    # print only the run manifest (quantbox/run@1); logs on stderr
 quantbox approve --run-dir <path>  # write approval file for a run's orders
 quantbox warehouse tables          # list warehouse tables
 quantbox warehouse query -q <sql>  # run SQL against the artifact warehouse
@@ -143,7 +144,13 @@ quantbox warehouse query -q <sql>  # run SQL against the artifact warehouse
 ## Artifacts
 
 Each run writes to `artifacts/<run_id>/`:
-- `run_manifest.json` — run metadata
+- `run_manifest.json` — the run manifest, schema `quantbox/run@1`: run id, git sha, config sha256,
+  engine, dataset, funding, execution timing, venue, `n_trials`, metrics, and `files` — the
+  run-dir-relative paths of `returns`, `traded_weights` and `metrics`. Its contract, including the
+  versioning rule (adding a field is minor, renaming or re-meaning one is major), is the schema
+  [`run_manifest.schema.json`](src/quantbox/artifact_schemas/run_manifest.schema.json); check a
+  manifest with `quantbox.run_manifest.validate_run_manifest`. A golden run directory for reader
+  tests is [`tests/fixtures/golden_run/`](tests/fixtures/golden_run/).
 - `events.jsonl` — structured event log
 - Strategy-specific outputs (weights, orders, fills, metrics)
 
