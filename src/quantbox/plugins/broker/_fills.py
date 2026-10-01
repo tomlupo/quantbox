@@ -54,6 +54,14 @@ FILL_UNKNOWN = "UNKNOWN"  # no evidence either way — caller should re-fetch
 # id, so the next cycle resolves it against the venue instead of alarming.
 STATUS_WORKING = "WORKING"
 
+# Emitted status for an order whose outcome could not be confirmed either way:
+# the venue reply (and every re-read) lacked a status or a ``filled`` field.
+# Not a fill — it books no quantity — and not a known failure either: the order
+# may well have executed. The pipeline reports it as a failure (so a human is
+# told) and, when it carries an id, queues it so the next cycle resolves it
+# against the venue (TOM-1336).
+STATUS_UNKNOWN = "UNKNOWN"
+
 # Bounded confirmation wait for an async-settling order (Kraken spot settles a
 # marketable order milliseconds after create_order returns status='open',
 # filled=0 — issue #97). resolve_fill re-polls up to this many times, sleeping
@@ -94,10 +102,10 @@ def classify_fill(order: dict | None, requested_qty: float) -> tuple[str, float,
     """Classify a ccxt order result into ``(verdict, filled_qty, fill_price)``.
 
     ``verdict`` is one of FILL_FILLED / FILL_PARTIAL / FILL_UNFILLED /
-    FILL_UNKNOWN. ``filled_qty`` is the *actual* filled base quantity (never the
-    requested qty unless the venue explicitly reports the order closed without a
-    ``filled`` field). FILL_UNKNOWN means the result carried no status and no
-    ``filled`` field — the caller should re-fetch the order before deciding.
+    FILL_PENDING / FILL_UNKNOWN. ``filled_qty`` is the *actual* filled base
+    quantity, never the requested qty. FILL_UNKNOWN means the result carried no
+    (recognised) status, or a closed status with no ``filled`` and no
+    ``remaining`` — the caller should re-fetch the order before deciding.
     """
     req = _to_float(requested_qty) or 0.0
     if not order:
@@ -118,13 +126,11 @@ def classify_fill(order: dict | None, requested_qty: float) -> tuple[str, float,
     ref = ordered if (ordered is not None and ordered > _EPS) else req
 
     if status == _CLOSED:
-        # Venue says the order is done. Trust the reported filled amount; only
-        # when the venue *omits* ``filled`` entirely do we treat a closed order
-        # as a full fill. A closed order that explicitly reports filled==0 is
-        # contradictory — do NOT claim a fill.
+        # Venue says the order is done. Trust the reported filled amount. A
+        # closed order that explicitly reports filled==0 is contradictory — do
+        # NOT claim a fill.
         if filled is None:
-            # Venue omitted ``filled``. Treat a closed order as fully filled ONLY
-            # when nothing contradicts it. A closed order that still reports a
+            # Venue omitted ``filled``. A closed order that still reports a
             # positive ``remaining`` (issue #68 hardening) did NOT fully fill —
             # the unfilled remainder is real residual exposure, critical on a
             # close-out SELL. Never claim a full fill against that evidence.
@@ -133,7 +139,11 @@ def classify_fill(order: dict | None, requested_qty: float) -> tuple[str, float,
                 if implied > _EPS:
                     return FILL_PARTIAL, implied, price
                 return FILL_UNFILLED, 0.0, price
-            return FILL_FILLED, req, price
+            # Nothing says how much filled. The quantity is UNKNOWN, never the
+            # requested one (TOM-1336): "closed" is also what a venue says of an
+            # order it cancelled after a partial, so assuming a full fill here
+            # books exposure that may not exist. The caller re-reads the venue.
+            return FILL_UNKNOWN, 0.0, price
         if has_fill:
             # A closed order that filled LESS than it SUBMITTED (e.g. an IOC that
             # partially filled then canceled the remainder) is a PARTIAL, not a
@@ -160,21 +170,11 @@ def classify_fill(order: dict | None, requested_qty: float) -> tuple[str, float,
         # zero-wait FILL_UNFILLED that mis-reported real fills as failures.
         return (FILL_PARTIAL, filled, price) if has_fill else (FILL_PENDING, 0.0, price)
 
-    # Status missing / unrecognised: decide on the numeric fill evidence.
-    if filled is not None:
-        if not has_fill:
-            return FILL_UNFILLED, 0.0, price
-        if remaining is not None and remaining > _EPS:
-            return FILL_PARTIAL, filled, price
-        # filled > 0 and remainder 0 / unknown: FILLED only if it reached the
-        # requested qty. A visible underfill (filled < requested) is a PARTIAL even
-        # without an explicit ``remaining`` field — same rule as the CLOSED branch,
-        # so a real partial can't slip through the status-less path as a clean fill.
-        if ref > _EPS and filled < ref - _EPS:
-            return FILL_PARTIAL, filled, price
-        return FILL_FILLED, filled, price
-
-    # No status AND no ``filled`` field: genuinely unknown — caller must verify.
+    # Status missing / unrecognised: UNKNOWN, whatever ``filled`` says
+    # (TOM-1336). A status-less reply is not a statement that the order is
+    # done — a ``filled`` figure on an order that may still be working is a
+    # snapshot, and reading it as final is how an unconfirmed order booked as a
+    # fill. The caller re-reads the venue, whose answer carries a status.
     return FILL_UNKNOWN, 0.0, price
 
 
@@ -189,7 +189,7 @@ def resolve_fill(
     """Resolve an order into an *emitted* ``(status, qty, price, reason)`` row.
 
     ``status`` is one of ``"FILLED"`` / ``"PARTIAL"`` / ``"WORKING"`` /
-    ``"FAILED"`` — the vocabulary the pipeline understands. When the first classification is
+    ``"UNKNOWN"`` / ``"FAILED"`` — the vocabulary the pipeline understands. When the first classification is
     non-terminal — either ambiguous (FILL_UNKNOWN) or accepted-but-still-settling
     (FILL_PENDING) — and a ``refetch`` callable is supplied, the order is re-read
     (bounded ``confirm_attempts`` re-polls, sleeping ``confirm_delay`` s between
@@ -198,7 +198,8 @@ def resolve_fill(
     NOT re-polled and reports FAILED immediately. If the order is *still*
     unconfirmed after the wait, the result never claims an unconfirmed FILLED: it
     is ``"WORKING"`` when the venue still reports the order alive on the book,
-    and otherwise fails safe to ``"FAILED"``.
+    ``"UNKNOWN"`` when nothing the venue said classifies it, and ``"FAILED"``
+    when the venue reports it dead or closed with nothing filled.
     """
     verdict, filled_qty, price = classify_fill(order, requested_qty)
     # The most recent snapshot actually observed from the venue. Seeded with the
@@ -263,8 +264,20 @@ def resolve_fill(
             f"order accepted and still working at the venue (status={raw_status})",
         )
 
-    # FILL_UNFILLED or still-FILL_UNKNOWN: not confirmed filled, and NOT known to
-    # be working either. Report honestly as FAILED. This is safe against
+    if verdict == FILL_UNKNOWN:
+        # Still no evidence either way after the re-reads. Book NO fill, but do
+        # not call it a failure either: the order may well have executed. The
+        # pipeline alerts on it and, when it carries an id, queues it so the next
+        # cycle resolves it against the venue (TOM-1336).
+        return (
+            STATUS_UNKNOWN,
+            0.0,
+            price,
+            f"order not confirmed filled — outcome UNKNOWN (venue status={raw_status})",
+        )
+
+    # FILL_UNFILLED: not filled, and NOT known to be working either. Report
+    # honestly as FAILED. This is safe against
     # double-placement: the pipeline reconciles from the broker's ACTUAL positions
     # every cycle (get_positions -> target-vs-current diff), so if this order in
     # fact filled, the next cycle sees the resulting position and places no

@@ -119,6 +119,8 @@ class SimPaperBroker:
                 "price": fill_price,
                 "fee": fee,
                 "timestamp": now,
+                # An executed fill says so: a status-less row is UNKNOWN to the pipeline (TOM-1336).
+                "status": "FILLED",
             }
             fills.append(fill)
             self._fill_log.append(fill)
