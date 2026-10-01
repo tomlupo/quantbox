@@ -10,6 +10,7 @@ from .contracts import (
     DataPlugin,
     FeaturePlugin,
     MonitorPlugin,
+    OverlayPlugin,
     PipelinePlugin,
     PublisherPlugin,
     RebalancingPlugin,
@@ -30,6 +31,7 @@ ENTRYPOINT_GROUPS = {
     "feature": "quantbox.features",
     "validation": "quantbox.validations",
     "monitor": "quantbox.monitors",
+    "overlay": "quantbox.overlays",
     "dataset": "quantbox.datasets",
     "capability": "quantbox.capabilities",
 }
@@ -55,6 +57,7 @@ class PluginRegistry:
     features: dict[str, type[FeaturePlugin]] = field(default_factory=dict)
     validations: dict[str, type[ValidationPlugin]] = field(default_factory=dict)
     monitors: dict[str, type[MonitorPlugin]] = field(default_factory=dict)
+    overlays: dict[str, type[OverlayPlugin]] = field(default_factory=dict)
     datasets: dict[str, type] = field(default_factory=dict)
     capabilities: dict[str, type] = field(default_factory=dict)
 
@@ -82,6 +85,7 @@ class PluginRegistry:
             features={**builtins.get("feature", {}), **_load_group(ENTRYPOINT_GROUPS["feature"])},
             validations={**builtins.get("validation", {}), **_load_group(ENTRYPOINT_GROUPS["validation"])},
             monitors={**builtins.get("monitor", {}), **_load_group(ENTRYPOINT_GROUPS["monitor"])},
+            overlays={**builtins.get("overlay", {}), **_load_group(ENTRYPOINT_GROUPS["overlay"])},
             datasets={**builtins.get("dataset", {}), **_load_group(ENTRYPOINT_GROUPS["dataset"])},
             capabilities=capability_classes,
         )

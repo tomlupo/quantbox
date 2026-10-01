@@ -32,6 +32,7 @@ If you can do the work at L1, do it at L1. Reach for plugins only when the contr
 | **Feature** | `FeaturePlugin` | `compute(data, params)` | `DataFrame` |
 | **Validation** | `ValidationPlugin` | `validate(returns, weights, benchmark, params)` | `dict` |
 | **Monitor** | `MonitorPlugin` | `check(result, history, params)` | `list[dict]` |
+| **Overlay** | `OverlayPlugin` | `apply(weights, data, params)` | `DataFrame` (same index/columns; never shifted — [ADR-0004](../adr/0004-overlay-stage.md)) |
 
 **StrategyPlugin contract details:** `data` is a dict of wide-format DataFrames — required key `"prices"` (date index × symbol columns), optional `"volume"`, `"market_cap"`, `"universe"`, `"funding_rates"`. `params` overrides instance attributes. Return dict must contain `"weights"`; convention adds `"simple_weights"` (latest dict), `"details"`, `"exposure"`.
 

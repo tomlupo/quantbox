@@ -17,7 +17,19 @@ from quantbox.registry import PluginRegistry
 # ---------------------------------------------------------------------------
 
 EXPECTED_PLUGIN_TYPES = frozenset(
-    {"pipeline", "data", "broker", "strategy", "rebalancing", "risk", "publisher", "feature", "monitor", "validation"}
+    {
+        "pipeline",
+        "data",
+        "broker",
+        "strategy",
+        "rebalancing",
+        "risk",
+        "publisher",
+        "feature",
+        "monitor",
+        "validation",
+        "overlay",
+    }
 )
 
 # ---------------------------------------------------------------------------
@@ -176,6 +188,7 @@ class TestPluginRegistry:
             "feature": "features",
             "monitor": "monitors",
             "validation": "validations",
+            "overlay": "overlays",
         }
         for type_key, expected_plugins in b.items():
             field_name = field_map[type_key]
@@ -202,6 +215,7 @@ class TestPluginRegistry:
             "feature": "features",
             "monitor": "monitors",
             "validation": "validations",
+            "overlay": "overlays",
         }
         for type_key, expected_plugins in b.items():
             field_name = field_map[type_key]
