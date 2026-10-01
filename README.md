@@ -52,66 +52,10 @@ All plugins are config-driven and discovered automatically. List registered plug
 quantbox plugins list
 ```
 
-### Pipelines
-
-| Name | Description |
-|---|---|
-| `fund_selection.simple.v1` | Research pipeline: universe screening and allocation |
-| `trade.allocations_to_orders.v1` | Converts allocations to broker orders |
-| `trade.full_pipeline.v1` | End-to-end trading: strategy → rebalance → execute |
-| `backtest.pipeline.v1` | Historical simulation with vectorbt or rsims engine |
-
-### Strategies
-
-| Name | Description |
-|---|---|
-| `strategy.crypto_trend.v1` | Momentum trend-following for crypto |
-| `strategy.carver_trend.v1` | Rob Carver-style trend with vol targeting |
-| `strategy.momentum_long_short.v1` | Cross-sectional momentum, long/short |
-| `strategy.cross_asset_momentum.v1` | Multi-asset momentum |
-| `strategy.crypto_regime_trend.v1` | Regime-aware crypto trend |
-| `strategy.weighted_avg.v1` | Meta-strategy aggregator (weighted blend) |
-
-### Data
-
-| Name | Description |
-|---|---|
-| `local_file_data` | Local Parquet files via DuckDB |
-| `binance.live_data.v1` | Binance spot OHLCV + market data |
-| `binance.futures_data.v1` | Binance USDM futures + funding rates |
-| `hyperliquid.data.v1` | Hyperliquid market data |
-
-### Brokers
-
-| Name | Description |
-|---|---|
-| `sim.paper.v1` | Paper simulator (spot) |
-| `sim.futures_paper.v1` | Paper simulator (futures, with funding) |
-| `ibkr.paper.stub.v1` | IBKR paper trading stub |
-| `ibkr.live.v1` | IBKR live execution |
-| `binance.paper.stub.v1` | Binance paper trading stub |
-| `binance.live.v1` | Binance spot live execution |
-| `binance.futures.v1` | Binance USDM futures execution |
-| `hyperliquid.perps.v1` | Hyperliquid perpetual futures |
-
-### Rebalancing
-
-| Name | Description |
-|---|---|
-| `rebalancing.standard.v1` | Standard portfolio rebalancer (spot) |
-| `rebalancing.futures.v1` | Futures rebalancer with leverage and margin |
-
-### Risk
-
-| Name | Description |
-|---|---|
-| `risk.trading_basic.v1` | Leverage, concentration, and notional limits |
-
-### Publishers
-
-| Name | Description |
-|---|---|
-| `telegram.publisher.v1` | Trade notifications via Telegram |
+The catalogue is `src/quantbox/plugins/manifest.yaml` (`plugins.builtins`), kept
+equal to the registry by `tests/pipeline/test_pipeline_smoke.py`; `quantbox plugins
+info --name <id>` describes one plugin. No list is copied here — the last one
+drifted.
 
 ## Plugin manifest and profiles
 

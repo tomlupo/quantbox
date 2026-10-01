@@ -135,8 +135,16 @@ def _read_via_pandas(path: str, ext: str, asof: str | None, symbols: list[str] |
     return df
 
 
-def _load_pinned_dataset(name: str) -> Any:
-    """A quantbox-datasets Dataset, served at the build pinned in the nearest ``datasets.lock``."""
+def _load_pinned_dataset(name: str, lock: str | None = None) -> tuple[Any, dict[str, Any]]:
+    """A quantbox-datasets Dataset and the resolution it was served from.
+
+    Resolved by :func:`quantbox.dataset_lock.resolve_dataset` — the root from
+    ``$QUANTBOX_DATASETS_ROOT``, the pin from *lock* (default: the nearest ``datasets.lock``) —
+    and refused before any read when the bytes are not the pinned build.
+    """
+    from quantbox.dataset_lock import require_match, resolve_dataset
+
+    resolved = require_match(resolve_dataset(name, lock=lock))
     try:
         from quantbox_datasets.lock import load
     except ImportError as exc:
@@ -145,7 +153,7 @@ def _load_pinned_dataset(name: str) -> Any:
             "quantbox does not depend on it — install it from its clone and point "
             "QUANTBOX_DATASETS_ROOT at <clone>/datasets"
         ) from exc
-    return load(name)
+    return load(name, root=resolved["root"], sha256=resolved["sha256"], pinned=False), resolved
 
 
 def _clip_frame(df: pd.DataFrame, asof: str | None) -> pd.DataFrame:
@@ -195,9 +203,10 @@ class LocalFileDataPlugin:
               prices_path: ./data/prices.parquet
               volume_path: ./data/volume.parquet
 
-    Or, for a quantbox-datasets dataset, by name — served at the build pinned in the
-    consumer's ``datasets.lock`` (``quantbox-datasets pin <name>``); the ``*_path``
-    params are then ignored::
+    Or, for a quantbox-datasets dataset, by name — rooted at ``$QUANTBOX_DATASETS_ROOT``
+    and served at the build pinned in the ``datasets.lock`` nearest the config
+    (``quantbox-datasets pin <name>``); ``quantbox dataset resolve <name> -c <config> --json`` shows
+    what will be read. The ``*_path`` params are then ignored::
 
             params_init:
               dataset: etf-daily
@@ -220,12 +229,17 @@ class LocalFileDataPlugin:
     funding_rates_path: str | None = None
     fx_path: str | None = None
     dataset: str | None = None
+    # The datasets.lock pinning ``dataset``; the runner sets it to the lock nearest the
+    # config, so a run resolves the same build from any working directory.
+    dataset_lock: str | None = None
     mode: str | None = None
     _dataset: Any = field(default=None, init=False, repr=False)
+    # What ``quantbox dataset resolve -c <config> --json`` reports; the runner records it in the manifest.
+    dataset_resolution: dict[str, Any] | None = field(default=None, init=False, repr=False)
 
     def _pinned(self) -> Any:
         if self._dataset is None:
-            self._dataset = _load_pinned_dataset(self.dataset)
+            self._dataset, self.dataset_resolution = _load_pinned_dataset(self.dataset, self.dataset_lock)
         return self._dataset
 
     def load_universe(self, params: dict[str, Any]) -> pd.DataFrame:

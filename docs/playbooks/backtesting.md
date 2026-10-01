@@ -116,9 +116,20 @@ Datasets from `quantbox-datasets` are read **by name**, never by a sibling path:
       dataset: etf-daily
 ```
 
-The build served is the one pinned for that name in `datasets.lock` at this repo's
-root; re-pin with `quantbox-datasets pin <name> --lock <quantbox>/datasets.lock`, and
-commit the lock. `quantbox sweep` takes the same name as `data.dataset`.
+The build served is the one pinned for that name in the `datasets.lock` nearest the
+config (this repo's root here); re-pin with
+`quantbox-datasets pin <name> --lock <quantbox>/datasets.lock`, and commit the lock.
+The bytes are read under `$QUANTBOX_DATASETS_ROOT`, never relative to the working
+directory, so the same config run from the repo root or a worktree reads the same
+build. `quantbox sweep` takes the same name as `data.dataset`.
+
+`quantbox dataset resolve <name> -c <config> --json` prints what `run -c <config>`
+will read — the same lock, so the same build — `path`, the pinned `sha256`, the `actual_sha256` of those bytes, `matches`, `market` and the
+`funding_rates` file if any — and `run` records the same object under
+`run_manifest.json` → `dataset.resolved`. When the bytes are not the pinned build and
+quantbox-datasets cannot restore it from git history, both commands fail and name both
+shas. The older inline style (`dataset_root` + `expected_prices_sha256`, as
+`dataset.curated.v1` takes them) still runs but warns: it is the deprecated alias.
 
 quantbox does **not** depend on `quantbox-datasets` (it is a private repo, and the
 dependency would point the wrong way): install it from its clone, and set
@@ -151,7 +162,12 @@ between deciding and filling. It is applied in exactly one place
 (`BacktestPipeline._align_for_engine`, after aggregation, venue clipping and
 risk transforms, before the engine), so it holds for the vectorbt `from_orders`
 branch, the vectorbt order-func (`threshold`) branch, rsims and the variants
-flow alike. `quantbox sweep` (`analysis.parameter_grid`) uses the same setting.
+flow alike. `quantbox sweep` (`analysis.parameter_grid`) uses the same setting,
+and so do the Python helpers `backtest()` and `optimize()`
+(`quantbox.plugins.backtesting`): keyword `lag_bars=`, same default, same
+same-bar warning, and the result carries the same `execution` record. Before
+TOM-1337 those two helpers traded same-bar; pass `lag_bars=0` to reproduce one
+of their old numbers.
 
 ```yaml
 plugins:
@@ -233,6 +249,9 @@ reach the `DatasetManifest`, so the venue has to be declared in the config.
 > On the reviewer's toy the split was: same-bar −0.1792, next-bar −0.1589,
 > same-bar with only the first rebalance zeroed −0.1553 — there the lost first
 > period ALONE moves the number by more than the whole same-bar → next-bar delta.
+> Buy-and-hold (`rebalancing_freq: null`) is the exception: its one trade moves
+> to bar `lag_bars` (`quantbox.execution.lag_buy_and_hold`) — on bar 0 it would
+> trade the flat row and never enter.
 
 ## Outputs
 

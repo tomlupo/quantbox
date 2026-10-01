@@ -9,10 +9,10 @@ QuantBox exposes every capability at multiple layers so users (humans, scripts, 
 | Layer | API shape | When to use | Example |
 |---|---|---|---|
 | **L0** Re-exports | `from quantbox.adapters.vectorbt import vbt` | Quick experiment, throwaway script. Pure pass-through to the underlying lib. | `vbt.Portfolio.from_signals(prices, signals)` |
-| **L1** Convenience helpers | `quantbox.bt.run(...)`, `quantbox.opt.max_sharpe(...)`, `quantbox.score.peer_z(...)` | Common idiom — one function call. No plugin/config layer. | `qbt.run(prices, signals, fees=0.001)` |
-| **L2** Composable units (planned) | `quantbox.functions.run_strategy(strategy, data)` | Building a notebook, composing two ideas, no run_id ceremony. | `result = run_strategy(my_strat, data)` |
+| **L1** Convenience helpers | `quantbox.bt.run(...)` (the only L1 namespace today) | Common idiom — one function call. No plugin/config layer. | `qbt.run(prices, signals, fees=0.001)` |
+| **L2** Composable units (not built) | — | Building a notebook, composing two ideas, no run_id ceremony. Until it exists, use L3. | — |
 | **L3** Plugin instances | Instantiate `Strategy()`, `DataPlugin()`, call directly | You want validation and contracts but not the YAML/runner. | `MyStrat().run(data, params)` |
-| **L4** Full pipeline | `quantbox.run_from_config(yaml_path)` | Logged experiment, ArtifactStore manifest, EXPERIMENTS.md entry. | `run_from_config("cookbook/configs/research.yaml")` |
+| **L4** Full pipeline | `quantbox.runner.run_from_config(yaml_path)` | Logged experiment, ArtifactStore manifest, EXPERIMENTS.md entry. | `run_from_config("cookbook/configs/research.yaml")` |
 | **L5** CLI | `quantbox run -c config.yaml` | Production cron, reproducibility-pinned, lifecycle-tracked. | scheduled job in agent-cron / systemd |
 
 ---
@@ -22,7 +22,7 @@ QuantBox exposes every capability at multiple layers so users (humans, scripts, 
 | Task | Default layer | Rationale |
 |---|---|---|
 | "Try this idea" | L1 | Function call beats YAML for one-off work. |
-| "Compare A vs B" | L2 | Composable units exist for this; runner overkill. |
+| "Compare A vs B" | L3 | L2 is not built; two plugin calls, runner overkill. |
 | "Show me the chart" | L0 + L1 | Use vbt's plotting directly. |
 | "Backtest with my dm-evo data" | L1 with project-specific helper, or L3 plugin | Depends on whether the data plugin is registered. |
 | "Author a new strategy" | L3 (plugin instance) → L4 once registered | Build it without the runner first; promote later. |
@@ -39,9 +39,6 @@ When a skill is unsure, **start at L1.** Escalate only when the task demands it.
 |---|---|---|
 | `quantbox.adapters.{lib}` | Re-exports + thin helpers (`vbt`, ...) — added when ≥2 consumers need same bridge | L0 |
 | `quantbox.bt` | Convenience for backtesting (most common idiom) | L1 |
-| `quantbox.opt` | Convenience for portfolio optimization | L1 |
-| `quantbox.score` | Convenience for ranking/scoring | L1 |
-| `quantbox.functions` (planned) | `run_strategy`, `validate_artifact` — composable units | L2 |
 | `quantbox.contracts` | `Protocol`s, `PluginMeta`, `RunResult` | L3 |
 | `quantbox.runner` | `run_from_config` | L4 |
 | `quantbox.cli` | Typer-based CLI | L5 |
@@ -119,15 +116,10 @@ L1 helpers should:
 
 ## L2 — Composable units
 
-The rule: function-style API for users who want validation and contracts but want to compose things by hand.
-
-```python
-from quantbox.functions import run_strategy
-
-weights = run_strategy(MyStrat(params=...), data=market_data, asof="2026-04-22")
-```
-
-L2 functions accept plugin instances and return validated artifacts. They don't write to ArtifactStore; that's L4's job.
+**Not built.** The intent: a function-style API for users who want validation and
+contracts but want to compose things by hand — functions that accept plugin
+instances and return validated artifacts without writing to ArtifactStore (that
+is L4's job). No module implements it; use L3 until one does.
 
 ---
 

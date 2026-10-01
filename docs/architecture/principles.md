@@ -94,7 +94,7 @@ from quantbox.adapters.vectorbt import vbt  # re-export
 from quantbox.bt import run  # convenience helper at L1
 
 # Wrong
-from quantbox.backtesting.engine import VectorbtEngine  # opaque wrapper hiding vbt
+engine = VectorbtEngine(prices)  # an opaque wrapper class hiding vbt
 ```
 
 If you find yourself writing logic that exists in the underlying library, stop. Use it. See [adapters.md](adapters.md) for the rule and examples.
@@ -106,7 +106,7 @@ If you find yourself writing logic that exists in the underlying library, stop. 
 | Anti-pattern | Why it's wrong |
 |---|---|
 | **Forcing the runner** for one-off scripts | Violates lowest-viable-abstraction. Expose L0/L1 for casual use. |
-| **Reimplementing vectorbt features** in `quantbox.backtesting` | Wheel already exists. Adapt, don't rebuild. |
+| **Reimplementing vectorbt features** in `quantbox.plugins.backtesting` | Wheel already exists. Adapt, don't rebuild. |
 | **Hiding the underlying library** behind opaque wrappers | Caller can't escape to the wheel when needed. Brittle. |
 | **Rich domain types** in core (e.g., advisory profiles, regulated identifiers) | Domain belongs in projects, not in quantbox. |
 | **Schema strictness** that rejects extra columns | `prefixItems` for required core; extras allowed. |
