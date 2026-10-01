@@ -15,7 +15,8 @@ Quant research and trading framework with a plugin architecture. Config-driven p
 uv venv && source .venv/bin/activate
 uv sync
 
-# Optional extras for broker adapters:
+# Optional extras:
+uv sync --extra vectorbt  # vectorbt backtest engine (quantbox.bt, engine: vectorbt, sweeps)
 uv sync --extra ccxt      # Binance, Hyperliquid (via ccxt)
 uv sync --extra ibkr      # Interactive Brokers
 uv sync --extra binance   # python-binance
@@ -75,6 +76,7 @@ Override the manifest via `QUANTBOX_MANIFEST=path/to/manifest.yaml`.
 quantbox plugins list              # list all registered plugins
 quantbox plugins list --json       # JSON output
 quantbox plugins info --name <id>  # plugin details
+quantbox plugins schema --json     # every plugin: id, status, params JSON Schema
 quantbox plugins doctor            # health check: schemas, entry points, config refs
 quantbox validate -c <config>      # validate config without running
 quantbox run -c <config>           # run a pipeline

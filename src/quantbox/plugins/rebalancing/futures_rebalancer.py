@@ -66,6 +66,60 @@ class FuturesRebalancer:
         core_compat=">=0.1,<0.2",
         description="Futures rebalancer: margin-based with signed position support",
         tags=("rebalancing", "futures", "trading"),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "capital_at_risk": {
+                    "type": "number",
+                    "default": 1.0,
+                    "description": "Fraction of portfolio value the targets are sized against (pipeline value if unset).",
+                },
+                "tranches": {
+                    "type": "integer",
+                    "default": 1,
+                    "description": "Average targets over N tranches (rolling mean).",
+                },
+                "max_leverage": {
+                    "type": "number",
+                    "default": 1,
+                    "description": "Cap on gross leverage of the targets.",
+                },
+                "min_trade_size": {
+                    "type": "number",
+                    "default": 0.01,
+                    "description": "Minimum abs(weight delta) to trade.",
+                },
+                "exclusions": {
+                    "type": "array",
+                    "default": [],
+                    "description": "Assets never traded (pipeline value if unset).",
+                },
+                "strategy_weights": {
+                    "type": "object",
+                    "default": {},
+                    "description": "Per-strategy weight overrides used with tranches (pipeline value if unset).",
+                },
+                "equity_reconciliation_tolerance": {
+                    "type": "number",
+                    "default": 0.005,
+                    "description": "Relative tolerance of the live pre-trade reconciliation against broker equity.",
+                },
+                "require_equity_reconciliation": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Require the live pre-trade reconciliation against broker equity.",
+                },
+                "stable_coin_symbol": {
+                    "type": "string",
+                    "default": "USDT",
+                    "description": "Margin asset of the book (pipeline value if unset).",
+                },
+                "min_notional": {
+                    "type": ["number", "null"],
+                    "description": "Operator order floor (never bypassed); unset = the venue's per-pair minimum, else 10.",
+                },
+            },
+        },
     )
 
     def generate_orders(

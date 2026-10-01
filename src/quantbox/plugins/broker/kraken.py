@@ -177,10 +177,26 @@ class KrakenBroker:
         params_schema={
             "type": "object",
             "properties": {
-                "quote_asset": {"type": "string", "default": "USD"},
-                "api_key_env": {"type": "string", "default": "KRAKEN_API_KEY"},
-                "api_secret_env": {"type": "string", "default": "KRAKEN_API_SECRET"},
-                "readonly": {"type": "boolean", "default": False},
+                "quote_asset": {
+                    "type": "string",
+                    "default": "USD",
+                    "description": "Quote asset of the book.",
+                },
+                "api_key_env": {
+                    "type": "string",
+                    "default": "KRAKEN_API_KEY",
+                    "description": "Environment variable holding the API key.",
+                },
+                "api_secret_env": {
+                    "type": "string",
+                    "default": "KRAKEN_API_SECRET",
+                    "description": "Environment variable holding the API secret.",
+                },
+                "readonly": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Block order placement (reads only).",
+                },
             },
         },
         examples=("plugins:\n  broker:\n    name: kraken.spot.v1\n    params_init:\n      quote_asset: USD",),

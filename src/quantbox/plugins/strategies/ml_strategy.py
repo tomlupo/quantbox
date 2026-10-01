@@ -243,6 +243,28 @@ class MLPredictionStrategy:
         core_compat=">=0.1,<0.2",
         description="ML prediction strategy using sklearn models for return/direction forecasting",
         tags=("ml", "prediction", "sklearn"),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "task": {"enum": ["classification", "regression"], "description": "Predict direction or return."},
+                "model_name": {
+                    "description": "sklearn model: ridge, lasso, elastic_net, random_forest, gradient_boosting, svr (regression); logistic, random_forest, gradient_boosting, svc (classification)."
+                },
+                "prediction_horizon": {"description": "Forward bars of the predicted target."},
+                "lookback_periods": {"description": "Lookbacks of the return/volatility features."},
+                "n_splits": {"description": "Time-series cross-validation folds."},
+                "scaler": {"enum": ["standard", "robust"], "description": "Feature scaler."},
+                "train_lookback": {"description": "Bars of history in each training window."},
+                "retrain_frequency": {"description": "Retrain every N bars."},
+                "weight_method": {
+                    "enum": ["rank", "confidence", "threshold"],
+                    "description": "How predictions become weights.",
+                },
+                "top_n": {"description": "Number of top-predicted symbols held."},
+                "max_symbols": {"description": "Cap on symbols modelled."},
+                "output_periods": {"description": "Number of most recent bars returned in the weights output."},
+            },
+        },
     )
 
     task: str = "classification"

@@ -47,6 +47,20 @@ class StatisticalValidation:
             "see validation.deflated_sharpe_blp.v1 for that."
         ),
         tags=("validation", "statistics", "sharpe", "bootstrap"),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "n_trials": {"type": "integer", "default": 100, "description": "Random-strategy trials of the null."},
+                "n_bootstrap": {"type": "integer", "default": 1000, "description": "Bootstrap resamples."},
+                "confidence": {"type": "number", "default": 0.95, "description": "Confidence level of the intervals."},
+                "n_strategies_tested": {
+                    "type": "integer",
+                    "default": 1,
+                    "description": "Strategies tested, for the multiple-testing correction.",
+                },
+                "trading_days": {"type": "integer", "default": 365, "description": "Bars per year for annualisation."},
+            },
+        },
     )
 
     def validate(

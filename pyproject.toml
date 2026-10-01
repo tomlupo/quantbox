@@ -14,20 +14,25 @@ dependencies = [
   "httpx>=0.28.1",
   "pycoingecko>=3.2.0",
   "typer>=0.27.2",
-  "vectorbt>=1.0.0",
-  "numba>=0.67.0",
+  # Declared, not borrowed: report blocks import plotly lazily, and until
+  # TOM-1334 it only arrived transitively through vectorbt.
+  "plotly>=6.5.2",
   "pandas-market-calendars>=5.4.0",
   "statsmodels>=0.15.0",
 ]
 
 [project.optional-dependencies]
+# The vectorbt backtest engine (quantbox.bt, adapters.vectorbt, run_vectorbt,
+# engine: vectorbt, analysis.sweep/run_grid). Without it those raise
+# MissingExtraError naming this extra; everything else imports (TOM-1334).
+vectorbt = ["vectorbt>=1.0.0", "numba>=0.67.0"]
 ibkr = ["ib_insync"]
 binance = ["python-binance"]
 ccxt = ["ccxt>=4.5.81"]
 ml = ["scikit-learn>=1.7.2"]
 simulation = ["arch>=8.0"]
 viz = ["matplotlib>=3.10.9", "seaborn>=0.13.2"]
-full = ["python-binance", "ccxt>=4.5.81", "ib_insync", "scikit-learn>=1.7.2", "arch>=8.0"]
+full = ["vectorbt>=1.0.0", "numba>=0.67.0", "python-binance", "ccxt>=4.5.81", "ib_insync", "scikit-learn>=1.7.2", "arch>=8.0"]
 
 [project.scripts]
 quantbox = "quantbox.cli:main"
@@ -38,6 +43,11 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    # The suite exercises the vectorbt engine, so the dev env carries the
+    # [vectorbt] extra's pins; the no-vectorbt path is proven by
+    # tests/test_without_vectorbt.py and the ci.yml `no-vectorbt` job.
+    "vectorbt>=1.0.0",
+    "numba>=0.67.0",
     "commitizen>=4.18.1",
     "pytest>=9.1.1",
     "ruff>=0.16.8",

@@ -186,13 +186,50 @@ class AltcoinCrashBounceStrategy:
         params_schema={
             "type": "object",
             "properties": {
-                "crash_threshold_pct": {"type": "number", "default": -15.0},
-                "volume_spike_ratio": {"type": "number", "default": 1.3},
-                "take_profit_pct": {"type": "number", "default": 12.0},
-                "stop_loss_pct": {"type": "number", "default": 12.0},
-                "max_hold_hours": {"type": "integer", "default": 72},
-                "position_size_pct": {"type": "number", "default": 8.0},
-                "max_positions": {"type": "integer", "default": 15},
+                "crash_threshold_pct": {
+                    "type": "number",
+                    "default": -15.0,
+                    "description": "Entry trigger: return over lookback_periods at or below this percentage (negative).",
+                },
+                "volume_spike_ratio": {
+                    "type": "number",
+                    "default": 1.3,
+                    "description": "Entry trigger: volume over its volume_lookback_periods mean must exceed this ratio.",
+                },
+                "take_profit_pct": {
+                    "type": "number",
+                    "default": 12.0,
+                    "description": "Exit when the position gains this percentage.",
+                },
+                "stop_loss_pct": {
+                    "type": "number",
+                    "default": 12.0,
+                    "description": "Exit when the position loses this percentage.",
+                },
+                "max_hold_hours": {
+                    "type": "integer",
+                    "default": 72,
+                    "description": "Exit after holding this many bars (hours).",
+                },
+                "position_size_pct": {
+                    "type": "number",
+                    "default": 8.0,
+                    "description": "Weight of each open position, in percent of the book.",
+                },
+                "max_positions": {
+                    "type": "integer",
+                    "default": 15,
+                    "description": "Maximum concurrent positions.",
+                },
+                "circuit_breaker_entries": {
+                    "description": "Stop opening positions after this many entries inside circuit_breaker_hours."
+                },
+                "circuit_breaker_hours": {"description": "Window (bars) of the entry circuit breaker."},
+                "exclude_tickers": {"description": "Tickers never traded (stablecoins by default)."},
+                "lookback_periods": {"description": "Bars over which the crash return is measured."},
+                "min_daily_volume_usd": {"description": "Skip coins whose daily USD volume is below this."},
+                "slippage_pct": {"description": "Assumed entry/exit slippage, in percent of price."},
+                "volume_lookback_periods": {"description": "Bars in the baseline volume mean (drives warm-up)."},
             },
         },
         examples=(

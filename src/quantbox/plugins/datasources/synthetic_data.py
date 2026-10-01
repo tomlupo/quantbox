@@ -8,7 +8,7 @@ need deterministic synthetic data without external API calls.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -117,30 +117,50 @@ class SyntheticDataPlugin:
                     "description": "Starting price for all assets.",
                 },
                 "random_state": {
-                    "type": "integer",
+                    "type": ["integer", "null"],
                     "default": 42,
                     "description": "Random seed for reproducibility.",
                 },
                 "symbols": {
-                    "type": "array",
+                    "type": ["array", "null"],
                     "items": {"type": "string"},
+                    "default": None,
                     "description": "Explicit symbol names. If omitted, generates SYN_001, SYN_002, ...",
                 },
             },
         },
         examples=(
-            "plugins:\n  data:\n    name: data.synthetic.v1\n    params:\n"
-            "      n_assets: 20\n      n_steps: 504\n      model: jump_diffusion\n"
-            "      correlation: random\n      random_state: 42",
+            "plugins:\n  data:\n    name: data.synthetic.v1\n    params_init:\n"
+            "      n_assets: 20\n"
+            "      n_steps: 504\n"
+            "      model: jump_diffusion\n"
+            "      random_state: 42",
+            "# per-run override of the same knobs, read by load_universe / load_market_data:\n"
+            "plugins:\n  pipeline:\n    name: backtest.pipeline.v1\n    params:\n"
+            "      universe: {n_assets: 20}\n"
+            "      prices: {n_steps: 504, model: jump_diffusion}\n"
+            "  data:\n    name: data.synthetic.v1",
         ),
     )
 
+    # Generator knobs. Set them under ``params_init``; the per-call params of
+    # load_universe / load_market_data (``plugins.pipeline.params.universe`` /
+    # ``.prices``) override them for that call.
+    n_assets: int = 10
+    n_steps: int = 252
+    model: str = "gbm"
+    model_params: dict[str, Any] = field(default_factory=dict)
+    correlation: str = "random"
+    initial_price: float = 100.0
+    random_state: int | None = 42
+    symbols: list[str] | None = None
+
     def load_universe(self, params: dict[str, Any]) -> list[str]:
         """Return list of synthetic symbol names."""
-        symbols = params.get("symbols")
+        symbols = params.get("symbols", self.symbols)
         if symbols:
             return list(symbols)
-        n_assets = int(params.get("n_assets", 10))
+        n_assets = int(params.get("n_assets", self.n_assets))
         return [f"SYN_{i + 1:03d}" for i in range(n_assets)]
 
     def load_market_data(
@@ -154,12 +174,12 @@ class SyntheticDataPlugin:
         Returns wide-format DataFrames backdated from *asof*.
         """
         n_assets = len(universe)
-        n_steps = int(params.get("n_steps", 252))
-        model_name = params.get("model", "gbm")
-        model_params = params.get("model_params", {})
-        correlation_type = params.get("correlation", "random")
-        initial_price = float(params.get("initial_price", 100.0))
-        random_state = params.get("random_state", 42)
+        n_steps = int(params.get("n_steps", self.n_steps))
+        model_name = params.get("model", self.model)
+        model_params = params.get("model_params", self.model_params)
+        correlation_type = params.get("correlation", self.correlation)
+        initial_price = float(params.get("initial_price", self.initial_price))
+        random_state = params.get("random_state", self.random_state)
         random_state = int(random_state) if random_state is not None else None
 
         rng = np.random.default_rng(random_state)

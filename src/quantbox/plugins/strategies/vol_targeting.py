@@ -57,6 +57,35 @@ class VolTargetingStrategy:
         capabilities=("backtest", "live"),
         inputs=("prices",),
         outputs=("weights",),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "risk_off_ticker": {
+                    "type": ["string", "object", "null"],
+                    "description": "Risk-off ticker for every asset, or {ticker: risk_off, default: risk_off}.",
+                },
+                "exposure": {
+                    "type": "object",
+                    "default": {},
+                    "description": "{min, max, neutral} exposure; each key wins over exposure_min/_max/_neutral.",
+                },
+                "lookbacks": {
+                    "items": {"type": "integer", "minimum": 1},
+                    "description": "Rolling-volatility lookbacks (bars); their vols are averaged.",
+                },
+                "exposure_min": {"description": "Exposure floor in the high-volatility regime."},
+                "exposure_max": {"description": "Exposure cap in the low-volatility regime."},
+                "exposure_neutral": {"description": "Exposure outside the extreme regimes."},
+                "quantile_low": {"description": "Volatility quantile below which the regime is low."},
+                "quantile_high": {"description": "Volatility quantile above which the regime is high."},
+                "vol_lag": {"description": "Lag (bars) of the volatility the current one is scaled against."},
+                "trading_days": {
+                    "type": "integer",
+                    "default": 252,
+                    "description": "Annualization factor for the rolling volatility.",
+                },
+            },
+        },
     )
 
     lookbacks: list[int] = field(default_factory=lambda: [252])
@@ -93,9 +122,9 @@ class VolTargetingStrategy:
 
         risk_off = params.get("risk_off_ticker")
         exposure = params.get("exposure", {})
-        exp_min = exposure.get("min", self.exposure_min)
-        exp_max = exposure.get("max", self.exposure_max)
-        exp_neutral = exposure.get("neutral", self.exposure_neutral)
+        exp_min = exposure.get("min", params.get("exposure_min", self.exposure_min))
+        exp_max = exposure.get("max", params.get("exposure_max", self.exposure_max))
+        exp_neutral = exposure.get("neutral", params.get("exposure_neutral", self.exposure_neutral))
         lookbacks = params.get("lookbacks", self.lookbacks)
         q_low = params.get("quantile_low", self.quantile_low)
         q_high = params.get("quantile_high", self.quantile_high)

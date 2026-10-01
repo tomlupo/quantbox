@@ -196,3 +196,19 @@ def test_factor_regression_one_sided_pvalue_consistent_with_tstat():
     y = 0.001 + F @ np.array([0.5, 0.2]) + rng.normal(0, 0.003, n)
     reg = factor_regression(y, F, ["a", "b"])
     assert reg["alpha_pvalue_onesided"] == pytest.approx(1.0 - norm.cdf(reg["alpha_tstat"]), abs=1e-9)
+
+
+@pytest.mark.parametrize("n", [50, 337, 1000, 2501])
+def test_constant_series_yields_no_tstat_whatever_its_length(n):
+    """Exact ``std == 0`` was a lottery on (value, length): ``[0.001] * 337`` has std
+    ~2e-19 and came out with t = 3.5e16 (TOM-1351). The guard is relative now."""
+    out = newey_west_tstat(np.full(n, 0.001))
+    assert out["nw_tstat"] is None and out["nw_se"] is None
+
+
+@pytest.mark.parametrize("y_of", [lambda F: np.full(len(F), 0.001), lambda F: 0.001 + F @ [1.0, 2.0]])
+def test_a_perfect_factor_fit_yields_no_alpha_tstat(y_of):
+    """Residuals cancelled to noise leave no HAC variance; the alpha t was ~1e14-1e16."""
+    t = np.arange(300)
+    F = np.column_stack([np.sin(0.3 * t), np.cos(0.7 * t)]) * 0.01
+    assert factor_regression(y_of(F), F, ["a", "b"])["alpha_tstat"] is None

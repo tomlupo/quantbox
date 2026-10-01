@@ -220,6 +220,26 @@ class LocalFileDataPlugin:
         description="Load market data from local Parquet/CSV files via DuckDB",
         inputs=(),
         outputs=("universe", "prices", "volume", "market_cap", "funding_rates", "fx"),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "prices_path": {"description": "Parquet/CSV of close prices (wide or long)."},
+                "volume_path": {"description": "Parquet/CSV of volume."},
+                "market_cap_path": {"description": "Parquet/CSV of market cap."},
+                "universe_path": {"description": "Parquet/CSV listing the universe symbols."},
+                "funding_rates_path": {"description": "Parquet/CSV of funding rates."},
+                "fx_path": {"description": "Parquet/CSV of FX rates."},
+                "dataset": {
+                    "description": "quantbox-datasets name served at the build pinned in datasets.lock; *_path are then ignored."
+                },
+                "dataset_lock": {
+                    "description": "datasets.lock that pins `dataset`; the runner defaults it to the lock nearest the config."
+                },
+                "mode": {
+                    "description": "Accepted for compatibility and unused: the run mode reaches the plugin per request."
+                },
+            },
+        },
     )
 
     prices_path: str | None = None

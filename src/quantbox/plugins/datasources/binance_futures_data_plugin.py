@@ -47,8 +47,16 @@ class BinanceFuturesDataPlugin:
         params_schema={
             "type": "object",
             "properties": {
-                "quote_asset": {"type": "string", "default": "USDT"},
-                "min_open_interest_usd": {"type": "number", "default": 0},
+                "quote_asset": {
+                    "type": "string",
+                    "default": "USDT",
+                    "description": "Quote asset of the perpetual contracts (e.g. USDT).",
+                },
+                "min_open_interest_usd": {
+                    "type": "number",
+                    "default": 0,
+                    "description": "Skip contracts whose open interest (USD) is below this.",
+                },
             },
         },
         outputs=("universe", "prices", "volume", "funding_rates", "market_cap", "screen_volume"),

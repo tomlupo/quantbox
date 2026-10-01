@@ -44,6 +44,21 @@ class TrendCatcherStrategy:
         schema_version="v1",
         description="MA-crossover trend-following with BTC regime filter (Robuxio TrendCatcher v1).",
         tags=("crypto", "trend-following", "long-only"),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "regime_window": {"description": "Moving average of the regime filter on regime_ticker."},
+                "trend_window": {"description": "Moving average of the per-coin trend signal."},
+                "max_positions": {"description": "Maximum concurrent positions."},
+                "sizing": {"enum": ["ew", "rw"], "description": "Equal weight or risk (ATR) weight."},
+                "atr_window": {"description": "ATR window for risk weighting."},
+                "regime_ticker": {"description": "Ticker of the regime asset."},
+                "vol_target": {
+                    "description": "Annualised volatility target; set switches sizing to rw. null disables."
+                },
+                "vol_lookback": {"description": "Bars of the volatility estimate."},
+            },
+        },
     )
 
     regime_window: int = 50

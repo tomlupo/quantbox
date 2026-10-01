@@ -253,6 +253,30 @@ reach the `DatasetManifest`, so the venue has to be declared in the config.
 > to bar `lag_bars` (`quantbox.execution.lag_buy_and_hold`) — on bar 0 it would
 > trade the flat row and never enter.
 
+### Arms: one base config, many runs
+
+Near-identical configs that differ in one or two values are **arms** of one
+batch, declared once: a base config plus named `overrides:` (dotted paths, list
+indices allowed: `plugins.strategies.0.params.min_periods`) or a Cartesian
+`grid:`. `quantbox arms -c arms.yaml` runs them in parallel within
+`--max-workers` and a memory budget (`parallel.memory_budget_gb` /
+`arm_memory_gb`; with no budget, the memory available now), one ordinary run —
+and one `run@1` manifest — per arm. `arms_summary.json` (`quantbox/arms@1`)
+lists every arm with a link to its manifest, `n_trials` (the number of arms, or
+a larger honest count from the file) is stamped into every manifest, and a
+failing arm fails the batch (exit 1) by name while the others' results stay.
+The file format is the `quantbox.arms` module docstring.
+
+Timing is batch-level: the arms file's `execution:` block is the same block
+`quantbox sweep` reads, and an arm that overrides `execution`, `run.n_trials` or
+`artifacts` is refused. `quantbox sweep` records its timing and `n_trials`
+(one per grid row) in `<output_dir>/sweep_manifest.json`.
+
+A `source: path/to/strategy.py:Class` strategy works in a single run, as an
+arm, in a variant (`variants[].strategy.source`) and in a sweep
+(`strategy: {source: ...}`, path relative to the sweep config). In the runner
+the path is relative to the working directory.
+
 ## Outputs
 
 Artifacts are written to `artifacts/<run_id>/`:

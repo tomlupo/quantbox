@@ -148,12 +148,27 @@ def sr_estimator_std(T: int, sr: float, skew: float, kurtosis: float) -> float:
     return math.sqrt(numerator / (T - 1))
 
 
-def deflated_sharpe_ratio(sr: float, T: int, skew: float, kurtosis: float, n_trials: int) -> DSRResult:
+def deflated_sharpe_ratio(
+    sr: float,
+    T: int,
+    skew: float,
+    kurtosis: float,
+    n_trials: int,
+    *,
+    trials_sr_std: float | None = None,
+) -> DSRResult:
     """Compute the genuine Deflated Sharpe Ratio.
 
     Parameters are all PER-PERIOD (not annualised): ``sr`` is the per-period
     Sharpe, ``skew``/``kurtosis`` are the per-period return-distribution
     moments, ``T`` is the number of return observations.
+
+    The deflation benchmark is ``sr0 = sigma * expected_max_sr(n_trials)``, where
+    sigma is the cross-trial standard deviation of the Sharpe ratios tried. When
+    the sweep's Sharpes are known, pass their per-period std as
+    ``trials_sr_std`` (the textbook form). Omitted, sigma is this series' own
+    estimator std — the null in which every trial had zero true Sharpe and this
+    estimator's noise (the default, and the only form before TOM-1351).
 
     Returns a DSRResult; ``result.dsr`` is P(true SR exceeds the
     multiple-testing-deflated benchmark) — compare against a threshold
@@ -203,8 +218,10 @@ def deflated_sharpe_ratio(sr: float, T: int, skew: float, kurtosis: float, n_tri
     # guard is how the first one stops being the real protection.
     sr_std = sr_estimator_std(T, sr, skew, kurtosis)
 
+    if trials_sr_std is not None and not (math.isfinite(trials_sr_std) and trials_sr_std > 0):
+        raise ValueError(f"trials_sr_std must be finite and positive, got {trials_sr_std!r}")
     e_max = expected_max_sr(n_trials)
-    sr0 = sr_std * e_max
+    sr0 = (sr_std if trials_sr_std is None else trials_sr_std) * e_max
     z = (sr - sr0) / sr_std
     psr0 = stats.norm.cdf(sr / sr_std)
     dsr = stats.norm.cdf(z)
