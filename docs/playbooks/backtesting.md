@@ -151,7 +151,12 @@ between deciding and filling. It is applied in exactly one place
 (`BacktestPipeline._align_for_engine`, after aggregation, venue clipping and
 risk transforms, before the engine), so it holds for the vectorbt `from_orders`
 branch, the vectorbt order-func (`threshold`) branch, rsims and the variants
-flow alike. `quantbox sweep` (`analysis.parameter_grid`) uses the same setting.
+flow alike. `quantbox sweep` (`analysis.parameter_grid`) uses the same setting,
+and so do the Python helpers `backtest()` and `optimize()`
+(`quantbox.plugins.backtesting`): keyword `lag_bars=`, same default, same
+same-bar warning, and the result carries the same `execution` record. Before
+TOM-1337 those two helpers traded same-bar; pass `lag_bars=0` to reproduce one
+of their old numbers.
 
 ```yaml
 plugins:
@@ -233,6 +238,9 @@ reach the `DatasetManifest`, so the venue has to be declared in the config.
 > On the reviewer's toy the split was: same-bar −0.1792, next-bar −0.1589,
 > same-bar with only the first rebalance zeroed −0.1553 — there the lost first
 > period ALONE moves the number by more than the whole same-bar → next-bar delta.
+> Buy-and-hold (`rebalancing_freq: null`) is the exception: its one trade moves
+> to bar `lag_bars` (`quantbox.execution.lag_buy_and_hold`) — on bar 0 it would
+> trade the flat row and never enter.
 
 ## Outputs
 

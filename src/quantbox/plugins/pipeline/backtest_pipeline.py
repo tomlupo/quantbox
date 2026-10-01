@@ -68,6 +68,7 @@ from quantbox.execution import (
     describe_execution,
     execution_record,
     exposure_metrics,
+    lag_buy_and_hold,
     materialise_nan_policy,
     resolve_allow_shorts,
     resolve_lag_bars,
@@ -416,7 +417,7 @@ class BacktestPipeline:
                 fees=fees,
                 fixed_fees=fixed_fees,
                 slippage=slippage_val,
-                rebalancing_freq=rebalancing_freq,
+                rebalancing_freq=lag_buy_and_hold(bt_prices.index, rebalancing_freq, lag_bars),
                 threshold=threshold,
                 trading_days=trading_days,
             )
@@ -795,7 +796,7 @@ class BacktestPipeline:
                 fees=v_fees,
                 fixed_fees=v_fixed,
                 slippage=v_slip,
-                rebalancing_freq=v_freq,
+                rebalancing_freq=lag_buy_and_hold(bt_p.index, v_freq, lag_bars),
                 threshold=v_thresh,
                 trading_days=trading_days,
             )
