@@ -576,6 +576,36 @@ def approve(
     print("Wrote approval:", out)
 
 
+dataset_app = typer.Typer(help="Datasets read by name: pinned by datasets.lock, rooted by $QUANTBOX_DATASETS_ROOT.")
+app.add_typer(dataset_app, name="dataset")
+
+
+@dataset_app.command("resolve")
+def dataset_resolve(
+    name: str = typer.Argument(help="Dataset name, as a config's data.params_init.dataset names it"),
+    lock: str = typer.Option(None, "--lock", help="datasets.lock to read (default: the nearest above the cwd)"),
+    json: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """What the runner would read for a dataset: path, pinned sha256, market, funding file, match.
+
+    Exits 1 when the bytes are not the pinned build, or the dataset cannot be resolved.
+    """
+    from .dataset_lock import DatasetResolveError, resolve_dataset
+
+    try:
+        resolved = resolve_dataset(name, lock=lock)
+    except DatasetResolveError as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise SystemExit(1) from exc
+    if json:
+        print(_as_json(resolved))
+    else:
+        for key, value in resolved.items():
+            print(f"{key}: {value}")
+    if resolved["matches"] is False:
+        raise SystemExit(1)
+
+
 def main():
     app()
 
