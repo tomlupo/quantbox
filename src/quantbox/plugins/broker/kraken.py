@@ -53,7 +53,7 @@ from quantbox.portfolio_value import (
 from quantbox.retry import with_retry
 
 from ..datasources.kraken_data import KRAKEN_BALANCE_SUFFIXES, normalize_kraken_asset
-from ._fills import STATUS_WORKING, resolve_fill, trade_fee, trade_fee_currency
+from ._fills import STATUS_UNKNOWN, STATUS_WORKING, resolve_fill, trade_fee, trade_fee_currency
 
 try:
     import ccxt
@@ -625,7 +625,9 @@ class KrakenBroker:
                         "error": reason,
                     }
                 )
-                if status == "FAILED":
+                if status in ("FAILED", STATUS_UNKNOWN):
+                    # UNKNOWN booked no fill and is not known to be working —
+                    # it is counted with the failures, never logged as a fill.
                     n_failed += 1
                 elif status == STATUS_WORKING:
                     n_working += 1

@@ -168,7 +168,7 @@ Tests live next to the plugin: `tests/plugins/strategy/test_fund_scoring.py`.
 Minimum tests:
 
 1. **Smoke test** — instantiate, call key method with synthetic data, assert no crash.
-2. **Schema test** — feed bogus params, assert `quantbox.validate_params` raises.
+2. **Schema test** — feed bogus params, assert `jsonschema.validate(params, meta.params_schema)` raises (quantbox has no params validator of its own).
 3. **Output schema test** — assert returned DataFrame matches `src/quantbox/artifact_schemas/{output}.schema.json`.
 
 Beyond that, test domain logic the same way you'd test any function. Use plain pytest. Don't stand up the runner unless you're explicitly testing the runner.

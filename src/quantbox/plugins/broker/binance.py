@@ -143,6 +143,8 @@ class BinanceBroker:
                         "side": side.lower(),
                         "qty": float(f.get("qty", 0.0)),
                         "price": float(f.get("price", 0.0)),
+                        # An executed fill says so: a status-less row is UNKNOWN to the pipeline (TOM-1336).
+                        "status": "FILLED",
                     }
                 )
 

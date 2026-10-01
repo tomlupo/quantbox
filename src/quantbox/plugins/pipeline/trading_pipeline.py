@@ -34,6 +34,7 @@ from quantbox.contracts import (
     RunResult,
     StrategyPlugin,
 )
+from quantbox.frequency import resolve_pipeline_frequency
 from quantbox.portfolio_value import (
     BASIS_MARK,
     DEFAULT_RECONCILIATION_TOLERANCE,
@@ -42,7 +43,7 @@ from quantbox.portfolio_value import (
     resolve_portfolio_value,
     value_holdings,
 )
-from quantbox.reconciliation.ledger import EXEC_STATUS_TO_LEDGER
+from quantbox.reconciliation.ledger import EXEC_STATUS_TO_LEDGER, NON_TERMINAL_RESULT_STATUSES
 from quantbox.reconciliation.working_orders import DEFAULT_MAX_AGE_DAYS
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,18 @@ def _safe_float(v: Any) -> float | None:
         return None
 
 
+def _with_injected_annualize(strat_params: dict[str, Any], injected: float | None) -> dict[str, Any]:
+    """A COPY of a strategy's params carrying `_pipeline_annualize`.
+
+    An explicit value already in the strategy's params wins, as it does in the
+    backtest pipeline. The config dict itself is never mutated.
+    """
+    out = dict(strat_params or {})
+    if injected is not None and "_pipeline_annualize" not in out:
+        out["_pipeline_annualize"] = injected
+    return out
+
+
 class ReconEnforcementError(RuntimeError):
     """A CRITICAL enforce-mode reconciliation failure that must NOT be swallowed.
 
@@ -149,6 +162,10 @@ def _atomic_write_text(path: Any, text: str) -> None:
 # out-of-cycle working-order resolver must translate into the same map and a
 # private second copy is how two callers start disagreeing.
 _EXEC_STATUS_TO_LEDGER = EXEC_STATUS_TO_LEDGER
+
+# The statuses a broker row may carry that the execution loop acts on. Anything
+# else — absent, empty, or a word outside this set — is UNKNOWN (TOM-1336).
+_EXEC_STATUSES = frozenset({"FILLED", "PARTIAL", "WORKING", "FAILED", "SKIPPED", "UNKNOWN"})
 
 
 @dataclass
@@ -749,14 +766,23 @@ class TradingPipeline:
         market_data = self._build_market_data(market_data_dict, universe)
 
         # --- Stage 2: Strategy Execution ---
+        # Hand strategies the SAME `_pipeline_annualize` the backtest pipeline
+        # does (one resolver, `resolve_pipeline_frequency`). Without it every
+        # strategy that reads the key fell back to 252 in paper/live while its
+        # backtest used 365 on a 24/7 book — a sqrt(365/252) ~= 1.20x vol-sizing
+        # gap between the two (TOM-1338).
+        injected_annualize = resolve_pipeline_frequency(params, prices_params).bars_per_year()
         if strategies:
             strategy_results = self._run_strategy_plugins(
                 strategies,
                 strategies_cfg,
                 market_data,
+                injected_annualize=injected_annualize,
             )
         else:
-            strategy_results = self._run_strategies(market_data, strategies_cfg, params)
+            strategy_results = self._run_strategies(
+                market_data, strategies_cfg, params, injected_annualize=injected_annualize
+            )
 
         # Save per-strategy weights
         strat_weights_records: list[dict[str, Any]] = []
@@ -1337,6 +1363,7 @@ class TradingPipeline:
         market_data: dict[str, Any],
         strategies_cfg: list[dict[str, Any]],
         pipeline_params: dict[str, Any],
+        injected_annualize: float | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Import and run each strategy, collecting results."""
         results: dict[str, dict[str, Any]] = {}
@@ -1344,7 +1371,7 @@ class TradingPipeline:
         for strat_cfg in strategies_cfg:
             name = strat_cfg["name"]
             weight = float(strat_cfg.get("weight", 1.0))
-            strat_params = strat_cfg.get("params", {})
+            strat_params = _with_injected_annualize(strat_cfg.get("params", {}), injected_annualize)
 
             try:
                 module = importlib.import_module(f"quantbox.plugins.strategies.{name}")
@@ -1376,6 +1403,7 @@ class TradingPipeline:
         strategy_plugins: list[StrategyPlugin],
         strategies_cfg: list[dict[str, Any]],
         market_data: dict[str, Any],
+        injected_annualize: float | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Run injected StrategyPlugin instances, collecting results."""
         results: dict[str, dict[str, Any]] = {}
@@ -1383,7 +1411,7 @@ class TradingPipeline:
         for i, strat in enumerate(strategy_plugins):
             strat_cfg = strategies_cfg[i] if i < len(strategies_cfg) else {}
             weight = float(strat_cfg.get("weight", 1.0))
-            strat_params = strat_cfg.get("params", {})
+            strat_params = _with_injected_annualize(strat_cfg.get("params", {}), injected_annualize)
 
             result = strat.run(data=market_data, params=strat_params)
 
@@ -2469,7 +2497,14 @@ class TradingPipeline:
                 # Strip whitespace before normalising: a broker that returns a
                 # padded side/status (e.g. "SELL " / "SKIPPED ") must not slip
                 # past the SKIPPED / close-out-SELL freeze counter (#81).
-                status = str(fill_row.get("status", "FILLED")).strip().upper()
+                #
+                # A missing, empty or unrecognised status is UNKNOWN, never
+                # FILLED (TOM-1336): defaulting it to FILLED is how an order the
+                # venue never confirmed booked as a full fill.
+                _raw_status = fill_row.get("status")
+                status = "" if _raw_status is None or pd.isna(_raw_status) else str(_raw_status).strip().upper()
+                if status not in _EXEC_STATUSES:
+                    status = "UNKNOWN"
                 side = str(fill_row.get("side", "")).strip().lower()
                 if status == "SKIPPED":
                     # Broker intentionally did not place this order (sub-minimum /
@@ -2556,6 +2591,72 @@ class TradingPipeline:
                         logger.error(
                             "Order for %s is working at the venue but carries NO order id — "
                             "it cannot be resolved next cycle and its fill may go unrecorded",
+                            fill_row.get("symbol", ""),
+                        )
+                    continue
+                if status == "UNKNOWN":
+                    # The broker could not confirm what happened. Book NO fill.
+                    # It is reported as a failure (so the operator is alerted and
+                    # every FAILED consumer downstream sees a non-fill), and when
+                    # it carries an order id it joins the working-order queue so
+                    # the next cycle books the venue's real outcome.
+                    _oid = fill_row.get("order_id")
+                    order_id = "" if _oid is None or pd.isna(_oid) else str(_oid)
+                    _err = fill_row.get("error")
+                    _err = "" if _err is None or pd.isna(_err) else str(_err)
+                    # A QUEUED unconfirmed order is non-terminal `unknown` in the
+                    # ledger, the same rule as WORKING: the resolver books its real
+                    # outcome against this order_ref next cycle. Booking it terminal
+                    # `failed` let Stage 7b count it into the failure streak — one
+                    # unconfirmed order opened a consecutive_failed break, three
+                    # escalated to HALT. With no id or no queue nothing will ever
+                    # resolve it, so it stays terminal `failed` and loud.
+                    queued = bool(order_id) and working_store is not None
+                    report["orders_details"].append(
+                        {
+                            "symbol": str(fill_row.get("symbol", "")),
+                            "action": str(fill_row.get("side", "")),
+                            "quantity": 0.0,
+                            "status": "FAILED",
+                            "fill_status": "UNKNOWN",
+                            "queued": queued,
+                            "order_id": order_id,
+                            "error": (
+                                f"fill UNCONFIRMED (broker status={_raw_status!r}); no fill booked"
+                                + (f" — {_err}" if _err else "")
+                            ),
+                        }
+                    )
+                    report["summary"]["total_failed"] += 1
+                    _pool = intent_refs.get((str(fill_row.get("symbol", "")), side))
+                    intent_ref = _pool.pop(0) if _pool else None
+                    if ledger is not None and cycle_id is not None and intent_ref:
+                        try:
+                            if queued:
+                                ledger.record_result(
+                                    order_ref=str(intent_ref), cycle_id=cycle_id, status="unknown", order_id=order_id
+                                )
+                            else:
+                                ledger.record_result(order_ref=str(intent_ref), cycle_id=cycle_id, status="failed")
+                        except Exception:  # noqa: BLE001 - ledger must not break the run
+                            logger.exception(
+                                "Failed to record the unconfirmed result for %s", fill_row.get("symbol", "")
+                            )
+                    if order_id:
+                        working_to_queue.append(
+                            {
+                                "symbol": str(fill_row.get("symbol", "")),
+                                "side": side,
+                                "order_id": order_id,
+                                "requested_qty": float(fill_row.get("requested_qty", 0) or 0.0),
+                                "reason": f"fill unconfirmed: {_err}",
+                                "order_ref": intent_ref,
+                            }
+                        )
+                    else:
+                        logger.error(
+                            "Order for %s has an UNCONFIRMED fill and NO order id — it cannot be "
+                            "resolved next cycle; reconcile it against the venue by hand",
                             fill_row.get("symbol", ""),
                         )
                     continue
@@ -3202,12 +3303,14 @@ class TradingPipeline:
                 status = str(result.get("status")).lower() if result else None
                 if status in ("filled", "partial"):
                     filled_syms.add(sym)
-                elif status == "working":
-                    # Accepted and still live on the book. Not a fill (nothing
-                    # executed yet) and NOT a missed fill (nothing went wrong) --
-                    # so it must touch neither `filled_syms` nor the failure
-                    # streak. Stage 6c resolves it against the venue next cycle
-                    # and records the terminal result against this same ref.
+                elif status in NON_TERMINAL_RESULT_STATUSES:
+                    # `working`: accepted and still live on the book. `unknown`:
+                    # unconfirmed but queued for resolution (TOM-1336). Neither is
+                    # a fill (nothing confirmed executed) nor a missed fill
+                    # (nothing is known to have gone wrong) -- so it must touch
+                    # neither `filled_syms` nor the failure streak. Stage 6c
+                    # resolves it against the venue next cycle and records the
+                    # terminal result against this same ref.
                     continue
                 elif status in ("timeout", None):
                     # Submitted but no (real) result observed = missed fill.
@@ -3267,6 +3370,10 @@ class TradingPipeline:
                     match = pool.pop(0) if pool else None
                     if match is not None:
                         status = str(match.get("status", "failed")).upper()
+                        if str(match.get("fill_status", "")).upper() == "UNKNOWN" and match.get("queued"):
+                            # Unconfirmed but queued for next-cycle resolution: the
+                            # same non-terminal rule as the captured path (TOM-1336).
+                            status = "UNKNOWN"
                         ledger.record_result(
                             order_ref=order_ref,
                             cycle_id=cycle_id,
@@ -3276,11 +3383,13 @@ class TradingPipeline:
                         )
                         if status in ("FILLED", "PARTIAL"):
                             filled_syms.add(sym)
-                        elif status == "WORKING":
-                            # Accepted, still live on the book. Neither a fill nor
-                            # a failure — the same rule as the captured-intent path
-                            # above. Without this the reconstruction path would
-                            # count every resting limit order as a failed order.
+                        elif status.lower() in NON_TERMINAL_RESULT_STATUSES:
+                            # WORKING: accepted, still live on the book. UNKNOWN
+                            # (queued): unconfirmed, resolved next cycle. Neither a
+                            # fill nor a failure — the same rule as the captured-
+                            # intent path above. Without this the reconstruction
+                            # path would count every resting limit order, and every
+                            # queued unconfirmed one, as a failed order.
                             pass
                         else:  # FAILED / SKIPPED / anything non-fill
                             this_cycle_failed[sym] = this_cycle_failed.get(sym, 0) + 1
@@ -3292,6 +3401,11 @@ class TradingPipeline:
 
         # --- Reconcile against external truth (holdings) -------------------
         actual_wt: dict[str, float] = {}
+        # Held symbols whose mark is missing: their weight is UNKNOWN, not zero
+        # (TOM-1335). Reading a missing mid as 0 made a fully-held name a -100%
+        # drift, a hard break that alone sends the book to FLATTEN. They are
+        # kept out of `actual_wt` and out of the drift map, and reported.
+        unpriced: list[str] = []
         phantom: list[str] = []
         get_positions = getattr(broker, "get_positions", None)
         pv = float(portfolio_value) if portfolio_value else 0.0
@@ -3299,15 +3413,36 @@ class TradingPipeline:
             try:
                 pos = get_positions()
                 if pos is not None and len(pos) > 0 and hasattr(broker, "get_market_snapshot"):
-                    snap = broker.get_market_snapshot(pos["symbol"].tolist())
-                    if snap is not None and "mid" in snap.columns:
-                        merged = pos.merge(snap[["symbol", "mid"]], on="symbol", how="left")
-                        for _, r in merged.iterrows():
-                            sym = str(r.get("symbol", ""))
-                            val = float(r.get("qty", 0) or 0) * float(r.get("mid", 0) or 0)
-                            actual_wt[sym] = val / pv
+                    # Lots summed per symbol BEFORE marking — the same rule #204
+                    # applied to the pre- and post-trade NAV. Keyed per merged row,
+                    # the last lot won; and `get_market_snapshot` emits one row per
+                    # REQUESTED element, so a duplicate request fans a merge out.
+                    # `min_count=1` keeps an all-NaN quantity NaN (unknown), not 0.
+                    held = (
+                        pd.to_numeric(pos["qty"], errors="coerce").groupby(pos["symbol"].astype(str)).sum(min_count=1)
+                    )
+                    snap = broker.get_market_snapshot(held.index.tolist())
+                    marks = pd.Series(dtype=float)
+                    if snap is not None and "mid" in snap.columns and len(snap) > 0:
+                        # One mark per symbol; `first()` takes the first non-null.
+                        marks = pd.to_numeric(snap["mid"], errors="coerce").groupby(snap["symbol"].astype(str)).first()
+                    values = held * marks.reindex(held.index)
+                    values[held == 0] = 0.0  # a flat position is known zero whatever its mark
+                    for sym, val in values.items():
+                        if pd.notna(val):
+                            actual_wt[sym] = float(val) / pv
+                        elif sym != stable_coin:
+                            unpriced.append(sym)
             except Exception as exc:  # never let recon crash the run
                 logger.warning("Reconciliation position read failed: %s", exc)
+        unpriced.sort()
+        if unpriced:
+            logger.warning(
+                "RECON [%s]: drift UNKNOWN for %d unmarkable holding(s): %s",
+                book_key,
+                len(unpriced),
+                ", ".join(unpriced),
+            )
 
         # Drift must be FRACTIONAL (|actual - target| / |target|), because that is
         # what BookTolerances documents and what `max_drift=0.10` / `drift_halt=0.25`
@@ -3322,7 +3457,7 @@ class TradingPipeline:
         drift_floor = float(getattr(tol, "drift_notional_floor", 10.0))
         drifts: dict[str, float] = {}
         for sym in set(final_weights) | set(actual_wt):
-            if sym == stable_coin:
+            if sym == stable_coin or sym in unpriced:
                 continue
             actual = actual_wt.get(sym, 0.0)
             target = float(final_weights.get(sym, 0.0))
@@ -3473,6 +3608,8 @@ class TradingPipeline:
                 for b in breaks
             ],
             "missed_fills": missed_fills,
+            # Held symbols whose drift is UNKNOWN (no mark) — not breaks, not zero.
+            "unpriced": unpriced,
             "ledger_path": str(ledger.path),
         }
 

@@ -16,15 +16,19 @@ class ValidationFinding:
 def _check_legacy_dataset_params(cfg: dict) -> None:
     data = (cfg.get("plugins") or {}).get("data") or {}
     params = data.get("params_init") or {}
-    # A bare ``dataset`` name is current (loaded by name, pinned by datasets.lock);
-    # only the filesystem root is legacy.
-    has_legacy = "dataset_root" in params
+    # A bare ``dataset`` name is current: rooted by $QUANTBOX_DATASETS_ROOT, pinned by
+    # datasets.lock (TOM-1349). An inline root or inline sha is the deprecated alias — it
+    # still runs. FutureWarning, not DeprecationWarning: Python hides the latter from a
+    # CLI user by default, and this one is meant for the person who wrote the config.
+    legacy = [k for k in ("dataset_root", "expected_prices_sha256") if k in params]
     has_new = "dataset_id" in params
-    if has_legacy and not has_new:
+    if legacy and not has_new:
         warnings.warn(
-            "config uses legacy dataset_root param; switch to dataset_id or a pinned dataset name "
+            f"config pins its dataset inline ({', '.join(legacy)}) — deprecated; name the dataset "
+            "and pin it in datasets.lock (`quantbox-datasets pin <name>`), with the root from "
+            "$QUANTBOX_DATASETS_ROOT; `quantbox dataset resolve <name> -c <config> --json` shows the result "
             "(see quantbox-qute/docs/decisions/0004-quantbox-dataset-plugin-tiers.md)",
-            DeprecationWarning,
+            FutureWarning,
             stacklevel=2,
         )
 
