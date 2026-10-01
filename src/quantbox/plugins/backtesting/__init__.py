@@ -28,7 +28,13 @@ from typing import Any
 
 import pandas as pd
 
-from quantbox.execution import apply_execution_lag, execution_record, resolve_lag_bars, warn_if_same_bar
+from quantbox.execution import (
+    apply_execution_lag,
+    execution_record,
+    lag_buy_and_hold,
+    resolve_lag_bars,
+    warn_if_same_bar,
+)
 
 from .metrics import (
     compute_backtest_metrics,
@@ -97,10 +103,13 @@ def _backtest(
     trading_days: int,
 ) -> dict[str, Any]:
     """``backtest()`` with an already-resolved ``lag_bars`` and no warning (``optimize()`` warns once)."""
+    grid = prices.index
+    for w in weights.values() if isinstance(weights, dict) else [weights]:
+        grid = grid.union(w.index)  # the engine's own bar grid
     pf = run_vectorbt(
         prices,
         _lag_for_engine(prices, weights, lag_bars),
-        rebalancing_freq=rebalancing_freq,
+        rebalancing_freq=lag_buy_and_hold(pd.to_datetime(grid), rebalancing_freq, lag_bars),
         threshold=threshold,
         fees=fees,
         fixed_fees=fixed_fees,
@@ -144,7 +153,8 @@ def backtest(
     slippage : float
         Slippage rate.
     rebalancing_freq : None | int | str | list
-        Rebalancing schedule.
+        Rebalancing schedule. ``None`` = buy-and-hold: one trade, at
+        ``close[lag_bars]`` (:func:`quantbox.execution.lag_buy_and_hold`).
     threshold : float | None
         Deviation threshold for rebalancing bands.
     use_numba : bool

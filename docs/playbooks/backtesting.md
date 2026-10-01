@@ -238,6 +238,9 @@ reach the `DatasetManifest`, so the venue has to be declared in the config.
 > On the reviewer's toy the split was: same-bar −0.1792, next-bar −0.1589,
 > same-bar with only the first rebalance zeroed −0.1553 — there the lost first
 > period ALONE moves the number by more than the whole same-bar → next-bar delta.
+> Buy-and-hold (`rebalancing_freq: null`) is the exception: its one trade moves
+> to bar `lag_bars` (`quantbox.execution.lag_buy_and_hold`) — on bar 0 it would
+> trade the flat row and never enter.
 
 ## Outputs
 

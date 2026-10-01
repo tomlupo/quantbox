@@ -90,3 +90,34 @@ def test_optimize_walk_forward_records_the_execution_timing():
         _prices(), _decided_fn, {"decided_on": [J - 1]}, method="walk_forward", train_size=10, test_size=10, fees=0.0
     )
     assert result["execution"]["lag_bars"] == 1
+
+
+def _hold_prices() -> pd.DataFrame:
+    idx = pd.date_range("2024-01-01", periods=5, freq="D")
+    return pd.DataFrame({"A": [100.0, 100.0, 110.0, 121.0, 133.1]}, index=idx)
+
+
+@pytest.mark.parametrize("lag", [0, 1])
+def test_buy_and_hold_enters_on_the_lagged_bar(lag):
+    """``rebalancing_freq=None`` trades once: the decision on bar 0 fills at close[lag].
+
+    Lagging the weights alone left the one scheduled trade on bar 0, where the
+    lagged weight is flat, so a next-bar buy-and-hold never entered and returned 0%.
+    """
+    prices = _hold_prices()
+    weights = pd.DataFrame({"A": 1.0}, index=prices.index)
+    result = backtest(prices, weights, fees=0.0, rebalancing_freq=None, lag_bars=lag)
+    assert result["metrics"]["total_return"] == pytest.approx(0.331, abs=1e-9)
+
+
+@pytest.mark.parametrize("lag", [None, 0, 1, 2])
+def test_buy_and_hold_agrees_with_the_pipeline(tmp_path, lag):
+    """Both doors enter a buy-and-hold book at close[lag_bars]; the toy's later jump is earned."""
+    kwargs = {} if lag is None else {"lag_bars": lag}
+    result = backtest(_prices(), _weights_decided_on(0), fees=0.0, rebalancing_freq=None, **kwargs)
+    params = {"rebalancing_freq": None}
+    if lag is not None:
+        params["execution"] = {"lag_bars": lag}
+    pipeline_return = _run_pipeline(tmp_path, params, decided_on=0)[0].metrics["total_return"]
+    assert result["metrics"]["total_return"] == pytest.approx(JUMP, abs=1e-9)
+    assert pipeline_return == pytest.approx(JUMP, abs=1e-9)
