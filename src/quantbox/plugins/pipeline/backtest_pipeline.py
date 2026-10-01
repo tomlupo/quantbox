@@ -328,6 +328,15 @@ class BacktestPipeline:
                     **VENUE_SCHEMA,
                     "description": "Run-level venue constraints (allow_shorts).",
                 },
+                "full_report": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Also write the heavy HTML research report (report.html + report_data.json, "
+                        "tens of MB on a typical line). Off by default: every backtest run writes the "
+                        "slim finding_report.json (qute-research/finding-report@1) instead."
+                    ),
+                },
             },
         },
         inputs=(),
@@ -388,6 +397,9 @@ class BacktestPipeline:
                 initial_cash=_number("initial_cash", params.get("initial_cash", 10000)),
                 margin=_number("margin", params.get("margin", 0.0)),
             )
+        full_report = params.get("full_report", False)
+        if not isinstance(full_report, bool):  # a truthy "no" must not write tens of MB
+            raise ValueError(f"'full_report' must be true or false, got {full_report!r}")
         variants = params.get("variants") or []
         variant_costs = _plan_variants(variants, engine, venue_declared, costs)
         # The run's files are the PRIMARY (first) variant's book, so its cap is the one recorded.
@@ -410,6 +422,8 @@ class BacktestPipeline:
             "variant_costs": variant_costs,
             # What data.load_market_data receives (before the warmup lookback and mode are added).
             "load_params": load_params,
+            # Also write the heavy report.html + report_data.json (TOM-1365); off by default.
+            "full_report": full_report,
         }
 
     def check_planned_data(self, data: Any, paths: dict[str, str | None]) -> None:
@@ -726,32 +740,34 @@ class BacktestPipeline:
                 execution=describe_execution(lag_bars),
             ),
         )
-        try:
-            rd = generate_report_data(
-                run_id=store.run_id,
-                asof=asof,
-                metrics=report_metrics,
-                portfolio_daily=portfolio_daily,
-                returns=returns_series,
-                # The report describes the TRADED book (post venue/risk/lag):
-                # its attribution is `w.shift(1) * ret` — "held at the close
-                # of t, earns t+1" — which is only true of what the engine
-                # actually filled.
-                weights_history=bt_weights,
-                bt_prices=bt_prices,
-                strategy_names=report_strategy_names,
-                period_start=period_start,
-                period_end=period_end,
-                vbt_portfolio=result_data.get("vbt_portfolio"),
-                strategy_details=strategy_details,
-                narrative=narrative,
-                reproducibility=reproducibility,
-                execution=describe_execution(lag_bars),
-            )
-            store.put_text("report_data.json", report_data_to_json(rd))
-            store.put_text("report.html", generate_html_report(rd))
-        except Exception as _report_exc:
-            logger.warning("HTML report generation failed: %s", _report_exc)
+        # The heavy HTML report is opt-in; the slim finding_report.json is written by the runner.
+        if plan["full_report"]:
+            try:
+                rd = generate_report_data(
+                    run_id=store.run_id,
+                    asof=asof,
+                    metrics=report_metrics,
+                    portfolio_daily=portfolio_daily,
+                    returns=returns_series,
+                    # The report describes the TRADED book (post venue/risk/lag):
+                    # its attribution is `w.shift(1) * ret` — "held at the close
+                    # of t, earns t+1" — which is only true of what the engine
+                    # actually filled.
+                    weights_history=bt_weights,
+                    bt_prices=bt_prices,
+                    strategy_names=report_strategy_names,
+                    period_start=period_start,
+                    period_end=period_end,
+                    vbt_portfolio=result_data.get("vbt_portfolio"),
+                    strategy_details=strategy_details,
+                    narrative=narrative,
+                    reproducibility=reproducibility,
+                    execution=describe_execution(lag_bars),
+                )
+                store.put_text("report_data.json", report_data_to_json(rd))
+                store.put_text("report.html", generate_html_report(rd))
+            except Exception as _report_exc:
+                logger.warning("HTML report generation failed: %s", _report_exc)
 
         # --- Risk checks on latest targets ---
         targets = pd.DataFrame(agg_records)
@@ -1090,6 +1106,18 @@ class BacktestPipeline:
                     row[k] = float(v_)
             metric_rows.append(row)
         a_var_metrics = store.put_parquet("variant_metrics", pd.DataFrame(metric_rows))
+        # Every arm's return series, LONG (date, variant, returns) so a variant may be
+        # named anything ("date" included): the finding-report export reads it.
+        a_var_returns = store.put_parquet(
+            "variant_returns",
+            pd.concat(
+                [
+                    pd.DataFrame({"date": r["returns"].index, "variant": n, "returns": r["returns"].to_numpy()})
+                    for n, r in variant_results.items()
+                ],
+                ignore_index=True,
+            ),
+        )
 
         period_start = str(primary["returns"].index[0])[:10] if len(primary["returns"]) else asof
         period_end = str(primary["returns"].index[-1])[:10] if len(primary["returns"]) else asof
@@ -1134,29 +1162,30 @@ class BacktestPipeline:
                     execution=describe_execution(lag_bars),
                 ),
             )
-            rd = generate_report_data(
-                run_id=store.run_id,
-                asof=asof,
-                metrics=report_metrics,
-                portfolio_daily=primary["portfolio_daily"],
-                returns=primary["returns"],
-                weights_history=primary["weights_history"],
-                bt_prices=primary["bt_prices"],
-                strategy_names=list(variant_results.keys()),
-                period_start=period_start,
-                period_end=period_end,
-                vbt_portfolio=primary["vbt_portfolio"],
-                strategy_details={
-                    vname: (next(iter(r["strategy_details"].values()), {}) or {})
-                    for vname, r in variant_results.items()
-                },
-                variant_results=variant_results,
-                narrative=narrative,
-                reproducibility=reproducibility,
-                execution=describe_execution(lag_bars),
-            )
-            store.put_text("report_data.json", report_data_to_json(rd))
-            store.put_text("report.html", generate_html_report(rd))
+            if plan["full_report"]:  # the heavy HTML report is opt-in
+                rd = generate_report_data(
+                    run_id=store.run_id,
+                    asof=asof,
+                    metrics=report_metrics,
+                    portfolio_daily=primary["portfolio_daily"],
+                    returns=primary["returns"],
+                    weights_history=primary["weights_history"],
+                    bt_prices=primary["bt_prices"],
+                    strategy_names=list(variant_results.keys()),
+                    period_start=period_start,
+                    period_end=period_end,
+                    vbt_portfolio=primary["vbt_portfolio"],
+                    strategy_details={
+                        vname: (next(iter(r["strategy_details"].values()), {}) or {})
+                        for vname, r in variant_results.items()
+                    },
+                    variant_results=variant_results,
+                    narrative=narrative,
+                    reproducibility=reproducibility,
+                    execution=describe_execution(lag_bars),
+                )
+                store.put_text("report_data.json", report_data_to_json(rd))
+                store.put_text("report.html", generate_html_report(rd))
         except Exception as _exc:
             logger.warning("Multi-variant report generation failed: %s", _exc)
 
@@ -1191,6 +1220,7 @@ class BacktestPipeline:
                 "metrics": a_metrics,
                 "traded_weights": a_traded,
                 "variant_metrics": a_var_metrics,
+                "variant_returns": a_var_returns,
             },
             metrics=flat_metrics,
             notes={

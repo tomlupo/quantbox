@@ -29,6 +29,7 @@ from .contracts import (
 from .exceptions import ConfigValidationError, PluginNotFoundError
 from .llm_utils import event_line, load_schema, validate_table
 from .plugin_manifest import load_manifest, resolve_profile
+from .run_history import RUN_TS_FORMAT
 from .run_manifest import _sha256_file
 from .store import FileArtifactStore
 from .strict import get_capability
@@ -351,7 +352,7 @@ def _run_capability_checks(data: Any, run_ctx: Any) -> dict[str, dict[str, Any]]
 
 
 def _run_id(asof: str, pipeline_name: str, cfg_hash: str) -> str:
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(timezone.utc).strftime(RUN_TS_FORMAT)
     safe = pipeline_name.replace(".", "_")
     return f"{asof}__{safe}__{cfg_hash}__{ts}"
 
@@ -815,6 +816,17 @@ def run_from_config(
             raise RuntimeError(f"strict mode capability failures: {failures}")
 
     store.put_json("run_manifest", _run_manifest.json_safe(manifest))
+    if manifest.get("engine"):
+        # The slim default report (TOM-1365): the run's qute-research/finding-report@1
+        # data, read back through the manifest just written.
+        from .finding_export import write_finding_report
+
+        try:
+            write_finding_report(store.root)
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).warning("finding_report.json export failed: %s", exc)
     store.append_event(event_line("RUN_END", run_id=run_id, metrics=result.metrics, warnings=len(manifest["warnings"])))
 
     # Optional: ingest artifacts into warehouse

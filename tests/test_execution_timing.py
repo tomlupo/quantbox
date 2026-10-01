@@ -293,7 +293,8 @@ def test_apply_execution_lag_shape():
 
 def test_default_run_records_and_states_its_timing(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="quantbox.execution"):
-        result, store = _run_pipeline(tmp_path, {})
+        # full_report: the heavy HTML report is opt-in (TOM-1365) and must state the timing too
+        result, store = _run_pipeline(tmp_path, {"full_report": True})
     assert "SAME-BAR" not in caplog.text
     assert result.notes["execution"] == {
         "lag_bars": 1,

@@ -1,6 +1,10 @@
 # Report blocks — reusable units of the research report
 
-The HTML research report (`backtest.pipeline.v1`) is composed of *blocks*:
+The HTML research report (`backtest.pipeline.v1`) is **opt-in**: a run writes it
+(`report.html` + `report_data.json`) only with `full_report: true` in the pipeline
+params. The default report is the slim `finding_report.json` (README § Artifacts).
+
+The report is composed of *blocks*:
 named, self-describing chart units that render into a fixed editorial
 template. A block has metadata (title, description, payload contract, tags)
 and a builder function that produces a Plotly figure dict.
