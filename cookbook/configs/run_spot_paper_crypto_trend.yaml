@@ -39,8 +39,7 @@ plugins:
   strategies:
     - name: "strategy.crypto_trend.v1"
       weight: 1.0
-      params:
-        lookback_days: 365
+      params: {}
 
   aggregator:
     name: "strategy.weighted_avg.v1"

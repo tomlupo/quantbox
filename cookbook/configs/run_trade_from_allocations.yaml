@@ -14,10 +14,9 @@ plugins:
       allocations_path: null
       allocations_ref: "latest:fund_selection.simple.v1"
       allocations_artifact: "allocations.parquet"
-      instrument_map: \"./config/instruments.yaml\"
+      instrument_map: "./config/instruments.yaml"
       prices:
         lookback_days: 5
-      round_lot: 1
       min_abs_qty: 0.0
       approval_required: true
       approval_path: null

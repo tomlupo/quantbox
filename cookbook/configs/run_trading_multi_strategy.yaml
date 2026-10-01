@@ -24,12 +24,10 @@ plugins:
   strategies:
     - name: "strategy.crypto_trend.v1"
       weight: 0.6
-      params:
-        lookback_days: 365
+      params: {}
     - name: "strategy.carver_trend.v1"
       weight: 0.4
-      params:
-        lookback_days: 365
+      params: {}
 
   aggregator:
     name: "strategy.weighted_avg.v1"
@@ -53,7 +51,7 @@ plugins:
   broker:
     name: "sim.paper.v1"
     params_init:
-      cash_usd: 100000
+      cash: 100000
 
   publishers: []
 

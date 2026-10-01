@@ -7,6 +7,9 @@ run:
   mode: backtest
   asof: "2026-02-01"
 
+artifacts:
+  root: "./artifacts"
+
 plugins:
   pipeline:
     name: backtest.pipeline.v1
@@ -21,7 +24,7 @@ plugins:
       weight: 1.0
       params:
         method: max_sharpe
-        lookback_days: 120
+        lookback: 120
         risk_free_rate: 0.04
 
   data:

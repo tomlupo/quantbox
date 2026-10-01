@@ -11,7 +11,7 @@ plugins:
     name: "trade.allocations_to_orders.v1"
     params:
       allocations_path: "./artifacts/<FUND_RUN_ID>/allocations.parquet"
-      instrument_map: \"./config/instruments.yaml\"
+      instrument_map: "./config/instruments.yaml"
       prices:
         lookback_days: 5
 
