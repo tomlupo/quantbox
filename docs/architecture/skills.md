@@ -95,7 +95,7 @@ Recommended template:
 | Task shape | Use | Code |
 |---|---|---|
 | "Does this idea even work?" | L0/L1 | vbt or qbt.run |
-| "Compare A vs B" | L2 | quantbox.compare |
+| "Compare A vs B" | L3 (L2 not built) | two plugin `.run()` calls |
 | "Log this for EXPERIMENTS.md" | L4 | YAML + run_from_config |
 | "Production run" | L5 | quantbox run --strict |
 

@@ -86,13 +86,15 @@ Skip this step on first add. Wait for the second consumer to confirm what idiom 
 
 ### 5. Wire to L1 namespace (if applicable)
 
-If the adapter serves a top-level capability (`quantbox.bt`, `quantbox.opt`, `quantbox.score`):
+If the adapter serves a top-level capability, expose it the way `quantbox.bt`
+(`src/quantbox/bt.py`, the only L1 namespace today) builds on
+`adapters.vectorbt`:
 
 ```python
-# src/quantbox/opt.py
-from .adapters.riskfolio import max_sharpe, rp
+# src/quantbox/{capability}.py
+from .adapters.{lib} import {lib_alias}, convenience_helper
 
-__all__ = ["max_sharpe", "rp"]
+__all__ = ["{lib_alias}", "convenience_helper"]
 ```
 
 ### 6. Test
@@ -101,19 +103,18 @@ __all__ = ["max_sharpe", "rp"]
 
 ```python
 def test_reexport_is_the_library():
-    from quantbox.adapters.riskfolio import rp
-    import riskfolio
+    from quantbox.adapters.{lib} import {lib_alias}
+    import {lib_module}
 
-    assert rp is riskfolio
+    assert {lib_alias} is {lib_module}
 
 
 def test_convenience_helper_runs():
     import pandas as pd
-    from quantbox.adapters.riskfolio import max_sharpe
+    from quantbox.adapters.{lib} import convenience_helper
 
     returns = pd.DataFrame({"A": [0.01, 0.02], "B": [0.03, -0.01]})
-    w = max_sharpe(returns)
-    assert w is not None
+    assert convenience_helper(returns) is not None
 ```
 
 Don't test the underlying library's behavior. That's their job.

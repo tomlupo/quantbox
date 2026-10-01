@@ -2,6 +2,7 @@
 
 LLM-driven continuous improvement of an existing strategy within a defined search space, budget, and statistical gate. Read [architecture/autoresearch.md](../architecture/autoresearch.md) first.
 
+<!-- design-only: names modules that are not built (tests/test_docs_module_refs.py) -->
 > **Not runnable yet.** This is the intended flow. There is no `quantbox.autoresearch`
 > module and no `quantbox autoresearch` command (`uv run quantbox --help`); ADR-0003
 > records the design.

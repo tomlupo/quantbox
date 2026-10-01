@@ -5,10 +5,12 @@ Resolves the historical sprawl of `prices.frequency` (ccxt string), `rebalancing
 default 252) by deriving everything from one `bar_size + calendar` pair, exchange-aware
 via `pandas-market-calendars`.
 
-Used internally by `backtest.pipeline.v1` to:
-  - derive default `trading_days` from `frequency.bars_per_year()`
+Used internally by `backtest.pipeline.v1` and `trade.full_pipeline.v1` (both via
+`resolve_pipeline_frequency`) to:
+  - derive default `trading_days` from `frequency.bars_per_year()` (backtest)
   - inject `_pipeline_annualize` into each strategy's params so strategies don't
-    need their own (potentially drifting) defaults
+    need their own (potentially drifting) defaults — identically in backtest and
+    paper/live (TOM-1338)
 
 Strategies that need annualization should declare `annualize: float | None = None`
 and consume it via `params.get("_pipeline_annualize", 252.0)` as a fallback —
@@ -47,6 +49,31 @@ _ALWAYS_OPEN_CALENDARS = frozenset({"24/7", "always_open", "ALWAYS_OPEN"})
 # unusual US holiday closures, broadly representative across calendars.
 _REFERENCE_YEAR_START = "2023-01-01"
 _REFERENCE_YEAR_END = "2023-12-31"
+
+# Semantic spellings of a bar size → ccxt interval. The ONE table: the data
+# sources' `normalize_data_frequency` and `_parse_bar_size` both read it, so a
+# `prices.frequency` that loads data also resolves an annualisation (TOM-1338).
+FREQUENCY_ALIASES: dict[str, str] = {
+    "daily": "1d",
+    "day": "1d",
+    "d": "1d",
+    "1day": "1d",
+    "hourly": "1h",
+    "hour": "1h",
+    "h": "1h",
+    "1hour": "1h",
+    "4hourly": "4h",
+    "4hour": "4h",
+    "weekly": "1w",
+    "week": "1w",
+    "w": "1w",
+    "monthly": "1M",
+    "month": "1M",
+    "1min": "1m",
+    "5min": "5m",
+    "15min": "15m",
+    "30min": "30m",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +145,30 @@ class Frequency:
         return f"Frequency(bar_size={_bar_size_to_str(self.bar_size)!r}, calendar={self.calendar!r})"
 
 
+def resolve_pipeline_frequency(params: dict[str, Any], prices_params: dict[str, Any]) -> Frequency:
+    """Resolve a pipeline run's `Frequency` from its params — the ONE resolver.
+
+    Both ``backtest.pipeline.v1`` and ``trade.full_pipeline.v1`` call this, and
+    inject its ``bars_per_year()`` into every strategy's params as
+    ``_pipeline_annualize``, so a strategy is annualised identically in its
+    backtest and in paper/live (TOM-1338).
+
+    Accepts (in priority order):
+      1. ``params['frequency']`` — full spec, str or dict
+         - dict: ``{'bar_size': '1h', 'calendar': 'NYSE'}``
+         - str: ``'1h'`` (calendar defaults to '24/7')
+      2. ``prices.frequency`` + optional ``params['market_calendar']`` shorthand
+      3. Default: ``Frequency('1d', '24/7')`` — 365 bars/yr, crypto-friendly
+    """
+    explicit = params.get("frequency")
+    if explicit is not None:
+        return Frequency.parse(explicit)
+
+    bar_size = prices_params.get("frequency", "1d")
+    calendar = params.get("market_calendar", "24/7")
+    return Frequency.parse({"bar_size": bar_size, "calendar": calendar})
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -178,6 +229,10 @@ def _parse_bar_size(s: str | pd.Timedelta) -> pd.Timedelta:
         return s
     if not isinstance(s, str) or not s:
         raise TypeError(f"_parse_bar_size: expected str|Timedelta, got {type(s).__name__}")
+    # Semantic aliases ("daily", "hourly", ...) the data sources already accept for
+    # `prices.frequency`. Looked up case-insensitively, but a canonical spec is
+    # never case-folded: "1M" (month) and "1m" (minute) are different bars.
+    s = FREQUENCY_ALIASES.get(s.strip().lower(), s)
     if s.endswith("M"):
         # Calendar month — pd.Timedelta has no months; approximate at 30 days.
         n = int(s[:-1]) if s[:-1] else 1

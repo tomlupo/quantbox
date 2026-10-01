@@ -1174,6 +1174,8 @@ class BinanceLiveBroker:
                     "commission": float(f.get("commission", 0.0)),
                     "commission_asset": f.get("commissionAsset"),
                     "execution_mode": "LIVE",
+                    # An executed fill says so: a status-less row is UNKNOWN to the pipeline (TOM-1336).
+                    "status": "FILLED",
                 }
 
             return None
@@ -1299,6 +1301,8 @@ class BinanceLiveBroker:
             "commission": commission,
             "commission_asset": self.stable_coin,
             "execution_mode": "PAPER",
+            # An executed fill says so: a status-less row is UNKNOWN to the pipeline (TOM-1336).
+            "status": "FILLED",
             "simulation": {
                 "spread_cost": sim_breakdown.get("spread_cost", 0),
                 "impact_cost": sim_breakdown.get("impact_cost", 0),

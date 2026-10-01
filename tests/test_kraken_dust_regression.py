@@ -88,6 +88,8 @@ class _FakeExchange:
             "amount": amount,
             "average": price or (1.0 if base == "USDC" else _PRICES.get(base, 0.0)),
             "filled": amount,
+            # A confirmed fill carries a status: a status-less reply is UNKNOWN (TOM-1336).
+            "status": "closed",
         }
         self.created_orders.append(order)
         return order

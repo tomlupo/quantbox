@@ -576,6 +576,53 @@ def approve(
     print("Wrote approval:", out)
 
 
+dataset_app = typer.Typer(help="Datasets read by name: pinned by datasets.lock, rooted by $QUANTBOX_DATASETS_ROOT.")
+app.add_typer(dataset_app, name="dataset")
+
+
+@dataset_app.command("resolve")
+def dataset_resolve(
+    name: str = typer.Argument(help="Dataset name, as a config's data.params_init.dataset names it"),
+    lock: str = typer.Option(None, "--lock", help="datasets.lock to read (overrides --config)"),
+    config: str = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Resolve as `run -c <config>` would: its data.params_init.dataset_lock, else the lock nearest the config",
+    ),
+    json: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """What a run would read for a dataset: path, pinned sha256, market, funding file, match.
+
+    With --config, the lock is the one `run -c <config>` binds (the nearest above the
+    config). Without it, the nearest datasets.lock above the cwd is used, which matches
+    a run only when no lock sits above the config.
+
+    Exits 1 when the bytes are not the pinned build, or the dataset cannot be resolved.
+    """
+    from .dataset_lock import DatasetResolveError, lock_for_config, resolve_dataset
+
+    if lock is None and config is not None:
+        cfg = yaml.safe_load(Path(config).read_text(encoding="utf-8")) or {}
+        params_init = ((cfg.get("plugins") or {}).get("data") or {}).get("params_init") or {}
+        explicit = params_init.get("dataset_lock")
+        found = lock_for_config(config)
+        lock = explicit if explicit is not None else (str(found) if found is not None else None)
+
+    try:
+        resolved = resolve_dataset(name, lock=lock)
+    except DatasetResolveError as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise SystemExit(1) from exc
+    if json:
+        print(_as_json(resolved))
+    else:
+        for key, value in resolved.items():
+            print(f"{key}: {value}")
+    if resolved["matches"] is False:
+        raise SystemExit(1)
+
+
 def main():
     app()
 

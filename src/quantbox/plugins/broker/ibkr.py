@@ -158,6 +158,8 @@ class IBKRBroker:
                         "side": side,
                         "qty": float(f.execution.shares),
                         "price": float(f.execution.price),
+                        # An executed fill says so: a status-less row is UNKNOWN to the pipeline (TOM-1336).
+                        "status": "FILLED",
                     }
                 )
 

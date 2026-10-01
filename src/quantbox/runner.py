@@ -269,13 +269,35 @@ def _plugin_meta(plugin: Any, fallback_name: str | None = None) -> dict[str, Any
     }
 
 
+def _bind_dataset_lock(data: Any, config_path: str | Path | None) -> None:
+    """Pin a by-name dataset with the datasets.lock nearest the CONFIG, not the cwd.
+
+    The same config run from the lab root or from a worktree then reads the same lock
+    and so the same build (TOM-1349). With no lock above the config, the plugin falls
+    back to the nearest one above the cwd, as before.
+    """
+    if config_path is None or not getattr(data, "dataset", None) or getattr(data, "dataset_lock", "") is not None:
+        return
+    from .dataset_lock import lock_for_config
+
+    lock = lock_for_config(config_path)
+    if lock is not None:
+        data.dataset_lock = str(lock)
+
+
 def _dataset_block(data: Any) -> dict[str, Any]:
     """Return the typed dataset evidence block for run_manifest.json.
 
-    Accepts a DataPlugin. If the DataPlugin exposes ``.resolve()`` returning a
-    DatasetPlugin (Tier 1+), evidence is read from it. Otherwise (Tier 0)
-    a raw marker is emitted.
+    Accepts a DataPlugin. A dataset read by name records its resolution (tier
+    ``lock``) — exactly what ``quantbox dataset resolve -c <config> --json`` prints. If the
+    DataPlugin exposes ``.resolve()`` returning a DatasetPlugin (Tier 1+),
+    evidence is read from it. Otherwise (Tier 0) a raw marker is emitted.
     """
+    resolution = getattr(data, "dataset_resolution", None)
+    if isinstance(resolution, dict):
+        if resolution["sha256"]:
+            return {"tier": "lock", "id": resolution["name"], "resolved": resolution}
+        return {"tier": "raw", "warning": "dataset not pinned in datasets.lock", "resolved": resolution}
     plugin = None
     if hasattr(data, "resolve"):
         try:
@@ -385,6 +407,7 @@ def run_from_config(
         raise PluginNotFoundError(data_name, "data", list(registry.data.keys()))
     data_cls = registry.data[data_name]
     data: DataPlugin = data_cls(**cfg["plugins"]["data"].get("params_init", {}))
+    _bind_dataset_lock(data, config_path)
 
     broker: BrokerPlugin | None = None
     broker_block = cfg["plugins"].get("broker")
@@ -597,10 +620,12 @@ def run_from_config(
 
     strict_mode = bool(cfg.get("run", {}).get("strict")) or result.mode == "promotion"
     if strict_mode:
-        if manifest["dataset"]["tier"] == "raw":
+        # "lock" (a by-name dataset verified against datasets.lock, TOM-1349) was "raw" before
+        # it had a tier of its own; accepting it in strict mode is a separate decision.
+        if manifest["dataset"]["tier"] in ("raw", "lock"):
             store.put_json("run_manifest", manifest)
             raise RuntimeError(
-                "strict mode rejects Tier-0 raw ingest — see "
+                f"strict mode rejects Tier-0 raw ingest (dataset tier {manifest['dataset']['tier']!r}) — see "
                 "quantbox-qute/docs/decisions/0004-quantbox-dataset-plugin-tiers.md"
             )
         failures = [c for c, r in manifest["capability_results"].items() if not r["passed"]]
