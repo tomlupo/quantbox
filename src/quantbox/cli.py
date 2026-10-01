@@ -405,6 +405,11 @@ def sweep(
           lag_bars: 1        # default; same convention as `quantbox run`
                              # (backtest.shift_signal is a deprecated alias)
         output_dir: heatmaps
+
+    ``strategy`` may also be ``{source: strategy.py:MyStrategy}`` (path relative to
+    the config). Writes ``<output_dir>/grid.parquet`` and
+    ``<output_dir>/sweep_manifest.json`` (``quantbox/sweep@1``: strategy, execution
+    timing, n_trials = grid rows).
     """
     from .analysis import DEFAULT_METRICS, run_grid
     from .analysis.parameter_grid import align_market_data
@@ -420,13 +425,8 @@ def sweep(
 
     sweep_lag_bars = resolve_lag_bars(cfg["execution"]) if "execution" in cfg else None
 
-    reg = PluginRegistry.discover()
-    strategy_name = cfg["strategy"]
-    if strategy_name not in reg.strategies:
-        raise PluginNotFoundError(strategy_name, "strategy", list(reg.strategies.keys()))
-    strategy_cls = reg.strategies[strategy_name]
-
     config_dir = config_path.parent
+    strategy_spec, strategy_cls = _sweep_strategy(cfg["strategy"], config_dir)
     data_cfg = cfg.get("data", {}) or {}
     if "dataset" not in data_cfg:
         raise typer.BadParameter("sweep config needs data.dataset: <quantbox-datasets name>")
@@ -463,7 +463,78 @@ def sweep(
         lag_bars=sweep_lag_bars,
         shift_signal=backtest.get("shift_signal"),  # deprecated alias of execution.lag_bars
     )
+    # The sweep's own manifest: the timing every row was simulated with, and the
+    # honest trial count (one per grid row), so a gate never counts by hand.
+    from .execution import execution_record, resolve_sweep_lag_bars
+
+    sweep_manifest = {
+        "schema": "quantbox/sweep@1",
+        "config": str(config_path),
+        "strategy": strategy_spec,
+        "execution": execution_record(resolve_sweep_lag_bars(sweep_lag_bars, backtest.get("shift_signal"))),
+        "n_trials": len(grid),
+        "grid": "grid.parquet",
+    }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "sweep_manifest.json").write_text(_as_json(sweep_manifest), encoding="utf-8")
     print(f"SWEEP: {len(grid)} rows  ->  {output_dir}")
+
+
+def _sweep_strategy(spec: Any, config_dir: Path) -> tuple[dict[str, str], type]:
+    """A sweep's ``strategy:`` — a registry name, ``{name: ...}`` or ``{source: file.py:Class}``.
+
+    A relative ``source`` path resolves from the sweep config, like every other sweep path.
+    """
+    from .runner import _resolve_plugin_cls
+
+    if isinstance(spec, str):
+        spec = {"name": spec}
+    if not isinstance(spec, dict) or ("name" in spec) == ("source" in spec):
+        raise typer.BadParameter("sweep `strategy:` is a registry name, {name: ...} or {source: path.py:Class}")
+    resolved = dict(spec)
+    if "source" in spec:
+        file_part, sep, cls_name = str(spec["source"]).rpartition(":")
+        if sep and not Path(file_part).is_absolute():
+            resolved["source"] = f"{config_dir / file_part}:{cls_name}"
+    registry = PluginRegistry.discover().strategies if "name" in spec else {}
+    cls = _resolve_plugin_cls(resolved, registry, "strategy", mode="backtest")
+    return {k: str(v) for k, v in spec.items()}, cls
+
+
+@app.command()
+def arms(
+    config: str = typer.Option(..., "-c", "--config", help="Path to the arms YAML (base + overrides or grid)"),
+    max_workers: int | None = typer.Option(
+        None, "--max-workers", help="Arms run at once (overrides parallel.max_workers)"
+    ),
+    memory_budget_gb: float | None = typer.Option(
+        None, "--memory-budget-gb", help="Total memory for concurrent arms (overrides parallel.memory_budget_gb)"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print only the batch summary (quantbox/arms@1) on stdout"),
+):
+    """Run every arm of an arms file in parallel; write arms_summary.json.
+
+    Exits 1 when any arm failed, naming it; the other arms' manifests are kept and linked.
+    File format: the `quantbox.arms` module docstring.
+    """
+    import json as json_mod
+
+    from .arms import load_arms, run_arms
+
+    out = sys.stderr if as_json else sys.stdout
+    with contextlib.redirect_stdout(out):
+        summary = run_arms(load_arms(config), max_workers=max_workers, memory_budget_gb=memory_budget_gb)
+    if as_json:
+        print(json_mod.dumps(summary, indent=2))
+    else:
+        par = summary["parallel"]
+        print(f"ARMS: {len(summary['arms'])} arms, n_trials={summary['n_trials']}, workers={par['workers']}")
+        for arm in summary["arms"]:
+            print(f"  {arm['status']:6s} {arm['name']}  {arm['manifest'] or arm['error']}")
+        print("SUMMARY:", summary["path"])
+    if summary["failed"]:
+        print(f"ARMS FAILED: {', '.join(summary['failed'])}", file=out)
+        raise SystemExit(1)
 
 
 @app.command()

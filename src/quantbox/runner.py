@@ -426,9 +426,14 @@ def run_from_config(
     strategies_cfg = cfg["plugins"].get("strategies", [])
     if strategies_cfg:
         strategy_plugins = []
+        named_cfg = []
         for s in strategies_cfg:
             cls = _resolve_plugin_cls(s, registry.strategies, "strategy", mode=mode)
             strategy_plugins.append(cls(**s.get("params_init", {})))
+            # The pipeline keys strategies by name; a `source:` block may omit it,
+            # so it carries the loaded class's meta.name (the config is not mutated).
+            named_cfg.append(s if s.get("name") else {**s, "name": cls.meta.name})
+        strategies_cfg = named_cfg
 
     # --- Aggregator (it's a strategy plugin) ---
     aggregator: StrategyPlugin | None = None
@@ -465,10 +470,11 @@ def run_from_config(
     for v in variants_cfg:
         vname = str(v["name"])
         strat_cfg = v.get("strategy") or {}
-        sname = strat_cfg.get("name") if isinstance(strat_cfg, dict) else str(strat_cfg)
-        if not sname:
-            raise ValueError(f"Variant {vname!r}: missing strategy.name")
-        cls = _resolve_plugin_cls({"name": sname}, registry.strategies, "strategy", mode=mode)
+        spec = strat_cfg if isinstance(strat_cfg, dict) else {"name": str(strat_cfg)}
+        if not (spec.get("name") or spec.get("source")):
+            raise ValueError(f"Variant {vname!r}: missing strategy.name or strategy.source")
+        spec = {"source": spec["source"]} if spec.get("source") else {"name": spec["name"]}
+        cls = _resolve_plugin_cls(spec, registry.strategies, "strategy", mode=mode)
         params_init = strat_cfg.get("params_init", {}) if isinstance(strat_cfg, dict) else {}
         variant_plugins[vname] = cls(**params_init)
 

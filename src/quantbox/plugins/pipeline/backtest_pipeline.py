@@ -747,9 +747,12 @@ class BacktestPipeline:
         for v in variants_cfg:
             vname = str(v["name"])
             strat_cfg = v.get("strategy") or {}
-            sname = strat_cfg.get("name") if isinstance(strat_cfg, dict) else str(strat_cfg)
+            if isinstance(strat_cfg, dict):
+                sname = strat_cfg.get("name") or strat_cfg.get("source")  # source: file.py:Class
+            else:
+                sname = str(strat_cfg)
             if not sname:
-                raise ValueError(f"Variant {vname!r}: missing strategy.name")
+                raise ValueError(f"Variant {vname!r}: missing strategy.name or strategy.source")
             splugin = variant_plugins.get(vname) or variant_plugins.get(sname)
             if splugin is None:
                 raise ValueError(f"Variant {vname!r}: no resolved plugin for strategy {sname!r}")
