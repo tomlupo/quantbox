@@ -85,8 +85,16 @@ _PARAM_SLOTS: dict[str, tuple[str, bool]] = {
 }
 
 
+# Pseudo-group for ``pipeline.params.strategies``: there ``name`` is a module under
+# ``quantbox.plugins.strategies`` whose module-level ``run(data, params)`` the backtest
+# and trading pipelines call when ``plugins.strategies`` is absent.
+_STRATEGY_MODULE = "strategy_module"
+_STRATEGY_PKG = "quantbox.plugins.strategies"
+
+
 def _plugin_blocks(plugins: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
-    """(where, group, block) for every named plugin block, backtest variants included."""
+    """(where, group, block) for every named plugin block, backtest variants and
+    ``pipeline.params.strategies`` included."""
     out: list[tuple[str, str, dict[str, Any]]] = []
     for slot, (group, is_list) in _PARAM_SLOTS.items():
         val = plugins.get(slot)
@@ -95,19 +103,36 @@ def _plugin_blocks(plugins: dict[str, Any]) -> list[tuple[str, str, dict[str, An
             if isinstance(block, dict) and block.get("name"):
                 out.append((f"plugins.{slot}[{i}]" if is_list else f"plugins.{slot}", group, block))
     pipeline = plugins.get("pipeline")
-    variants = ((pipeline or {}).get("params") or {}).get("variants") if isinstance(pipeline, dict) else None
-    for i, v in enumerate(variants or []):
+    pparams = ((pipeline or {}).get("params") or {}) if isinstance(pipeline, dict) else {}
+    for i, v in enumerate(pparams.get("variants") or []):
         strat = v.get("strategy") if isinstance(v, dict) else None
         if isinstance(strat, dict) and strat.get("name"):
             out.append((f"plugins.pipeline.params.variants[{i}].strategy", "strategy", strat))
+    for i, strat in enumerate(pparams.get("strategies") or []):
+        if isinstance(strat, dict) and strat.get("name"):
+            out.append((f"plugins.pipeline.params.strategies[{i}]", _STRATEGY_MODULE, strat))
     return out
+
+
+def _resolve_block_plugin(registry: Any, group: str, name: str) -> tuple[Any, str, str]:
+    """(plugin class, plugin name for messages, why it is unresolved) for one block."""
+    from .params_schema import PLUGIN_GROUPS
+
+    if group != _STRATEGY_MODULE:
+        cls = (getattr(registry, PLUGIN_GROUPS[group], None) or {}).get(name)
+        return cls, name, f"not a registered {group} plugin"
+    module = f"{_STRATEGY_PKG}.{name}"
+    for cls in (getattr(registry, PLUGIN_GROUPS["strategy"], None) or {}).values():
+        if getattr(cls, "__module__", None) == module:
+            return cls, cls.meta.name, ""
+    return None, name, f"no registered strategy plugin in module {module}"
 
 
 def check_plugin_params(plugins: dict[str, Any], registry: Any = None) -> list[ValidationFinding]:
     """Every key a config sets on a plugin must be a property of that plugin's params schema."""
     import difflib
 
-    from .params_schema import PLUGIN_GROUPS, check_params, config_fields, resolve_params_schema
+    from .params_schema import check_params, config_fields, resolve_params_schema
 
     blocks = _plugin_blocks(plugins)
     if not blocks:
@@ -122,10 +147,9 @@ def check_plugin_params(plugins: dict[str, Any], registry: Any = None) -> list[V
 
     findings: list[ValidationFinding] = []
     for where, group, block in blocks:
-        name = block["name"]
-        cls = (getattr(registry, PLUGIN_GROUPS[group], None) or {}).get(name)
+        cls, name, unresolved = _resolve_block_plugin(registry, group, block["name"])
         if cls is None:
-            findings.append(ValidationFinding("warning", f"params_not_checked:{name}: not a registered {group} plugin"))
+            findings.append(ValidationFinding("warning", f"params_not_checked:{name}: {unresolved}"))
             continue
         schema = resolve_params_schema(cls)
         if schema is None:

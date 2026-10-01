@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 import yaml
@@ -182,6 +183,55 @@ def test_validate_unregistered_plugin_is_a_warning_not_an_error():
     findings = validate_config(cfg, REG)
     assert not [f for f in findings if f.level == "error"]
     assert any("params_not_checked:lab.strategy.elsewhere.v1" in f.message for f in findings)
+
+
+# --- the repo's own examples validate clean (review of #218) --------------------
+
+COOKBOOK = sorted((Path(__file__).resolve().parents[1] / "cookbook").glob("**/configs/*.yaml"))
+RUN_CONFIGS = [p for p in COOKBOOK if "run" in (yaml.safe_load(p.read_text(encoding="utf-8")) or {})]
+
+
+def test_cookbook_run_configs_are_found():
+    """A glob that matches nothing would make the parametrized test below vacuously green."""
+    assert len(RUN_CONFIGS) >= 15, [p.name for p in COOKBOOK]
+
+
+@pytest.mark.parametrize("path", RUN_CONFIGS, ids=[p.name for p in RUN_CONFIGS])
+def test_cookbook_config_validates_clean(path):
+    cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+    errors = [f.message for f in validate_config(cfg, REG, check_params=True) if f.level == "error"]
+    assert not errors, f"{path.name}: {errors}"
+
+
+# --- the legacy pipeline.params.strategies path is checked too -------------------
+
+
+def _legacy_strategies_config(strategy_params: dict, name: str = "carry") -> dict:
+    cfg = _config({})
+    del cfg["plugins"]["strategies"]
+    cfg["plugins"]["pipeline"]["params"]["strategies"] = [{"name": name, "weight": 1.0, "params": strategy_params}]
+    return cfg
+
+
+def test_validate_checks_pipeline_params_strategies():
+    """backtest/trading pipelines run ``pipeline.params.strategies`` when ``plugins.strategies`` is absent:
+    each ``name`` is a module under ``quantbox.plugins.strategies`` whose ``run()`` takes ``params``."""
+    msgs = [f.message for f in validate_config(_legacy_strategies_config({"signal_span_dayz": 5}), REG)]
+    assert any(
+        "'signal_span_dayz'" in m and "strategy.carry.v1" in m and "pipeline.params.strategies[0]" in m for m in msgs
+    ), msgs
+
+
+def test_pipeline_params_strategies_valid_params_pass():
+    findings = validate_config(_legacy_strategies_config({"signal_span_days": 5}), REG)
+    assert not [f for f in findings if f.level == "error"], findings
+    assert not [f for f in findings if "params_not_checked" in f.message], findings
+
+
+def test_pipeline_params_strategies_unknown_module_is_a_warning():
+    findings = validate_config(_legacy_strategies_config({"x": 1}, name="no_such_module"), REG)
+    assert not [f for f in findings if f.level == "error"], findings
+    assert any("params_not_checked:no_such_module" in f.message for f in findings), findings
 
 
 def test_run_warns_on_unknown_param_but_does_not_refuse(caplog):
