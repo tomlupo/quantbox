@@ -8,12 +8,14 @@ import typer
 import yaml
 
 from .exceptions import PluginNotFoundError
+from .gates_cli import gates_app
 from .plugin_manifest import load_manifest, resolve_profile
 from .registry import PluginRegistry
 from .runner import run_from_config
 from .validate import validate_config
 
 app = typer.Typer(name="quantbox", help="Quant research & trading CLI")
+app.add_typer(gates_app, name="gates")
 
 
 def _as_json(obj) -> str:
