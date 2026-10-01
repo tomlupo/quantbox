@@ -30,7 +30,7 @@ _BLOCK = textwrap.dedent(
     import importlib.abc, sys
 
     class _Block(importlib.abc.MetaPathFinder):
-        BLOCKED = {"vectorbt", "numba"}
+        BLOCKED = __BLOCKED__
 
         def find_spec(self, name, path=None, target=None):
             if name.split(".")[0] in self.BLOCKED:
@@ -42,18 +42,19 @@ _BLOCK = textwrap.dedent(
             del sys.modules[_m]
     sys.meta_path.insert(0, _Block())
 
+    _probe = sorted(_Block.BLOCKED)[0]
     try:
-        import vectorbt  # noqa: F401
+        __import__(_probe)
     except ModuleNotFoundError:
         pass
     else:
-        raise SystemExit("HARNESS BROKEN: vectorbt still importable")
+        raise SystemExit(f"HARNESS BROKEN: {_probe} still importable")
     """
 )
 
 
-def _run(body: str) -> subprocess.CompletedProcess:
-    code = _BLOCK + textwrap.dedent(body)
+def _run(body: str, blocked: tuple[str, ...] = ("vectorbt", "numba")) -> subprocess.CompletedProcess:
+    code = _BLOCK.replace("__BLOCKED__", repr(set(blocked))) + textwrap.dedent(body)
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
     assert "HARNESS BROKEN" not in proc.stdout + proc.stderr, proc.stderr
     return proc
@@ -134,3 +135,23 @@ def test_asking_for_vectorbt_names_the_extra(snippet: str):
     )
     assert proc.returncode == 0, proc.stderr
     assert "NAMED-EXTRA" in proc.stdout, proc.stdout + proc.stderr
+
+
+def test_broken_vectorbt_install_is_not_reported_as_missing_extra():
+    """vectorbt present but one of ITS dependencies missing is a broken install:
+    the real ModuleNotFoundError must surface, not "install the extra"."""
+    proc = _run(
+        """
+        from quantbox.exceptions import MissingExtraError
+        try:
+            import quantbox.plugins.backtesting.vectorbt_engine  # noqa: F401
+        except MissingExtraError as exc:
+            raise SystemExit(f"WRONG: broken install reported as missing extra: {exc}")
+        except ModuleNotFoundError as exc:
+            assert exc.name.split(".")[0] == "plotly", exc
+            print("REAL-ERROR")
+        """,
+        blocked=("plotly",),
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "REAL-ERROR" in proc.stdout, proc.stdout + proc.stderr

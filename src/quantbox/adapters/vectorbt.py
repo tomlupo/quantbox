@@ -18,6 +18,11 @@ from quantbox.exceptions import MissingExtraError
 try:
     import vectorbt as vbt
 except ModuleNotFoundError as exc:  # vectorbt ships in the [vectorbt] extra
+    # Only the extra's OWN packages being absent means "install the extra"; a
+    # module missing deeper inside an installed vectorbt is a broken install
+    # and must surface as itself.
+    if (exc.name or "").split(".")[0] not in ("vectorbt",):
+        raise
     raise MissingExtraError("vectorbt", "quantbox.adapters.vectorbt", exc.name) from exc
 
 __all__ = ["vbt", "from_signals_with_costs"]
