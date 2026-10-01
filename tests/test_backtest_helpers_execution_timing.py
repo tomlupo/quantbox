@@ -44,7 +44,7 @@ def test_each_strategy_of_a_dict_is_lagged_on_the_engine_grid():
     prices = _prices()
     sparse = _weights_decided_on(J - 1).iloc[[0, J - 1]]  # decided on two dates only
     lagged = _lag_for_engine(prices, {"late": sparse, "same": _weights_decided_on(J - 2)}, 1)
-    assert lagged["late"]["A"].iloc[J - 1] == 0.0 or pd.isna(lagged["late"]["A"].iloc[J - 1])
+    assert pd.isna(lagged["late"]["A"].iloc[J - 1])  # no decision here: the engine ffills it
     assert lagged["late"]["A"].iloc[J] == 1.0  # one PRICE bar later, not one weights row later
     assert lagged["same"]["A"].iloc[J - 1] == 1.0
     assert _lag_for_engine(prices, sparse, 0) is sparse
