@@ -1101,10 +1101,21 @@ class BacktestPipeline:
         lose its effect on exactly the bars it targets. The policy is idempotent,
         so the engine later receives the same book it would have built itself.
         No lag is applied here — ``_align_for_engine`` lags the overlaid book once.
+
+        The filled value must not LEAK past the chain, though: the risk
+        transforms run on the decided book BEFORE the engine resolves its NaNs,
+        and tranching's rolling mean skips a NaN but averages a filled value. So
+        a cell that came in NaN and that the chain left at exactly its
+        materialised value goes back to NaN — no overlay touched it, and the
+        book downstream is the one the run without overlays builds. A cell the
+        chain CHANGED keeps the overlay's number.
         """
         if not chain:
             return weights, []
-        return apply_overlays(materialise_nan_policy(weights, engine), market_data, chain)
+        materialised = materialise_nan_policy(weights, engine)
+        out, record = apply_overlays(materialised, market_data, chain)
+        untouched = weights.isna() & out.eq(materialised)
+        return out.mask(untouched), record
 
     # ==================================================================
     # Stage 4: Risk transforms on full time series

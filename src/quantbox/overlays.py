@@ -39,10 +39,17 @@ def apply_overlays(
     for plugin, params in chain:
         meta = getattr(plugin, "meta", None)
         name = getattr(meta, "name", type(plugin).__name__)
-        out = plugin.apply(weights, data, dict(params or {}))
+        # Snapshot BEFORE the call: an overlay that mutates its input in place
+        # (``drop(columns=..., inplace=True)``) would otherwise be compared with
+        # itself and pass. Each overlay also gets its own copy of the book and of
+        # the data mapping, so neither the caller's frame (saved as
+        # ``base_weights_history``) nor the mapping the engine later prices from
+        # can be changed behind the chain's back.
+        index, columns = weights.index.copy(), weights.columns.copy()
+        out = plugin.apply(weights.copy(), dict(data), dict(params or {}))
         if not isinstance(out, pd.DataFrame):
             raise TypeError(f"overlay {name!r} returned {type(out).__name__}, not a DataFrame")
-        if not out.index.equals(weights.index) or not out.columns.equals(weights.columns):
+        if not out.index.equals(index) or not out.columns.equals(columns):
             raise ValueError(
                 f"overlay {name!r} changed the weights' index or columns; an overlay modifies row t in place "
                 "and never shifts — the execution lag is applied once, after the whole chain"

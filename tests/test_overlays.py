@@ -186,6 +186,82 @@ def test_an_overlay_that_shifts_or_drops_rows_is_refused():
         apply_overlays(_hold_a(), {"prices": _prices()}, [(_Shift(), {})])
 
 
+class _DropInPlace:
+    meta = type("M", (), {"name": "overlay.drops_in_place", "version": "0"})()
+
+    def apply(self, weights, data, params):
+        weights.drop(columns=["A"], inplace=True)
+        return weights
+
+
+class _ZeroInPlaceReturnsOther:
+    meta = type("M", (), {"name": "overlay.zeros_in_place", "version": "0"})()
+
+    def apply(self, weights, data, params):
+        out = weights.copy()
+        weights.loc[:, :] = 0.0
+        data.pop("prices", None)
+        return out
+
+
+def test_an_overlay_that_drops_a_column_in_place_is_refused():
+    with pytest.raises(ValueError, match="never shifts"):
+        apply_overlays(_hold_a(), {"prices": _prices()}, [(_DropInPlace(), {})])
+
+
+def test_an_overlay_cannot_mutate_the_callers_weights_or_data():
+    base = _hold_a()
+    data = {"prices": _prices()}
+    out, _ = apply_overlays(base, data, [(_ZeroInPlaceReturnsOther(), {})])
+    assert (base["A"] == 1.0).all()
+    assert "prices" in data
+    pd.testing.assert_frame_equal(out, _hold_a())
+
+
+class _Sparse:
+    """A strategy that speaks on bars 0 and 2 only: [1, NaN, 0, NaN, ...] for A."""
+
+    meta = type("M", (), {"name": "strategy.sparse.v1"})()
+
+    def run(self, data: Any, params: Any = None) -> dict[str, Any]:
+        w = pd.DataFrame(np.nan, index=_prices().index, columns=["A", "USD"])
+        w.iloc[0] = [1.0, 0.0]
+        w.iloc[2] = [0.0, 0.0]
+        return {"weights": w}
+
+
+@pytest.mark.parametrize("engine", ["vectorbt", "rsims"])
+@pytest.mark.parametrize("tranches", [1, 2, 3])
+def test_an_identity_overlay_leaves_a_sparse_book_bit_for_bit(tmp_path, engine, tranches):
+    """NaN cells mean "hold" (vectorbt) / "flat" (rsims); the overlay path must not
+    resolve them earlier than the baseline does, or tranching averages different numbers."""
+
+    def run(sub, chain):
+        store = FileArtifactStore(str(tmp_path / sub), "run")
+        result = BacktestPipeline().run(
+            mode="backtest",
+            asof="2024-02-09",
+            params={
+                "fees": 0.0,
+                "engine": engine,
+                "risk": {"tranches": tranches},
+                "strategies": [{"name": "strategy.sparse.v1", "weight": 1.0}],
+            },
+            data=_Data(),
+            store=store,
+            broker=None,
+            risk=[],
+            strategies=[_Sparse()],
+            overlays=chain,
+        )
+        return result, store.read_parquet("traded_weights").set_index("date")
+
+    base_res, base = run("base", None)
+    over_res, over = run("over", [(_Scale("identity", 1.0), {})])
+    pd.testing.assert_frame_equal(over, base)
+    assert over_res.metrics == base_res.metrics
+
+
 # ----------------------------------------------------------------------
 # The other two overlays, known answers
 # ----------------------------------------------------------------------
