@@ -179,3 +179,34 @@ def test_missing_lab_dir_is_cannot_check(world: dict[str, Path]) -> None:
         text=True,
     )
     assert res.returncode == 2
+
+
+def test_shallow_clone_is_cannot_check_not_unreachable(world: dict[str, Path]) -> None:
+    """In a shallow clone (actions/checkout's default --depth=1) the ancestry walk
+    stops at the shallow boundary, so a reachable pin would read UNREACHABLE.
+    That is "could not look", not a verdict: exit 2, never 1 (PR #217 review)."""
+    pinned = _commit(world["work"], "pinned")
+    _commit(world["work"], "later")
+    _git(world["work"], "push", "-q", "origin", "main")
+    _pin_line(world["lab"], "line", pinned)
+
+    shallow = world["tmp"] / "shallow"
+    _git(world["tmp"], "clone", "-q", "--depth=1", f"file://{world['origin']}", str(shallow))
+    assert _git(shallow, "rev-parse", "--is-shallow-repository") == "true"
+    res = subprocess.run(
+        [sys.executable, str(SCRIPT), "--repo", str(shallow), str(world["lab"])],
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "shallow" in res.stderr.lower()
+    assert "UNREACHABLE" not in res.stdout
+
+    # once unshallowed the same pin is green — the check itself was right all along
+    _git(shallow, "fetch", "-q", "--unshallow", "origin")
+    res = subprocess.run(
+        [sys.executable, str(SCRIPT), "--repo", str(shallow), str(world["lab"])],
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0, res.stdout + res.stderr

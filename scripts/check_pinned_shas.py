@@ -27,7 +27,8 @@ USAGE:
 EXIT:
     0  every pin found is reachable (the count is printed — read it)
     1  at least one pin is UNREACHABLE (each one is named, with who pins it)
-    2  could not check: a lab dir is missing, no pins were found, or git failed
+    2  could not check: a lab dir is missing, no pins were found, the quantbox
+       clone is shallow (ancestry is cut at the boundary), or git failed
 """
 
 from __future__ import annotations
@@ -83,6 +84,20 @@ def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
     if check and res.returncode != 0:
         raise CannotCheck(f"git {' '.join(args)} failed: {res.stderr.strip()}")
     return res
+
+
+def refuse_shallow(repo: Path) -> None:
+    """A shallow clone cuts history at its boundary, so ``merge-base --is-ancestor``
+    says "no" for a pin below it even when origin's branch contains it. That is a
+    blind check, not a verdict: refuse rather than report UNREACHABLE."""
+    out = _git(repo, "rev-parse", "--is-shallow-repository").stdout.strip()
+    if out == "true":
+        raise CannotCheck(
+            f"{repo} is a shallow clone; ancestry stops at the shallow boundary. "
+            "Run `git fetch --unshallow` (or check out with fetch-depth: 0) and retry"
+        )
+    if out != "false":
+        raise CannotCheck(f"cannot tell whether {repo} is shallow: {out!r}")
 
 
 def origin_ref_tips(repo: Path, remote: str) -> dict[str, str]:
@@ -143,6 +158,7 @@ def main(argv: list[str] | None = None) -> int:
             pins.setdefault(s, []).append("--sha")
         if not pins:
             raise CannotCheck("no pinned quantbox SHA found under " + ", ".join(map(str, args.labs)))
+        refuse_shallow(args.repo)
         tips = origin_ref_tips(args.repo, args.remote)
         bad = 0
         for sha in sorted(pins):
