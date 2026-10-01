@@ -42,6 +42,19 @@ jobs:
         # which meant a bare local `pytest` silently skipped them too.
       - run: uv run pytest -q -m "not pipeline_smoke and not canonical_reproduction"
 
+  no-vectorbt:
+    # A base `quantbox` (no extras, no lockfile, no dev group) installed into a
+    # CLEAN venv must import, list plugins and run an rsims backtest without
+    # vectorbt — and `engine: vectorbt` must fail naming the extra (TOM-1334).
+    # The `test` job cannot prove this: its env carries vectorbt via the dev group.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.12'
+      - run: bash scripts/check_no_vectorbt.sh
+
   pipeline-smoke:
     # L1 of the pipeline-correctness ladder. Catches the "pytest is green
     # but the pipeline can't load plugins" class of failure that unit tests
