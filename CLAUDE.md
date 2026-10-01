@@ -81,6 +81,7 @@ src/quantbox/              ← installable library (uv add quantbox)
     features/              Feature plugins (derived signals)
     validation/            Validation plugins (walk-forward, DSR, benchmark, …)
     monitor/               Monitor plugins (run anomaly alerts)
+    overlays/              Overlay plugins (modify decided weights before execution)
     publisher/             Publisher plugins (notifications)
     backtesting/           Backtest engines (vectorbt, rsims)
     trading/               Trading helpers (token allow/deny policy)
@@ -132,6 +133,7 @@ uv run pytest -q                            # run tests
 | Feature | `FeaturePlugin` | `compute(data, params)` → DataFrame |
 | Validation | `ValidationPlugin` | `validate(returns, weights, benchmark, params)` |
 | Monitor | `MonitorPlugin` | `check(result, history, params)` → alerts |
+| Overlay | `OverlayPlugin` | `apply(weights, data, params)` → weights; chained under `plugins.overlays`, never self-shifted ([ADR-0004](docs/adr/0004-overlay-stage.md)) |
 
 ## Data format
 

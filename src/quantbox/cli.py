@@ -36,6 +36,7 @@ def cmd_plugins_list(reg: PluginRegistry, as_json: bool = False):
             "rebalancing": sorted(list(reg.rebalancing.keys())),
             "publishers": sorted(list(reg.publishers.keys())),
             "risk": sorted(list(reg.risk.keys())),
+            "overlays": sorted(list(reg.overlays.keys())),
         }
         print(_as_json(payload))
         return
@@ -52,6 +53,7 @@ def cmd_plugins_list(reg: PluginRegistry, as_json: bool = False):
     show("Rebalancing", reg.rebalancing)
     show("Publishers", reg.publishers)
     show("Risk", reg.risk)
+    show("Overlays", reg.overlays)
 
 
 def cmd_plugins_info(reg: PluginRegistry, name: str, as_json: bool = False):
@@ -64,6 +66,7 @@ def cmd_plugins_info(reg: PluginRegistry, name: str, as_json: bool = False):
         "rebalancing": reg.rebalancing,
         "publisher": reg.publishers,
         "risk": reg.risk,
+        "overlay": reg.overlays,
     }
     for gname, d in groups.items():
         if name in d:

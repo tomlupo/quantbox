@@ -1,0 +1,62 @@
+# H22 as a config change: a trend base strategy plus a reversal de-risk overlay.
+#
+# H22 (quant-research hypothesis, 2026-06-22): when an instrument's fastest
+# EWMAC (2/8) flips sign, cut that instrument's position by half for 5 bars.
+# It was blocked because quantbox had no such knob (TOM-1364). It is now one
+# overlay block: drop `plugins.overlays` to get the baseline, keep it for the
+# test arm. Overlays chain in the order listed and never shift their own
+# output — `execution.lag_bars` moves the overlaid book to the fill bar
+# (docs/adr/0004-overlay-stage.md).
+#
+# The committed canonical fixture keeps this runnable anywhere, offline; a lab
+# line swaps the data block for its dataset (`params_init: {dataset: <name>}`)
+# and the base for its own (H22 targets Hypertrend, strategy.carver_trend.v2).
+#
+# Usage (from the repo root):
+#   quantbox run -c cookbook/configs/run_backtest_overlay_reversal_derisk.yaml
+
+run:
+  mode: backtest
+  asof: "2024-09-08"
+  pipeline: backtest.pipeline.v1
+
+artifacts:
+  root: "./artifacts"
+
+plugins:
+  pipeline:
+    name: backtest.pipeline.v1
+    params:
+      engine: rsims
+      fees: 0.0005
+      rebalancing_freq: 1
+      venue:
+        allow_shorts: false
+      universe:
+        symbols: [BTC, ALT1, ALT2, ALT3, ALT4]
+
+  strategies:
+    - name: strategy.trend_catcher_simple.v1
+      weight: 1.0
+      params:
+        side: long
+        regime_ticker: BTC
+        regime_filter_ma: 30
+        signal_ma: 10
+        universe_top_n_volume: 5
+        max_positions: 4
+        position_size: 0.25
+
+  overlays:
+    - name: overlay.reversal_derisk.v1
+      params:
+        fast_span: 2
+        slow_span: 8
+        multiplier: 0.5
+        hold_bars: 5
+
+  data:
+    name: local_file_data
+    params_init:
+      prices_path: ./cookbook/canonical/fixture.parquet
+      volume_path: ./cookbook/canonical/fixture_volume.parquet

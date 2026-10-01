@@ -36,6 +36,10 @@ plugins:
     monitors:
       - monitor.drawdown.v1
       - monitor.signal_decay.v1
+    overlays:
+      - overlay.reversal_derisk.v1
+      - overlay.regime_reweight.v1
+      - overlay.corr_gross_cap.v1
     validation:
       - validation.walk_forward.v1
       - validation.statistical.v1

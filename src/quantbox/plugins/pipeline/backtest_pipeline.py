@@ -8,7 +8,8 @@ Workflow
 -------
 1. Load universe & market data (same as TradingPipeline)
 2. Run strategies → full weights time series
-3. Aggregate across strategies (same logic)
+3. Aggregate across strategies (same logic), then the overlay chain
+   (``plugins.overlays``, ADR-0004) modifies the decided book in config order
 4. Apply venue constraint (``venue.allow_shorts``) then risk transforms
    (tranching, leverage cap)
 5. Apply the execution lag (``execution.lag_bars``, default 1 = next-bar) —
@@ -76,6 +77,7 @@ from quantbox.execution import (
     warn_on_shorts,
 )
 from quantbox.frequency import Frequency, resolve_pipeline_frequency
+from quantbox.overlays import OverlayLink, apply_overlays
 from quantbox.plugins.datasources._utils import interval_step, normalize_data_frequency
 
 logger = logging.getLogger(__name__)
@@ -294,6 +296,8 @@ class BacktestPipeline:
         ),
     )
     kind = "research"
+    # The runner refuses ``plugins.overlays`` for a pipeline that does not say it applies them.
+    accepts_overlays = True
 
     # ==================================================================
     # Main entry point
@@ -407,6 +411,7 @@ class BacktestPipeline:
         # when `variants:` is absent.
         variants_cfg = params.get("variants") or []
         variant_plugins = kwargs.get("variant_plugins") or {}
+        overlay_chain: list[OverlayLink] = list(kwargs.get("overlays") or [])
         if variants_cfg:
             return self._run_variants_flow(
                 mode=mode,
@@ -428,6 +433,7 @@ class BacktestPipeline:
                 lag_bars=lag_bars,
                 allow_shorts=allow_shorts,
                 venue_declared=venue_declared,
+                overlay_chain=overlay_chain,
             )
 
         # --- Stage 2: Strategy Execution ---
@@ -460,6 +466,19 @@ class BacktestPipeline:
             weights_history.shape[0],
             weights_history.shape[1],
         )
+
+        # --- Stage 3b: the overlay chain modifies the DECIDED book ---
+        base_weights = weights_history
+        weights_history, overlays_applied = self._apply_overlay_stage(
+            weights_history, market_data, overlay_chain, engine
+        )
+        overlay_artifacts: dict[str, str] = {}
+        if overlays_applied:
+            base_save = base_weights.copy()
+            base_save.index.name = "date"
+            overlay_artifacts["base_weights_history"] = store.put_parquet(
+                "base_weights_history", base_save.reset_index()
+            )
 
         # Save latest aggregated weights (same as TradingPipeline)
         latest_weights = weights_history.iloc[-1]
@@ -634,6 +653,7 @@ class BacktestPipeline:
                 "portfolio_daily": a_port,
                 "returns": a_returns,
                 "metrics": a_metrics,
+                **overlay_artifacts,
             },
             metrics={
                 "n_strategies": float(len(strategy_results)),
@@ -651,6 +671,7 @@ class BacktestPipeline:
                     "max_leverage": _max_leverage(risk_cfg),
                 },
                 "funding": {"modelled": funding_modelled},
+                "overlays": overlays_applied,
                 "risk_findings": risk_findings,
             },
         )
@@ -805,6 +826,7 @@ class BacktestPipeline:
         lag_bars: int,
         allow_shorts: bool,
         venue_declared: bool,
+        overlay_chain: list[OverlayLink],
     ) -> RunResult:
         """Run N independent variants and emit a combined report.
 
@@ -818,6 +840,7 @@ class BacktestPipeline:
         base_risk_cfg = dict(params.get("risk", {}) or {})
 
         variant_results: dict[str, dict[str, Any]] = {}
+        overlays_applied: list[dict[str, Any]] = []
 
         for v in variants_cfg:
             vname = str(v["name"])
@@ -866,6 +889,8 @@ class BacktestPipeline:
 
             # Stage 3: aggregate (trivial for single strategy)
             wh = self._aggregate_weights_history(s_results, {"_strategies_cfg": v_strategies_cfg})
+            # Stage 3b: the overlay chain is run-level — every variant gets the same one.
+            wh, overlays_applied = self._apply_overlay_stage(wh, market_data, overlay_chain, engine)
 
             # Stage 4: venue constraint + risk transforms
             v_allow_shorts = allow_shorts if venue_declared else bool(v_risk_cfg.get("allow_short", False))
@@ -1075,9 +1100,53 @@ class BacktestPipeline:
                 },
                 "funding": {"modelled": False},  # variants run vectorbt only, which charges no funding
                 "variants": list(variant_results.keys()),
+                "overlays": overlays_applied,
                 "risk_findings": risk_findings,
             },
         )
+
+    # ==================================================================
+    # Stage 3b: overlay chain on the decided book
+    # ==================================================================
+    @staticmethod
+    def _apply_overlay_stage(
+        weights: pd.DataFrame,
+        market_data: dict[str, Any],
+        chain: list[OverlayLink],
+        engine: str,
+    ) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+        """Run the overlay chain on the decided weights; a no-op without overlays.
+
+        The engine's NaN policy is materialised FIRST: a NaN cell means "hold"
+        to vectorbt and "flat" to rsims, and an overlay multiplying a NaN would
+        lose its effect on exactly the bars it targets. The policy is idempotent,
+        so the engine later receives the same book it would have built itself.
+        No lag is applied here — ``_align_for_engine`` lags the overlaid book once.
+
+        The filled value must not LEAK past the chain, though: the risk
+        transforms run on the decided book BEFORE the engine resolves its NaNs,
+        and tranching's rolling mean skips a NaN but averages a filled value. So
+        a cell that came in NaN and that the chain left at exactly its
+        materialised value goes back to NaN — no overlay touched it, and the
+        book downstream is the one the run without overlays builds. A cell the
+        chain CHANGED keeps the overlay's number.
+
+        Under a HOLD policy (vectorbt) a NaN resolves to the PREVIOUS row's
+        value, so "untouched" alone is not enough: the first bar after an
+        overlay window closes is untouched yet must stay explicit, or the engine
+        holds the last REDUCED weight instead of returning to the base one. A
+        NaN goes back only where the previous row was untouched too. Under the
+        FLAT policy (rsims) a NaN resolves to 0 whatever came before.
+        """
+        if not chain:
+            return weights, []
+        materialised = materialise_nan_policy(weights, engine)
+        out, record = apply_overlays(materialised, market_data, chain)
+        same = out.eq(materialised) | (out.isna() & materialised.isna())
+        untouched = weights.isna() & same
+        if engine == "vectorbt":
+            untouched &= same.shift(1, fill_value=True)
+        return out.mask(untouched), record
 
     # ==================================================================
     # Stage 4: Risk transforms on full time series

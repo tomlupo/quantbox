@@ -37,6 +37,7 @@ PLUGIN_GROUPS: dict[str, str] = {
     "publisher": "publishers",
     "validation": "validations",
     "monitor": "monitors",
+    "overlay": "overlays",
     "feature": "features",
 }
 

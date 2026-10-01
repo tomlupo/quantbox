@@ -71,7 +71,32 @@ def validate_config(cfg: dict[str, Any], registry: Any = None, *, check_params: 
         findings.extend(_check_backtest_execution(plugins))
         if check_params:
             findings.extend(check_plugin_params(plugins, registry))
+            findings.extend(_check_overlay_host(plugins, registry))
     return findings
+
+
+def _check_overlay_host(plugins: dict[str, Any], registry: Any = None) -> list[ValidationFinding]:
+    """``plugins.overlays`` needs a pipeline that applies them; the runner refuses the rest."""
+    pipeline = plugins.get("pipeline")
+    if not plugins.get("overlays") or not isinstance(pipeline, dict) or not pipeline.get("name"):
+        return []
+    if registry is None:
+        from .registry import PluginRegistry
+
+        try:
+            registry = PluginRegistry.discover()
+        except Exception:
+            return []  # check_plugin_params already reported the registry failure
+    cls = (getattr(registry, "pipelines", None) or {}).get(pipeline["name"])
+    if cls is None or getattr(cls, "accepts_overlays", False):
+        return []
+    return [
+        ValidationFinding(
+            "error",
+            f"plugins.overlays is set but pipeline '{pipeline['name']}' does not apply overlays "
+            "(overlays run in backtest.pipeline.*)",
+        )
+    ]
 
 
 # config slot -> (registry group, is a list of blocks)
@@ -86,6 +111,7 @@ _PARAM_SLOTS: dict[str, tuple[str, bool]] = {
     "publishers": ("publisher", True),
     "validation": ("validation", True),
     "monitors": ("monitor", True),
+    "overlays": ("overlay", True),
 }
 
 
