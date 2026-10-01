@@ -177,6 +177,30 @@ def test_params_init_accepts_constructor_params_only():
     assert any("'engine'" in m and "params_init" in m and "run-time param" in m for m in msgs), msgs
 
 
+@pytest.mark.parametrize(
+    ("slot", "block", "key"),
+    [
+        ("data", {"name": "data.synthetic.v1", "params": {"n_steps": 504}}, "n_steps"),
+        ("broker", {"name": "sim.paper.v1", "params": {"spread_bps": 2.0}}, "spread_bps"),
+    ],
+)
+def test_data_and_broker_params_are_refused_because_nothing_reads_them(slot, block, key):
+    """review of #218: the runner builds data/broker plugins from params_init alone and the
+    pipelines feed load_universe/load_market_data from pipeline.params.universe/prices, so a
+    schema-valid key under plugins.data.params / plugins.broker.params is silently dropped."""
+    cfg = _config({})
+    cfg["plugins"][slot] = block
+    msgs = [f.message for f in validate_config(cfg, REG) if f.level == "error"]
+    assert any(f"'{key}'" in m and f"plugins.{slot}.params" in m and "never read" in m for m in msgs), msgs
+
+
+def test_data_params_hint_names_where_load_params_go():
+    cfg = _config({})
+    cfg["plugins"]["data"] = {"name": "data.synthetic.v1", "params": {"n_steps": 504}}
+    msgs = [f.message for f in validate_config(cfg, REG) if f.level == "error"]
+    assert any("plugins.pipeline.params.universe" in m and "prices" in m for m in msgs), msgs
+
+
 def test_validate_unregistered_plugin_is_a_warning_not_an_error():
     cfg = _config({})
     cfg["plugins"]["strategies"] = [{"name": "lab.strategy.elsewhere.v1", "params": {"x": 1}}]
@@ -271,3 +295,39 @@ def test_run_warns_on_unknown_param_but_does_not_refuse(caplog):
         run_from_config(cfg, reg)
     assert pipeline.run.called
     assert any("signal_span_dayz" in r.getMessage() for r in caplog.records)
+
+
+class _Reached(Exception):
+    pass
+
+
+def test_synthetic_cookbook_knobs_reach_the_data_plugin(tmp_path, monkeypatch):
+    """The synthetic example's knobs must be what the run generates, not the plugin defaults."""
+    from quantbox.plugins.datasources.synthetic_data import SyntheticDataPlugin
+    from quantbox.runner import run_from_config
+
+    seen: dict[str, dict] = {}
+    orig_u, orig_m = SyntheticDataPlugin.load_universe, SyntheticDataPlugin.load_market_data
+
+    def spy_u(self, params):
+        seen["universe"] = dict(params)
+        return orig_u(self, params)
+
+    def spy_m(self, universe, asof, params):
+        seen["prices"] = dict(params)
+        out = orig_m(self, universe, asof, params)
+        seen["shape"] = out["prices"].shape
+        # Stop here: what is under test is the routing of the knobs. (The synthetic plugin's
+        # load_universe returns a list, which the backtest pipeline cannot store as parquet.)
+        raise _Reached
+
+    monkeypatch.setattr(SyntheticDataPlugin, "load_universe", spy_u)
+    monkeypatch.setattr(SyntheticDataPlugin, "load_market_data", spy_m)
+    path = next(p for p in RUN_CONFIGS if p.name == "run_synthetic_backtest.yaml")
+    cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+    cfg["artifacts"]["root"] = str(tmp_path)
+    with pytest.raises(_Reached):
+        run_from_config(cfg, REG)
+    assert seen["universe"] == {"n_assets": 10}
+    assert seen["prices"]["model"] == "jump_diffusion"
+    assert seen["shape"] == (504 + 1, 10)  # n_steps plus the initial bar; plugin defaults give (253, 10)

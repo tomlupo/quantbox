@@ -6,6 +6,7 @@
 run:
   mode: backtest
   asof: "2026-02-01"
+  pipeline: backtest.pipeline.v1
 
 artifacts:
   root: "./artifacts"
@@ -18,6 +19,22 @@ plugins:
       fees: 0.001
       rebalancing_freq: 5
       trading_days: 252
+      # data.synthetic.v1 reads its knobs at load time: n_assets / symbols in
+      # load_universe(), the rest in load_market_data(). plugins.data.params is never read.
+      universe:
+        n_assets: 10
+      prices:
+        n_steps: 504
+        model: jump_diffusion
+        model_params:
+          mu: 0.08
+          sigma: 0.20
+          jump_intensity: 5.0
+          jump_mean: -0.02
+          jump_std: 0.03
+        correlation: random
+        initial_price: 100.0
+        random_state: 42
 
   strategies:
     - name: strategy.portfolio_optimizer.v1
@@ -29,19 +46,6 @@ plugins:
 
   data:
     name: data.synthetic.v1
-    params:
-      n_assets: 10
-      n_steps: 504
-      model: jump_diffusion
-      model_params:
-        mu: 0.08
-        sigma: 0.20
-        jump_intensity: 5.0
-        jump_mean: -0.02
-        jump_std: 0.03
-      correlation: random
-      initial_price: 100.0
-      random_state: 42
 
   broker:
     name: sim.paper.v1

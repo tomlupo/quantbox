@@ -85,6 +85,20 @@ _PARAM_SLOTS: dict[str, tuple[str, bool]] = {
 }
 
 
+# Blocks whose ``params`` NOTHING reads (review of #218): the runner builds the data and
+# broker plugins from ``params_init`` alone and never forwards their ``params``; a data
+# plugin's load-time params reach load_universe() / load_market_data() only through
+# ``plugins.pipeline.params.universe`` / ``.prices``. Any key here is refused, valid or not.
+_UNREAD_PARAMS: dict[str, str] = {
+    "plugins.data": (
+        "plugins.data.params is never read; constructor params go under params_init, "
+        "load-time params under plugins.pipeline.params.universe (load_universe) "
+        "or plugins.pipeline.params.prices (load_market_data)"
+    ),
+    "plugins.broker": "plugins.broker.params is never read; set constructor params under params_init",
+}
+
+
 # Pseudo-group for ``pipeline.params.strategies``: there ``name`` is a module under
 # ``quantbox.plugins.strategies`` whose module-level ``run(data, params)`` the backtest
 # and trading pipelines call when ``plugins.strategies`` is absent.
@@ -163,6 +177,15 @@ def check_plugin_params(plugins: dict[str, Any], registry: Any = None) -> list[V
             params = block.get(channel) or {}
             if not isinstance(params, dict):
                 findings.append(ValidationFinding("error", f"{where}.{channel} must be a mapping ({name})"))
+                continue
+            unread = _UNREAD_PARAMS.get(where) if channel == "params" else None
+            if unread:
+                findings.extend(
+                    ValidationFinding(
+                        "error", f"unknown_param: '{key}' is set on plugin '{name}' ({where}.params); {unread}"
+                    )
+                    for key in params
+                )
                 continue
             allowed = init_names if channel == "params_init" else None
             unknown, violations = check_params(schema, params, allowed)

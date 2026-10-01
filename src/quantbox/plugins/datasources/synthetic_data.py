@@ -129,9 +129,10 @@ class SyntheticDataPlugin:
             },
         },
         examples=(
-            "plugins:\n  data:\n    name: data.synthetic.v1\n    params:\n"
-            "      n_assets: 20\n      n_steps: 504\n      model: jump_diffusion\n"
-            "      correlation: random\n      random_state: 42",
+            "plugins:\n  pipeline:\n    name: backtest.pipeline.v1\n    params:\n"
+            "      universe: {n_assets: 20}\n"
+            "      prices: {n_steps: 504, model: jump_diffusion, correlation: random, random_state: 42}\n"
+            "  data:\n    name: data.synthetic.v1",
         ),
     )
 
