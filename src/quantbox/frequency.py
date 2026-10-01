@@ -5,10 +5,12 @@ Resolves the historical sprawl of `prices.frequency` (ccxt string), `rebalancing
 default 252) by deriving everything from one `bar_size + calendar` pair, exchange-aware
 via `pandas-market-calendars`.
 
-Used internally by `backtest.pipeline.v1` to:
-  - derive default `trading_days` from `frequency.bars_per_year()`
+Used internally by `backtest.pipeline.v1` and `trade.full_pipeline.v1` (both via
+`resolve_pipeline_frequency`) to:
+  - derive default `trading_days` from `frequency.bars_per_year()` (backtest)
   - inject `_pipeline_annualize` into each strategy's params so strategies don't
-    need their own (potentially drifting) defaults
+    need their own (potentially drifting) defaults — identically in backtest and
+    paper/live (TOM-1338)
 
 Strategies that need annualization should declare `annualize: float | None = None`
 and consume it via `params.get("_pipeline_annualize", 252.0)` as a fallback —
@@ -116,6 +118,30 @@ class Frequency:
 
     def __str__(self) -> str:
         return f"Frequency(bar_size={_bar_size_to_str(self.bar_size)!r}, calendar={self.calendar!r})"
+
+
+def resolve_pipeline_frequency(params: dict[str, Any], prices_params: dict[str, Any]) -> Frequency:
+    """Resolve a pipeline run's `Frequency` from its params — the ONE resolver.
+
+    Both ``backtest.pipeline.v1`` and ``trade.full_pipeline.v1`` call this, and
+    inject its ``bars_per_year()`` into every strategy's params as
+    ``_pipeline_annualize``, so a strategy is annualised identically in its
+    backtest and in paper/live (TOM-1338).
+
+    Accepts (in priority order):
+      1. ``params['frequency']`` — full spec, str or dict
+         - dict: ``{'bar_size': '1h', 'calendar': 'NYSE'}``
+         - str: ``'1h'`` (calendar defaults to '24/7')
+      2. ``prices.frequency`` + optional ``params['market_calendar']`` shorthand
+      3. Default: ``Frequency('1d', '24/7')`` — 365 bars/yr, crypto-friendly
+    """
+    explicit = params.get("frequency")
+    if explicit is not None:
+        return Frequency.parse(explicit)
+
+    bar_size = prices_params.get("frequency", "1d")
+    calendar = params.get("market_calendar", "24/7")
+    return Frequency.parse({"bar_size": bar_size, "calendar": calendar})
 
 
 # ---------------------------------------------------------------------------
