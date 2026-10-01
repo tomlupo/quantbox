@@ -91,7 +91,7 @@ Don't add an adapter:
 | Adapter | Underlying library | Layer it serves | Status | Notes |
 |---|---|---|---|---|
 | `adapters.vectorbt` | vectorbt | L0/L1 (`quantbox.bt`) | ✅ shipped | Used by `bt.py`, backtest engine, strategy tests — ≥2 consumers |
-| `adapters.riskfolio` | Riskfolio-Lib | L0/L1 (`quantbox.opt`) | deferred | Add when a second consumer beyond `portfolio_optimizer` needs it |
+| `adapters.riskfolio` | Riskfolio-Lib | L0/L1 (portfolio optimization) | deferred | Add when a second consumer beyond `portfolio_optimizer` needs it |
 | `adapters.lightgbm` | lightgbm | L0/L1 (ML strategies) | deferred | `ml_strategy.py` imports it directly — add adapter when a second plugin needs it |
 | `adapters.mlflow` | mlflow | experiment tracking, model registry | **not in core** | Single consumer (quantbox-lab); lab imports mlflow directly. Migrate here if ≥2 repos need the same `RunResult → mlflow` bridge |
 | `adapters.dvc` | dvc | data versioning | **not in core** | Single consumer (quantbox-lab); lab imports dvc.api directly. Migrate here if ≥2 repos need the same data-versioning idiom |
@@ -103,38 +103,9 @@ Don't add an adapter:
 
 ---
 
-## Walkthrough — adding the riskfolio adapter
+## Adding an adapter
 
-1. **Create the file**: `src/quantbox/adapters/riskfolio.py`.
-2. **Re-export**:
-   ```python
-   import riskfolio as rp
-
-   __all__ = ["rp"]
-   ```
-3. **Add a convenience helper** if a common idiom emerges:
-   ```python
-   def max_sharpe(returns, *, risk_free_rate=0.02):
-       port = rp.Portfolio(returns=returns)
-       port.assets_stats(method_mu="hist", method_cov="hist")
-       w = port.optimization(model="Classic", rm="MV", obj="Sharpe", rf=risk_free_rate, l=0)
-       return w
-   ```
-4. **Wire the L1 surface** at `quantbox/opt.py`:
-   ```python
-   from .adapters.riskfolio import max_sharpe, rp
-
-   __all__ = ["max_sharpe", "rp"]
-   ```
-5. **Add an extras entry** in `pyproject.toml`:
-   ```toml
-   [project.optional-dependencies]
-   opt-riskfolio = ["riskfolio-lib>=4.0"]
-   ```
-6. **Test** the convenience helper with a tiny synthetic returns DataFrame. Don't test riskfolio itself — that's their job.
-7. **Document** in this file's adapters table.
-
-That's the whole flow. No plugin needed at this stage. A plugin (`risk.opt.riskfolio.max_sharpe.v1`) can come later if a pipeline needs it at L4.
+The step-by-step lives in [playbooks/add-an-adapter.md](../playbooks/add-an-adapter.md).
 
 ---
 
@@ -147,7 +118,7 @@ Examples of things that are tempting to wrap but shouldn't be:
 - **Custom domain models** (advisory profiles, regulated identifiers) — domain belongs in projects.
 - **A library you're going to use once** — just import it where you need it.
 
-If you catch yourself adding a `quantbox.X` that exists in `pandas.X`, you've crossed the line.
+If you catch yourself adding a `quantbox.<name>` that exists as `pandas.<name>`, you've crossed the line.
 
 ---
 

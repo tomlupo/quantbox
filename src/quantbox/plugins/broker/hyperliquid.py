@@ -61,7 +61,7 @@ from quantbox.exceptions import BrokerExecutionError
 from quantbox.portfolio_value import BASIS_MARGIN
 from quantbox.retry import with_retry
 
-from ._fills import STATUS_WORKING, resolve_fill, trade_fee, trade_fee_currency
+from ._fills import STATUS_UNKNOWN, STATUS_WORKING, resolve_fill, trade_fee, trade_fee_currency
 from ._funding import net_funding, select_window
 
 try:
@@ -611,7 +611,9 @@ class HyperliquidBroker:
                         "error": reason,
                     }
                 )
-                if status == "FAILED":
+                if status in ("FAILED", STATUS_UNKNOWN):
+                    # UNKNOWN booked no fill and is not known to be working —
+                    # it is counted with the failures, never logged as a fill.
                     n_failed += 1
                 elif status == STATUS_WORKING:
                     # Must be handled BEFORE the else below, which announces a
@@ -653,7 +655,7 @@ class HyperliquidBroker:
                 len(orders),
             )
         if n_failed:
-            failed_rows = [r for r in rows if r["status"] == "FAILED"]
+            failed_rows = [r for r in rows if r["status"] in ("FAILED", STATUS_UNKNOWN)]
             logger.error(
                 "Orders failed (%d/%d): %s",
                 n_failed,

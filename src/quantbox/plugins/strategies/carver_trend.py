@@ -425,8 +425,7 @@ class CarverTrendStrategy:
     Carver-Style Trend Following Strategy.
 
     .. deprecated::
-        ``strategy.carver_trend.v1`` is DEPRECATED as of 2026-07-09 and is
-        removed from the active plugin manifest. It sizes positions by the full
+        ``strategy.carver_trend.v1`` is DEPRECATED as of 2026-07-09. It sizes positions by the full
         universe column count rather than the per-date active count, causing a
         ~12x under-deployment (obsidian-vaults#114). Do NOT use it for new
         research or any paper/live book. The canonical successor is
@@ -537,8 +536,8 @@ class CarverTrendStrategy:
     def __post_init__(self) -> None:
         warnings.warn(
             "strategy.carver_trend.v1 is DEPRECATED (obsidian-vaults#114: "
-            "~12x under-deployment from full-universe sizing) and removed from "
-            "the active manifest. Use strategy.carver_trend.v2 instead. This "
+            "~12x under-deployment from full-universe sizing). "
+            "Use strategy.carver_trend.v2 instead. This "
             "plugin is retained only for historical backtest reproducibility.",
             DeprecationWarning,
             stacklevel=2,

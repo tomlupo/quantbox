@@ -70,7 +70,9 @@ def _order(asset, action, qty=10.0, price=1.0):
     return {"Asset": asset, "Action": action, "Adjusted Quantity": qty, "Price": price, "Executable": True}
 
 
-def _drive_cycle(pipe, params, broker, orders, final_weights, run_id, asof="d", portfolio_value=1000.0):
+def _drive_cycle(
+    pipe, params, broker, orders, final_weights, run_id, asof="d", portfolio_value=1000.0, working_store=None
+):
     """Replicate run()'s recon wiring: preflight → execute → evaluate."""
     ctx = pipe._recon_load(params, run_id, asof)
     pre = pipe._recon_preflight(ctx, broker) if ctx is not None else {}
@@ -85,6 +87,7 @@ def _drive_cycle(pipe, params, broker, orders, final_weights, run_id, asof="d", 
         cycle_id=ctx.cycle_id if ctx is not None else None,
         gate_orders_allowed=pre.get("orders_allowed", True) if applied else True,
         gate_reduce_only=pre.get("reduce_only", False) if applied else False,
+        working_store=working_store,
     )
     notes = pipe._run_reconciliation(
         params=params,
@@ -719,6 +722,128 @@ def test_working_order_is_recorded_as_a_non_terminal_result(tmp_path):
     assert len(results) == 1
     assert results[0]["status"] == "working"
     assert results[0].get("order_id") == "OID-DOGE"
+
+
+# ── A queued UNKNOWN is not a failure either (review finding, PR #219) ───────
+# An order whose fill the broker could not confirm, but which carries an order id,
+# is queued for next-cycle resolution exactly like a WORKING one. Recording it as
+# terminal `failed` let Stage 7b count it into the failure streak: with
+# degraded_failed_streak=1 one unconfirmed order opened a consecutive_failed
+# break, three in a row escalated to HALT — the cry-wolf WORKING was built to
+# avoid. It is recorded NON-terminal `unknown` instead, and the resolver books the
+# venue's real outcome against the same order_ref next cycle.
+
+
+class _QueueStore:
+    def __init__(self):
+        self.recorded: list[dict] = []
+
+    def record(self, **kw):
+        self.recorded.append(kw)
+
+
+def _fills_unknown(order_id=True):
+    def _fn(orders):
+        rows = []
+        for _, o in orders.iterrows():
+            row = {
+                "symbol": o["symbol"],
+                "side": o["side"],
+                "qty": 0.0,
+                "price": float(o["price"]),
+                "status": "UNKNOWN",
+                "fee": 0.0,
+            }
+            if order_id:
+                row["order_id"] = f"OID-{o['symbol']}"
+            rows.append(row)
+        return pd.DataFrame(rows)
+
+    return _fn
+
+
+def test_queued_unknown_order_raises_no_reconciliation_break(tmp_path):
+    broker = _FakeBroker(fills_fn=_fills_unknown())
+    params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
+    store = _QueueStore()
+    _report, notes, _pre = _drive_cycle(
+        TradingPipeline(), params, broker, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1", working_store=store
+    )
+    assert [r["order_id"] for r in store.recorded] == ["OID-DOGE"]  # really queued
+    assert notes["missed_fills"] == [], f"a queued unconfirmed order read as a missed fill: {notes}"
+    classes = [b["class"] for b in notes["breaks"]]
+    assert "consecutive_failed" not in classes, f"a queued unconfirmed order opened a failure break: {notes['breaks']}"
+    results = [r for r in _ledger_records(tmp_path) if r.get("kind") == "result"]
+    assert [r["status"] for r in results] == ["unknown"]
+    assert results[0].get("order_id") == "OID-DOGE"
+
+
+def test_queued_unknown_orders_never_escalate_to_halt(tmp_path):
+    # Three unconfirmed cycles in a row was the HALT path (consecutive_failed
+    # escalating to hard). DRIFT may still appear — an unfilled order really does
+    # leave the book off target — so the streak class is what is asserted.
+    params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
+    pipe = TradingPipeline()
+    for i in range(3):
+        broker = _FakeBroker(fills_fn=_fills_unknown())
+        _r, notes, _p = _drive_cycle(
+            pipe, params, broker, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id=f"r{i}", working_store=_QueueStore()
+        )
+        assert "consecutive_failed" not in [b["class"] for b in notes["breaks"]], (i, notes["breaks"])
+
+
+def test_queued_unknown_order_raises_no_break_on_the_reconstruction_path(tmp_path):
+    # Same class, other branch of Stage 7b: when intent capture was not active
+    # (e.g. an observe-mode preflight fault left recon_ctx None) the ledger is
+    # rebuilt from orders_details, where an UNKNOWN row reads status FAILED.
+    params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
+    pipe = TradingPipeline()
+    broker = _FakeBroker(fills_fn=_fills_unknown())
+    orders = [_order("DOGE", "Buy")]
+    store = _QueueStore()
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=pd.DataFrame(orders),
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+        working_store=store,
+    )
+    notes = pipe._run_reconciliation(
+        params=params,
+        broker=broker,
+        final_weights={"DOGE": 0.5},
+        orders_df=pd.DataFrame(orders),
+        execution_report=report,
+        portfolio_value=1000.0,
+        stable_coin="USDC",
+        asof="d",
+        run_id="r1",
+        intent_captured=False,
+    )
+    assert [r["order_id"] for r in store.recorded] == ["OID-DOGE"]
+    assert "consecutive_failed" not in [b["class"] for b in notes["breaks"]], notes["breaks"]
+    results = [r for r in _ledger_records(tmp_path) if r.get("kind") == "result"]
+    assert [r["status"] for r in results] == ["unknown"]
+
+
+def test_unknown_order_with_no_order_id_is_still_a_failure(tmp_path):
+    # POSITIVE CONTROL. With no order id nothing can resolve it next cycle, so a
+    # non-terminal record would sit forever; it stays terminal `failed` and loud.
+    broker = _FakeBroker(fills_fn=_fills_unknown(order_id=False))
+    params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
+    _report, notes, _pre = _drive_cycle(
+        TradingPipeline(),
+        params,
+        broker,
+        [_order("DOGE", "Buy")],
+        {"DOGE": 0.5},
+        run_id="r1",
+        working_store=_QueueStore(),
+    )
+    results = [r for r in _ledger_records(tmp_path) if r.get("kind") == "result"]
+    assert [r["status"] for r in results] == ["failed"]
+    assert "consecutive_failed" in [b["class"] for b in notes["breaks"]]
 
 
 def test_a_genuine_missed_fill_is_still_a_missed_fill(tmp_path):
