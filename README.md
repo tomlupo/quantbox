@@ -80,6 +80,8 @@ quantbox validate -c <config>      # validate config without running
 quantbox run -c <config>           # run a pipeline
 quantbox run --dry-run -c <config> # dry run (no side effects)
 quantbox run --json -c <config>    # print only the run manifest (quantbox/run@1); logs on stderr
+quantbox report export <run-or-arms-dir> --format qute-research/finding-report@1 [-o out.json]
+                                   # the data the qute-research finding page renders
 quantbox approve --run-dir <path>  # write approval file for a run's orders
 quantbox warehouse tables          # list warehouse tables
 quantbox warehouse query -q <sql>  # run SQL against the artifact warehouse
@@ -95,6 +97,13 @@ Each run writes to `artifacts/<run_id>/`:
   [`run_manifest.schema.json`](src/quantbox/artifact_schemas/run_manifest.schema.json); check a
   manifest with `quantbox.run_manifest.validate_run_manifest`. A golden run directory for reader
   tests is [`tests/fixtures/golden_run/`](tests/fixtures/golden_run/).
+- `finding_report.json` — every backtest's slim default report: returns as equity/drawdown,
+  the engine's metrics, a per-arm calendar-year robustness grid and the manifest's provenance,
+  as `qute-research/finding-report@1` data for the qute-research `/finding-report` page (which
+  owns the page and the contract). `quantbox report export` writes the same for a run or a
+  directory of arms (one run each); a variants run's arms come from `variant_returns.parquet`.
+- `report.html` + `report_data.json` — the heavy HTML research report (tens of MB on a typical
+  line), written only with `plugins.pipeline.params.full_report: true`.
 - `events.jsonl` — structured event log
 - Strategy-specific outputs (weights, orders, fills, metrics)
 

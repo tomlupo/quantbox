@@ -634,6 +634,17 @@ def run_from_config(
             raise RuntimeError(f"strict mode capability failures: {failures}")
 
     store.put_json("run_manifest", _run_manifest.json_safe(manifest))
+    if manifest.get("engine"):
+        # The slim default report (TOM-1365): the run's qute-research/finding-report@1
+        # data, read back through the manifest just written.
+        from .finding_export import write_finding_report
+
+        try:
+            write_finding_report(store.root)
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).warning("finding_report.json export failed: %s", exc)
     store.append_event(event_line("RUN_END", run_id=run_id, metrics=result.metrics, warnings=len(manifest["warnings"])))
 
     # Optional: ingest artifacts into warehouse
