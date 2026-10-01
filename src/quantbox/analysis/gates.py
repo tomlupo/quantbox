@@ -320,8 +320,14 @@ def _metric(r: np.ndarray, metric: str) -> float:
         return float(r.mean())
     if metric == "max_drawdown":
         return max_drawdown(r)
-    std = float(r.std(ddof=1)) if r.size > 1 else 0.0
-    return float(r.mean()) / std if std > 0 else float("nan")
+    if r.size < 2:
+        return float("nan")
+    std = float(r.std(ddof=1))
+    # Relative, not `> 0` (see DEGENERATE_RTOL): a constant series carries std ~1e-19
+    # of rounding noise, which would otherwise be a Sharpe of ~1e15 — a sure PASS.
+    if std <= DEGENERATE_RTOL * float(np.mean(np.abs(r))):
+        return float("nan")
+    return float(r.mean()) / std
 
 
 def _leg_value(cand: np.ndarray, base: np.ndarray | None, metric: str, compare: str) -> float:
