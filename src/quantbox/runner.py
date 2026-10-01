@@ -5,6 +5,7 @@ import importlib.util
 import json
 import logging
 import subprocess
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -356,13 +357,19 @@ def _run_id(asof: str, pipeline_name: str, cfg_hash: str) -> str:
     return f"{asof}__{safe}__{cfg_hash}__{ts}"
 
 
-def run_from_config(
-    cfg: dict[str, Any],
-    registry,
-    *,
-    config_path: str | Path | None = None,
-) -> RunResult:
-    run_cfg = cfg["run"]
+def _lookup(registry_dict: dict[str, type], name: str, group: str) -> type:
+    if name not in registry_dict:
+        raise PluginNotFoundError(name, group, list(registry_dict.keys()))
+    return registry_dict[name]
+
+
+def prepare_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Fill plugin blocks from ``plugins.profile`` (IN PLACE) and refuse an invalid config.
+
+    The first step of :func:`run_from_config` and of ``quantbox config explain``:
+    both hash and resolve the config as it stands after this.
+    """
+    cfg["run"]  # noqa: B018 — a config without `run` is a KeyError before anything else, as always
     if "plugins" in cfg and cfg["plugins"].get("profile"):
         profile_name = str(cfg["plugins"]["profile"])
         prof = resolve_profile(profile_name, load_manifest())
@@ -376,64 +383,113 @@ def run_from_config(
     if any(f.level == "error" for f in findings):
         msgs = "; ".join(f.message for f in findings)
         raise ConfigValidationError(f"config_validation_failed: {msgs}", findings=findings)
-    # Plugin params (TOM-1350): `quantbox validate` REFUSES an unknown or invalid
-    # param; a run only warns. Configs in use today carry keys their plugins have
-    # always ignored silently, and turning that into a refusal here would halt a
-    # live book on its next pin bump rather than at a deliberate migration.
-    try:
-        for f in check_plugin_params(cfg["plugins"], registry):
-            logger.warning("config params: %s", f.message)
-    except Exception as exc:  # a params check must never be what breaks a run
-        logger.warning("config params: not checked (%s)", exc)
+    return cfg
 
+
+@dataclass
+class ResolvedRun:
+    """The plugins a run of a config uses, instantiated, and the params its pipeline gets.
+
+    Built by :func:`resolve_run`, the one place a config becomes plugins — shared by
+    :func:`run_from_config` and ``quantbox config explain``.
+    """
+
+    mode: Mode
+    asof: str
+    pipeline_key: str
+    pipe_name: str
+    data_name: str
+    pipeline: PipelinePlugin
+    data: DataPlugin
+    broker_block: dict[str, Any] | None
+    broker_cls: type | None  # set only when the run instantiates a broker (trading, paper/live)
+    risk_plugins: list[RiskPlugin]
+    strategy_plugins: list[StrategyPlugin] | None
+    aggregator: StrategyPlugin | None
+    rebalancer: RebalancingPlugin | None
+    pipeline_params: dict[str, Any]
+    variant_plugins: dict[str, Any]
+    #: ``(overlay plugin, params)`` per ``plugins.overlays`` entry, in config order (ADR-0004).
+    overlay_chain: list[tuple[Any, dict[str, Any]]]
+
+
+def plugin_refs(cfg: dict[str, Any]) -> list[tuple[str, str, str, dict[str, Any]]]:
+    """``(role, group, registry attribute, spec)`` for every plugin a prepared config names.
+
+    Includes the plugins a run resolves only AFTER the pipeline (publishers,
+    validation, monitors), so a pre-flight can check every id up front.
+    """
+    plugins = cfg.get("plugins") or {}
+    refs: list[tuple[str, str, str, dict[str, Any]]] = []
+
+    def add(role: str, group: str, attr: str, spec: Any) -> None:
+        if isinstance(spec, dict):
+            refs.append((role, group, attr, spec))
+
+    add("pipeline", "pipeline", "pipelines", plugins.get("pipeline"))
+    add("data", "data", "data", plugins.get("data"))
+    add("broker", "broker", "brokers", plugins.get("broker"))
+    for i, r in enumerate(plugins.get("risk") or []):
+        add(f"risk[{i}]", "risk", "risk", r)
+    for i, s in enumerate(plugins.get("strategies") or []):
+        add(f"strategies[{i}]", "strategy", "strategies", s)
+    add("aggregator", "strategy", "strategies", plugins.get("aggregator"))
+    add("rebalancing", "rebalancing", "rebalancing", plugins.get("rebalancing"))
+    for i, o in enumerate(plugins.get("overlays") or []):
+        add(f"overlays[{i}]", "overlay", "overlays", o)
+    for v in ((plugins.get("pipeline") or {}).get("params") or {}).get("variants") or []:
+        strat = v.get("strategy") or {}
+        if not isinstance(strat, dict):
+            strat = {"name": strat}
+        # As resolve_run reads it: a `source:` (TOM-1363) wins over a name.
+        spec = {"source": strat["source"]} if strat.get("source") else {"name": strat.get("name")}
+        add(f"variants[{v.get('name')}]", "strategy", "strategies", spec)
+    for i, p in enumerate(plugins.get("publishers") or []):
+        add(f"publishers[{i}]", "publisher", "publishers", p)
+    for i, v in enumerate(plugins.get("validation") or []):
+        add(f"validation[{i}]", "validation", "validations", v)
+    for i, m in enumerate(plugins.get("monitors") or []):
+        add(f"monitors[{i}]", "monitor", "monitors", m)
+    return refs
+
+
+def resolve_run(
+    cfg: dict[str, Any],
+    registry,
+    *,
+    config_path: str | Path | None = None,
+) -> ResolvedRun:
+    """Resolve and instantiate the plugins of a PREPARED config (:func:`prepare_config`).
+
+    Touches no artifact store, loads no data and contacts no broker: the broker
+    CLASS is resolved here and :func:`run_from_config` instantiates it.
+    """
+    run_cfg = cfg["run"]
     mode: Mode = run_cfg["mode"]
-    asof: str = run_cfg["asof"]
-    pipeline_key: str = run_cfg["pipeline"]
-    n_trials = _run_manifest.n_trials(cfg)  # refuses a malformed value before any work
+    plugins = cfg["plugins"]
 
-    cfg_hash = _hash_config(cfg)
-    cfg_hash_full = _hash_config_full(cfg)
-    run_id = _run_id(asof, pipeline_key, cfg_hash)
+    pipe_name = plugins["pipeline"]["name"]
+    pipeline_cls = _lookup(registry.pipelines, pipe_name, "pipeline")
+    pipeline: PipelinePlugin = pipeline_cls(**plugins["pipeline"].get("params_init", {}))
 
-    store = FileArtifactStore(cfg["artifacts"]["root"], run_id)
-    store.append_event(event_line("RUN_START", run_id=run_id, asof=asof, mode=mode, pipeline=pipeline_key))
-
-    pipe_name = cfg["plugins"]["pipeline"]["name"]
-    if pipe_name not in registry.pipelines:
-        raise PluginNotFoundError(pipe_name, "pipeline", list(registry.pipelines.keys()))
-    pipeline_cls = registry.pipelines[pipe_name]
-    pipeline: PipelinePlugin = pipeline_cls(**cfg["plugins"]["pipeline"].get("params_init", {}))
-
-    data_name = cfg["plugins"]["data"]["name"]
-    if data_name not in registry.data:
-        raise PluginNotFoundError(data_name, "data", list(registry.data.keys()))
-    data_cls = registry.data[data_name]
-    data: DataPlugin = data_cls(**cfg["plugins"]["data"].get("params_init", {}))
+    data_name = plugins["data"]["name"]
+    data_cls = _lookup(registry.data, data_name, "data")
+    data: DataPlugin = data_cls(**plugins["data"].get("params_init", {}))
     _bind_dataset_lock(data, config_path)
 
-    broker: BrokerPlugin | None = None
-    broker_block = cfg["plugins"].get("broker")
+    broker_cls: type | None = None
+    broker_block = plugins.get("broker")
     if broker_block and getattr(pipeline, "kind", None) == "trading" and mode in ("paper", "live"):
-        broker_cls = registry.brokers[broker_block["name"]]
-        broker = broker_cls(**broker_block.get("params_init", {}))
-
-    store.append_event(
-        event_line(
-            "PLUGINS_RESOLVED",
-            pipeline=pipe_name,
-            data=data_name,
-            broker=(broker_block["name"] if broker_block else None),
-        )
-    )
+        broker_cls = _lookup(registry.brokers, broker_block["name"], "broker")
 
     risk_plugins: list[RiskPlugin] = []
-    for r in cfg["plugins"].get("risk", []) or []:
-        risk_cls = registry.risk[r["name"]]
+    for r in plugins.get("risk", []) or []:
+        risk_cls = _lookup(registry.risk, r["name"], "risk")
         risk_plugins.append(risk_cls(**r.get("params_init", {})))
 
     # --- Strategy plugins (registered or local-source) ---
     strategy_plugins: list[StrategyPlugin] | None = None
-    strategies_cfg = cfg["plugins"].get("strategies", [])
+    strategies_cfg = plugins.get("strategies", [])
     if strategies_cfg:
         strategy_plugins = []
         named_cfg = []
@@ -447,21 +503,21 @@ def run_from_config(
 
     # --- Aggregator (it's a strategy plugin) ---
     aggregator: StrategyPlugin | None = None
-    agg_cfg = cfg["plugins"].get("aggregator")
+    agg_cfg = plugins.get("aggregator")
     if agg_cfg:
-        agg_cls = registry.strategies[agg_cfg["name"]]
+        agg_cls = _lookup(registry.strategies, agg_cfg["name"], "strategy")
         aggregator = agg_cls(**agg_cfg.get("params_init", {}))
 
     # --- Rebalancer ---
     rebalancer: RebalancingPlugin | None = None
-    rebal_cfg = cfg["plugins"].get("rebalancing")
+    rebal_cfg = plugins.get("rebalancing")
     if rebal_cfg:
-        rebal_cls = registry.rebalancing[rebal_cfg["name"]]
+        rebal_cls = _lookup(registry.rebalancing, rebal_cfg["name"], "rebalancing")
         rebalancer = rebal_cls(**rebal_cfg.get("params_init", {}))
 
     # --- Overlay chain (registered or local-source), applied in config order (ADR-0004) ---
     overlay_chain: list[tuple[Any, dict[str, Any]]] = []
-    overlays_cfg = cfg["plugins"].get("overlays") or []
+    overlays_cfg = plugins.get("overlays") or []
     if overlays_cfg and not getattr(pipeline, "accepts_overlays", False):
         raise ValueError(
             f"plugins.overlays is set but pipeline {pipe_name!r} does not apply overlays; "
@@ -472,14 +528,14 @@ def run_from_config(
         overlay_chain.append((cls(**o.get("params_init", {})), dict(o.get("params") or {})))
 
     # Build pipeline params, merging in strategy/aggregator/rebalancer config
-    pipeline_params = dict(cfg["plugins"]["pipeline"].get("params", {}))
+    pipeline_params = dict(plugins["pipeline"].get("params", {}))
     if strategies_cfg:
         pipeline_params["_strategies_cfg"] = strategies_cfg
     if agg_cfg:
         pipeline_params["_aggregator_cfg"] = agg_cfg
     if rebal_cfg:
         pipeline_params["_rebalancer_cfg"] = rebal_cfg
-    risk_cfg_list = cfg["plugins"].get("risk", []) or []
+    risk_cfg_list = plugins.get("risk", []) or []
     if risk_cfg_list:
         merged_risk_params: dict[str, Any] = {}
         for r in risk_cfg_list:
@@ -499,6 +555,116 @@ def run_from_config(
         cls = _resolve_plugin_cls(spec, registry.strategies, "strategy", mode=mode)
         params_init = strat_cfg.get("params_init", {}) if isinstance(strat_cfg, dict) else {}
         variant_plugins[vname] = cls(**params_init)
+
+    return ResolvedRun(
+        mode=mode,
+        asof=run_cfg["asof"],
+        pipeline_key=run_cfg["pipeline"],
+        pipe_name=pipe_name,
+        data_name=data_name,
+        pipeline=pipeline,
+        data=data,
+        broker_block=broker_block,
+        broker_cls=broker_cls,
+        risk_plugins=risk_plugins,
+        strategy_plugins=strategy_plugins,
+        aggregator=aggregator,
+        rebalancer=rebalancer,
+        pipeline_params=pipeline_params,
+        variant_plugins=variant_plugins,
+        overlay_chain=overlay_chain,
+    )
+
+
+def strict_refusal(cfg: dict[str, Any], mode: str, dataset_tier: str | None) -> str | None:
+    """Why ``run.strict`` (or a promotion run) refuses this dataset tier, or None.
+
+    One check for :func:`run_from_config` and ``quantbox config explain``: the run
+    raises it after writing its manifest, explain reports it before any work (TOM-1362).
+    """
+    if not (bool(cfg.get("run", {}).get("strict")) or mode == "promotion"):
+        return None
+    # "lock" (a by-name dataset verified against datasets.lock, TOM-1349) was "raw" before
+    # it had a tier of its own; accepting it in strict mode is a separate decision.
+    if dataset_tier in ("raw", "lock"):
+        return (
+            f"strict mode rejects Tier-0 raw ingest (dataset tier {dataset_tier!r}) — see "
+            "quantbox-qute/docs/decisions/0004-quantbox-dataset-plugin-tiers.md"
+        )
+    return None
+
+
+def _config_block(cfg: dict[str, Any], config_path: str | Path | None) -> dict[str, Any]:
+    """The run@1 ``config`` block of a PREPARED config."""
+    path = Path(config_path).resolve() if config_path is not None else None
+    return {
+        "path": str(path) if path else None,
+        "sha256": _hash_config_full(cfg),
+        "file_sha256": _sha256_file(path) if path else None,
+        "git_blob_sha": _git_value(["hash-object", str(path)], Path.cwd()) if path else None,
+    }
+
+
+def _plugins_block(resolved: ResolvedRun, broker: Any = None) -> dict[str, Any]:
+    """The run@1 ``plugins`` block; *broker* is the instance, when the run made one."""
+    broker_name = None
+    if resolved.broker_cls is not None:
+        broker_name = getattr(getattr(broker or resolved.broker_cls, "meta", None), "name", None) or (
+            resolved.broker_block or {}
+        ).get("name")
+    return {
+        "pipeline": getattr(getattr(resolved.pipeline, "meta", None), "name", resolved.pipe_name),
+        "data": getattr(getattr(resolved.data, "meta", None), "name", resolved.data_name),
+        "broker": broker_name,
+    }
+
+
+def run_from_config(
+    cfg: dict[str, Any],
+    registry,
+    *,
+    config_path: str | Path | None = None,
+) -> RunResult:
+    prepare_config(cfg)
+    # Plugin params (TOM-1350): `quantbox validate` REFUSES an unknown or invalid
+    # param; a run only warns. Configs in use today carry keys their plugins have
+    # always ignored silently, and turning that into a refusal here would halt a
+    # live book on its next pin bump rather than at a deliberate migration.
+    try:
+        for f in check_plugin_params(cfg["plugins"], registry):
+            logger.warning("config params: %s", f.message)
+    except Exception as exc:  # a params check must never be what breaks a run
+        logger.warning("config params: not checked (%s)", exc)
+    n_trials = _run_manifest.n_trials(cfg)  # refuses a malformed value before any work
+    resolved = resolve_run(cfg, registry, config_path=config_path)
+    mode, asof, pipeline_key = resolved.mode, resolved.asof, resolved.pipeline_key
+    pipe_name, data_name = resolved.pipe_name, resolved.data_name
+    pipeline, data = resolved.pipeline, resolved.data
+    broker_block = resolved.broker_block
+    risk_plugins, strategy_plugins = resolved.risk_plugins, resolved.strategy_plugins
+    aggregator, rebalancer = resolved.aggregator, resolved.rebalancer
+    pipeline_params, variant_plugins = resolved.pipeline_params, resolved.variant_plugins
+    overlay_chain = resolved.overlay_chain
+
+    cfg_hash = _hash_config(cfg)
+    cfg_hash_full = _hash_config_full(cfg)
+    run_id = _run_id(asof, pipeline_key, cfg_hash)
+
+    store = FileArtifactStore(cfg["artifacts"]["root"], run_id)
+    store.append_event(event_line("RUN_START", run_id=run_id, asof=asof, mode=mode, pipeline=pipeline_key))
+
+    broker: BrokerPlugin | None = None
+    if resolved.broker_cls is not None:
+        broker = resolved.broker_cls(**broker_block.get("params_init", {}))
+
+    store.append_event(
+        event_line(
+            "PLUGINS_RESOLVED",
+            pipeline=pipe_name,
+            data=data_name,
+            broker=(broker_block["name"] if broker_block else None),
+        )
+    )
 
     result = pipeline.run(
         mode=mode,
@@ -576,12 +742,11 @@ def run_from_config(
     )
 
     for p in cfg["plugins"].get("publishers", []) or []:
-        pub_cls = registry.publishers[p["name"]]
+        pub_cls = _lookup(registry.publishers, p["name"], "publisher")
         pub: PublisherPlugin = pub_cls(**p.get("params_init", {}))
         pub.publish(result, p.get("params", {}))
 
     # LLM-friendly manifest (single file to understand the run)
-    config_path_obj = Path(config_path).resolve() if config_path is not None else None
     plugin_versions = {
         "pipeline": _plugin_meta(pipeline, pipe_name),
         "data": _plugin_meta(data, data_name),
@@ -602,21 +767,10 @@ def run_from_config(
         "mode": result.mode,
         "pipeline": result.pipeline_name,
         "config_hash": cfg_hash,
-        "config": {
-            "path": str(config_path_obj) if config_path_obj else None,
-            "sha256": cfg_hash_full,
-            "file_sha256": _sha256_file(config_path_obj) if config_path_obj else None,
-            "git_blob_sha": (
-                _git_value(["hash-object", str(config_path_obj)], Path.cwd()) if config_path_obj else None
-            ),
-        },
+        "config": _config_block(cfg, config_path),
         "git": _git_info(Path.cwd()),
         "installed_packages": _installed_packages(),
-        "plugins": {
-            "pipeline": getattr(getattr(pipeline, "meta", None), "name", pipe_name),
-            "data": getattr(getattr(data, "meta", None), "name", data_name),
-            "broker": getattr(getattr(broker, "meta", None), "name", broker_block["name"]) if broker else None,
-        },
+        "plugins": _plugins_block(resolved, broker),
         "plugin_versions": plugin_versions,
         "engine": _run_manifest.engine_block(notes),
         "dataset": dataset,
@@ -652,14 +806,10 @@ def run_from_config(
 
     strict_mode = bool(cfg.get("run", {}).get("strict")) or result.mode == "promotion"
     if strict_mode:
-        # "lock" (a by-name dataset verified against datasets.lock, TOM-1349) was "raw" before
-        # it had a tier of its own; accepting it in strict mode is a separate decision.
-        if manifest["dataset"]["tier"] in ("raw", "lock"):
+        refusal = strict_refusal(cfg, result.mode, manifest["dataset"]["tier"])
+        if refusal:
             store.put_json("run_manifest", _run_manifest.json_safe(manifest))
-            raise RuntimeError(
-                f"strict mode rejects Tier-0 raw ingest (dataset tier {manifest['dataset']['tier']!r}) — see "
-                "quantbox-qute/docs/decisions/0004-quantbox-dataset-plugin-tiers.md"
-            )
+            raise RuntimeError(refusal)
         failures = [c for c, r in manifest["capability_results"].items() if not r["passed"]]
         if failures:
             store.put_json("run_manifest", _run_manifest.json_safe(manifest))

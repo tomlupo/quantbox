@@ -84,6 +84,7 @@ quantbox run --dry-run -c <config> # dry run (no side effects)
 quantbox run --json -c <config>    # print only the run manifest (quantbox/run@1); logs on stderr
 quantbox report export <run-or-arms-dir> --format qute-research/finding-report@1 [-o out.json]
                                    # the data the qute-research finding page renders
+quantbox config explain <config> --json  # what a run WOULD do (quantbox/explain@1), nothing simulated
 quantbox approve --run-dir <path>  # write approval file for a run's orders
 quantbox warehouse tables          # list warehouse tables
 quantbox warehouse query -q <sql>  # run SQL against the artifact warehouse
@@ -99,6 +100,10 @@ Each run writes to `artifacts/<run_id>/`:
   [`run_manifest.schema.json`](src/quantbox/artifact_schemas/run_manifest.schema.json); check a
   manifest with `quantbox.run_manifest.validate_run_manifest`. A golden run directory for reader
   tests is [`tests/fixtures/golden_run/`](tests/fixtures/golden_run/).
+  `quantbox config explain <config> --json` reports the same fields BEFORE a run, resolved by
+  the runner's own code (no data loaded, nothing simulated), under the schema
+  [`config_explain.schema.json`](src/quantbox/artifact_schemas/config_explain.schema.json)
+  (`quantbox/explain@1`); it exits 1 with the reason when a plugin id or the dataset does not resolve.
 - `finding_report.json` — every backtest's slim default report: returns as equity/drawdown,
   the engine's metrics, a per-arm calendar-year robustness grid and the manifest's provenance,
   as `qute-research/finding-report@1` data for the qute-research `/finding-report` page (which

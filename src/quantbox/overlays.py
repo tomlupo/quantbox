@@ -22,6 +22,25 @@ import pandas as pd
 OverlayLink = tuple[Any, dict[str, Any]]
 
 
+def overlay_record(chain: Sequence[OverlayLink]) -> list[dict[str, Any]]:
+    """What a run records for *chain* (``name``, ``version``, ``params`` per overlay, in order).
+
+    :func:`apply_overlays` returns exactly this, and ``quantbox config explain``
+    reports it before a run, so the plan and the manifest's ``overlays`` agree.
+    """
+    record = []
+    for plugin, params in chain:
+        meta = getattr(plugin, "meta", None)
+        record.append(
+            {
+                "name": getattr(meta, "name", type(plugin).__name__),
+                "version": getattr(meta, "version", None),
+                "params": dict(params or {}),
+            }
+        )
+    return record
+
+
 def apply_overlays(
     weights: pd.DataFrame,
     data: dict[str, Any],
@@ -35,7 +54,6 @@ def apply_overlays(
     index and columns is refused: a moved row is a shifted signal, and a
     dropped column a position that silently vanished.
     """
-    record: list[dict[str, Any]] = []
     for plugin, params in chain:
         meta = getattr(plugin, "meta", None)
         name = getattr(meta, "name", type(plugin).__name__)
@@ -55,5 +73,4 @@ def apply_overlays(
                 "and never shifts — the execution lag is applied once, after the whole chain"
             )
         weights = out
-        record.append({"name": name, "version": getattr(meta, "version", None), "params": dict(params or {})})
-    return weights, record
+    return weights, overlay_record(chain)
