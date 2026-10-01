@@ -116,9 +116,20 @@ Datasets from `quantbox-datasets` are read **by name**, never by a sibling path:
       dataset: etf-daily
 ```
 
-The build served is the one pinned for that name in `datasets.lock` at this repo's
-root; re-pin with `quantbox-datasets pin <name> --lock <quantbox>/datasets.lock`, and
-commit the lock. `quantbox sweep` takes the same name as `data.dataset`.
+The build served is the one pinned for that name in the `datasets.lock` nearest the
+config (this repo's root here); re-pin with
+`quantbox-datasets pin <name> --lock <quantbox>/datasets.lock`, and commit the lock.
+The bytes are read under `$QUANTBOX_DATASETS_ROOT`, never relative to the working
+directory, so the same config run from the repo root or a worktree reads the same
+build. `quantbox sweep` takes the same name as `data.dataset`.
+
+`quantbox dataset resolve <name> -c <config> --json` prints what `run -c <config>`
+will read — the same lock, so the same build — `path`, the pinned `sha256`, the `actual_sha256` of those bytes, `matches`, `market` and the
+`funding_rates` file if any — and `run` records the same object under
+`run_manifest.json` → `dataset.resolved`. When the bytes are not the pinned build and
+quantbox-datasets cannot restore it from git history, both commands fail and name both
+shas. The older inline style (`dataset_root` + `expected_prices_sha256`, as
+`dataset.curated.v1` takes them) still runs but warns: it is the deprecated alias.
 
 quantbox does **not** depend on `quantbox-datasets` (it is a private repo, and the
 dependency would point the wrong way): install it from its clone, and set
