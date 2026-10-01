@@ -23,7 +23,7 @@ Examples
 
     plugins:
       strategies:
-        - name: "frozen_weights"
+        - name: "strategy.frozen_weights.v1"
           weight: 1.0
           params:
             weights_path: "./data/passive_weights_weekly.parquet"
