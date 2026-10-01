@@ -138,6 +138,43 @@ def test_binance_futures_goes_through_the_shared_resolver_and_refetches():
 
 
 # ---------------------------------------------------------------------------
+# Every adapter that can emit UNKNOWN/WORKING must resolve it next cycle.
+# The pipeline queues such an order; a broker without fetch_order_result leaves
+# it "cannot resolve" until it ages out, so a real fill never reaches the books.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("make", list(BROKERS.values()), ids=list(BROKERS))
+def test_live_broker_resolves_a_queued_order_next_cycle(make):
+    broker = make(
+        NO_FILLED, refetched={"id": "OID-2", "status": "closed", "filled": 1.0, "amount": 1.0, "average": 101.0}
+    )
+    out = broker.fetch_order_result("OID-2", "BTC")
+    assert out == {"status": "FILLED", "qty": pytest.approx(1.0), "price": pytest.approx(101.0), "error": ""}
+    assert broker._exchange.fetch_calls == 1  # this IS the refetch: one read, no poll loop
+
+
+@pytest.mark.parametrize("make", list(BROKERS.values()), ids=list(BROKERS))
+def test_live_broker_unreadable_venue_resolves_to_none(make):
+    broker = make(NO_FILLED, refetched=None)
+    assert broker.fetch_order_result("OID-2", "BTC") is None
+
+
+def test_binance_futures_queued_unknown_is_booked_by_the_working_order_resolver(tmp_path):
+    from quantbox.reconciliation.working_orders import WorkingOrderStore, resolve_working_orders
+
+    store = WorkingOrderStore(book_key="book-bf", root=tmp_path)
+    store.record(symbol="BTC", side="buy", order_id="OID-2", requested_qty=1.0, cycle_id="c1", order_ref="r1")
+    broker = _binance_futures(
+        NO_FILLED, refetched={"id": "OID-2", "status": "closed", "filled": 1.0, "amount": 1.0, "average": 101.0}
+    )
+    res = resolve_working_orders(store, broker)
+    assert res.checked is True
+    assert res.unreadable == []
+    assert store.load() == []
+
+
+# ---------------------------------------------------------------------------
 # The pipeline: a missing status is UNKNOWN, and UNKNOWN is not dropped
 # ---------------------------------------------------------------------------
 

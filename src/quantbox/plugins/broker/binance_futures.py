@@ -424,6 +424,36 @@ class BinanceFuturesBroker:
             logger.warning("Fill confirmation fetch_order failed for %s: %s", symbol, exc)
             return None
 
+    def fetch_order_result(self, order_id: str, symbol: str) -> dict | None:
+        """Resolve a previously-placed order against the venue. Read-only.
+
+        Second half of the WORKING/UNKNOWN outcome, matching the Kraken and
+        Hyperliquid brokers (TOM-1336): an order this adapter could not confirm
+        is queued by the pipeline, and the NEXT cycle calls this to book what
+        actually happened. Without it the queue reads "broker cannot resolve
+        orders" until the entry ages out and a real fill never reaches the books.
+
+        Returns ``{status, qty, price, error}`` in the same emitted vocabulary as
+        :func:`resolve_fill`, or ``None`` when the venue cannot be read — which
+        the caller treats as "still unresolved", never as a failure.
+        """
+        if not order_id:
+            logger.warning("Cannot resolve working order for %s: missing order id", symbol)
+            return None
+        try:
+            order = self._exchange.fetch_order(order_id, f"{symbol}/{self.quote_currency}:USDT")
+        except Exception as exc:  # noqa: BLE001 - resolution must never crash a run
+            logger.warning("fetch_order failed resolving %s (%s): %s", symbol, order_id, exc)
+            return None
+        if not order:
+            return None
+        # The venue's own reported size is the reference; the original request is
+        # out of scope here and would misread a floored full fill as a partial.
+        # No refetch: this IS the refetch.
+        requested = order.get("amount") or 0.0
+        status, qty, price, reason = resolve_fill(order, requested, refetch=None)
+        return {"status": status, "qty": qty, "price": price, "error": reason}
+
     def fetch_fills(self, since: str) -> pd.DataFrame:
         """BrokerPlugin-compliant fill history."""
         try:
