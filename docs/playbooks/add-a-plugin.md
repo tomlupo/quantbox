@@ -81,7 +81,12 @@ Key requirements:
 
 - `@dataclass` decorator on the class.
 - `meta` is a **class attribute**, not instance attribute.
-- `params_schema` is JSON Schema — not just a dict.
+- `params_schema` is JSON Schema — not just a dict — and it is **mandatory**: every
+  key a config may set (constructor args via `params_init`, run-time `params`) is a
+  property with a `description`. Constructor params get their `type` and `default`
+  from the signature (`quantbox.params_schema.resolve_params_schema`); declare only
+  what it cannot carry. `tests/test_params_schema.py` fails for a registered plugin
+  without one, and `quantbox validate` refuses a key that is not a property.
 - `meta.status="research"` for new code (you can't promote yourself).
 
 ### 3. Register
@@ -209,7 +214,7 @@ quantbox run -c cookbook/configs/{slug}_example.yaml
 ## Validation checklist
 
 - [ ] `meta` is a class attribute (not instance).
-- [ ] `params_schema` is valid JSON Schema.
+- [ ] `params_schema` is valid JSON Schema, describes every param, and `quantbox plugins schema --name <id> --json` shows it.
 - [ ] `meta.status` is `research` (not auto-locked).
 - [ ] Smoke test, schema test, output test all pass.
 - [ ] Plugin appears in `quantbox plugins list`.

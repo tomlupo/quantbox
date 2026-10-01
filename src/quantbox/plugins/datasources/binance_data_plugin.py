@@ -48,11 +48,16 @@ class BinanceDataPlugin:
         params_schema={
             "type": "object",
             "properties": {
-                "quote_asset": {"type": "string", "default": "USDT"},
+                "quote_asset": {
+                    "type": "string",
+                    "default": "USDT",
+                    "description": "Quote asset of the spot pairs (e.g. USDT).",
+                },
                 "mcap_source": {
                     "type": "string",
                     "enum": ["coingecko", "coinmarketcap", "cmc"],
                     "default": "coingecko",
+                    "description": "Market-cap provider.",
                 },
             },
         },

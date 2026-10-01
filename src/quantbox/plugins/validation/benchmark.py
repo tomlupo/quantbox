@@ -34,6 +34,12 @@ class BenchmarkValidation:
             "information ratio, and R-squared against a benchmark."
         ),
         tags=("validation", "benchmark", "relative-performance"),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "trading_days": {"type": "integer", "default": 365, "description": "Bars per year for annualisation."}
+            },
+        },
     )
 
     def validate(

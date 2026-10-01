@@ -32,7 +32,7 @@ from .plugin_manifest import load_manifest, resolve_profile
 from .run_manifest import _sha256_file
 from .store import FileArtifactStore
 from .strict import get_capability
-from .validate import validate_config
+from .validate import check_plugin_params, validate_config
 
 logger = logging.getLogger(__name__)
 
@@ -378,7 +378,7 @@ def prepare_config(cfg: dict[str, Any]) -> dict[str, Any]:
                 if key in prof and key not in cfg["plugins"]:
                     cfg["plugins"][key] = prof[key]
     # Basic config validation (LLM-friendly)
-    findings = validate_config(cfg)
+    findings = validate_config(cfg, check_params=False)
     if any(f.level == "error" for f in findings):
         msgs = "; ".join(f.message for f in findings)
         raise ConfigValidationError(f"config_validation_failed: {msgs}", findings=findings)
@@ -434,12 +434,11 @@ def plugin_refs(cfg: dict[str, Any]) -> list[tuple[str, str, str, dict[str, Any]
     add("rebalancing", "rebalancing", "rebalancing", plugins.get("rebalancing"))
     for v in ((plugins.get("pipeline") or {}).get("params") or {}).get("variants") or []:
         strat = v.get("strategy") or {}
-        add(
-            f"variants[{v.get('name')}]",
-            "strategy",
-            "strategies",
-            {"name": strat.get("name") if isinstance(strat, dict) else strat},
-        )
+        if not isinstance(strat, dict):
+            strat = {"name": strat}
+        # As resolve_run reads it: a `source:` (TOM-1363) wins over a name.
+        spec = {"source": strat["source"]} if strat.get("source") else {"name": strat.get("name")}
+        add(f"variants[{v.get('name')}]", "strategy", "strategies", spec)
     for i, p in enumerate(plugins.get("publishers") or []):
         add(f"publishers[{i}]", "publisher", "publishers", p)
     for i, v in enumerate(plugins.get("validation") or []):
@@ -488,9 +487,14 @@ def resolve_run(
     strategies_cfg = plugins.get("strategies", [])
     if strategies_cfg:
         strategy_plugins = []
+        named_cfg = []
         for s in strategies_cfg:
             cls = _resolve_plugin_cls(s, registry.strategies, "strategy", mode=mode)
             strategy_plugins.append(cls(**s.get("params_init", {})))
+            # The pipeline keys strategies by name; a `source:` block may omit it,
+            # so it carries the loaded class's meta.name (the config is not mutated).
+            named_cfg.append(s if s.get("name") else {**s, "name": cls.meta.name})
+        strategies_cfg = named_cfg
 
     # --- Aggregator (it's a strategy plugin) ---
     aggregator: StrategyPlugin | None = None
@@ -527,10 +531,11 @@ def resolve_run(
     for v in variants_cfg:
         vname = str(v["name"])
         strat_cfg = v.get("strategy") or {}
-        sname = strat_cfg.get("name") if isinstance(strat_cfg, dict) else str(strat_cfg)
-        if not sname:
-            raise ValueError(f"Variant {vname!r}: missing strategy.name")
-        cls = _resolve_plugin_cls({"name": sname}, registry.strategies, "strategy", mode=mode)
+        spec = strat_cfg if isinstance(strat_cfg, dict) else {"name": str(strat_cfg)}
+        if not (spec.get("name") or spec.get("source")):
+            raise ValueError(f"Variant {vname!r}: missing strategy.name or strategy.source")
+        spec = {"source": spec["source"]} if spec.get("source") else {"name": spec["name"]}
+        cls = _resolve_plugin_cls(spec, registry.strategies, "strategy", mode=mode)
         params_init = strat_cfg.get("params_init", {}) if isinstance(strat_cfg, dict) else {}
         variant_plugins[vname] = cls(**params_init)
 
@@ -585,6 +590,15 @@ def run_from_config(
     config_path: str | Path | None = None,
 ) -> RunResult:
     prepare_config(cfg)
+    # Plugin params (TOM-1350): `quantbox validate` REFUSES an unknown or invalid
+    # param; a run only warns. Configs in use today carry keys their plugins have
+    # always ignored silently, and turning that into a refusal here would halt a
+    # live book on its next pin bump rather than at a deliberate migration.
+    try:
+        for f in check_plugin_params(cfg["plugins"], registry):
+            logger.warning("config params: %s", f.message)
+    except Exception as exc:  # a params check must never be what breaks a run
+        logger.warning("config params: not checked (%s)", exc)
     n_trials = _run_manifest.n_trials(cfg)  # refuses a malformed value before any work
     resolved = resolve_run(cfg, registry, config_path=config_path)
     mode, asof, pipeline_key = resolved.mode, resolved.asof, resolved.pipeline_key

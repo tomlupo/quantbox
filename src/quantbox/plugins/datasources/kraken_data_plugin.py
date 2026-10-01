@@ -56,11 +56,16 @@ class KrakenDataPlugin:
         params_schema={
             "type": "object",
             "properties": {
-                "quote_asset": {"type": "string", "default": "USD"},
+                "quote_asset": {
+                    "type": "string",
+                    "default": "USD",
+                    "description": "Quote asset of the spot pairs (e.g. USD).",
+                },
                 "mcap_source": {
                     "type": "string",
                     "enum": ["coingecko", "coinmarketcap", "cmc"],
                     "default": "coingecko",
+                    "description": "Market-cap provider.",
                 },
                 "screen_volume_source": {
                     "type": "string",

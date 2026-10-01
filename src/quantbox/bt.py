@@ -20,8 +20,6 @@ from typing import Any
 
 import pandas as pd
 
-from .adapters.vectorbt import vbt
-
 __all__ = ["run", "BacktestResult"]
 
 
@@ -110,6 +108,8 @@ def run(
         >>> result = qbt.run(prices, signals)
         >>> print(result.metrics)
     """
+    from .adapters.vectorbt import vbt  # lazy: vectorbt is the [vectorbt] extra
+
     portfolio = vbt.Portfolio.from_signals(
         close=prices,
         entries=signals > 0,

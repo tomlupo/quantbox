@@ -90,7 +90,7 @@ Don't add an adapter:
 
 | Adapter | Underlying library | Layer it serves | Status | Notes |
 |---|---|---|---|---|
-| `adapters.vectorbt` | vectorbt | L0/L1 (`quantbox.bt`) | ✅ shipped | Used by `bt.py`, backtest engine, strategy tests — ≥2 consumers |
+| `adapters.vectorbt` | vectorbt | L0/L1 (`quantbox.bt`) | ✅ shipped | Used by `bt.py`, backtest engine, strategy tests — ≥2 consumers. Optional: `[vectorbt]` extra (in `[full]`); without it, raises `MissingExtraError` |
 | `adapters.riskfolio` | Riskfolio-Lib | L0/L1 (portfolio optimization) | deferred | Add when a second consumer beyond `portfolio_optimizer` needs it |
 | `adapters.lightgbm` | lightgbm | L0/L1 (ML strategies) | deferred | `ml_strategy.py` imports it directly — add adapter when a second plugin needs it |
 | `adapters.mlflow` | mlflow | experiment tracking, model registry | **not in core** | Single consumer (quantbox-lab); lab imports mlflow directly. Migrate here if ≥2 repos need the same `RunResult → mlflow` bridge |

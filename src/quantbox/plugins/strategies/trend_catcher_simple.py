@@ -38,6 +38,19 @@ class TrendCatcherSimpleStrategy:
         schema_version="v1",
         description="Event-driven MA20-cross trend follower with BTC>MA50 regime filter (Robuxio PDF rules).",
         tags=("trend-following", "event-driven", "single-window"),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "side": {"enum": ["long", "short"], "description": "Direction traded."},
+                "regime_ticker": {"description": "Ticker of the regime asset."},
+                "regime_filter_ma": {"description": "Moving average of the regime filter."},
+                "signal_ma": {"description": "Moving average of the per-coin signal."},
+                "universe_top_n_volume": {"description": "Universe: top N coins by volume."},
+                "max_positions": {"description": "Maximum concurrent positions."},
+                "position_size": {"description": "Weight per position."},
+                "close_on_regime_flip": {"description": "Close every position when the regime flips."},
+            },
+        },
     )
 
     side: str = "long"

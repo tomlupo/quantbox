@@ -8,6 +8,9 @@ run:
   mode: backtest
   asof: "2026-02-01"
 
+artifacts:
+  root: "./artifacts"
+
 plugins:
   pipeline:
     name: backtest.pipeline.v1
@@ -21,15 +24,13 @@ plugins:
     - name: strategy.crypto_trend.v1
       weight: 1.0
       params:
-        ema_short: 12
-        ema_long: 26
         top_by_mcap: 50
         top_by_volume: 20
 
   data:
     name: local_file_data
     params_init:
-      base_path: data/crypto-spot-daily
+      dataset: crypto-spot-daily  # pinned in datasets.lock at the repo root
 
   broker:
     name: sim.paper.v1

@@ -33,7 +33,13 @@ def _check_legacy_dataset_params(cfg: dict) -> None:
         )
 
 
-def validate_config(cfg: dict[str, Any]) -> list[ValidationFinding]:
+def validate_config(cfg: dict[str, Any], registry: Any = None, *, check_params: bool = True) -> list[ValidationFinding]:
+    """Findings for a run config.
+
+    ``check_params`` checks every plugin block's ``params_init`` / ``params``
+    against that plugin's params schema (see ``check_plugin_params``);
+    ``registry`` defaults to ``PluginRegistry.discover()``.
+    """
     _check_legacy_dataset_params(cfg)
     findings: list[ValidationFinding] = []
     for k in ("run", "artifacts", "plugins"):
@@ -63,6 +69,144 @@ def validate_config(cfg: dict[str, Any]) -> list[ValidationFinding]:
                     if "pipeline" not in prof or "data" not in prof:
                         findings.append(ValidationFinding("error", f"profile_missing_required_plugins:{profile}"))
         findings.extend(_check_backtest_execution(plugins))
+        if check_params:
+            findings.extend(check_plugin_params(plugins, registry))
+    return findings
+
+
+# config slot -> (registry group, is a list of blocks)
+_PARAM_SLOTS: dict[str, tuple[str, bool]] = {
+    "pipeline": ("pipeline", False),
+    "data": ("data", False),
+    "broker": ("broker", False),
+    "rebalancing": ("rebalancing", False),
+    "aggregator": ("strategy", False),
+    "strategies": ("strategy", True),
+    "risk": ("risk", True),
+    "publishers": ("publisher", True),
+    "validation": ("validation", True),
+    "monitors": ("monitor", True),
+}
+
+
+# Blocks whose ``params`` NOTHING reads (review of #218): the runner builds the data and
+# broker plugins from ``params_init`` alone and never forwards their ``params``; a data
+# plugin's load-time params reach load_universe() / load_market_data() only through
+# ``plugins.pipeline.params.universe`` / ``.prices``. Any key here is refused, valid or not.
+_UNREAD_PARAMS: dict[str, str] = {
+    "plugins.data": (
+        "plugins.data.params is never read; constructor params go under params_init, "
+        "load-time params under plugins.pipeline.params.universe (load_universe) "
+        "or plugins.pipeline.params.prices (load_market_data)"
+    ),
+    "plugins.broker": "plugins.broker.params is never read; set constructor params under params_init",
+}
+
+
+# Pseudo-group for ``pipeline.params.strategies``: there ``name`` is a module under
+# ``quantbox.plugins.strategies`` whose module-level ``run(data, params)`` the backtest
+# and trading pipelines call when ``plugins.strategies`` is absent.
+_STRATEGY_MODULE = "strategy_module"
+_STRATEGY_PKG = "quantbox.plugins.strategies"
+
+
+def _plugin_blocks(plugins: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
+    """(where, group, block) for every named plugin block, backtest variants and
+    ``pipeline.params.strategies`` included."""
+    out: list[tuple[str, str, dict[str, Any]]] = []
+    for slot, (group, is_list) in _PARAM_SLOTS.items():
+        val = plugins.get(slot)
+        items = (val or []) if is_list else [val]
+        for i, block in enumerate(items):
+            if isinstance(block, dict) and block.get("name"):
+                out.append((f"plugins.{slot}[{i}]" if is_list else f"plugins.{slot}", group, block))
+    pipeline = plugins.get("pipeline")
+    pparams = ((pipeline or {}).get("params") or {}) if isinstance(pipeline, dict) else {}
+    for i, v in enumerate(pparams.get("variants") or []):
+        strat = v.get("strategy") if isinstance(v, dict) else None
+        if isinstance(strat, dict) and strat.get("name"):
+            out.append((f"plugins.pipeline.params.variants[{i}].strategy", "strategy", strat))
+    for i, strat in enumerate(pparams.get("strategies") or []):
+        if isinstance(strat, dict) and strat.get("name"):
+            out.append((f"plugins.pipeline.params.strategies[{i}]", _STRATEGY_MODULE, strat))
+    return out
+
+
+def _resolve_block_plugin(registry: Any, group: str, name: str) -> tuple[Any, str, str]:
+    """(plugin class, plugin name for messages, why it is unresolved) for one block."""
+    from .params_schema import PLUGIN_GROUPS
+
+    if group != _STRATEGY_MODULE:
+        cls = (getattr(registry, PLUGIN_GROUPS[group], None) or {}).get(name)
+        return cls, name, f"not a registered {group} plugin"
+    module = f"{_STRATEGY_PKG}.{name}"
+    for cls in (getattr(registry, PLUGIN_GROUPS["strategy"], None) or {}).values():
+        if getattr(cls, "__module__", None) == module:
+            return cls, cls.meta.name, ""
+    return None, name, f"no registered strategy plugin in module {module}"
+
+
+def check_plugin_params(plugins: dict[str, Any], registry: Any = None) -> list[ValidationFinding]:
+    """Every key a config sets on a plugin must be a property of that plugin's params schema."""
+    import difflib
+
+    from .params_schema import check_params, config_fields, resolve_params_schema
+
+    blocks = _plugin_blocks(plugins)
+    if not blocks:
+        return []
+    if registry is None:
+        from .registry import PluginRegistry
+
+        try:
+            registry = PluginRegistry.discover()
+        except Exception as exc:
+            return [ValidationFinding("warning", f"params_not_checked: plugin registry failed to load ({exc})")]
+
+    findings: list[ValidationFinding] = []
+    for where, group, block in blocks:
+        cls, name, unresolved = _resolve_block_plugin(registry, group, block["name"])
+        if cls is None:
+            findings.append(ValidationFinding("warning", f"params_not_checked:{name}: {unresolved}"))
+            continue
+        schema = resolve_params_schema(cls)
+        if schema is None:
+            findings.append(
+                ValidationFinding("warning", f"params_not_checked:{name}: plugin declares no params_schema")
+            )
+            continue
+        props = schema.get("properties", {})
+        init_names = {p.name for p in config_fields(cls)}
+        for channel in ("params_init", "params"):
+            params = block.get(channel) or {}
+            if not isinstance(params, dict):
+                findings.append(ValidationFinding("error", f"{where}.{channel} must be a mapping ({name})"))
+                continue
+            unread = _UNREAD_PARAMS.get(where) if channel == "params" else None
+            if unread:
+                findings.extend(
+                    ValidationFinding(
+                        "error", f"unknown_param: '{key}' is set on plugin '{name}' ({where}.params); {unread}"
+                    )
+                    for key in params
+                )
+                continue
+            allowed = init_names if channel == "params_init" else None
+            unknown, violations = check_params(schema, params, allowed)
+            for key in unknown:
+                if key in props:
+                    hint = "; it is a run-time param, set it under params"
+                else:
+                    close = difflib.get_close_matches(key, list(props), n=1)
+                    hint = f"; did you mean '{close[0]}'?" if close else ""
+                findings.append(
+                    ValidationFinding(
+                        "error",
+                        f"unknown_param: '{key}' is not a parameter of plugin '{name}' ({where}.{channel}){hint}",
+                    )
+                )
+            for msg in violations:
+                findings.append(ValidationFinding("error", f"invalid_param: plugin '{name}' ({where}.{channel}) {msg}"))
     return findings
 
 

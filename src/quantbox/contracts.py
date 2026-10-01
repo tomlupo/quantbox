@@ -99,7 +99,10 @@ class PluginMeta:
         tags: Searchable tags (e.g. ("crypto", "futures")).
         capabilities: Supported modes/features (e.g. ("paper", "live")).
         schema_version: Version of the artifact schema this plugin produces.
-        params_schema: JSON Schema for plugin parameters (LLM-friendly).
+        params_schema: JSON Schema for plugin parameters (LLM-friendly). Required
+            for every registered plugin: each key a config may set is a property
+            with a description. ``quantbox.params_schema.resolve_params_schema``
+            completes constructor params (type, default) from the signature.
         inputs: Artifact names this plugin expects as input.
         outputs: Artifact names this plugin produces.
         examples: Minimal YAML config snippets showing usage.

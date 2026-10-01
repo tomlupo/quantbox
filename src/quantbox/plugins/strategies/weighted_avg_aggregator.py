@@ -41,6 +41,16 @@ class WeightedAverageAggregator:
         core_compat=">=0.1,<0.2",
         description="Weighted-average meta-strategy aggregator",
         tags=("aggregator", "meta-strategy"),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "strategy_weights": {
+                    "type": "object",
+                    "default": {},
+                    "description": "Per-strategy weight overrides {strategy name: weight}.",
+                }
+            },
+        },
     )
 
     def run(self, data: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:

@@ -11,7 +11,7 @@ plugins:
     name: "trade.allocations_to_orders.v1"
     params:
       allocations_path: "./artifacts/<FUND_RUN_ID>/allocations.parquet"
-      instrument_map: \"./config/instruments.yaml\"
+      instrument_map: "./config/instruments.yaml"
       prices:
         lookback_days: 5
 
@@ -23,12 +23,10 @@ plugins:
 
   broker:
     name: "ibkr.paper.stub.v1"
+    # The paper stub simulates fills in memory. For a real IBKR paper account use
+    # ibkr.live.v1 with host / port (7497) / client_id / account / readonly.
     params_init:
-      host: "127.0.0.1"
-      port: 7497
-      client_id: 7
-      account: "DUXXXX"
-      readonly: true   # switch to false to enable orders
+      starting_cash_usd: 100000
 
   publishers: []
   risk: []

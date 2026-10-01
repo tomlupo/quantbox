@@ -152,6 +152,28 @@ def test_explain_lists_variant_strategies_named_by_a_bare_string_or_a_spec(tmp_p
     assert {"variants[bare]", "variants[spec]"} <= {p["role"] for p in planned["plugin_ids"]}
 
 
+def test_explain_resolves_source_strategies_and_source_variants(tmp_path):
+    # TOM-1363 made `source: file.py:Class` valid for a strategy AND a variant;
+    # explain's pre-flight must resolve it as the runner does, not look it up by name.
+    from test_arms import _write_base
+
+    base_path = _write_base(tmp_path)
+    cfg = yaml.safe_load(base_path.read_text())
+    source = cfg["plugins"]["strategies"][0]["source"]
+    cfg["plugins"]["pipeline"]["params"]["variants"] = [
+        {"name": "half", "strategy": {"source": source, "params": {"frac": 0.5}}},
+    ]
+    planned = explain_config(cfg, PluginRegistry.discover(), config_path=base_path)
+
+    assert planned["ok"] is True, planned["errors"]
+    assert validate_explain(planned) == []
+    ids = {p["role"]: p for p in planned["plugin_ids"]}
+    assert ids["strategies[0]"]["name"] == source and ids["strategies[0]"]["resolved"] is True
+    assert ids["variants[half]"]["name"] == source and ids["variants[half]"]["resolved"] is True
+    names = {s.get("variant"): s["name"] for s in planned["strategies"]}
+    assert names[None] == names["half"]
+
+
 def _cli(config_path: Path) -> tuple[int, dict, str]:
     result = CliRunner().invoke(app, ["config", "explain", str(config_path), "--json"])
     return result.exit_code, json.loads(result.stdout), result.stderr

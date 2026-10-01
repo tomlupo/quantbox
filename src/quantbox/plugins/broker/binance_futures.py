@@ -199,6 +199,27 @@ class BinanceFuturesBroker:
         tags=("live", "futures", "binance"),
         capabilities=("live", "futures", "shorts", "leverage"),
         schema_version="v1",
+        params_schema={
+            "type": "object",
+            "properties": {
+                "api_key": {
+                    "type": "string",
+                    "description": "API key; empty = read API_KEY_BINANCE from the environment.",
+                },
+                "api_secret": {
+                    "type": "string",
+                    "description": "API secret; empty = read API_SECRET_BINANCE from the environment.",
+                },
+                "target_leverage": {"type": "integer", "description": "Account leverage set on each traded symbol."},
+                "quote_currency": {"type": "string", "description": "Margin currency."},
+                "risk": {
+                    "type": "object",
+                    "description": "Python-only: a RiskConfig object (position/leverage/loss limits); default limits apply.",
+                },
+                "telegram_token": {"type": "string", "description": "Telegram bot token for fill notifications."},
+                "telegram_chat_id": {"type": "string", "description": "Telegram chat id for fill notifications."},
+            },
+        },
     )
 
     # Credentials

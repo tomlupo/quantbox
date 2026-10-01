@@ -45,4 +45,4 @@ plugins:
   data:
     name: "local_file_data"
     params_init:
-      data_dir: "./data/etf-daily"
+      dataset: etf-daily  # pinned in datasets.lock at the repo root

@@ -125,13 +125,16 @@ class BacktestPipeline:
                     "type": "number",
                     "minimum": 0,
                     "default": 0.0,
+                    "description": "Fixed fee per order, in quote currency (vectorbt).",
                 },
                 "slippage": {
                     "type": "number",
                     "minimum": 0,
                     "default": 0.0,
+                    "description": "Proportional slippage applied to fills (e.g. 0.0005 = 5 bps).",
                 },
                 "rebalancing_freq": {
+                    "type": ["integer", "string", "array", "null"],
                     "description": (
                         "How often portfolio is rebalanced to target weights. Accepts: "
                         "int (every N bars; e.g. 5 = weekly on daily data, every 5 hours on hourly), "
@@ -204,8 +207,69 @@ class BacktestPipeline:
                     "items": {"type": "object"},
                     "description": "Strategy configs (same as TradingPipeline).",
                 },
-                "execution": EXECUTION_SCHEMA,
-                "venue": VENUE_SCHEMA,
+                "universe": {
+                    "type": "object",
+                    "default": {},
+                    "description": "Universe selection params, passed to the data plugin's load_universe().",
+                },
+                "prices": {
+                    "type": "object",
+                    "default": {"lookback_days": 365},
+                    "description": (
+                        "Market-data request passed to the data plugin's load_market_data() "
+                        "(lookback_days, frequency, symbols, ...). `mode` is set from the run."
+                    ),
+                },
+                "frequency": {
+                    "type": ["string", "object"],
+                    "description": (
+                        "Bar frequency: '1h' or {bar_size, calendar}. Wins over prices.frequency + "
+                        "market_calendar; its bars_per_year is the default trading_days and strategy annualize."
+                    ),
+                },
+                "market_calendar": {
+                    "type": "string",
+                    "default": "24/7",
+                    "description": "Calendar used with prices.frequency when `frequency` is absent (e.g. NYSE).",
+                },
+                "risk": {
+                    "type": "object",
+                    "default": {},
+                    "description": (
+                        "Risk transforms applied to the weights time series and handed to risk plugins "
+                        "(allow_short, max_leverage, tranches, ...)."
+                    ),
+                },
+                "strategy_weights": {
+                    "type": "object",
+                    "default": {},
+                    "description": "Per-strategy weight overrides by strategy name, used when aggregating.",
+                },
+                "variants": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "default": [],
+                    "description": (
+                        "Independent variants overlaid in one report; each has name, strategy {name, params, "
+                        "params_init} and optional overrides (fees, fixed_fees, slippage, rebalancing_freq, "
+                        "threshold, risk)."
+                    ),
+                },
+                "narrative": {
+                    "type": "object",
+                    "description": (
+                        "Report narrative: title, methodology, findings inline, or title_file / "
+                        "methodology_file / findings_file paths."
+                    ),
+                },
+                "execution": {
+                    **EXECUTION_SCHEMA,
+                    "description": "Run-level execution timing (lag_bars).",
+                },
+                "venue": {
+                    **VENUE_SCHEMA,
+                    "description": "Run-level venue constraints (allow_shorts).",
+                },
             },
         },
         inputs=(),
@@ -785,9 +849,12 @@ class BacktestPipeline:
         for v in variants_cfg:
             vname = str(v["name"])
             strat_cfg = v.get("strategy") or {}
-            sname = strat_cfg.get("name") if isinstance(strat_cfg, dict) else str(strat_cfg)
+            if isinstance(strat_cfg, dict):
+                sname = strat_cfg.get("name") or strat_cfg.get("source")  # source: file.py:Class
+            else:
+                sname = str(strat_cfg)
             if not sname:
-                raise ValueError(f"Variant {vname!r}: missing strategy.name")
+                raise ValueError(f"Variant {vname!r}: missing strategy.name or strategy.source")
             splugin = variant_plugins.get(vname) or variant_plugins.get(sname)
             if splugin is None:
                 raise ValueError(f"Variant {vname!r}: no resolved plugin for strategy {sname!r}")
