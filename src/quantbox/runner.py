@@ -278,9 +278,9 @@ def _bind_dataset_lock(data: Any, config_path: str | Path | None) -> None:
     """
     if config_path is None or not getattr(data, "dataset", None) or getattr(data, "dataset_lock", "") is not None:
         return
-    from .dataset_lock import find_lock
+    from .dataset_lock import lock_for_config
 
-    lock = find_lock(Path(config_path).resolve().parent)
+    lock = lock_for_config(config_path)
     if lock is not None:
         data.dataset_lock = str(lock)
 
@@ -289,7 +289,7 @@ def _dataset_block(data: Any) -> dict[str, Any]:
     """Return the typed dataset evidence block for run_manifest.json.
 
     Accepts a DataPlugin. A dataset read by name records its resolution (tier
-    ``lock``) — exactly what ``quantbox dataset resolve --json`` prints. If the
+    ``lock``) — exactly what ``quantbox dataset resolve -c <config> --json`` prints. If the
     DataPlugin exposes ``.resolve()`` returning a DatasetPlugin (Tier 1+),
     evidence is read from it. Otherwise (Tier 0) a raw marker is emitted.
     """

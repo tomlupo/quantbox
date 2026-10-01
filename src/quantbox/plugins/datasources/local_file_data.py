@@ -205,7 +205,7 @@ class LocalFileDataPlugin:
 
     Or, for a quantbox-datasets dataset, by name — rooted at ``$QUANTBOX_DATASETS_ROOT``
     and served at the build pinned in the ``datasets.lock`` nearest the config
-    (``quantbox-datasets pin <name>``); ``quantbox dataset resolve <name> --json`` shows
+    (``quantbox-datasets pin <name>``); ``quantbox dataset resolve <name> -c <config> --json`` shows
     what will be read. The ``*_path`` params are then ignored::
 
             params_init:
@@ -234,7 +234,7 @@ class LocalFileDataPlugin:
     dataset_lock: str | None = None
     mode: str | None = None
     _dataset: Any = field(default=None, init=False, repr=False)
-    # What ``quantbox dataset resolve --json`` reports; the runner records it in the manifest.
+    # What ``quantbox dataset resolve -c <config> --json`` reports; the runner records it in the manifest.
     dataset_resolution: dict[str, Any] | None = field(default=None, init=False, repr=False)
 
     def _pinned(self) -> Any:

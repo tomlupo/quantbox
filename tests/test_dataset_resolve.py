@@ -419,3 +419,59 @@ def test_a_dataset_name_that_is_not_one_directory_under_the_root_is_refused(root
         resolve_dataset(name)
     result = CliRunner().invoke(app, ["dataset", "resolve", name, "--json"])
     assert result.exit_code == 1
+
+
+def test_resolve_with_config_reads_the_lock_the_run_reads_not_the_cwds(root, tmp_path, monkeypatch, fake_datasets):
+    """PR #212 review: resolve must answer for the lock nearest the CONFIG, as run binds it."""
+    sha = _build(root, "etf-daily")
+    line = tmp_path / "line"
+    line.mkdir()
+    (line / "datasets.lock").write_text(f"etf-daily: {sha}\n")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "datasets.lock").write_text(f"etf-daily: {'e' * 64}\n")
+    monkeypatch.chdir(elsewhere)
+
+    manifest = _run(line / "config.yaml", tmp_path / "artifacts")
+    code, out = _resolve_json("etf-daily", "--config", str(line / "config.yaml"))
+
+    assert code == 0
+    assert out["lock"] == str(line / "datasets.lock")
+    assert manifest["dataset"]["resolved"] == out
+
+
+def test_resolve_with_config_and_no_lock_above_it_falls_back_to_the_cwd_like_run(
+    root, tmp_path, monkeypatch, fake_datasets
+):
+    sha = _build(root, "etf-daily")
+    line = tmp_path / "line"
+    line.mkdir()
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    (cwd / "datasets.lock").write_text(f"etf-daily: {sha}\n")
+    monkeypatch.chdir(cwd)
+
+    manifest = _run(line / "config.yaml", tmp_path / "artifacts")
+    code, out = _resolve_json("etf-daily", "--config", str(line / "config.yaml"))
+
+    assert code == 0
+    assert out["lock"] == str(cwd / "datasets.lock")
+    assert manifest["dataset"]["resolved"] == out
+
+
+def test_resolve_with_config_honours_its_explicit_dataset_lock(root, tmp_path, monkeypatch):
+    sha = _build(root, "etf-daily")
+    line = tmp_path / "line"
+    line.mkdir()
+    (line / "datasets.lock").write_text(f"etf-daily: {'e' * 64}\n")
+    explicit = tmp_path / "pins.lock"
+    explicit.write_text(f"etf-daily: {sha}\n")
+    cfg = _config(tmp_path / "artifacts")
+    cfg["plugins"]["data"]["params_init"]["dataset_lock"] = str(explicit)
+    (line / "config.yaml").write_text(yaml.safe_dump(cfg))
+    monkeypatch.chdir(tmp_path)
+
+    code, out = _resolve_json("etf-daily", "--config", str(line / "config.yaml"))
+
+    assert code == 0
+    assert out["lock"] == str(explicit)

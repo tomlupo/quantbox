@@ -26,7 +26,7 @@ def _check_legacy_dataset_params(cfg: dict) -> None:
         warnings.warn(
             f"config pins its dataset inline ({', '.join(legacy)}) — deprecated; name the dataset "
             "and pin it in datasets.lock (`quantbox-datasets pin <name>`), with the root from "
-            "$QUANTBOX_DATASETS_ROOT; `quantbox dataset resolve <name> --json` shows the result "
+            "$QUANTBOX_DATASETS_ROOT; `quantbox dataset resolve <name> -c <config> --json` shows the result "
             "(see quantbox-qute/docs/decisions/0004-quantbox-dataset-plugin-tiers.md)",
             FutureWarning,
             stacklevel=2,

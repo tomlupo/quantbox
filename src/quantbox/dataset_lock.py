@@ -7,8 +7,9 @@ must be come from two places that are NOT the config and NOT the working directo
   from (its own ``datasets_root()``);
 - the pin: the ``datasets.lock`` nearest the config (``quantbox-datasets pin <name>``).
 
-:func:`resolve_dataset` is the one answer both ``quantbox dataset resolve --json`` and
-the runner use, and the runner records it verbatim in ``run_manifest.json``.
+:func:`resolve_dataset` is the one answer both ``quantbox dataset resolve -c <config> --json``
+and the runner use (both pick the lock with :func:`lock_for_config`), and the runner
+records it verbatim in ``run_manifest.json``.
 
 quantbox does not depend on quantbox-datasets. Resolution needs nothing from it beyond
 the clone fallback above; restoring a pinned build from git history (quantbox-datasets
@@ -39,6 +40,16 @@ def find_lock(start: str | Path | None = None) -> Path | None:
         if (directory / LOCK_NAME).is_file():
             return directory / LOCK_NAME
     return None
+
+
+def lock_for_config(config_path: str | Path) -> Path | None:
+    """The datasets.lock a run of *config_path* binds: the nearest above the config.
+
+    None means no lock above the config; the data plugin then falls back to the nearest
+    one above the cwd. The runner and ``quantbox dataset resolve --config`` both call
+    this, so they cannot disagree on which lock pins a by-name dataset.
+    """
+    return find_lock(Path(config_path).resolve().parent)
 
 
 def datasets_root() -> Path:
