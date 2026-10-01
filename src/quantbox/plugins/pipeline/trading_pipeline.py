@@ -34,6 +34,7 @@ from quantbox.contracts import (
     RunResult,
     StrategyPlugin,
 )
+from quantbox.frequency import resolve_pipeline_frequency
 from quantbox.portfolio_value import (
     BASIS_MARK,
     DEFAULT_RECONCILIATION_TOLERANCE,
@@ -97,6 +98,18 @@ def _safe_float(v: Any) -> float | None:
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+def _with_injected_annualize(strat_params: dict[str, Any], injected: float | None) -> dict[str, Any]:
+    """A COPY of a strategy's params carrying `_pipeline_annualize`.
+
+    An explicit value already in the strategy's params wins, as it does in the
+    backtest pipeline. The config dict itself is never mutated.
+    """
+    out = dict(strat_params or {})
+    if injected is not None and "_pipeline_annualize" not in out:
+        out["_pipeline_annualize"] = injected
+    return out
 
 
 class ReconEnforcementError(RuntimeError):
@@ -703,14 +716,23 @@ class TradingPipeline:
         market_data = self._build_market_data(market_data_dict, universe)
 
         # --- Stage 2: Strategy Execution ---
+        # Hand strategies the SAME `_pipeline_annualize` the backtest pipeline
+        # does (one resolver, `resolve_pipeline_frequency`). Without it every
+        # strategy that reads the key fell back to 252 in paper/live while its
+        # backtest used 365 on a 24/7 book — a sqrt(365/252) ~= 1.20x vol-sizing
+        # gap between the two (TOM-1338).
+        injected_annualize = resolve_pipeline_frequency(params, prices_params).bars_per_year()
         if strategies:
             strategy_results = self._run_strategy_plugins(
                 strategies,
                 strategies_cfg,
                 market_data,
+                injected_annualize=injected_annualize,
             )
         else:
-            strategy_results = self._run_strategies(market_data, strategies_cfg, params)
+            strategy_results = self._run_strategies(
+                market_data, strategies_cfg, params, injected_annualize=injected_annualize
+            )
 
         # Save per-strategy weights
         strat_weights_records: list[dict[str, Any]] = []
@@ -1291,6 +1313,7 @@ class TradingPipeline:
         market_data: dict[str, Any],
         strategies_cfg: list[dict[str, Any]],
         pipeline_params: dict[str, Any],
+        injected_annualize: float | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Import and run each strategy, collecting results."""
         results: dict[str, dict[str, Any]] = {}
@@ -1298,7 +1321,7 @@ class TradingPipeline:
         for strat_cfg in strategies_cfg:
             name = strat_cfg["name"]
             weight = float(strat_cfg.get("weight", 1.0))
-            strat_params = strat_cfg.get("params", {})
+            strat_params = _with_injected_annualize(strat_cfg.get("params", {}), injected_annualize)
 
             try:
                 module = importlib.import_module(f"quantbox.plugins.strategies.{name}")
@@ -1330,6 +1353,7 @@ class TradingPipeline:
         strategy_plugins: list[StrategyPlugin],
         strategies_cfg: list[dict[str, Any]],
         market_data: dict[str, Any],
+        injected_annualize: float | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Run injected StrategyPlugin instances, collecting results."""
         results: dict[str, dict[str, Any]] = {}
@@ -1337,7 +1361,7 @@ class TradingPipeline:
         for i, strat in enumerate(strategy_plugins):
             strat_cfg = strategies_cfg[i] if i < len(strategies_cfg) else {}
             weight = float(strat_cfg.get("weight", 1.0))
-            strat_params = strat_cfg.get("params", {})
+            strat_params = _with_injected_annualize(strat_cfg.get("params", {}), injected_annualize)
 
             result = strat.run(data=market_data, params=strat_params)
 
