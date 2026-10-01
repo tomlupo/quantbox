@@ -13,6 +13,7 @@ import pandas as pd
 
 from quantbox.parquet_io import read_parquet
 
+from . import run_manifest as _run_manifest
 from .contracts import (
     BrokerPlugin,
     DataPlugin,
@@ -27,6 +28,7 @@ from .contracts import (
 from .exceptions import ConfigValidationError, PluginNotFoundError
 from .llm_utils import event_line, load_schema, validate_table
 from .plugin_manifest import load_manifest, resolve_profile
+from .run_manifest import _sha256_file
 from .store import FileArtifactStore
 from .strict import get_capability
 from .validate import validate_config
@@ -170,17 +172,6 @@ def _hash_config(cfg: dict[str, Any]) -> str:
 def _hash_config_full(cfg: dict[str, Any]) -> str:
     b = json.dumps(cfg, sort_keys=True).encode("utf-8")
     return hashlib.sha256(b).hexdigest()
-
-
-def _sha256_file(path: Path) -> str | None:
-    try:
-        h = hashlib.sha256()
-        with path.open("rb") as f:
-            for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                h.update(chunk)
-        return h.hexdigest()
-    except OSError:
-        return None
 
 
 def _git_value(args: list[str], cwd: Path) -> str | None:
@@ -547,7 +538,11 @@ def run_from_config(
         "aggregator": _plugin_meta(aggregator) if aggregator else None,
         "rebalancer": _plugin_meta(rebalancer) if rebalancer else None,
     }
+    notes = result.notes or {}
+    dataset = _dataset_block(data)
+    dataset.update(_run_manifest.dataset_fields(data, dataset))
     manifest = {
+        "schema": _run_manifest.SCHEMA_ID,
         "run_id": result.run_id,
         "asof": result.asof,
         "mode": result.mode,
@@ -569,17 +564,21 @@ def run_from_config(
             "broker": getattr(getattr(broker, "meta", None), "name", broker_block["name"]) if broker else None,
         },
         "plugin_versions": plugin_versions,
-        "dataset": _dataset_block(data),
+        "engine": _run_manifest.engine_block(notes),
+        "dataset": dataset,
+        "funding": _run_manifest.funding_block(data, notes),
+        "n_trials": _run_manifest.n_trials(cfg),
         "capability_results": _run_capability_checks(data, run_ctx=None),
         "artifacts": result.artifacts,
+        "files": _run_manifest.files_block(result.artifacts or {}, store.root),
         "metrics": result.metrics,
         "warnings": [],
     }
     # Backtest pipelines state their execution timing and venue; a reader of
     # the manifest must never have to infer either (quantbox.execution).
     for block in ("execution", "venue"):
-        if block in (result.notes or {}):
-            manifest[block] = result.notes[block]
+        if block in notes:
+            manifest[block] = notes[block]
 
     # Validate artifacts against JSON schemas when available (best-effort)
     from importlib.resources import files as _res_files
@@ -598,17 +597,17 @@ def run_from_config(
     strict_mode = bool(cfg.get("run", {}).get("strict")) or result.mode == "promotion"
     if strict_mode:
         if manifest["dataset"]["tier"] == "raw":
-            store.put_json("run_manifest", manifest)
+            store.put_json("run_manifest", _run_manifest.json_safe(manifest))
             raise RuntimeError(
                 "strict mode rejects Tier-0 raw ingest — see "
                 "quantbox-qute/docs/decisions/0004-quantbox-dataset-plugin-tiers.md"
             )
         failures = [c for c, r in manifest["capability_results"].items() if not r["passed"]]
         if failures:
-            store.put_json("run_manifest", manifest)
+            store.put_json("run_manifest", _run_manifest.json_safe(manifest))
             raise RuntimeError(f"strict mode capability failures: {failures}")
 
-    store.put_json("run_manifest", manifest)
+    store.put_json("run_manifest", _run_manifest.json_safe(manifest))
     store.append_event(event_line("RUN_END", run_id=run_id, metrics=result.metrics, warnings=len(manifest["warnings"])))
 
     # Optional: ingest artifacts into warehouse

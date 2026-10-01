@@ -345,7 +345,7 @@ plugins:
     manifest = json.loads((tmp_path / "artifacts" / result.run_id / "run_manifest.json").read_text())
     assert manifest["execution"]["lag_bars"] == 1
     assert manifest["execution"]["same_bar"] is False
-    assert manifest["venue"] == {"declared": True, "allow_shorts": False}
+    assert manifest["venue"] == {"declared": True, "allow_shorts": False, "max_leverage": 99.0}
     assert manifest["metrics"]["execution_lag_bars"] == 1.0
 
 
@@ -397,7 +397,7 @@ def test_shorts_traded_without_a_venue_block_warn_and_are_measured(tmp_path, cap
     assert "no `venue:` block is declared" in caplog.text
     assert result.metrics["traded_short_gross_share"] == pytest.approx(1.0)
     assert result.metrics["traded_mean_net_exposure"] < 0
-    assert result.notes["venue"] == {"declared": False, "allow_shorts": True}
+    assert result.notes["venue"] == {"declared": False, "allow_shorts": True, "max_leverage": 99.0}
 
 
 def test_declared_short_venue_is_quiet(tmp_path, caplog):

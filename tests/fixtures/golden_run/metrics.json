@@ -1,0 +1,22 @@
+{
+  "total_return": -0.14692603224076517,
+  "cagr": -0.7829024339328287,
+  "sharpe": -9.355910125627055,
+  "sortino": -12.180585748113547,
+  "max_drawdown": -0.15080205883256248,
+  "max_drawdown_duration_days": 37,
+  "annual_volatility": 0.15734144378047363,
+  "calmar": -5.19158982306797,
+  "win_rate": 0.28205128205128205,
+  "profit_factor": 0.264105037654571,
+  "var_95": -0.018378685763734404,
+  "cvar_95": -0.021992121244332197,
+  "execution_lag_bars": 1.0,
+  "traded_mean_gross_exposure": 0.975,
+  "traded_mean_net_exposure": 0.975,
+  "traded_short_gross_share": 0.0,
+  "traded_mean_turnover": 0.025,
+  "traded_flat_bar_share": 0.025,
+  "target_short_gross_share": 0.0,
+  "target_mean_net_exposure": 1.0
+}
