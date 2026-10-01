@@ -745,6 +745,95 @@ def dataset_resolve(
         raise SystemExit(1)
 
 
+new_app = typer.Typer(help="Scaffold new things (a research line).")
+app.add_typer(new_app, name="new")
+line_app = typer.Typer(help="Research lines (Model C): move a line's engine pin.")
+app.add_typer(line_app, name="line")
+
+
+def _line_report(result: dict[str, Any], as_json: bool) -> None:
+    if as_json:
+        print(_as_json(result))
+        return
+    for key, value in result.items():
+        print(f"{key}: {value}")
+
+
+@new_app.command("line")
+def new_line(
+    slug: str = typer.Argument(help="Line name: lowercase letters, digits, '-' and '_'"),
+    directory: str = typer.Option(None, "--dir", help="Where to create it (default: ./<slug>); must be empty"),
+    quantbox_ref: str = typer.Option(
+        None, "--quantbox-ref", help="quantbox tag, branch or SHA (default: latest v* tag)"
+    ),
+    quantbox_url: str = typer.Option(None, "--quantbox-url", help="quantbox git URL (default: GitHub)"),
+    datasets_ref: str = typer.Option(None, "--datasets-ref", help="quantbox-datasets ref (default: its HEAD)"),
+    datasets_url: str = typer.Option(None, "--datasets-url", help="quantbox-datasets git URL (default: GitHub)"),
+    extras: str = typer.Option(None, "--extras", help="quantbox extras to install (default: full; '' for none)"),
+    python: str = typer.Option(None, "--python", help="Python minor version the line runs on (default: 3.12)"),
+    dataset: str = typer.Option(None, "--dataset", help="Dataset the base config reads (default: crypto-spot-daily)"),
+    question: str = typer.Option(None, "--question", help="One sentence: what this line investigates"),
+    no_lock: bool = typer.Option(False, "--no-lock", help="Write the files only; skip `uv lock`"),
+    as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Create a Model C research line: pinned pyproject + lock, README with prereg, datasets.lock, arms, repro test.
+
+    quantbox is pinned to the commit the tag names, every transitive dependency exactly.
+    Then: `cd <slug> && uv sync && uv run quantbox run -c config.yaml`.
+    """
+    from . import line
+
+    kwargs: dict[str, Any] = {
+        "directory": directory,
+        "quantbox_ref": quantbox_ref,
+        "datasets_ref": datasets_ref,
+        "question": question,
+        "lock": not no_lock,
+    }
+    defaults = {
+        "quantbox_url": (quantbox_url, line.QUANTBOX_URL),
+        "datasets_url": (datasets_url, line.DATASETS_URL),
+        "extras": (extras, line.DEFAULT_EXTRAS),
+        "python": (python, line.DEFAULT_PYTHON),
+        "dataset": (dataset, line.DEFAULT_DATASET),
+    }
+    kwargs.update({k: (v if v is not None else d) for k, (v, d) in defaults.items()})
+    try:
+        result = line.new_line(slug, **kwargs)
+    except line.LineError as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise SystemExit(1) from exc
+    _line_report(result, as_json)
+    if result["dataset"]["sha256"] is None:
+        typer.echo(
+            f"WARNING: datasets.lock does not pin {result['dataset']['name']} yet: "
+            f"{result['dataset']['unpinned_reason']}",
+            err=True,
+        )
+
+
+@line_app.command("repin")
+def line_repin(
+    path: str = typer.Argument(".", help="The line directory"),
+    ref: str = typer.Option(None, "--ref", help="quantbox tag, branch or SHA (default: latest v* tag)"),
+    quantbox_url: str = typer.Option(None, "--quantbox-url", help="quantbox git URL (default: the one the line pins)"),
+    no_lock: bool = typer.Option(False, "--no-lock", help="Rewrite pyproject.toml only; skip `uv lock`"),
+    as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Move a line's quantbox pin to REF, re-derive every exact pin from it, and refresh uv.lock.
+
+    Then: `uv sync && uv run pytest -m reproduction` — red means the engine moved a number.
+    """
+    from . import line
+
+    try:
+        result = line.repin(path, ref=ref, quantbox_url=quantbox_url, lock=not no_lock)
+    except line.LineError as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise SystemExit(1) from exc
+    _line_report(result, as_json)
+
+
 def main():
     app()
 

@@ -83,6 +83,8 @@ quantbox run -c <config>           # run a pipeline
 quantbox run --dry-run -c <config> # dry run (no side effects)
 quantbox run --json -c <config>    # print only the run manifest (quantbox/run@1); logs on stderr
 quantbox approve --run-dir <path>  # write approval file for a run's orders
+quantbox new line <slug>           # scaffold a pinned research line (docs/playbooks/research-line.md)
+quantbox line repin <dir> --ref vX # move a line's quantbox pin, re-derive its exact pins, re-lock
 quantbox warehouse tables          # list warehouse tables
 quantbox warehouse query -q <sql>  # run SQL against the artifact warehouse
 ```
