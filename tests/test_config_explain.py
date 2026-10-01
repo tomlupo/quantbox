@@ -309,6 +309,21 @@ def test_a_non_numeric_variant_override_is_refused_by_explain_and_run(tmp_path):
     _both_refuse(cfg, config_path, "Variant 'v1'.*'fees'")
 
 
+@pytest.mark.parametrize("value", ["yes", "no", 1])
+def test_a_non_boolean_full_report_is_refused_by_explain_and_run(tmp_path, value):
+    # TOM-1365: a truthy "no" would otherwise write the tens-of-MB HTML report.
+    cfg, config_path = _inline_config(tmp_path, "vectorbt")
+    cfg["plugins"]["pipeline"]["params"]["full_report"] = value
+    _both_refuse(cfg, config_path, "'full_report' must be true or false")
+
+
+def test_plan_records_full_report_off_by_default():
+    from quantbox.plugins.pipeline.backtest_pipeline import BacktestPipeline
+
+    assert BacktestPipeline().plan({})["full_report"] is False
+    assert BacktestPipeline().plan({"full_report": True})["full_report"] is True
+
+
 def test_a_missing_engine_extra_is_refused_by_explain_and_run(tmp_path, monkeypatch):
     from quantbox.plugins.pipeline import backtest_pipeline
 

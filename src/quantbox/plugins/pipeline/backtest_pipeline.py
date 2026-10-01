@@ -397,6 +397,9 @@ class BacktestPipeline:
                 initial_cash=_number("initial_cash", params.get("initial_cash", 10000)),
                 margin=_number("margin", params.get("margin", 0.0)),
             )
+        full_report = params.get("full_report", False)
+        if not isinstance(full_report, bool):  # a truthy "no" must not write tens of MB
+            raise ValueError(f"'full_report' must be true or false, got {full_report!r}")
         variants = params.get("variants") or []
         variant_costs = _plan_variants(variants, engine, venue_declared, costs)
         # The run's files are the PRIMARY (first) variant's book, so its cap is the one recorded.
@@ -419,6 +422,8 @@ class BacktestPipeline:
             "variant_costs": variant_costs,
             # What data.load_market_data receives (before the warmup lookback and mode are added).
             "load_params": load_params,
+            # Also write the heavy report.html + report_data.json (TOM-1365); off by default.
+            "full_report": full_report,
         }
 
     def check_planned_data(self, data: Any, paths: dict[str, str | None]) -> None:
@@ -736,7 +741,7 @@ class BacktestPipeline:
             ),
         )
         # The heavy HTML report is opt-in; the slim finding_report.json is written by the runner.
-        if params.get("full_report", False):
+        if plan["full_report"]:
             try:
                 rd = generate_report_data(
                     run_id=store.run_id,
@@ -1157,7 +1162,7 @@ class BacktestPipeline:
                     execution=describe_execution(lag_bars),
                 ),
             )
-            if params.get("full_report", False):  # the heavy HTML report is opt-in
+            if plan["full_report"]:  # the heavy HTML report is opt-in
                 rd = generate_report_data(
                     run_id=store.run_id,
                     asof=asof,
