@@ -10,7 +10,9 @@ calls the gate and maps the result to an exit code:
 With ``--json`` the verdict is one JSON object on stdout; a 2 prints
 ``{"error": ...}`` on stderr. Inputs are per-period return series as ``.csv`` or
 ``.parquet``. Paired inputs (``factor``, ``bootstrap``, ``episode --baseline``)
-are date-indexed — the first column is the date — and are inner-joined on it.
+are date-indexed — the first column is the date — and are inner-joined on it, in
+date order; a numeric first column is refused rather than paired by row position.
+A single-series file that carries a date first column is read in date order too.
 """
 
 from __future__ import annotations
@@ -64,13 +66,41 @@ def _read_frame(path: str, *, indexed: bool):
         frame = pd.read_csv(p, encoding="utf-8", index_col=0 if indexed else None)
     else:
         raise _input_error(f"unsupported file type {suffix!r} (need .csv or .parquet): {p}")
-    if indexed:
-        # one spelling of a date per row, whatever the file wrote ("2020-01-01" vs "... 00:00:00")
-        try:
-            frame.index = pd.to_datetime(frame.index)
-        except (ValueError, TypeError) as exc:
-            raise _input_error(f"{p}: the first column must be a date index for a paired gate ({exc})") from exc
+    if not indexed:
+        return _in_date_order(frame)
+    # A numeric index is a row number or a return, never a date: to_datetime would read it
+    # as epoch nanoseconds and the two files would pair POSITIONALLY on fabricated 1970 dates.
+    if not isinstance(frame.index, pd.DatetimeIndex) and pd.api.types.is_numeric_dtype(frame.index):
+        raise _input_error(
+            f"{p}: a paired gate needs dates — the first column (or the parquet index) must be a date, "
+            f"got a numeric {type(frame.index).__name__} ({frame.index.dtype})"
+        )
+    # one spelling of a date per row, whatever the file wrote ("2020-01-01" vs "... 00:00:00")
+    try:
+        frame.index = pd.to_datetime(frame.index)
+    except (ValueError, TypeError) as exc:
+        raise _input_error(f"{p}: the first column must be a date index for a paired gate ({exc})") from exc
     return frame
+
+
+def _in_date_order(frame):
+    """An unpaired read in DATE order when the file carries dates, else in file order.
+
+    HAC and the drawdown episode both depend on row order, so a dated file written
+    newest-first (or shuffled) must not be read as if it were chronological.
+    """
+    import numpy as np
+    import pandas as pd
+
+    if isinstance(frame.index, pd.DatetimeIndex):
+        return frame.sort_index(kind="stable")
+    if frame.shape[1] == 0 or pd.api.types.is_numeric_dtype(frame.iloc[:, 0]):
+        return frame
+    try:
+        dates = pd.to_datetime(frame.iloc[:, 0], format="mixed")
+    except (ValueError, TypeError):
+        return frame
+    return frame.iloc[np.argsort(dates.to_numpy(), kind="stable")]
 
 
 def _pick_column(frame, column: str | None, path: str) -> str:
@@ -281,7 +311,8 @@ def factor(
         parts = [strat, panel[names]]
         if rf_column is not None:
             parts.append(panel[[rf_column]].rename(columns={rf_column: "__rf__"}))
-        joined = pd.concat(parts, axis=1, join="inner")
+        # date order, not file order: the HAC standard error weights NEIGHBOURING rows
+        joined = pd.concat(parts, axis=1, join="inner").sort_index(kind="stable")
         finite = np.isfinite(joined.to_numpy(dtype=float)).all(axis=1)
         dropped = int((~finite).sum())
         if dropped and not allow_nonfinite_drop:

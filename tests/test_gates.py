@@ -436,3 +436,110 @@ def test_cli_json_matches_the_function(files):
 def test_cli_without_json_prints_a_verdict_line(files):
     res = runner.invoke(app, ["gates", "nw", "--returns", files["strong"]])
     assert res.exit_code == 0 and res.stdout.startswith("nw: PASS")
+
+
+# ── review round (PR #213): constants, row order, undated paired inputs ────
+
+
+@pytest.mark.parametrize("n", [200, 337, 1000])
+def test_a_constant_series_cannot_pass_a_sharpe_claim(n):
+    """`np.full(n, 0.001)` carries std ~1e-19, not 0.0: the `std > 0` guard in the
+    Sharpe leg turned it into a Sharpe of ~1e15 and the bootstrap PASSED every draw.
+    The point leg is undefined, so the gate cannot compute (exit 2), not a verdict."""
+    with pytest.raises(g.GateInputError):
+        g.paired_block_bootstrap(np.full(n, 0.001), np.full(n, 0.003), draws=50)
+    with pytest.raises(g.GateInputError):
+        g.episode_gate(np.full(n, 0.001))
+
+
+def test_a_draw_of_only_constant_rows_is_undefined_not_a_huge_sharpe():
+    """A resample made only of the constant stretch must count as undefined."""
+    c = np.concatenate([np.full(300, 0.001), [0.02, -0.01]])
+    b = np.concatenate([np.full(300, 0.003), [0.01, -0.02]])
+    assert math.isnan(g._metric(np.full(50, 0.001), "sharpe"))
+    out = g.paired_block_bootstrap(c, b, draws=200, mean_block=150, seed=3)
+    assert out["n_undefined_draws"] > 0
+    assert abs(out["quantiles"]["0.975"]) < 1e3  # no 1e15 Sharpes leaked into the defined draws
+
+
+def _shuffled(frame: pd.DataFrame, seed: int = 7) -> pd.DataFrame:
+    return frame.iloc[np.random.default_rng(seed).permutation(len(frame))]
+
+
+def test_factor_cli_does_not_depend_on_the_row_order_of_its_files(tmp_path):
+    """HAC weights neighbouring rows, so the regression must run in DATE order —
+    the same data shuffled in the CSV must give the same t-stat."""
+    r, F = series()
+    dates = pd.date_range("2020-01-01", periods=r.size, freq="D").strftime("%Y-%m-%d")
+    y = pd.DataFrame({"date": dates, "returns": r})
+    f = pd.DataFrame({"date": dates, "a": F[:, 0], "b": F[:, 1]})
+    tstats = []
+    for tag, (yy, ff) in {"sorted": (y, f), "shuffled": (_shuffled(y, 1), _shuffled(f, 2))}.items():
+        argv = ["gates", "factor", "--json", "--returns", _csv(tmp_path / f"y-{tag}.csv", yy)]
+        res = runner.invoke(app, [*argv, "--factors", _csv(tmp_path / f"f-{tag}.csv", ff)])
+        assert res.exit_code in (0, 1), res.output
+        tstats.append(json.loads(res.stdout)["alpha_tstat"])
+    assert tstats[1] == pytest.approx(tstats[0], rel=1e-12)
+
+
+@pytest.mark.parametrize("gate", ["nw", "episode"])
+def test_an_undated_gate_reads_a_dated_file_in_date_order(tmp_path, gate):
+    """The single-series gates are order-sensitive too (HAC, drawdown episode): a
+    file that carries a date column is read in date order, not file order."""
+    r, _ = series()
+    dates = pd.date_range("2020-01-01", periods=r.size, freq="D").strftime("%Y-%m-%d")
+    y = pd.DataFrame({"date": dates, "returns": r})
+    out = []
+    for tag, frame in {"sorted": y, "shuffled": _shuffled(y)}.items():
+        argv = ["gates", gate, "--json", "--returns", _csv(tmp_path / f"{tag}.csv", frame)]
+        res = runner.invoke(app, [*argv, "--min-oos-periods", "10"] if gate == "nw" else argv)
+        assert res.exit_code in (0, 1), res.output
+        payload = json.loads(res.stdout)
+        out.append(payload["nw_tstat"] if gate == "nw" else payload["ex_episode"]["value"])
+    assert out[1] == pytest.approx(out[0], rel=1e-12)
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda r: pd.DataFrame({"returns": r}),  # parquet: default RangeIndex
+        lambda r: pd.DataFrame({"returns": r, "other": r * 2}),  # first column numeric, not a date
+    ],
+    ids=["one-column", "numeric-first-column"],
+)
+@pytest.mark.parametrize("fmt", ["parquet", "csv"])
+def test_paired_gates_refuse_inputs_without_dates(tmp_path, make, fmt):
+    """An undated file must not be paired positionally on fabricated 1970 epoch dates."""
+    r, _ = series()
+    paths = []
+    for name, x in (("c", r + 0.002), ("b", r)):
+        frame = make(x)
+        if fmt == "parquet":
+            paths.append(str(_parquet(tmp_path / f"{name}.parquet", frame)))
+        else:
+            paths.append(_csv(tmp_path / f"{name}.csv", frame))
+    cols = ["--column", "returns", "--baseline-column", "returns"]
+    for argv in (
+        ["bootstrap", "--returns", paths[0], "--baseline", paths[1], *cols, "--draws", "50"],
+        ["episode", "--returns", paths[0], "--baseline", paths[1], *cols],
+    ):
+        res = runner.invoke(app, ["gates", *argv, "--json"])
+        assert res.exit_code == 2, res.output
+        assert "date" in json.loads(res.stderr)["error"]
+
+
+@pytest.mark.parametrize("dated_index", [True, False], ids=["datetime-index", "date-column"])
+def test_paired_gates_accept_dated_parquet(tmp_path, dated_index):
+    r, _ = series()
+    dates = pd.date_range("2020-01-01", periods=r.size, freq="D")
+    paths = []
+    for name, x in (("c", r + 0.001), ("b", r)):
+        if dated_index:
+            frame = pd.DataFrame({"returns": x}, index=dates)
+        else:
+            frame = pd.DataFrame({"date": dates, "returns": x})
+        paths.append(str(_parquet(tmp_path / f"{name}.parquet", frame)))
+    argv = ["bootstrap", "--returns", paths[0], "--baseline", paths[1], "--metric", "mean", "--draws", "100"]
+    res = runner.invoke(app, ["gates", *argv, "--json"])
+    assert res.exit_code == 0, res.output
+    assert json.loads(res.stdout)["first_date"].startswith("2020-01-01")
