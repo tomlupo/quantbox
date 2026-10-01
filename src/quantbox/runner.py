@@ -434,6 +434,8 @@ def plugin_refs(cfg: dict[str, Any]) -> list[tuple[str, str, str, dict[str, Any]
         add(f"strategies[{i}]", "strategy", "strategies", s)
     add("aggregator", "strategy", "strategies", plugins.get("aggregator"))
     add("rebalancing", "rebalancing", "rebalancing", plugins.get("rebalancing"))
+    for i, o in enumerate(plugins.get("overlays") or []):
+        add(f"overlays[{i}]", "overlay", "overlays", o)
     for v in ((plugins.get("pipeline") or {}).get("params") or {}).get("variants") or []:
         strat = v.get("strategy") or {}
         if not isinstance(strat, dict):
@@ -571,6 +573,24 @@ def resolve_run(
         variant_plugins=variant_plugins,
         overlay_chain=overlay_chain,
     )
+
+
+def strict_refusal(cfg: dict[str, Any], mode: str, dataset_tier: str | None) -> str | None:
+    """Why ``run.strict`` (or a promotion run) refuses this dataset tier, or None.
+
+    One check for :func:`run_from_config` and ``quantbox config explain``: the run
+    raises it after writing its manifest, explain reports it before any work (TOM-1362).
+    """
+    if not (bool(cfg.get("run", {}).get("strict")) or mode == "promotion"):
+        return None
+    # "lock" (a by-name dataset verified against datasets.lock, TOM-1349) was "raw" before
+    # it had a tier of its own; accepting it in strict mode is a separate decision.
+    if dataset_tier in ("raw", "lock"):
+        return (
+            f"strict mode rejects Tier-0 raw ingest (dataset tier {dataset_tier!r}) — see "
+            "quantbox-qute/docs/decisions/0004-quantbox-dataset-plugin-tiers.md"
+        )
+    return None
 
 
 def _config_block(cfg: dict[str, Any], config_path: str | Path | None) -> dict[str, Any]:
@@ -785,14 +805,10 @@ def run_from_config(
 
     strict_mode = bool(cfg.get("run", {}).get("strict")) or result.mode == "promotion"
     if strict_mode:
-        # "lock" (a by-name dataset verified against datasets.lock, TOM-1349) was "raw" before
-        # it had a tier of its own; accepting it in strict mode is a separate decision.
-        if manifest["dataset"]["tier"] in ("raw", "lock"):
+        refusal = strict_refusal(cfg, result.mode, manifest["dataset"]["tier"])
+        if refusal:
             store.put_json("run_manifest", _run_manifest.json_safe(manifest))
-            raise RuntimeError(
-                f"strict mode rejects Tier-0 raw ingest (dataset tier {manifest['dataset']['tier']!r}) — see "
-                "quantbox-qute/docs/decisions/0004-quantbox-dataset-plugin-tiers.md"
-            )
+            raise RuntimeError(refusal)
         failures = [c for c, r in manifest["capability_results"].items() if not r["passed"]]
         if failures:
             store.put_json("run_manifest", _run_manifest.json_safe(manifest))

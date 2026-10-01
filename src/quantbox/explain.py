@@ -8,12 +8,19 @@ Nothing here decides what a config MEANS — every fact comes from the code a ru
 
 - :func:`quantbox.runner.prepare_config` / :func:`~quantbox.runner.resolve_run` — profile
   merge, validation, plugin lookup and instantiation, the datasets.lock binding;
-- ``pipeline.plan(params)`` — engine, execution timing, venue, data-load params
-  (:meth:`BacktestPipeline.plan`, which ``run()`` itself reads);
+- ``pipeline.plan(params)`` — engine, execution timing, venue, frequency, costs, the
+  variants guards and data-load params (:meth:`BacktestPipeline.plan`, which ``run()``
+  itself reads, so every refusal on params alone happens there, for both);
 - ``data.planned_paths(load_params)`` — the files the data plugin will read, a by-name
-  dataset resolved against its lock (never loaded);
+  dataset resolved against its lock (never loaded), then ``pipeline.check_planned_data``
+  (a backtest refuses a missing prices file, as its ``run()`` does);
+- :func:`quantbox.runner.strict_refusal` — the ``run.strict`` dataset-tier refusal;
 - :mod:`quantbox.run_manifest` — the same functions that fill run@1's ``engine``,
-  ``dataset`` and ``funding``.
+  ``dataset`` and ``funding``; :func:`quantbox.overlays.overlay_record` — its ``overlays``.
+
+The contract (``tests/test_config_explain.py``): a config the run refuses, explain refuses
+(``ok`` false), from the same check. The one run-time refusal explain cannot see is
+data-dependent (an empty window, no ticker overlap, a strict-mode capability check).
 
 One fact is a plan, not a record: ``funding.modelled`` is true when the engine charges
 funding and a funding file exists; the run records true only if that file has rows in the
@@ -31,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from . import run_manifest as _rm
+from .overlays import overlay_record
 from .runner import (
     _config_block,
     _dataset_block,
@@ -40,6 +48,7 @@ from .runner import (
     plugin_refs,
     prepare_config,
     resolve_run,
+    strict_refusal,
 )
 
 SCHEMA_ID = "quantbox/explain@1"
@@ -56,6 +65,7 @@ SHARED_FIELDS: tuple[str, ...] = (
     "funding",
     "execution",
     "venue",
+    "overlays",
     "n_trials",
 )
 
@@ -162,11 +172,18 @@ def explain_config(
         if callable(planned_paths):
             # What load_market_data will record as loaded_paths; run@1's dataset/funding read it.
             data.loaded_paths = planned_paths((plan or {}).get("load_params") or {})
+            check = getattr(pipeline, "check_planned_data", None)
+            if callable(check):  # the same refusal run() makes before it loads anything
+                check(data, data.loaded_paths)
     except Exception as exc:  # noqa: BLE001
         errors.append(f"dataset: {exc}")
         return doc
 
     dataset = _dataset_block(data)
+    refusal = strict_refusal(cfg, resolved.mode, dataset.get("tier"))
+    if refusal:
+        errors.append(f"dataset: {refusal}")
+        return doc
     dataset.update(_rm.dataset_fields(data, dataset))
     resolution = getattr(data, "dataset_resolution", None)
     dataset["market"] = resolution.get("market") if isinstance(resolution, dict) else None
@@ -201,4 +218,7 @@ def explain_config(
     if plan:
         doc["execution"] = plan["execution"]
         doc["venue"] = plan["venue"]
+    if getattr(pipeline, "accepts_overlays", False):
+        # A pipeline that applies overlays records the chain, empty or not (run@1 minor 1).
+        doc["overlays"] = overlay_record(resolved.overlay_chain)
     return _jsonable(doc)
