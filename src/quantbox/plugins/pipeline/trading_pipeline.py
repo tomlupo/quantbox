@@ -3242,6 +3242,11 @@ class TradingPipeline:
 
         # --- Reconcile against external truth (holdings) -------------------
         actual_wt: dict[str, float] = {}
+        # Held symbols whose mark is missing: their weight is UNKNOWN, not zero
+        # (TOM-1335). Reading a missing mid as 0 made a fully-held name a -100%
+        # drift, a hard break that alone sends the book to FLATTEN. They are
+        # kept out of `actual_wt` and out of the drift map, and reported.
+        unmarked: list[str] = []
         phantom: list[str] = []
         get_positions = getattr(broker, "get_positions", None)
         pv = float(portfolio_value) if portfolio_value else 0.0
@@ -3249,15 +3254,36 @@ class TradingPipeline:
             try:
                 pos = get_positions()
                 if pos is not None and len(pos) > 0 and hasattr(broker, "get_market_snapshot"):
-                    snap = broker.get_market_snapshot(pos["symbol"].tolist())
-                    if snap is not None and "mid" in snap.columns:
-                        merged = pos.merge(snap[["symbol", "mid"]], on="symbol", how="left")
-                        for _, r in merged.iterrows():
-                            sym = str(r.get("symbol", ""))
-                            val = float(r.get("qty", 0) or 0) * float(r.get("mid", 0) or 0)
-                            actual_wt[sym] = val / pv
+                    # Lots summed per symbol BEFORE marking — the same rule #204
+                    # applied to the pre- and post-trade NAV. Keyed per merged row,
+                    # the last lot won; and `get_market_snapshot` emits one row per
+                    # REQUESTED element, so a duplicate request fans a merge out.
+                    # `min_count=1` keeps an all-NaN quantity NaN (unknown), not 0.
+                    held = (
+                        pd.to_numeric(pos["qty"], errors="coerce").groupby(pos["symbol"].astype(str)).sum(min_count=1)
+                    )
+                    snap = broker.get_market_snapshot(held.index.tolist())
+                    marks = pd.Series(dtype=float)
+                    if snap is not None and "mid" in snap.columns and len(snap) > 0:
+                        # One mark per symbol; `first()` takes the first non-null.
+                        marks = pd.to_numeric(snap["mid"], errors="coerce").groupby(snap["symbol"].astype(str)).first()
+                    values = held * marks.reindex(held.index)
+                    values[held == 0] = 0.0  # a flat position is known zero whatever its mark
+                    for sym, val in values.items():
+                        if pd.notna(val):
+                            actual_wt[sym] = float(val) / pv
+                        elif sym != stable_coin:
+                            unmarked.append(sym)
             except Exception as exc:  # never let recon crash the run
                 logger.warning("Reconciliation position read failed: %s", exc)
+        unmarked.sort()
+        if unmarked:
+            logger.warning(
+                "RECON [%s]: drift UNKNOWN for %d unmarkable holding(s): %s",
+                book_key,
+                len(unmarked),
+                ", ".join(unmarked),
+            )
 
         # Drift must be FRACTIONAL (|actual - target| / |target|), because that is
         # what BookTolerances documents and what `max_drift=0.10` / `drift_halt=0.25`
@@ -3272,7 +3298,7 @@ class TradingPipeline:
         drift_floor = float(getattr(tol, "drift_notional_floor", 10.0))
         drifts: dict[str, float] = {}
         for sym in set(final_weights) | set(actual_wt):
-            if sym == stable_coin:
+            if sym == stable_coin or sym in unmarked:
                 continue
             actual = actual_wt.get(sym, 0.0)
             target = float(final_weights.get(sym, 0.0))
@@ -3423,6 +3449,8 @@ class TradingPipeline:
                 for b in breaks
             ],
             "missed_fills": missed_fills,
+            # Held symbols whose drift is UNKNOWN (no mark) — not breaks, not zero.
+            "unmarked": unmarked,
             "ledger_path": str(ledger.path),
         }
 

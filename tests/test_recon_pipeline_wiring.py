@@ -8,6 +8,7 @@ change). Also proves it is a no-op when no `reconciliation` config block exists.
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
 
@@ -440,3 +441,93 @@ def test_phantom_uses_recent_intent_window_not_all_history(tmp_path):
     _cycle2("prev", held=[], target={"DOGE": 0.5}, order_asset="DOGE")
     cur2 = _cycle2("cur", held=["DOGE"], target={"BTC": 0.5}, order_asset="BTC")
     assert "DOGE" not in _phantom_syms(cur2)  # recent carryover, not phantom
+
+
+# --- TOM-1335: a missing mark is UNKNOWN drift, never a zero holding ----------
+
+
+class _SnapshotBroker(_FakeBroker):
+    """Fake broker whose snapshot is given per symbol and, like sim.py and
+    binance_live.py, emits ONE ROW PER REQUESTED ELEMENT — a symbol requested
+    twice comes back twice. A symbol absent from ``marks`` is omitted from the
+    snapshot; a symbol mapped to ``None`` comes back with a NaN mid."""
+
+    def __init__(self, positions, marks):
+        super().__init__(positions)
+        self._marks = marks
+
+    def get_market_snapshot(self, symbols):
+        rows = [
+            {"symbol": s, "mid": float("nan") if self._marks[s] is None else self._marks[s]}
+            for s in symbols
+            if s in self._marks
+        ]
+        return pd.DataFrame(rows, columns=["symbol", "mid"])
+
+
+def _recon(tmp_path, broker, final_weights):
+    params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
+    return TradingPipeline()._run_reconciliation(
+        params=params,
+        broker=broker,
+        final_weights=final_weights,
+        orders_df=_orders_df(),
+        execution_report=_exec_report(status="FILLED"),
+        portfolio_value=1000.0,
+        stable_coin="USDC",
+        asof="d1",
+        run_id="r",
+    )
+
+
+def _drift_breaks(notes, sym) -> list[dict]:
+    return [b for b in notes["breaks"] if b["class"] == "drift" and b["symbol"] == sym]
+
+
+@pytest.mark.parametrize("marks", [{"DOGE": None}, {}], ids=["nan-mid", "row-absent"])
+def test_missing_mark_is_unknown_drift_not_a_zero_holding(tmp_path, marks):
+    """DOGE is held at exactly its 50% target but cannot be marked. Reading the
+    missing mid as 0 made it a -100% drift — a hard break that alone sends the
+    book to FLATTEN. Unknown is not zero: it is reported, and it is not a break."""
+    broker = _SnapshotBroker([{"symbol": "DOGE", "qty": 500.0}], marks)
+    notes = _recon(tmp_path, broker, {"DOGE": 0.5})
+
+    assert notes["unmarked"] == ["DOGE"]
+    assert _drift_breaks(notes, "DOGE") == []
+    assert notes["to_state"] == "normal"
+    assert notes["would_be_action"] == "normal"
+
+
+def test_missing_mark_does_not_hide_drift_on_a_marked_symbol(tmp_path):
+    """The unknown is per symbol: a marked symbol beside it still drifts."""
+    broker = _SnapshotBroker(
+        [{"symbol": "DOGE", "qty": 500.0}, {"symbol": "ETH", "qty": 1.0}],
+        {"DOGE": None, "ETH": 100.0},  # ETH 10% of book vs 40% target -> -75% drift
+    )
+    notes = _recon(tmp_path, broker, {"DOGE": 0.5, "ETH": 0.4})
+
+    assert notes["unmarked"] == ["DOGE"]
+    assert _drift_breaks(notes, "DOGE") == []
+    assert len(_drift_breaks(notes, "ETH")) == 1
+
+
+def test_two_lots_for_one_symbol_are_summed_before_marking(tmp_path):
+    """Two lots of DOGE (200 + 300) at mid 1.0 on a 1000 book is 50% — exactly
+    on target. Keyed per merged row, the last lot won (30% -> a -40% hard
+    drift); merged without grouping, the snapshot's one-row-per-request fans
+    each lot out twice. Summed before the merge it is 500 x 1.0, no drift."""
+    broker = _SnapshotBroker(
+        [{"symbol": "DOGE", "qty": 200.0}, {"symbol": "DOGE", "qty": 300.0}],
+        {"DOGE": 1.0},
+    )
+    notes = _recon(tmp_path, broker, {"DOGE": 0.5})
+
+    assert notes["unmarked"] == []
+    assert _drift_breaks(notes, "DOGE") == []
+    assert notes["to_state"] == "normal"
+
+    # The sum is the summed position, not the fanned-out one: against a 25%
+    # target the true 50% holding is +100% drift; a doubled 100% would be +300%.
+    notes = _recon(tmp_path / "b", broker, {"DOGE": 0.25})
+    drift = _drift_breaks(notes, "DOGE")
+    assert len(drift) == 1 and "100.0%" in drift[0]["detail"]
