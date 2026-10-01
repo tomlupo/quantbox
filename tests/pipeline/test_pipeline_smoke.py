@@ -68,7 +68,9 @@ def test_discovery_finds_data_plugins(registry: PluginRegistry) -> None:
 
 
 @pytest.mark.pipeline_smoke
-@pytest.mark.parametrize("group_name", ["strategies", "pipelines", "data", "brokers", "rebalancing", "risk"])
+@pytest.mark.parametrize(
+    "group_name", ["strategies", "pipelines", "data", "brokers", "rebalancing", "risk", "overlays"]
+)
 def test_every_plugin_has_well_formed_meta(registry: PluginRegistry, group_name: str) -> None:
     """Every plugin must declare ``meta = PluginMeta(...)`` with required fields.
 
@@ -102,7 +104,7 @@ def test_no_duplicate_plugin_names_across_groups(registry: PluginRegistry) -> No
     or accidentally collides with an existing entry-point.
     """
     all_names: list[tuple[str, str]] = []
-    for group_name in ("strategies", "pipelines", "data", "brokers", "rebalancing", "risk"):
+    for group_name in ("strategies", "pipelines", "data", "brokers", "rebalancing", "risk", "overlays"):
         group = getattr(registry, group_name)
         for name in group:
             all_names.append((name, group_name))
@@ -139,6 +141,7 @@ def test_all_builtins_are_discovered(registry: PluginRegistry) -> None:
         "feature": "features",
         "validation": "validations",
         "monitor": "monitors",
+        "overlay": "overlays",
     }
     for group_key, registry_attr in group_to_attr.items():
         b = builtins.get(group_key, {})
@@ -184,6 +187,7 @@ _BUILTINS_TO_MANIFEST = {
     "feature": "features",
     "monitor": "monitors",
     "validation": "validation",
+    "overlay": "overlays",
 }
 
 

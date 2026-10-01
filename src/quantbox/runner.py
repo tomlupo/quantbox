@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 #     to "research" — production runs (``--strict``) should reject these.
 #
 # Local-source is allowed for: strategy, data, feature, validation, monitor,
-# rebalancing, risk, aggregator. Not allowed for: broker, pipeline.
+# rebalancing, risk, aggregator, overlay. Not allowed for: broker, pipeline.
 
 
 _LOCAL_SOURCE_FORBIDDEN_KINDS: frozenset[str] = frozenset({"broker", "pipeline"})
@@ -458,6 +458,18 @@ def run_from_config(
         rebal_cls = registry.rebalancing[rebal_cfg["name"]]
         rebalancer = rebal_cls(**rebal_cfg.get("params_init", {}))
 
+    # --- Overlay chain (registered or local-source), applied in config order (ADR-0004) ---
+    overlay_chain: list[tuple[Any, dict[str, Any]]] = []
+    overlays_cfg = cfg["plugins"].get("overlays") or []
+    if overlays_cfg and not getattr(pipeline, "accepts_overlays", False):
+        raise ValueError(
+            f"plugins.overlays is set but pipeline {pipe_name!r} does not apply overlays; "
+            "they would be silently dropped (overlays run in backtest.pipeline.*)"
+        )
+    for o in overlays_cfg:
+        cls = _resolve_plugin_cls(o, registry.overlays, "overlay", mode=mode)
+        overlay_chain.append((cls(**o.get("params_init", {})), dict(o.get("params") or {})))
+
     # Build pipeline params, merging in strategy/aggregator/rebalancer config
     pipeline_params = dict(cfg["plugins"]["pipeline"].get("params", {}))
     if strategies_cfg:
@@ -499,6 +511,7 @@ def run_from_config(
         rebalancer=rebalancer,
         aggregator=aggregator,
         variant_plugins=variant_plugins or None,
+        overlays=overlay_chain or None,
     )
 
     # --- Validation plugins (post-backtest) ---
@@ -576,6 +589,7 @@ def run_from_config(
         "strategies": [_plugin_meta(plugin) for plugin in strategy_plugins or []],
         "aggregator": _plugin_meta(aggregator) if aggregator else None,
         "rebalancer": _plugin_meta(rebalancer) if rebalancer else None,
+        "overlays": [_plugin_meta(plugin) for plugin, _ in overlay_chain],
     }
     notes = result.notes or {}
     dataset = _dataset_block(data)
@@ -615,7 +629,9 @@ def run_from_config(
     }
     # Backtest pipelines state their execution timing and venue; a reader of
     # the manifest must never have to infer either (quantbox.execution).
-    for block in ("execution", "venue"):
+    # ``overlays`` is the chain the pipeline APPLIED (name, version, params, in order),
+    # reported by the pipeline itself — the traded_weights file is its output.
+    for block in ("execution", "venue", "overlays"):
         if block in notes:
             manifest[block] = notes[block]
 

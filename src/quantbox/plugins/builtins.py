@@ -28,6 +28,7 @@ from .datasources import (
 )
 from .features import CrossSectionalFeatures, TechnicalFeatures
 from .monitor import DrawdownMonitor, SignalDecayMonitor
+from .overlays import CorrGrossCapOverlay, RegimeReweightOverlay, ReversalDeriskOverlay
 from .pipeline import AllocationsToOrdersPipeline, BacktestPipeline, FundSelectionPipeline, TradingPipeline
 from .publisher import TelegramPublisher
 from .rebalancing import FuturesRebalancer, StandardRebalancer
@@ -132,6 +133,7 @@ def builtins() -> dict[str, dict[str, type]]:
         "rebalancing": _map(StandardRebalancer, FuturesRebalancer),
         "feature": _map(TechnicalFeatures, CrossSectionalFeatures),
         "monitor": _map(DrawdownMonitor, SignalDecayMonitor),
+        "overlay": _map(ReversalDeriskOverlay, RegimeReweightOverlay, CorrGrossCapOverlay),
         "validation": _map(
             WalkForwardValidation,
             StatisticalValidation,
