@@ -86,6 +86,11 @@ def _max_leverage(risk_cfg: dict[str, Any]) -> float:
     return float(risk_cfg.get("max_leverage", 99))
 
 
+def _variant_risk_cfg(base_risk_cfg: dict[str, Any], variant: dict[str, Any]) -> dict[str, Any]:
+    """A variant's risk config: the run's ``risk`` with ``overrides.risk`` on top."""
+    return {**base_risk_cfg, **((variant.get("overrides") or {}).get("risk") or {})}
+
+
 @dataclass
 class BacktestPipeline:
     meta = PluginMeta(
@@ -223,6 +228,40 @@ class BacktestPipeline:
     kind = "research"
 
     # ==================================================================
+    # Plan: what run() will do with these params, decided before any data
+    # ==================================================================
+    def plan(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Engine, execution timing, venue and data-load params for *params* — no data read.
+
+        :meth:`run` takes these from here and records ``execution`` / ``venue`` in
+        its notes verbatim; ``quantbox config explain`` reports the same dict, so
+        the planned and the recorded run cannot drift apart (TOM-1362). Raises
+        ``ValueError`` on an unknown engine or a malformed ``execution`` / ``venue``.
+        """
+        engine = str(params.get("engine", "vectorbt")).lower()
+        if engine not in ("vectorbt", "rsims"):
+            raise ValueError(f"Unknown engine: {engine!r}. Use 'vectorbt' or 'rsims'.")
+        lag_bars = resolve_lag_bars(params.get("execution"))
+        allow_shorts, venue_declared = resolve_allow_shorts(params.get("venue"), params.get("risk"))
+        variants = params.get("variants") or []
+        # The run's files are the PRIMARY (first) variant's book, so its cap is the one recorded.
+        risk_cfg = _variant_risk_cfg(params.get("risk") or {}, variants[0]) if variants else params.get("risk", {})
+        return {
+            "engine": engine,
+            "execution": execution_record(lag_bars),
+            "venue": {
+                "declared": venue_declared,
+                "allow_shorts": allow_shorts,
+                "max_leverage": _max_leverage(risk_cfg),
+            },
+            # rsims charges the funding series it is handed; vectorbt charges none, and
+            # the variants flow runs vectorbt only.
+            "charges_funding": engine == "rsims" and not variants,
+            # What data.load_market_data receives (before the warmup lookback and mode are added).
+            "load_params": dict(params.get("prices", {"lookback_days": 365})),
+        }
+
+    # ==================================================================
     # Main entry point
     # ==================================================================
     def run(
@@ -239,24 +278,25 @@ class BacktestPipeline:
         rebalancer: RebalancingPlugin | None = None,
         **kwargs,
     ) -> RunResult:
-        engine = str(params.get("engine", "vectorbt")).lower()
+        # Engine, execution timing + venue: resolved (and refused if malformed)
+        # BEFORE any data is loaded, so a typo costs nothing and never runs
+        # same-bar by accident. `quantbox config explain` reports this same plan.
+        plan = self.plan(params)
+        engine = plan["engine"]
         fees = float(params.get("fees", 0.001))
         fixed_fees = float(params.get("fixed_fees", 0.0))
         slippage_val = float(params.get("slippage", 0.0))
         rebalancing_freq = params.get("rebalancing_freq", 1)
         threshold = params.get("threshold")
 
-        # Execution timing + venue: resolved (and refused if malformed) BEFORE
-        # any data is loaded, so a typo costs nothing and never runs same-bar
-        # by accident.
-        lag_bars = resolve_lag_bars(params.get("execution"))
-        allow_shorts, venue_declared = resolve_allow_shorts(params.get("venue"), params.get("risk"))
+        lag_bars = plan["execution"]["lag_bars"]
+        allow_shorts, venue_declared = plan["venue"]["allow_shorts"], plan["venue"]["declared"]
         warn_if_same_bar(lag_bars, where=f"{self.meta.name} run {store.run_id}")
         logger.info("Execution timing: %s", describe_execution(lag_bars))
 
         # --- Stage 1: Universe & Market Data ---
         universe_params = params.get("universe", {})
-        prices_params = dict(params.get("prices", {"lookback_days": 365}))
+        prices_params = plan["load_params"]
 
         # ------------------------------------------------------------------
         # Frequency resolution (PR B / issue #20)
@@ -355,6 +395,7 @@ class BacktestPipeline:
                 lag_bars=lag_bars,
                 allow_shorts=allow_shorts,
                 venue_declared=venue_declared,
+                plan=plan,
             )
 
         # --- Stage 2: Strategy Execution ---
@@ -569,12 +610,8 @@ class BacktestPipeline:
             notes={
                 "kind": "backtest",
                 "engine": engine,
-                "execution": execution_record(lag_bars),
-                "venue": {
-                    "declared": venue_declared,
-                    "allow_shorts": allow_shorts,
-                    "max_leverage": _max_leverage(risk_cfg),
-                },
+                "execution": plan["execution"],
+                "venue": plan["venue"],
                 "funding": {"modelled": funding_modelled},
                 "risk_findings": risk_findings,
             },
@@ -730,6 +767,7 @@ class BacktestPipeline:
         lag_bars: int,
         allow_shorts: bool,
         venue_declared: bool,
+        plan: dict[str, Any],
     ) -> RunResult:
         """Run N independent variants and emit a combined report.
 
@@ -774,7 +812,7 @@ class BacktestPipeline:
             v_slip = float(ov.get("slippage", slippage_val))
             v_freq = ov.get("rebalancing_freq", rebalancing_freq)
             v_thresh = ov.get("threshold", threshold)
-            v_risk_cfg = {**base_risk_cfg, **(ov.get("risk", {}) or {})}
+            v_risk_cfg = _variant_risk_cfg(base_risk_cfg, v)
 
             v_strategies_cfg = [{"name": sname, "weight": 1.0, "params": strat_params}]
 
@@ -981,13 +1019,9 @@ class BacktestPipeline:
             notes={
                 "kind": "backtest-variants",
                 "engine": engine,
-                "execution": execution_record(lag_bars),
-                # The run's files are the PRIMARY variant's book, so its cap is the one recorded.
-                "venue": {
-                    "declared": venue_declared,
-                    "allow_shorts": allow_shorts,
-                    "max_leverage": _max_leverage(primary["config"]["risk"]),
-                },
+                "execution": plan["execution"],
+                # The run's files are the PRIMARY (first) variant's book; plan() records its cap.
+                "venue": plan["venue"],
                 "funding": {"modelled": False},  # variants run vectorbt only, which charges no funding
                 "variants": list(variant_results.keys()),
                 "risk_findings": risk_findings,

@@ -640,6 +640,38 @@ def dataset_resolve(
         raise SystemExit(1)
 
 
+config_app = typer.Typer(help="What the runner does with a config.")
+app.add_typer(config_app, name="config")
+
+
+@config_app.command("explain")
+def config_explain(
+    config: str = typer.Argument(help="Path to config YAML"),
+    json: bool = typer.Option(False, "--json", help="Print only the plan (quantbox/explain@1) on stdout"),
+):
+    """Resolve a config exactly as `quantbox run` would, without running it.
+
+    Reports pipeline, engine, dataset (name, sha256, source, market), funding,
+    execution.lag_bars, shorts and max leverage, strategies with resolved params,
+    whether every plugin id resolves, and the artifact root — under run@1's field
+    names. Exits 1 with the reason when a plugin, the dataset or the params do not resolve.
+    """
+    from .explain import explain_config
+
+    cfg = yaml.safe_load(Path(config).read_text(encoding="utf-8")) or {}
+    with contextlib.redirect_stdout(sys.stderr):  # stdout carries ONE JSON document
+        doc = explain_config(cfg, PluginRegistry.discover(), config_path=config)
+    if json:
+        print(_as_json(doc))
+    else:
+        for key, value in doc.items():
+            print(f"{key}: {value}")
+    for err in doc["errors"]:
+        typer.echo(f"ERROR: {err}", err=True)
+    if not doc["ok"]:
+        raise SystemExit(1)
+
+
 def main():
     app()
 
