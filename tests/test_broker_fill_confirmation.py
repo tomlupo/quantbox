@@ -28,12 +28,13 @@ def test_closed_full_fill_is_filled():
     assert price == 100.0
 
 
-def test_closed_without_filled_field_assumes_full_fill():
-    # A 'closed' market order that omits ``filled`` == fully filled: fall back to
-    # the requested qty (this is the ONLY case where requested==filled is assumed).
+def test_closed_without_filled_field_is_unknown_not_a_full_fill():
+    # TOM-1336: a 'closed' order that omits ``filled`` used to fall back to the
+    # requested qty. A missing ``filled`` is an UNKNOWN quantity, never the
+    # requested one — the caller re-reads the venue.
     verdict, qty, _ = classify_fill({"status": "closed", "average": 5.0}, 3.0)
-    assert verdict == _fills.FILL_FILLED
-    assert qty == 3.0
+    assert verdict == _fills.FILL_UNKNOWN
+    assert qty == 0.0
 
 
 def test_closed_without_filled_but_positive_remaining_is_partial():
@@ -97,18 +98,20 @@ def test_rejected_with_partial_fill_is_partial():
     assert qty == 0.25
 
 
-def test_missing_status_with_zero_filled_is_unfilled():
+def test_missing_status_with_zero_filled_is_unknown():
     # The exact pre-fix landmine: ccxt returns filled=0 and the old code assumed
-    # FILLED with the requested qty. Now it is honestly UNFILLED.
+    # FILLED with the requested qty. A missing status is UNKNOWN (TOM-1336).
     verdict, qty, _ = classify_fill({"filled": 0.0}, 1.0)
-    assert verdict == _fills.FILL_UNFILLED
+    assert verdict == _fills.FILL_UNKNOWN
     assert qty == 0.0
 
 
-def test_missing_status_with_partial_remaining_is_partial():
+def test_missing_status_with_partial_remaining_is_unknown():
+    # TOM-1336: without a status the ``filled`` figure may be a snapshot of an
+    # order still working — UNKNOWN, re-read before anything is booked.
     verdict, qty, _ = classify_fill({"filled": 0.6, "remaining": 0.4}, 1.0)
-    assert verdict == _fills.FILL_PARTIAL
-    assert qty == 0.6
+    assert verdict == _fills.FILL_UNKNOWN
+    assert qty == 0.0
 
 
 def test_no_status_no_filled_is_unknown():
@@ -133,10 +136,10 @@ def test_resolve_unknown_confirmed_by_refetch():
     assert reason == ""
 
 
-def test_resolve_unknown_unconfirmed_fails_safe_to_failed():
-    # Refetch still can't confirm -> NEVER claim a fill.
+def test_resolve_unknown_unconfirmed_is_unknown_never_filled():
+    # Refetch still can't confirm -> NEVER claim a fill; UNKNOWN (TOM-1336).
     status, qty, _, reason = resolve_fill({"id": "x"}, 1.0, refetch=lambda: {"id": "x"})
-    assert status == "FAILED"
+    assert status == "UNKNOWN"
     assert qty == 0.0
     assert "not confirmed" in reason
 
@@ -146,7 +149,7 @@ def test_resolve_unknown_refetch_raises_fails_safe():
         raise RuntimeError("429 rate limited")
 
     status, qty, _, _ = resolve_fill({"id": "x"}, 1.0, refetch=_boom)
-    assert status == "FAILED"
+    assert status == "UNKNOWN"
     assert qty == 0.0
 
 
@@ -234,17 +237,17 @@ def test_working_reason_reports_the_venues_last_status_not_the_stale_first_read(
     assert "unknown" not in reason
 
 
-def test_unconfirmable_order_still_fails_safe_to_failed():
+def test_unconfirmable_order_is_unknown_not_working():
     # No status anywhere and the venue cannot be re-read: there is no evidence the
-    # order is alive, so WORKING would be a lie. This must stay FAILED — the guard
-    # that keeps the new WORKING branch from swallowing genuine unknowns.
+    # order is alive, so WORKING would be a lie. It is UNKNOWN (TOM-1336) — the
+    # guard that keeps the WORKING branch from swallowing genuine unknowns.
     status, qty, _, reason = resolve_fill(
         {"id": "x"},
         1.0,
         refetch=lambda: None,
         confirm_delay=0,
     )
-    assert status == "FAILED"
+    assert status == "UNKNOWN"
     assert qty == 0.0
     assert "not confirmed" in reason
 
@@ -369,11 +372,11 @@ def test_kraken_confirmed_fill_reports_filled():
 
 def test_kraken_unconfirmed_placement_not_reported_filled():
     # ccxt returns an accepted order with NO fill evidence; the follow-up
-    # fetch_order also can't confirm -> must be FAILED, never FILLED.
+    # fetch_order also can't confirm -> UNKNOWN (TOM-1336), never FILLED.
     broker = _kraken_with({"id": "2"})
     out = broker.place_orders(_one_buy())
     row = out.iloc[0]
-    assert row["status"] == "FAILED"
+    assert row["status"] == "UNKNOWN"
     assert row["qty"] == 0.0
 
 
@@ -405,15 +408,15 @@ def test_closed_partial_fill_is_partial_not_filled():
     assert v2 == _fills.FILL_FILLED and q2 == 10.0
 
 
-def test_statusless_underfill_is_partial_not_filled():
-    """No status + filled<requested + no remaining field must be PARTIAL, not a clean
-    FILLED — the status-less path must not let a real partial slip through (#85 re-review)."""
+def test_statusless_result_is_unknown_whatever_it_filled():
+    """No status is UNKNOWN (TOM-1336) — an underfill must not slip through as a clean
+    FILLED (#85 re-review), and neither may a full-looking one: both are re-read."""
     verdict, qty, _ = classify_fill({"filled": 1.0, "average": 100.0}, 10.0)
-    assert verdict == _fills.FILL_PARTIAL
-    assert qty == 1.0
-    # reached requested -> FILLED
-    v2, _, _ = classify_fill({"filled": 10.0, "average": 100.0}, 10.0)
-    assert v2 == _fills.FILL_FILLED
+    assert verdict == _fills.FILL_UNKNOWN
+    assert qty == 0.0
+    v2, q2, _ = classify_fill({"filled": 10.0, "average": 100.0}, 10.0)
+    assert v2 == _fills.FILL_UNKNOWN
+    assert q2 == 0.0
 
 
 def test_floored_full_fill_is_not_a_false_partial():
@@ -423,11 +426,8 @@ def test_floored_full_fill_is_not_a_false_partial():
     # requested 0.12345; broker floored+submitted 0.123; filled 0.123 fully.
     verdict, qty, _ = classify_fill({"status": "closed", "amount": 0.123, "filled": 0.123, "average": 100.0}, 0.12345)
     assert verdict == _fills.FILL_FILLED and qty == 0.123
-    # status-less variant (no status/remaining) — same via order["amount"].
-    v2, _, _ = classify_fill({"amount": 0.123, "filled": 0.123, "average": 100.0}, 0.12345)
-    assert v2 == _fills.FILL_FILLED
     # a genuine partial (filled < submitted amount) is still PARTIAL.
-    v3, q3, _ = classify_fill({"amount": 0.123, "filled": 0.05, "average": 100.0}, 0.12345)
+    v3, q3, _ = classify_fill({"status": "closed", "amount": 0.123, "filled": 0.05, "average": 100.0}, 0.12345)
     assert v3 == _fills.FILL_PARTIAL and q3 == 0.05
 
 

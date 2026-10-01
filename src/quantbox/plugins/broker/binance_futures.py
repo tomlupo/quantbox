@@ -57,7 +57,7 @@ from quantbox.contracts import PluginMeta
 from quantbox.portfolio_value import BASIS_MARGIN
 from quantbox.retry import with_retry
 
-from ._fills import trade_fee, trade_fee_currency
+from ._fills import resolve_fill, trade_fee, trade_fee_currency
 
 try:
     import ccxt
@@ -386,8 +386,15 @@ class BinanceFuturesBroker:
             reduce_only = bool(_ro) if pd.notna(_ro) else False
             result = self.place_order(sym, side, qty, reduce_only=reduce_only)
             if result:
-                fill_price = float(result.get("average", result.get("price", 0)) or 0)
-                filled_qty = float(result.get("filled", qty) or qty)
+                # The shared resolver decides what filled (TOM-1336). The old
+                # inline read emitted no status and fell back to the REQUESTED
+                # qty when ccxt omitted ``filled``, so the pipeline booked an
+                # unconfirmed order as a full fill.
+                status, filled_qty, fill_price, reason = resolve_fill(
+                    result,
+                    qty,
+                    refetch=lambda r=result, s=sym: self._refetch_order(r, s),
+                )
                 fills.append(
                     {
                         "symbol": sym,
@@ -395,9 +402,27 @@ class BinanceFuturesBroker:
                         "qty": filled_qty,
                         "price": fill_price,
                         "order_id": result.get("id"),
+                        "status": status,
+                        "error": reason,
                     }
                 )
-        return pd.DataFrame(fills) if fills else pd.DataFrame(columns=["symbol", "side", "qty", "price", "order_id"])
+        cols = ["symbol", "side", "qty", "price", "order_id", "status", "error"]
+        return pd.DataFrame(fills, columns=cols) if fills else pd.DataFrame(columns=cols)
+
+    def _refetch_order(self, order: dict, symbol: str) -> dict | None:
+        """Re-read an order from the venue to confirm its fill.
+
+        Called by ``resolve_fill`` when the create reply is non-terminal. Read-
+        only; any failure returns None so the caller fails safe to no fill.
+        """
+        order_id = order.get("id")
+        if not order_id:
+            return None
+        try:
+            return self._exchange.fetch_order(order_id, f"{symbol}/{self.quote_currency}:USDT")
+        except Exception as exc:  # noqa: BLE001 - confirmation must never crash execution
+            logger.warning("Fill confirmation fetch_order failed for %s: %s", symbol, exc)
+            return None
 
     def fetch_fills(self, since: str) -> pd.DataFrame:
         """BrokerPlugin-compliant fill history."""
@@ -549,16 +574,27 @@ class BinanceFuturesBroker:
                     params={"reduceOnly": True} if reduce_only else {},
                 )
 
-                fill_price = float(order.get("average", order.get("price", price)))
-                filled_qty = float(order.get("filled", adj_qty))
+                # Accepted is not filled (TOM-1336): the venue's ``filled`` is
+                # reported as-is, never defaulted to the requested quantity.
+                # What actually filled is decided by ``resolve_fill`` in
+                # ``place_orders``.
+                fill_price = float(order.get("average") or order.get("price") or price)
+                filled = order.get("filled")
 
-                logger.info(f"Order filled: {side.upper()} {filled_qty} {symbol} @ ${fill_price:.4f}")
+                logger.info(
+                    "Order accepted: %s %s %s (venue status=%s, filled=%s)",
+                    side.upper(),
+                    adj_qty,
+                    symbol,
+                    order.get("status") or "unknown",
+                    "unknown" if filled is None else filled,
+                )
 
                 # Send Telegram notification
                 emoji = "🟢" if side == "buy" else "🔴"
-                msg = f"{emoji} <b>{side.upper()}</b> {filled_qty:.4f} {symbol}\n"
-                msg += f"Price: ${fill_price:,.2f}\n"
-                msg += f"Notional: ${filled_qty * fill_price:,.2f}"
+                msg = f"{emoji} <b>{side.upper()}</b> {adj_qty:.4f} {symbol} submitted\n"
+                msg += f"Filled: {'unconfirmed' if filled is None else filled}\n"
+                msg += f"Price: ${fill_price:,.2f}"
                 send_telegram(self.telegram_token, self.telegram_chat_id, msg)
 
                 return order

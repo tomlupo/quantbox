@@ -150,6 +150,10 @@ def _atomic_write_text(path: Any, text: str) -> None:
 # private second copy is how two callers start disagreeing.
 _EXEC_STATUS_TO_LEDGER = EXEC_STATUS_TO_LEDGER
 
+# The statuses a broker row may carry that the execution loop acts on. Anything
+# else — absent, empty, or a word outside this set — is UNKNOWN (TOM-1336).
+_EXEC_STATUSES = frozenset({"FILLED", "PARTIAL", "WORKING", "FAILED", "SKIPPED", "UNKNOWN"})
+
 
 @dataclass
 class _ReconCtx:
@@ -2419,7 +2423,14 @@ class TradingPipeline:
                 # Strip whitespace before normalising: a broker that returns a
                 # padded side/status (e.g. "SELL " / "SKIPPED ") must not slip
                 # past the SKIPPED / close-out-SELL freeze counter (#81).
-                status = str(fill_row.get("status", "FILLED")).strip().upper()
+                #
+                # A missing, empty or unrecognised status is UNKNOWN, never
+                # FILLED (TOM-1336): defaulting it to FILLED is how an order the
+                # venue never confirmed booked as a full fill.
+                _raw_status = fill_row.get("status")
+                status = "" if _raw_status is None or pd.isna(_raw_status) else str(_raw_status).strip().upper()
+                if status not in _EXEC_STATUSES:
+                    status = "UNKNOWN"
                 side = str(fill_row.get("side", "")).strip().lower()
                 if status == "SKIPPED":
                     # Broker intentionally did not place this order (sub-minimum /
@@ -2506,6 +2517,58 @@ class TradingPipeline:
                         logger.error(
                             "Order for %s is working at the venue but carries NO order id — "
                             "it cannot be resolved next cycle and its fill may go unrecorded",
+                            fill_row.get("symbol", ""),
+                        )
+                    continue
+                if status == "UNKNOWN":
+                    # The broker could not confirm what happened. Book NO fill.
+                    # It is reported as a failure (so the operator is alerted and
+                    # every FAILED consumer downstream sees a non-fill), and when
+                    # it carries an order id it joins the working-order queue so
+                    # the next cycle books the venue's real outcome.
+                    _oid = fill_row.get("order_id")
+                    order_id = "" if _oid is None or pd.isna(_oid) else str(_oid)
+                    _err = fill_row.get("error")
+                    _err = "" if _err is None or pd.isna(_err) else str(_err)
+                    report["orders_details"].append(
+                        {
+                            "symbol": str(fill_row.get("symbol", "")),
+                            "action": str(fill_row.get("side", "")),
+                            "quantity": 0.0,
+                            "status": "FAILED",
+                            "fill_status": "UNKNOWN",
+                            "order_id": order_id,
+                            "error": (
+                                f"fill UNCONFIRMED (broker status={_raw_status!r}); no fill booked"
+                                + (f" — {_err}" if _err else "")
+                            ),
+                        }
+                    )
+                    report["summary"]["total_failed"] += 1
+                    _pool = intent_refs.get((str(fill_row.get("symbol", "")), side))
+                    intent_ref = _pool.pop(0) if _pool else None
+                    if ledger is not None and cycle_id is not None and intent_ref:
+                        try:
+                            ledger.record_result(order_ref=str(intent_ref), cycle_id=cycle_id, status="failed")
+                        except Exception:  # noqa: BLE001 - ledger must not break the run
+                            logger.exception(
+                                "Failed to record the unconfirmed result for %s", fill_row.get("symbol", "")
+                            )
+                    if order_id:
+                        working_to_queue.append(
+                            {
+                                "symbol": str(fill_row.get("symbol", "")),
+                                "side": side,
+                                "order_id": order_id,
+                                "requested_qty": float(fill_row.get("requested_qty", 0) or 0.0),
+                                "reason": f"fill unconfirmed: {_err}",
+                                "order_ref": intent_ref,
+                            }
+                        )
+                    else:
+                        logger.error(
+                            "Order for %s has an UNCONFIRMED fill and NO order id — it cannot be "
+                            "resolved next cycle; reconcile it against the venue by hand",
                             fill_row.get("symbol", ""),
                         )
                     continue

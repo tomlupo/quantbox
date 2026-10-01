@@ -54,6 +54,8 @@ class _FakeExchange:
             "price": price,
             "average": price or (60000.0 if symbol == "BTC/USD" else 3000.0),
             "filled": amount,
+            # A confirmed fill carries a status: a status-less reply is UNKNOWN (TOM-1336).
+            "status": "closed",
         }
         self.created_orders.append(order)
         return order
