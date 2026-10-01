@@ -169,6 +169,20 @@ def test_new_line_validates_against_the_registry(tmp_path, fake_qb, datasets_roo
     assert errors == []
 
 
+def test_new_line_config_passes_validate_and_explain_cli(tmp_path, fake_qb, datasets_root, monkeypatch):
+    """Both doors a user reaches first accept the scaffolded base config, run from the line."""
+    _scaffold(tmp_path, fake_qb)
+    monkeypatch.chdir(tmp_path / "demo")
+    runner = CliRunner()
+    res = runner.invoke(app, ["validate", "-c", "config.yaml"])
+    assert res.exit_code == 0, res.output
+    res = runner.invoke(app, ["config", "explain", "config.yaml", "--json"])
+    assert res.exit_code == 0, res.output
+    plan = json.loads(res.stdout)
+    assert plan["ok"] is True and plan["errors"] == []
+    assert plan["dataset"]["name"] == "demo-daily"
+
+
 def test_new_line_honours_an_explicit_ref_and_extras(tmp_path, fake_qb, datasets_root):
     result = _scaffold(tmp_path, fake_qb, quantbox_ref="v0.9.0", extras="")
     pyproject = (tmp_path / "demo/pyproject.toml").read_text()
