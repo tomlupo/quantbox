@@ -132,6 +132,26 @@ def test_explain_lists_strategies_with_resolved_params_and_every_plugin_id(tmp_p
     assert {p["role"] for p in planned["plugin_ids"]} == {"pipeline", "data", "strategies[0]"}
 
 
+def test_explain_lists_variant_strategies_named_by_a_bare_string_or_a_spec(tmp_path):
+    # The runner accepts `strategy: <registry id>` as well as `strategy: {name: ...}`;
+    # explain must report both, not crash on the string form.
+    cfg, config_path = _inline_config(tmp_path, "vectorbt")
+    cfg["plugins"]["pipeline"]["params"]["variants"] = [
+        {"name": "bare", "strategy": "strategy.static_weights.v1"},
+        {"name": "spec", "strategy": {"name": "strategy.static_weights.v1", "params": {"x": 1}}},
+    ]
+    planned = explain_config(cfg, PluginRegistry.discover(), config_path=config_path)
+
+    assert planned["ok"] is True, planned["errors"]
+    assert validate_explain(planned) == []
+    by_variant = {s["variant"]: s for s in planned["strategies"] if "variant" in s}
+    assert set(by_variant) == {"bare", "spec"}
+    assert by_variant["bare"]["name"] == "strategy.static_weights.v1"
+    assert by_variant["bare"]["params"] == {}
+    assert by_variant["spec"]["params"] == {"x": 1}
+    assert {"variants[bare]", "variants[spec]"} <= {p["role"] for p in planned["plugin_ids"]}
+
+
 def _cli(config_path: Path) -> tuple[int, dict, str]:
     result = CliRunner().invoke(app, ["config", "explain", str(config_path), "--json"])
     return result.exit_code, json.loads(result.stdout), result.stderr

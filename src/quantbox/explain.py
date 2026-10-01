@@ -103,6 +103,12 @@ def _strategy(plugin: Any, spec: dict[str, Any], **extra: Any) -> dict[str, Any]
     }
 
 
+def _variant_spec(variant: dict[str, Any]) -> dict[str, Any]:
+    """A variant's strategy spec; a bare registry id is ``{"name": id}``, as resolve_run reads it."""
+    spec = variant.get("strategy") or {}
+    return spec if isinstance(spec, dict) else {"name": str(spec)}
+
+
 def explain_config(
     cfg: dict[str, Any],
     registry: Any,
@@ -186,7 +192,7 @@ def explain_config(
                 for p, s in zip(resolved.strategy_plugins or [], cfg["plugins"].get("strategies") or [], strict=True)
             ]
             + [
-                _strategy(resolved.variant_plugins[str(v["name"])], v.get("strategy") or {}, variant=str(v["name"]))
+                _strategy(resolved.variant_plugins[str(v["name"])], _variant_spec(v), variant=str(v["name"]))
                 for v in resolved.pipeline_params.get("variants") or []
             ],
             "artifacts_root": str(Path(cfg["artifacts"]["root"]).resolve()),
