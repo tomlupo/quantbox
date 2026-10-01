@@ -44,8 +44,10 @@ the same::
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -61,6 +63,7 @@ from quantbox.contracts import (
     RunResult,
     StrategyPlugin,
 )
+from quantbox.exceptions import DataLoadError, MissingExtraError
 from quantbox.execution import (
     EXECUTION_SCHEMA,
     VENUE_SCHEMA,
@@ -86,6 +89,64 @@ logger = logging.getLogger(__name__)
 def _max_leverage(risk_cfg: dict[str, Any]) -> float:
     """The gross cap the leverage transform applies — 99 (effectively none) when unset."""
     return float(risk_cfg.get("max_leverage", 99))
+
+
+def _variant_risk_cfg(base_risk_cfg: dict[str, Any], variant: dict[str, Any]) -> dict[str, Any]:
+    """A variant's risk config: the run's ``risk`` with ``overrides.risk`` on top."""
+    return {**base_risk_cfg, **((variant.get("overrides") or {}).get("risk") or {})}
+
+
+def _engine_installed(engine: str) -> bool:
+    """Whether *engine*'s optional extra is importable (vectorbt is the ``[vectorbt]`` extra)."""
+    if engine == "vectorbt":
+        return importlib.util.find_spec("vectorbt") is not None
+    return True
+
+
+def _number(key: str, value: Any, *, cast: type = float, where: str = "") -> Any:
+    """``cast(value)``, refused with the param's *key* when it is not a number.
+
+    Callers pass ``params.get(key, default)`` literally, so the params-schema
+    check (tests/test_params_schema.py) still sees which keys are read.
+    """
+    try:
+        return cast(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{where}'{key}' must be a number, got {value!r}") from exc
+
+
+def _plan_variants(
+    variants: list[dict[str, Any]], engine: str, venue_declared: bool, costs: dict[str, float]
+) -> dict[str, dict[str, float]]:
+    """Refuse a variants block the run could not honour; the per-variant costs it will use.
+
+    Every check here once ran only inside the variants flow, after the data
+    was loaded, so ``quantbox config explain`` said ok for configs the run
+    then refused (TOM-1362).
+    """
+    if variants and engine != "vectorbt":
+        raise ValueError(f"Variants flow currently supports engine='vectorbt' only (got {engine!r})")
+    out: dict[str, dict[str, float]] = {}
+    for v in variants:
+        vname = str(v.get("name"))
+        ov = dict(v.get("overrides", {}) or {})
+        # Execution timing and venue are properties of the RUN, not of a
+        # variant: variants that differ in timing are not comparable, and
+        # a silently ignored override is worse than a refusal.
+        for run_level in ("execution", "venue"):
+            if run_level in ov or run_level in v:
+                raise ValueError(
+                    f"Variant {vname!r}: '{run_level}' is run-level — declare it once in the pipeline params"
+                )
+        if "allow_short" in (ov.get("risk") or {}) and venue_declared:
+            raise ValueError(
+                f"Variant {vname!r}: overrides.risk.allow_short conflicts with the run-level `venue` block"
+            )
+        out[vname] = {
+            key: _number(key, ov.get(key, costs[key]), where=f"Variant {vname!r}: overrides.")
+            for key in ("fees", "fixed_fees", "slippage")
+        }
+    return out
 
 
 @dataclass
@@ -267,6 +328,15 @@ class BacktestPipeline:
                     **VENUE_SCHEMA,
                     "description": "Run-level venue constraints (allow_shorts).",
                 },
+                "full_report": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Also write the heavy HTML research report (report.html + report_data.json, "
+                        "tens of MB on a typical line). Off by default: every backtest run writes the "
+                        "slim finding_report.json (qute-research/finding-report@1) instead."
+                    ),
+                },
             },
         },
         inputs=(),
@@ -291,6 +361,88 @@ class BacktestPipeline:
     accepts_overlays = True
 
     # ==================================================================
+    # Plan: what run() will do with these params, decided before any data
+    # ==================================================================
+    def plan(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Everything :meth:`run` decides from *params* alone, refused here if it would refuse — no data read.
+
+        :meth:`run` takes engine, timing, venue, frequency and costs from here and
+        records ``execution`` / ``venue`` in its notes verbatim; ``quantbox config
+        explain`` calls this same method, so a config the run would refuse on its
+        params is refused BEFORE any data is loaded, by one check shared by both
+        (TOM-1362). Raises ``ValueError`` on an unknown engine, a malformed
+        ``execution`` / ``venue`` / ``frequency``, a non-numeric cost, or a
+        ``variants`` block the run cannot honour; ``MissingExtraError`` when the
+        engine's extra is not installed.
+        """
+        engine = str(params.get("engine", "vectorbt")).lower()
+        if engine not in ("vectorbt", "rsims"):
+            raise ValueError(f"Unknown engine: {engine!r}. Use 'vectorbt' or 'rsims'.")
+        if not _engine_installed(engine):
+            raise MissingExtraError(engine, f"the {engine} backtest engine", engine)
+        lag_bars = resolve_lag_bars(params.get("execution"))
+        allow_shorts, venue_declared = resolve_allow_shorts(params.get("venue"), params.get("risk"))
+        load_params = dict(params.get("prices", {"lookback_days": 365}))
+        freq = self._resolve_frequency(params, load_params)
+        bars_per_year = freq.bars_per_year()
+        costs = {
+            "fees": _number("fees", params.get("fees", 0.001)),
+            "fixed_fees": _number("fixed_fees", params.get("fixed_fees", 0.0)),
+            "slippage": _number("slippage", params.get("slippage", 0.0)),
+        }
+        trading_days = _number("trading_days", params.get("trading_days", round(bars_per_year)), cast=int)
+        if engine == "rsims":  # only the rsims branch reads these
+            costs.update(
+                trade_buffer=_number("trade_buffer", params.get("trade_buffer", 0.0)),
+                initial_cash=_number("initial_cash", params.get("initial_cash", 10000)),
+                margin=_number("margin", params.get("margin", 0.0)),
+            )
+        full_report = params.get("full_report", False)
+        if not isinstance(full_report, bool):  # a truthy "no" must not write tens of MB
+            raise ValueError(f"'full_report' must be true or false, got {full_report!r}")
+        variants = params.get("variants") or []
+        variant_costs = _plan_variants(variants, engine, venue_declared, costs)
+        # The run's files are the PRIMARY (first) variant's book, so its cap is the one recorded.
+        risk_cfg = _variant_risk_cfg(params.get("risk") or {}, variants[0]) if variants else params.get("risk", {})
+        return {
+            "engine": engine,
+            "execution": execution_record(lag_bars),
+            "venue": {
+                "declared": venue_declared,
+                "allow_shorts": allow_shorts,
+                "max_leverage": _max_leverage(risk_cfg),
+            },
+            # rsims charges the funding series it is handed; vectorbt charges none, and
+            # the variants flow runs vectorbt only (refused above for any other engine).
+            "charges_funding": engine == "rsims" and not variants,
+            "frequency": freq,
+            "bars_per_year": bars_per_year,
+            "trading_days": trading_days,
+            "costs": costs,
+            "variant_costs": variant_costs,
+            # What data.load_market_data receives (before the warmup lookback and mode are added).
+            "load_params": load_params,
+            # Also write the heavy report.html + report_data.json (TOM-1365); off by default.
+            "full_report": full_report,
+        }
+
+    def check_planned_data(self, data: Any, paths: dict[str, str | None]) -> None:
+        """Refuse a data plan this pipeline cannot run on — *paths* from ``data.planned_paths``.
+
+        A backtest needs prices: with no prices file the data plugin hands back an
+        empty frame and the run died later on an IndexError, after ``quantbox config
+        explain`` had said ok. :meth:`run` and explain both call this on the same
+        planned paths (TOM-1362). A by-name dataset was already verified against its
+        lock when it was resolved, so only an inline path is checked on disk.
+        """
+        name = getattr(getattr(data, "meta", None), "name", type(data).__name__)
+        ppath = paths.get("prices")
+        if not ppath:
+            raise DataLoadError(name, "no prices source: set prices_path or dataset")
+        if getattr(data, "dataset_resolution", None) is None and not Path(ppath).is_file():
+            raise DataLoadError(name, f"prices file not found: {ppath}", path=str(ppath))
+
+    # ==================================================================
     # Main entry point
     # ==================================================================
     def run(
@@ -307,40 +459,41 @@ class BacktestPipeline:
         rebalancer: RebalancingPlugin | None = None,
         **kwargs,
     ) -> RunResult:
-        engine = str(params.get("engine", "vectorbt")).lower()
-        fees = float(params.get("fees", 0.001))
-        fixed_fees = float(params.get("fixed_fees", 0.0))
-        slippage_val = float(params.get("slippage", 0.0))
+        # Engine, execution timing + venue: resolved (and refused if malformed)
+        # BEFORE any data is loaded, so a typo costs nothing and never runs
+        # same-bar by accident. `quantbox config explain` reports this same plan.
+        plan = self.plan(params)
+        engine = plan["engine"]
+        costs = plan["costs"]
+        fees, fixed_fees, slippage_val = costs["fees"], costs["fixed_fees"], costs["slippage"]
         rebalancing_freq = params.get("rebalancing_freq", 1)
         threshold = params.get("threshold")
 
-        # Execution timing + venue: resolved (and refused if malformed) BEFORE
-        # any data is loaded, so a typo costs nothing and never runs same-bar
-        # by accident.
-        lag_bars = resolve_lag_bars(params.get("execution"))
-        allow_shorts, venue_declared = resolve_allow_shorts(params.get("venue"), params.get("risk"))
+        lag_bars = plan["execution"]["lag_bars"]
+        allow_shorts, venue_declared = plan["venue"]["allow_shorts"], plan["venue"]["declared"]
         warn_if_same_bar(lag_bars, where=f"{self.meta.name} run {store.run_id}")
         logger.info("Execution timing: %s", describe_execution(lag_bars))
 
         # --- Stage 1: Universe & Market Data ---
         universe_params = params.get("universe", {})
-        prices_params = dict(params.get("prices", {"lookback_days": 365}))
+        prices_params = plan["load_params"]
+        planned_paths = getattr(data, "planned_paths", None)
+        if callable(planned_paths):
+            self.check_planned_data(data, planned_paths(prices_params))
 
         # ------------------------------------------------------------------
-        # Frequency resolution (PR B / issue #20)
+        # Frequency resolution (PR B / issue #20) — done in plan()
         #
-        # Build a single Frequency value object from either the new top-level
+        # A single Frequency value object from either the new top-level
         # `frequency:` block, or the legacy `prices.frequency` + optional
-        # `market_calendar:` shorthand. `bars_per_year` derived here is used
+        # `market_calendar:` shorthand. `bars_per_year` derived there is used
         # as the DEFAULT for both `trading_days` (metrics annualization) and
         # `_pipeline_annualize` (strategy-level vol annualization), so the
         # two cannot silently drift apart. Explicit `trading_days` /
         # strategy `annualize` values still win, with a drift warning.
         # ------------------------------------------------------------------
-        freq = self._resolve_frequency(params, prices_params)
-        bars_per_year = freq.bars_per_year()
-        trading_days = int(params.get("trading_days", round(bars_per_year)))
-        if "trading_days" in params and abs(int(params["trading_days"]) - bars_per_year) > 1:
+        freq, bars_per_year, trading_days = plan["frequency"], plan["bars_per_year"], plan["trading_days"]
+        if "trading_days" in params and abs(trading_days - bars_per_year) > 1:
             logger.warning(
                 "trading_days=%s overrides derived frequency=%s (bars_per_year=%.1f). "
                 "If this is intentional, ignore; otherwise consider removing trading_days "
@@ -424,6 +577,7 @@ class BacktestPipeline:
                 lag_bars=lag_bars,
                 allow_shorts=allow_shorts,
                 venue_declared=venue_declared,
+                plan=plan,
                 overlay_chain=overlay_chain,
             )
 
@@ -523,9 +677,9 @@ class BacktestPipeline:
                 bt_weights,
                 bt_funding,
                 fees=fees,
-                trade_buffer=float(params.get("trade_buffer", 0.0)),
-                initial_cash=float(params.get("initial_cash", 10000)),
-                margin=float(params.get("margin", 0.0)),
+                trade_buffer=costs["trade_buffer"],
+                initial_cash=costs["initial_cash"],
+                margin=costs["margin"],
                 capitalise_profits=bool(params.get("capitalise_profits", False)),
                 equity_basis=str(params.get("equity_basis", "rsims")),
                 trading_days=trading_days,
@@ -586,32 +740,34 @@ class BacktestPipeline:
                 execution=describe_execution(lag_bars),
             ),
         )
-        try:
-            rd = generate_report_data(
-                run_id=store.run_id,
-                asof=asof,
-                metrics=report_metrics,
-                portfolio_daily=portfolio_daily,
-                returns=returns_series,
-                # The report describes the TRADED book (post venue/risk/lag):
-                # its attribution is `w.shift(1) * ret` — "held at the close
-                # of t, earns t+1" — which is only true of what the engine
-                # actually filled.
-                weights_history=bt_weights,
-                bt_prices=bt_prices,
-                strategy_names=report_strategy_names,
-                period_start=period_start,
-                period_end=period_end,
-                vbt_portfolio=result_data.get("vbt_portfolio"),
-                strategy_details=strategy_details,
-                narrative=narrative,
-                reproducibility=reproducibility,
-                execution=describe_execution(lag_bars),
-            )
-            store.put_text("report_data.json", report_data_to_json(rd))
-            store.put_text("report.html", generate_html_report(rd))
-        except Exception as _report_exc:
-            logger.warning("HTML report generation failed: %s", _report_exc)
+        # The heavy HTML report is opt-in; the slim finding_report.json is written by the runner.
+        if plan["full_report"]:
+            try:
+                rd = generate_report_data(
+                    run_id=store.run_id,
+                    asof=asof,
+                    metrics=report_metrics,
+                    portfolio_daily=portfolio_daily,
+                    returns=returns_series,
+                    # The report describes the TRADED book (post venue/risk/lag):
+                    # its attribution is `w.shift(1) * ret` — "held at the close
+                    # of t, earns t+1" — which is only true of what the engine
+                    # actually filled.
+                    weights_history=bt_weights,
+                    bt_prices=bt_prices,
+                    strategy_names=report_strategy_names,
+                    period_start=period_start,
+                    period_end=period_end,
+                    vbt_portfolio=result_data.get("vbt_portfolio"),
+                    strategy_details=strategy_details,
+                    narrative=narrative,
+                    reproducibility=reproducibility,
+                    execution=describe_execution(lag_bars),
+                )
+                store.put_text("report_data.json", report_data_to_json(rd))
+                store.put_text("report.html", generate_html_report(rd))
+            except Exception as _report_exc:
+                logger.warning("HTML report generation failed: %s", _report_exc)
 
         # --- Risk checks on latest targets ---
         targets = pd.DataFrame(agg_records)
@@ -653,12 +809,8 @@ class BacktestPipeline:
             notes={
                 "kind": "backtest",
                 "engine": engine,
-                "execution": execution_record(lag_bars),
-                "venue": {
-                    "declared": venue_declared,
-                    "allow_shorts": allow_shorts,
-                    "max_leverage": _max_leverage(risk_cfg),
-                },
+                "execution": plan["execution"],
+                "venue": plan["venue"],
                 "funding": {"modelled": funding_modelled},
                 "overlays": overlays_applied,
                 "risk_findings": risk_findings,
@@ -815,6 +967,7 @@ class BacktestPipeline:
         lag_bars: int,
         allow_shorts: bool,
         venue_declared: bool,
+        plan: dict[str, Any],
         overlay_chain: list[OverlayLink],
     ) -> RunResult:
         """Run N independent variants and emit a combined report.
@@ -845,26 +998,14 @@ class BacktestPipeline:
                 raise ValueError(f"Variant {vname!r}: no resolved plugin for strategy {sname!r}")
             strat_params = (strat_cfg.get("params") or {}) if isinstance(strat_cfg, dict) else {}
 
-            # Per-variant overrides
+            # Per-variant overrides; plan() already refused run-level keys and
+            # non-numeric costs, before any data was loaded (TOM-1362).
             ov = dict(v.get("overrides", {}) or {})
-            # Execution timing and venue are properties of the RUN, not of a
-            # variant: variants that differ in timing are not comparable, and
-            # a silently ignored override is worse than a refusal.
-            for run_level in ("execution", "venue"):
-                if run_level in ov or run_level in v:
-                    raise ValueError(
-                        f"Variant {vname!r}: '{run_level}' is run-level — declare it once in the pipeline params"
-                    )
-            if "allow_short" in (ov.get("risk") or {}) and venue_declared:
-                raise ValueError(
-                    f"Variant {vname!r}: overrides.risk.allow_short conflicts with the run-level `venue` block"
-                )
-            v_fees = float(ov.get("fees", fees))
-            v_fixed = float(ov.get("fixed_fees", fixed_fees))
-            v_slip = float(ov.get("slippage", slippage_val))
+            v_costs = plan["variant_costs"][vname]
+            v_fees, v_fixed, v_slip = v_costs["fees"], v_costs["fixed_fees"], v_costs["slippage"]
             v_freq = ov.get("rebalancing_freq", rebalancing_freq)
             v_thresh = ov.get("threshold", threshold)
-            v_risk_cfg = {**base_risk_cfg, **(ov.get("risk", {}) or {})}
+            v_risk_cfg = _variant_risk_cfg(base_risk_cfg, v)
 
             v_strategies_cfg = [{"name": sname, "weight": 1.0, "params": strat_params}]
 
@@ -892,9 +1033,7 @@ class BacktestPipeline:
             except ValueError as exc:
                 raise ValueError(f"Variant {vname!r}: {exc}") from exc
 
-            if engine != "vectorbt":
-                raise ValueError(f"Variants flow currently supports engine='vectorbt' only (got {engine!r})")
-            res = self._run_vectorbt(
+            res = self._run_vectorbt(  # plan() refused any other engine for a variants run
                 bt_p,
                 bt_w,
                 fees=v_fees,
@@ -967,6 +1106,18 @@ class BacktestPipeline:
                     row[k] = float(v_)
             metric_rows.append(row)
         a_var_metrics = store.put_parquet("variant_metrics", pd.DataFrame(metric_rows))
+        # Every arm's return series, LONG (date, variant, returns) so a variant may be
+        # named anything ("date" included): the finding-report export reads it.
+        a_var_returns = store.put_parquet(
+            "variant_returns",
+            pd.concat(
+                [
+                    pd.DataFrame({"date": r["returns"].index, "variant": n, "returns": r["returns"].to_numpy()})
+                    for n, r in variant_results.items()
+                ],
+                ignore_index=True,
+            ),
+        )
 
         period_start = str(primary["returns"].index[0])[:10] if len(primary["returns"]) else asof
         period_end = str(primary["returns"].index[-1])[:10] if len(primary["returns"]) else asof
@@ -1011,29 +1162,30 @@ class BacktestPipeline:
                     execution=describe_execution(lag_bars),
                 ),
             )
-            rd = generate_report_data(
-                run_id=store.run_id,
-                asof=asof,
-                metrics=report_metrics,
-                portfolio_daily=primary["portfolio_daily"],
-                returns=primary["returns"],
-                weights_history=primary["weights_history"],
-                bt_prices=primary["bt_prices"],
-                strategy_names=list(variant_results.keys()),
-                period_start=period_start,
-                period_end=period_end,
-                vbt_portfolio=primary["vbt_portfolio"],
-                strategy_details={
-                    vname: (next(iter(r["strategy_details"].values()), {}) or {})
-                    for vname, r in variant_results.items()
-                },
-                variant_results=variant_results,
-                narrative=narrative,
-                reproducibility=reproducibility,
-                execution=describe_execution(lag_bars),
-            )
-            store.put_text("report_data.json", report_data_to_json(rd))
-            store.put_text("report.html", generate_html_report(rd))
+            if plan["full_report"]:  # the heavy HTML report is opt-in
+                rd = generate_report_data(
+                    run_id=store.run_id,
+                    asof=asof,
+                    metrics=report_metrics,
+                    portfolio_daily=primary["portfolio_daily"],
+                    returns=primary["returns"],
+                    weights_history=primary["weights_history"],
+                    bt_prices=primary["bt_prices"],
+                    strategy_names=list(variant_results.keys()),
+                    period_start=period_start,
+                    period_end=period_end,
+                    vbt_portfolio=primary["vbt_portfolio"],
+                    strategy_details={
+                        vname: (next(iter(r["strategy_details"].values()), {}) or {})
+                        for vname, r in variant_results.items()
+                    },
+                    variant_results=variant_results,
+                    narrative=narrative,
+                    reproducibility=reproducibility,
+                    execution=describe_execution(lag_bars),
+                )
+                store.put_text("report_data.json", report_data_to_json(rd))
+                store.put_text("report.html", generate_html_report(rd))
         except Exception as _exc:
             logger.warning("Multi-variant report generation failed: %s", _exc)
 
@@ -1068,18 +1220,15 @@ class BacktestPipeline:
                 "metrics": a_metrics,
                 "traded_weights": a_traded,
                 "variant_metrics": a_var_metrics,
+                "variant_returns": a_var_returns,
             },
             metrics=flat_metrics,
             notes={
                 "kind": "backtest-variants",
                 "engine": engine,
-                "execution": execution_record(lag_bars),
-                # The run's files are the PRIMARY variant's book, so its cap is the one recorded.
-                "venue": {
-                    "declared": venue_declared,
-                    "allow_shorts": allow_shorts,
-                    "max_leverage": _max_leverage(primary["config"]["risk"]),
-                },
+                "execution": plan["execution"],
+                # The run's files are the PRIMARY (first) variant's book; plan() records its cap.
+                "venue": plan["venue"],
                 "funding": {"modelled": False},  # variants run vectorbt only, which charges no funding
                 "variants": list(variant_results.keys()),
                 "overlays": overlays_applied,

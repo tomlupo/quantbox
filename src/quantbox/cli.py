@@ -834,6 +834,71 @@ def line_repin(
     _line_report(result, as_json)
 
 
+report_app = typer.Typer(help="Report data exported from run directories.")
+app.add_typer(report_app, name="report")
+
+
+@report_app.command("export")
+def report_export(
+    path: str = typer.Argument(help="A run directory, or a directory of arms (one run each)"),
+    fmt: str = typer.Option(..., "--format", help="Export format: qute-research/finding-report@1"),
+    out: str = typer.Option(None, "--out", "-o", help="Write here instead of stdout"),
+    primary: str = typer.Option(None, "--primary", help="The arm the hero cards report (default: the first)"),
+):
+    """Export a run's returns, drawdowns, metrics, robustness across arms and provenance.
+
+    The qute-research /finding-report renderer reads the result with --data; it owns
+    the page and the contract. Exits 1 when there is no run under PATH, 2 on an
+    unknown --format.
+    """
+    from .finding_export import FORMATS, dumps, export_finding_report
+
+    if fmt not in FORMATS:
+        raise typer.BadParameter(f"unknown format {fmt!r}; supported: {', '.join(FORMATS)}", param_hint="--format")
+    try:
+        payload = export_finding_report(path, primary=primary)
+    except (FileNotFoundError, ValueError) as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise SystemExit(1) from exc
+    text = dumps(payload)
+    if out:
+        Path(out).write_text(text, encoding="utf-8")
+    else:
+        sys.stdout.write(text)
+
+
+config_app = typer.Typer(help="What the runner does with a config.")
+app.add_typer(config_app, name="config")
+
+
+@config_app.command("explain")
+def config_explain(
+    config: str = typer.Argument(help="Path to config YAML"),
+    json: bool = typer.Option(False, "--json", help="Print only the plan (quantbox/explain@1) on stdout"),
+):
+    """Resolve a config exactly as `quantbox run` would, without running it.
+
+    Reports pipeline, engine, dataset (name, sha256, source, market), funding,
+    execution.lag_bars, shorts and max leverage, strategies with resolved params,
+    whether every plugin id resolves, and the artifact root — under run@1's field
+    names. Exits 1 with the reason when a plugin, the dataset or the params do not resolve.
+    """
+    from .explain import explain_config
+
+    cfg = yaml.safe_load(Path(config).read_text(encoding="utf-8")) or {}
+    with contextlib.redirect_stdout(sys.stderr):  # stdout carries ONE JSON document
+        doc = explain_config(cfg, PluginRegistry.discover(), config_path=config)
+    if json:
+        print(_as_json(doc))
+    else:
+        for key, value in doc.items():
+            print(f"{key}: {value}")
+    for err in doc["errors"]:
+        typer.echo(f"ERROR: {err}", err=True)
+    if not doc["ok"]:
+        raise SystemExit(1)
+
+
 def main():
     app()
 

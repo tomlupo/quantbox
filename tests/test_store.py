@@ -103,6 +103,23 @@ class TestListRuns:
         runs = FileArtifactStore.list_runs(str(tmp_path), limit=2)
         assert len(runs) == 2
 
+    def test_same_asof_orders_by_run_timestamp_not_config_hash(self, tmp_path):
+        # run ids are asof__pipeline__cfghash__ts: by name the hash decides before the timestamp
+        newer = "2026-01-01__p_v1__0000aaaa__20260301T120000Z"
+        older = "2026-01-01__p_v1__ffffffff__20260101T120000Z"
+        self._make_run(tmp_path, older)
+        self._make_run(tmp_path, newer)
+        runs = FileArtifactStore.list_runs(str(tmp_path))
+        assert [r["run_id"] for r in runs] == [newer, older]
+        (only,) = FileArtifactStore.list_runs(str(tmp_path), limit=1)
+        assert only["run_id"] == newer
+
+    def test_limit_keeps_the_newest_asof(self, tmp_path):
+        for i in range(5):
+            self._make_run(tmp_path, f"run_{i}", asof=f"2026-01-0{5 - i}")
+        runs = FileArtifactStore.list_runs(str(tmp_path), limit=2)
+        assert [r["asof"] for r in runs] == ["2026-01-05", "2026-01-04"]
+
 
 class TestOpenRun:
     def test_open_existing(self, tmp_path):
