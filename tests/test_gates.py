@@ -543,3 +543,68 @@ def test_paired_gates_accept_dated_parquet(tmp_path, dated_index):
     res = runner.invoke(app, ["gates", *argv, "--json"])
     assert res.exit_code == 0, res.output
     assert json.loads(res.stdout)["first_date"].startswith("2020-01-01")
+
+
+# ── review round (PR #213): duplicate dates are malformed input ────────────
+
+
+def _with_duplicate_date(frame: pd.DataFrame, at: int = 10) -> pd.DataFrame:
+    """The same frame with row ``at`` written twice (same date, the second value nudged)."""
+    dup = frame.iloc[[at]].copy()
+    for col in dup.columns:
+        if col != "date":
+            dup[col] = dup[col] + 0.0001
+    return pd.concat([frame.iloc[: at + 1], dup, frame.iloc[at + 1 :]], ignore_index=True)
+
+
+@pytest.mark.parametrize(
+    "gate, which",
+    [
+        ("bootstrap", "returns"),
+        ("bootstrap", "baseline"),
+        ("episode", "returns"),
+        ("episode", "baseline"),
+        ("factor", "returns"),
+        ("factor", "factors"),
+        ("nw", "returns"),
+        ("dsr", "returns"),
+        ("episode-unpaired", "returns"),
+    ],
+)
+def test_a_duplicate_dated_input_cannot_compute_rather_than_giving_a_verdict(tmp_path, gate, which):
+    """A return series with two rows for one date is malformed: an inner join on it
+    pairs one row against two, an undated gate counts the period twice. Whatever
+    pandas would do with it, the gate exits 2 naming the file and the first duplicate."""
+    r, F = series()
+    dates = pd.date_range("2020-01-01", periods=r.size, freq="D").strftime("%Y-%m-%d")
+    frames = {
+        "returns": pd.DataFrame({"date": dates, "returns": r + 0.001}),
+        "baseline": pd.DataFrame({"date": dates, "returns": r}),
+        "factors": pd.DataFrame({"date": dates, "a": F[:, 0], "b": F[:, 1]}),
+    }
+    frames[which] = _with_duplicate_date(frames[which], at=10)
+    p = {k: _csv(tmp_path / f"{k}.csv", v) for k, v in frames.items()}
+    argv = {
+        "bootstrap": ["bootstrap", "--returns", p["returns"], "--baseline", p["baseline"], "--draws", "50"],
+        "episode": ["episode", "--returns", p["returns"], "--baseline", p["baseline"], "--metric", "mean"],
+        "factor": ["factor", "--returns", p["returns"], "--factors", p["factors"]],
+        "nw": ["nw", "--returns", p["returns"], "--min-oos-periods", "10"],
+        "dsr": ["dsr", "--returns", p["returns"], "--n-trials", "1"],
+        "episode-unpaired": ["episode", "--returns", p["returns"], "--metric", "mean"],
+    }[gate]
+    res = runner.invoke(app, ["gates", *argv, "--json"])
+    assert res.exit_code == 2, res.output
+    err = json.loads(res.stderr)["error"]
+    assert p[which] in err and "2020-01-11" in err and "duplicate" in err
+
+
+def test_a_duplicate_date_spelled_two_ways_is_still_a_duplicate(tmp_path):
+    r, _ = series()
+    dates = list(pd.date_range("2020-01-01", periods=r.size, freq="D").strftime("%Y-%m-%d"))
+    dup = list(dates)
+    dup[11] = dates[10] + " 00:00:00"  # 2020-01-11 written a second time, in another spelling
+    c = _csv(tmp_path / "c.csv", pd.DataFrame({"date": dup, "returns": r + 0.001}))
+    b = _csv(tmp_path / "b.csv", pd.DataFrame({"date": dates, "returns": r}))
+    res = runner.invoke(app, ["gates", "bootstrap", "--returns", c, "--baseline", b, "--draws", "50", "--json"])
+    assert res.exit_code == 2, res.output
+    assert "2020-01-11" in json.loads(res.stderr)["error"]

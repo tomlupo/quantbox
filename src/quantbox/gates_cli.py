@@ -13,6 +13,7 @@ With ``--json`` the verdict is one JSON object on stdout; a 2 prints
 are date-indexed — the first column is the date — and are inner-joined on it, in
 date order; a numeric first column is refused rather than paired by row position.
 A single-series file that carries a date first column is read in date order too.
+A date that appears twice in any input file is refused (exit 2), never joined.
 """
 
 from __future__ import annotations
@@ -67,7 +68,7 @@ def _read_frame(path: str, *, indexed: bool):
     else:
         raise _input_error(f"unsupported file type {suffix!r} (need .csv or .parquet): {p}")
     if not indexed:
-        return _in_date_order(frame)
+        return _in_date_order(frame, p)
     # A numeric index is a row number or a return, never a date: to_datetime would read it
     # as epoch nanoseconds and the two files would pair POSITIONALLY on fabricated 1970 dates.
     if not isinstance(frame.index, pd.DatetimeIndex) and pd.api.types.is_numeric_dtype(frame.index):
@@ -77,13 +78,33 @@ def _read_frame(path: str, *, indexed: bool):
         )
     # one spelling of a date per row, whatever the file wrote ("2020-01-01" vs "... 00:00:00")
     try:
-        frame.index = pd.to_datetime(frame.index)
+        frame.index = pd.to_datetime(frame.index, format="mixed")
     except (ValueError, TypeError) as exc:
         raise _input_error(f"{p}: the first column must be a date index for a paired gate ({exc})") from exc
+    _refuse_duplicate_dates(frame.index, p)
     return frame
 
 
-def _in_date_order(frame):
+def _refuse_duplicate_dates(dates, path: Path) -> None:
+    """Two rows for one date is a malformed series, not something a join may resolve.
+
+    An inner join pairs the single row of one side against both rows of the other
+    (or crashes, depending on the pandas version), and an unpaired gate counts the
+    period twice; either way the verdict would be about data nobody wrote.
+    """
+    import pandas as pd
+
+    dup = pd.Index(dates).duplicated()
+    if dup.any():
+        first = pd.Index(dates)[dup][0]
+        shown = first.isoformat() if hasattr(first, "isoformat") else str(first)
+        raise _input_error(
+            f"{path}: duplicate date {shown} ({int(dup.sum())} duplicate row(s)) — "
+            "one row per period is required; de-duplicate the file first"
+        )
+
+
+def _in_date_order(frame, path: Path):
     """An unpaired read in DATE order when the file carries dates, else in file order.
 
     HAC and the drawdown episode both depend on row order, so a dated file written
@@ -93,6 +114,7 @@ def _in_date_order(frame):
     import pandas as pd
 
     if isinstance(frame.index, pd.DatetimeIndex):
+        _refuse_duplicate_dates(frame.index, path)
         return frame.sort_index(kind="stable")
     if frame.shape[1] == 0 or pd.api.types.is_numeric_dtype(frame.iloc[:, 0]):
         return frame
@@ -100,6 +122,7 @@ def _in_date_order(frame):
         dates = pd.to_datetime(frame.iloc[:, 0], format="mixed")
     except (ValueError, TypeError):
         return frame
+    _refuse_duplicate_dates(dates, path)
     return frame.iloc[np.argsort(dates.to_numpy(), kind="stable")]
 
 
