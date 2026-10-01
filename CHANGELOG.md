@@ -29,6 +29,43 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.8.0 (2026-10-01)
+
+### BREAKING CHANGE
+
+- backtest runs no longer write report.html and
+report_data.json unless plugins.pipeline.params.full_report is true.
+- consumers that use the vectorbt engine (quantbox.bt,
+adapters.vectorbt, run_vectorbt, engine: vectorbt, analysis sweep/run_grid)
+must declare quantbox[vectorbt] or quantbox[full].
+- results of `quantbox.plugins.backtesting.backtest()` and
+`optimize()` change — they now fill weights decided on bar t at the close
+of bar t+1. Every historical number from these helpers was same-bar; to
+reproduce one, pass `lag_bars=0`.
+
+### Feat
+
+- **cli**: quantbox new line + quantbox line repin (TOM-1366) (#225)
+- **report**: export qute-research/finding-report@1 data; slim report by default (TOM-1365) (#221)
+- **cli**: quantbox config explain --json, the run plan without simulating (TOM-1362) (#220)
+- **overlays**: overlay stage on a base strategy, configurable from YAML (TOM-1364) (#224)
+- **arms**: arms as data - base + overrides/grid, parallel, n_trials recorded; source: everywhere (TOM-1363) (#222)
+- **cli**: quantbox gates dsr|nw|factor|bootstrap|episode --json (TOM-1351) (#213)
+- **plugins**: mandatory params_schema, plugins schema --json, validate refuses unknown params (TOM-1350) (#218)
+- **scripts**: check every lab-pinned quantbox SHA stays reachable (TOM-1340) (#217)
+- make vectorbt an optional [vectorbt] extra (TOM-1334) (#214)
+- **manifest**: run manifest quantbox/run@1 and quantbox run --json (TOM-1348) (#215)
+- **datasets**: resolve datasets by name from datasets.lock + $QUANTBOX_DATASETS_ROOT (TOM-1349) (#212)
+- **backtest**: backtest() and optimize() honour execution.lag_bars, next-bar by default (TOM-1337) (#209)
+
+### Fix
+
+- **plugins**: registry, manifest and docs match the code (TOM-1341) (#216)
+- **pipeline**: trading hands strategies the backtest's _pipeline_annualize (TOM-1338) (#210)
+- **broker**: an unconfirmed order never books as a full fill (TOM-1336) (#219)
+- **recon**: a missing mark is UNKNOWN drift, never a zero holding (TOM-1335) (#211)
+- **covariance**: scale roll-period returns by sqrt(roll), not roll (TOM-1339) (#208)
+
 ## v0.7.0 (2026-09-22)
 
 ### BREAKING CHANGE
