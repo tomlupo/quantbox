@@ -50,4 +50,6 @@ moved a number: record it as a finding, never loosen the tolerance or rewrite th
 to make it green.
 
 `repin` works on lines `quantbox new line` made: it refuses a `pyproject.toml` without
-exactly one `quantbox @ git+…@<sha>` dependency and the managed block.
+exactly one `quantbox @ git+…@<sha>` dependency and the managed block. Like `new line`,
+it refuses a ref that predates line support (explicit `--ref` or the latest-tag default)
+before it writes anything.

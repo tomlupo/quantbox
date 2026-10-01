@@ -243,6 +243,28 @@ def test_repin_moves_sha_tag_and_every_derived_pin(tmp_path, fake_qb, datasets_r
     assert strip.sub("X", before) == strip.sub("X", after)
 
 
+def test_repin_refuses_a_ref_that_predates_line_support(tmp_path, fake_qb, datasets_root):
+    """Same gate as new_line: a repin must not move a line onto an engine that cannot run it."""
+    _scaffold(tmp_path, fake_qb, quantbox_ref="v0.10.0")
+    target = tmp_path / "demo"
+    before = (target / "pyproject.toml").read_text()
+    # an older tag in the same repo that has no line support
+    _git(fake_qb, "checkout", "-q", "--orphan", "ancient")
+    _git(fake_qb, "rm", "-rq", "--cached", ".")
+    (fake_qb / "README.md").write_text("old\n")
+    _git(fake_qb, "add", "README.md")
+    _git(fake_qb, "commit", "-q", "-m", "ancient")
+    _git(fake_qb, "tag", "v0.7.0")
+    with pytest.raises(line.LineError, match=r"predates `quantbox new line`.*--ref"):
+        line.repin(target, ref="v0.7.0", lock=False)
+    assert (target / "pyproject.toml").read_text() == before
+    # the default (latest tag) is gated too, not just an explicit --ref
+    _git(fake_qb, "tag", "v0.11.0")
+    with pytest.raises(line.LineError, match="predates `quantbox new line`"):
+        line.repin(target, lock=False)
+    assert (target / "pyproject.toml").read_text() == before
+
+
 def test_repin_refuses_a_pyproject_it_did_not_write(tmp_path):
     (tmp_path / "pyproject.toml").write_text('[project]\ndependencies = ["quantbox>=0.7"]\n')
     with pytest.raises(line.LineError, match="exactly one"):

@@ -209,9 +209,21 @@ def _datasets_lock_text(dataset: str, sha: str, why_not: str) -> str:
 # ── the two commands ─────────────────────────────────────────────────────
 
 
-def _engine(url: str, ref: str | None, workdir: Path) -> tuple[EngineRef, Path]:
+def _engine(url: str, ref: str | None, workdir: Path, *, ref_flag: str) -> tuple[EngineRef, Path]:
+    """Resolve and fetch the engine a line will pin, refusing one that cannot run a line.
+
+    Both ``new_line`` and ``repin`` come through here, so the line-support gate holds for
+    an explicit ref and for the latest-tag default alike, before anything is written.
+    *ref_flag* is the CLI option the caller's user passes to choose another ref.
+    """
     ref = ref or latest_tag(url)
     sha = fetch_ref(url, ref, workdir)
+    if not (workdir / LINE_SUPPORT_FILE).is_file():
+        raise LineError(
+            f"quantbox {ref} ({sha[:12]}) predates `quantbox new line`: it has no arms files, "
+            "by-name datasets or run manifest, so a line pinned to it would not run. "
+            f"Pass {ref_flag} <a tag or SHA that has them>."
+        )
     return EngineRef(url=url, ref=ref, sha=sha), workdir
 
 
@@ -266,13 +278,7 @@ def new_line(
         raise LineError(f"--python {python!r}: give a minor version such as 3.12")
 
     with tempfile.TemporaryDirectory(prefix="quantbox-line-") as tmp:
-        engine, tree = _engine(quantbox_url, quantbox_ref, Path(tmp) / "quantbox")
-        if not (tree / LINE_SUPPORT_FILE).is_file():
-            raise LineError(
-                f"quantbox {engine.ref} ({engine.sha[:12]}) predates `quantbox new line`: it has no arms files, "
-                "by-name datasets or run manifest, so this skeleton would not run on it. "
-                "Pass --quantbox-ref <a tag or SHA that has them>."
-            )
+        engine, tree = _engine(quantbox_url, quantbox_ref, Path(tmp) / "quantbox", ref_flag="--quantbox-ref")
         ds_sha = datasets_ref if datasets_ref and _SHA40_RE.match(datasets_ref) else None
         if ds_sha is None:
             ds_sha = (
@@ -329,7 +335,8 @@ def repin(
 ) -> dict[str, Any]:
     """Move *line_dir*'s quantbox pin to *ref* (default: the latest tag) and re-derive every exact pin.
 
-    The URL defaults to the one the line already pins. Returns old and new ref/SHA.
+    The URL defaults to the one the line already pins. Refuses, before writing anything,
+    a ref that predates line support. Returns old and new ref/SHA.
     """
     line_dir = Path(line_dir)
     pyproject_path = line_dir / "pyproject.toml"
@@ -349,7 +356,7 @@ def repin(
     url = quantbox_url or match.group("url")
 
     with tempfile.TemporaryDirectory(prefix="quantbox-repin-") as tmp:
-        engine, tree = _engine(url, ref, Path(tmp) / "quantbox")
+        engine, tree = _engine(url, ref, Path(tmp) / "quantbox", ref_flag="--ref")
         new_dep = f'"quantbox{match.group(1) or ""} @ git+{engine.url}@{engine.sha}",  # {engine.ref}'
         text = text[: match.start()] + new_dep + text[match.end() :]
         text = _REF_LINE_RE.sub(f'quantbox-ref = "{engine.ref}"', text)
