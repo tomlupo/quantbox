@@ -9,7 +9,6 @@ QuantBox skills are the LLM-facing API. They live in this repo (`skills/`) so th
 ```
 quantbox/
 ├── skills/
-│   ├── quantbox-core/SKILL.md            # mental model
 │   ├── quantbox-config/SKILL.md          # YAML grammar
 │   ├── quantbox-research/SKILL.md        # capability skill — composes / authors
 │   ├── quantbox-backtest/SKILL.md        # capability skill
@@ -28,7 +27,7 @@ Project-specific skills (e.g., `dm-evo-fund-selection`) live in the *project's* 
 
 | Category | Lives in | Purpose | Example |
 |---|---|---|---|
-| **Foundation** | `quantbox/skills/` | Teach LLM the contracts, CLI, config grammar | `quantbox-core`, `quantbox-config` |
+| **Foundation** | `quantbox/skills/` | Teach LLM the CLI and config grammar (the contracts/registry/runner mental model is `CLAUDE.md`, loaded every session) | `quantbox-config` |
 | **Capability** | `quantbox/skills/` | Map task type → plugin composition + recipe | `quantbox-backtest`, `quantbox-research` |
 | **Authoring** | `quantbox/skills/` | When the LLM extends quantbox itself | `quantbox-strategy-author`, `quantbox-data-author` |
 | **Generic quant** | `quantbox/skills/` | Research methodology, reporting, market data | `qrd`, `paper-reading`, `investment-research` |
@@ -96,7 +95,7 @@ Recommended template:
 | Task shape | Use | Code |
 |---|---|---|
 | "Does this idea even work?" | L0/L1 | vbt or qbt.run |
-| "Compare A vs B" | L2 | quantbox.compare |
+| "Compare A vs B" | L3 (L2 not built) | two plugin `.run()` calls |
 | "Log this for EXPERIMENTS.md" | L4 | YAML + run_from_config |
 | "Production run" | L5 | quantbox run --strict |
 

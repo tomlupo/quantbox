@@ -71,8 +71,18 @@ class HyperliquidCachedDataPlugin:
         params_schema={
             "type": "object",
             "properties": {
-                "cache_dir": {"type": "string"},
-                "overlap_days": {"type": "integer"},
+                "cache_dir": {
+                    "type": "string",
+                    "description": "Directory of the local Parquet cache.",
+                },
+                "overlap_days": {
+                    "type": "integer",
+                    "description": "Days re-fetched on each refresh to heal the cache tail.",
+                },
+                "mcap_provider": {
+                    "type": ["object", "null"],
+                    "description": "Python-only: an injected market-cap provider object; not settable from YAML.",
+                },
             },
         },
         examples=(

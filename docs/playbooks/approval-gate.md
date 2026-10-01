@@ -6,6 +6,9 @@ If `approval_required: true` in paper/live mode, the pipeline will only execute 
 Default approval file (if approval_path is null):
 - `./approvals/<orders_digest>.json`
 
+Write it with `quantbox approve --run-dir artifacts/<run_id> [--who tom --note "..."]`,
+which reads the run's `orders_digest.json` and writes the file above.
+
 Example:
 ```json
 {

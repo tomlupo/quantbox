@@ -28,6 +28,7 @@ from .datasources import (
 )
 from .features import CrossSectionalFeatures, TechnicalFeatures
 from .monitor import DrawdownMonitor, SignalDecayMonitor
+from .overlays import CorrGrossCapOverlay, RegimeReweightOverlay, ReversalDeriskOverlay
 from .pipeline import AllocationsToOrdersPipeline, BacktestPipeline, FundSelectionPipeline, TradingPipeline
 from .publisher import TelegramPublisher
 from .rebalancing import FuturesRebalancer, StandardRebalancer
@@ -46,7 +47,9 @@ from .strategies import (
     CrossAssetMomentumStrategy,
     CryptoRegimeTrendStrategy,
     CryptoTrendStrategy,
+    DualMomentumStrategy,
     EthMeanReversion24h,
+    FrozenWeightsStrategy,
     HmmRegimeAllocation,
     MLPredictionStrategy,
     MomentumLongShortStrategy,
@@ -54,7 +57,9 @@ from .strategies import (
     StaticWeightsStrategy,
     TrendCatcherSimpleStrategy,
     TrendCatcherStrategy,
+    TrendFollowingStrategy,
     VolMatchedBuyHoldStrategy,
+    VolTargetingStrategy,
 )
 from .strategies.weighted_avg_aggregator import WeightedAverageAggregator
 from .validation import (
@@ -111,19 +116,24 @@ def builtins() -> dict[str, dict[str, type]]:
             MomentumLongShortStrategy,
             CrossAssetMomentumStrategy,
             CryptoRegimeTrendStrategy,
+            DualMomentumStrategy,
             EthMeanReversion24h,
+            FrozenWeightsStrategy,
             HmmRegimeAllocation,
             MLPredictionStrategy,
             PortfolioOptimizerStrategy,
             StaticWeightsStrategy,
             TrendCatcherStrategy,
             TrendCatcherSimpleStrategy,
+            TrendFollowingStrategy,
             VolMatchedBuyHoldStrategy,
+            VolTargetingStrategy,
             WeightedAverageAggregator,
         ),
         "rebalancing": _map(StandardRebalancer, FuturesRebalancer),
         "feature": _map(TechnicalFeatures, CrossSectionalFeatures),
         "monitor": _map(DrawdownMonitor, SignalDecayMonitor),
+        "overlay": _map(ReversalDeriskOverlay, RegimeReweightOverlay, CorrGrossCapOverlay),
         "validation": _map(
             WalkForwardValidation,
             StatisticalValidation,

@@ -76,6 +76,33 @@ class FuturesPaperBroker:
         tags=("paper", "futures"),
         capabilities=("paper", "futures", "shorts", "leverage"),
         schema_version="v1",
+        params_schema={
+            "type": "object",
+            "properties": {
+                "margin_balance": {"description": "Starting margin balance (quote currency)."},
+                "quote_currency": {"description": "Margin currency."},
+                "leverage": {"description": "Account leverage."},
+                "spread_bps": {"description": "Half-spread charged on fills, in bps."},
+                "slippage_bps": {"description": "Fixed market impact on fills, in bps."},
+                "impact_factor": {"description": "Size-dependent impact: bps per $10k notional."},
+                "max_impact_bps": {"description": "Cap on the size-dependent impact, in bps."},
+                "maker_fee_bps": {"description": "Maker fee, in bps."},
+                "taker_fee_bps": {"description": "Taker fee, in bps."},
+                "assume_taker": {"description": "Charge the taker fee on every fill."},
+                "state_file": {
+                    "description": "JSON file persisting positions and balance between runs; null = in memory."
+                },
+                "position_limits": {"description": "Max notional per symbol {symbol: notional}."},
+                "default_max_notional": {"description": "Max notional for symbols without a position_limits entry."},
+                "positions": {"description": "Starting positions {symbol: quantity}."},
+                "entry_prices": {"description": "Starting entry prices {symbol: price}."},
+                "prices": {"description": "Starting mark prices {symbol: price}."},
+                "funding_rates": {"description": "Funding rate per symbol per 8h {symbol: rate}."},
+                "default_funding_rate": {
+                    "description": "Funding rate per 8h for symbols without a funding_rates entry."
+                },
+            },
+        },
     )
 
     # Account
@@ -344,6 +371,8 @@ class FuturesPaperBroker:
                 "notional": notional,
                 "fee": fee,
                 "timestamp": now,
+                # An executed fill says so: a status-less row is UNKNOWN to the pipeline (TOM-1336).
+                "status": "FILLED",
             }
             fills.append(fill)
             self._fill_log.append(fill)

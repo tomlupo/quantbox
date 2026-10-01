@@ -116,9 +116,20 @@ Datasets from `quantbox-datasets` are read **by name**, never by a sibling path:
       dataset: etf-daily
 ```
 
-The build served is the one pinned for that name in `datasets.lock` at this repo's
-root; re-pin with `quantbox-datasets pin <name> --lock <quantbox>/datasets.lock`, and
-commit the lock. `quantbox sweep` takes the same name as `data.dataset`.
+The build served is the one pinned for that name in the `datasets.lock` nearest the
+config (this repo's root here); re-pin with
+`quantbox-datasets pin <name> --lock <quantbox>/datasets.lock`, and commit the lock.
+The bytes are read under `$QUANTBOX_DATASETS_ROOT`, never relative to the working
+directory, so the same config run from the repo root or a worktree reads the same
+build. `quantbox sweep` takes the same name as `data.dataset`.
+
+`quantbox dataset resolve <name> -c <config> --json` prints what `run -c <config>`
+will read — the same lock, so the same build — `path`, the pinned `sha256`, the `actual_sha256` of those bytes, `matches`, `market` and the
+`funding_rates` file if any — and `run` records the same object under
+`run_manifest.json` → `dataset.resolved`. When the bytes are not the pinned build and
+quantbox-datasets cannot restore it from git history, both commands fail and name both
+shas. The older inline style (`dataset_root` + `expected_prices_sha256`, as
+`dataset.curated.v1` takes them) still runs but warns: it is the deprecated alias.
 
 quantbox does **not** depend on `quantbox-datasets` (it is a private repo, and the
 dependency would point the wrong way): install it from its clone, and set
@@ -151,7 +162,12 @@ between deciding and filling. It is applied in exactly one place
 (`BacktestPipeline._align_for_engine`, after aggregation, venue clipping and
 risk transforms, before the engine), so it holds for the vectorbt `from_orders`
 branch, the vectorbt order-func (`threshold`) branch, rsims and the variants
-flow alike. `quantbox sweep` (`analysis.parameter_grid`) uses the same setting.
+flow alike. `quantbox sweep` (`analysis.parameter_grid`) uses the same setting,
+and so do the Python helpers `backtest()` and `optimize()`
+(`quantbox.plugins.backtesting`): keyword `lag_bars=`, same default, same
+same-bar warning, and the result carries the same `execution` record. Before
+TOM-1337 those two helpers traded same-bar; pass `lag_bars=0` to reproduce one
+of their old numbers.
 
 ```yaml
 plugins:
@@ -182,7 +198,7 @@ lagged twice — remove that shift rather than setting `lag_bars: 0`.
 
 **Where it is recorded.** `run_manifest.json` carries
 `execution: {lag_bars, fill: "close", same_bar, description}` and
-`venue: {declared, allow_shorts}`; `metrics.json` carries `execution_lag_bars`;
+`venue: {declared, allow_shorts, max_leverage}`; `metrics.json` carries `execution_lag_bars`;
 `summary.md` has an **Execution timing** line, the HTML report states it in the
 masthead and the reproducibility appendix, and the CLI prints `EXECUTION: …`
 under `METRICS:`. Sweep grids carry a `lag_bars` column.
@@ -233,6 +249,33 @@ reach the `DatasetManifest`, so the venue has to be declared in the config.
 > On the reviewer's toy the split was: same-bar −0.1792, next-bar −0.1589,
 > same-bar with only the first rebalance zeroed −0.1553 — there the lost first
 > period ALONE moves the number by more than the whole same-bar → next-bar delta.
+> Buy-and-hold (`rebalancing_freq: null`) is the exception: its one trade moves
+> to bar `lag_bars` (`quantbox.execution.lag_buy_and_hold`) — on bar 0 it would
+> trade the flat row and never enter.
+
+### Arms: one base config, many runs
+
+Near-identical configs that differ in one or two values are **arms** of one
+batch, declared once: a base config plus named `overrides:` (dotted paths, list
+indices allowed: `plugins.strategies.0.params.min_periods`) or a Cartesian
+`grid:`. `quantbox arms -c arms.yaml` runs them in parallel within
+`--max-workers` and a memory budget (`parallel.memory_budget_gb` /
+`arm_memory_gb`; with no budget, the memory available now), one ordinary run —
+and one `run@1` manifest — per arm. `arms_summary.json` (`quantbox/arms@1`)
+lists every arm with a link to its manifest, `n_trials` (the number of arms, or
+a larger honest count from the file) is stamped into every manifest, and a
+failing arm fails the batch (exit 1) by name while the others' results stay.
+The file format is the `quantbox.arms` module docstring.
+
+Timing is batch-level: the arms file's `execution:` block is the same block
+`quantbox sweep` reads, and an arm that overrides `execution`, `run.n_trials` or
+`artifacts` is refused. `quantbox sweep` records its timing and `n_trials`
+(one per grid row) in `<output_dir>/sweep_manifest.json`.
+
+A `source: path/to/strategy.py:Class` strategy works in a single run, as an
+arm, in a variant (`variants[].strategy.source`) and in a sweep
+(`strategy: {source: ...}`, path relative to the sweep config). In the runner
+the path is relative to the working directory.
 
 ## Outputs
 

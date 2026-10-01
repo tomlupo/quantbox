@@ -32,7 +32,12 @@ class PaperBrokerStub:
         tags=("paper", "stub"),
         capabilities=("paper",),
         schema_version="v1",
-        params_schema={"type": "object", "properties": {"starting_cash_usd": {"type": "number", "default": 100000}}},
+        params_schema={
+            "type": "object",
+            "properties": {
+                "starting_cash_usd": {"description": "Starting cash (USD)."},
+            },
+        },
         examples=(
             "plugins:\n  broker:\n    name: binance.paper.stub.v1\n    params_init:\n      starting_cash_usd: 100000",
         ),
@@ -63,7 +68,8 @@ class PaperBrokerStub:
             signed = qty if side == "buy" else -qty
             self.positions[sym] = self.positions.get(sym, 0.0) + signed
             self.cash_usd -= signed * price
-            fills.append({"symbol": sym, "side": side, "qty": qty, "price": price})
+            # An executed fill says so: a status-less row is UNKNOWN to the pipeline (TOM-1336).
+            fills.append({"symbol": sym, "side": side, "qty": qty, "price": price, "status": "FILLED"})
         return pd.DataFrame(fills)
 
     def fetch_fills(self, since: str) -> pd.DataFrame:

@@ -47,10 +47,26 @@ class BinanceBroker:
         params_schema={
             "type": "object",
             "properties": {
-                "api_key_env": {"type": "string", "default": "BINANCE_API_KEY"},
-                "api_secret_env": {"type": "string", "default": "BINANCE_API_SECRET"},
-                "testnet": {"type": "boolean", "default": False},
-                "readonly": {"type": "boolean", "default": False},
+                "api_key_env": {
+                    "type": "string",
+                    "default": "BINANCE_API_KEY",
+                    "description": "Environment variable holding the API key.",
+                },
+                "api_secret_env": {
+                    "type": "string",
+                    "default": "BINANCE_API_SECRET",
+                    "description": "Environment variable holding the API secret.",
+                },
+                "testnet": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Trade on the Binance testnet.",
+                },
+                "readonly": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Block order placement (reads only).",
+                },
             },
         },
         examples=(
@@ -127,6 +143,8 @@ class BinanceBroker:
                         "side": side.lower(),
                         "qty": float(f.get("qty", 0.0)),
                         "price": float(f.get("price", 0.0)),
+                        # An executed fill says so: a status-less row is UNKNOWN to the pipeline (TOM-1336).
+                        "status": "FILLED",
                     }
                 )
 

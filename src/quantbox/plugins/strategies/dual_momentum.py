@@ -57,6 +57,21 @@ class DualMomentumStrategy:
         capabilities=("backtest", "live"),
         inputs=("prices",),
         outputs=("weights",),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "asset_a": {"type": "string", "description": "Primary asset ticker (required at run time)."},
+                "asset_b": {"type": "string", "description": "Competing asset ticker (required at run time)."},
+                "safe_asset": {
+                    "type": "string",
+                    "description": "Risk-off ticker the excess returns are measured against (required at run time).",
+                },
+                "windows": {
+                    "items": {"type": "integer", "minimum": 1},
+                    "description": "Lookback windows (bars); each votes on the allocation.",
+                },
+            },
+        },
     )
 
     # Defaults (overridable via params)

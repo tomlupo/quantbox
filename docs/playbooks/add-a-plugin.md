@@ -81,7 +81,12 @@ Key requirements:
 
 - `@dataclass` decorator on the class.
 - `meta` is a **class attribute**, not instance attribute.
-- `params_schema` is JSON Schema — not just a dict.
+- `params_schema` is JSON Schema — not just a dict — and it is **mandatory**: every
+  key a config may set (constructor args via `params_init`, run-time `params`) is a
+  property with a `description`. Constructor params get their `type` and `default`
+  from the signature (`quantbox.params_schema.resolve_params_schema`); declare only
+  what it cannot carry. `tests/test_params_schema.py` fails for a registered plugin
+  without one, and `quantbox validate` refuses a key that is not a property.
 - `meta.status="research"` for new code (you can't promote yourself).
 
 ### 3. Register
@@ -112,6 +117,19 @@ Then `uv sync` and verify:
 ```bash
 quantbox plugins list | grep {slug}
 ```
+
+**Upstream builtin** — three places, all required. The three names differ per kind
+(directory `datasources`, `broker`, `strategies`…; manifest section `data`, `brokers`,
+`strategies`…), so copy where a sibling plugin of the same kind sits rather than
+deriving one name from another:
+
+1. Export the class from the kind's directory, `src/quantbox/plugins/<dir>/__init__.py`.
+2. Import it in `src/quantbox/plugins/builtins.py` and add it to that kind's map there.
+3. List its `meta.name` under the kind's section in `src/quantbox/plugins/manifest.yaml`
+   (`plugins.builtins.<section>`, the manifest's own key, e.g. `data` or `brokers`).
+
+Then `uv run quantbox plugins doctor` and `uv run pytest -m pipeline_smoke` — a builtin
+missing from any of the three is the silent break the smoke suite exists to catch.
 
 ### 4. Test
 
@@ -196,7 +214,7 @@ quantbox run -c cookbook/configs/{slug}_example.yaml
 ## Validation checklist
 
 - [ ] `meta` is a class attribute (not instance).
-- [ ] `params_schema` is valid JSON Schema.
+- [ ] `params_schema` is valid JSON Schema, describes every param, and `quantbox plugins schema --name <id> --json` shows it.
 - [ ] `meta.status` is `research` (not auto-locked).
 - [ ] Smoke test, schema test, output test all pass.
 - [ ] Plugin appears in `quantbox plugins list`.

@@ -257,10 +257,15 @@ def test_validate_config_reports_execution_and_venue_problems():
             "plugins": {"pipeline": {"name": "backtest.pipeline.v1", "params": params}, "data": {"name": "x"}},
         }
 
-    assert validate_config(cfg({})) == []
-    assert [f.level for f in validate_config(cfg({"execution": {"lag_bars": 0}}))] == ["warning"]
-    assert [f.level for f in validate_config(cfg({"execution": {"lag_bars": -1}}))] == ["error"]
-    assert [f.level for f in validate_config(cfg({"venue": {"allow_short": False}}))] == ["error"]
+    # The pipeline's own resolver, alone: the params-schema check (TOM-1350) reports the
+    # same nested typos again and is covered in test_params_schema.py.
+    def check(params):
+        return validate_config(cfg(params), check_params=False)
+
+    assert check({}) == []
+    assert [f.level for f in check({"execution": {"lag_bars": 0}})] == ["warning"]
+    assert [f.level for f in check({"execution": {"lag_bars": -1}})] == ["error"]
+    assert [f.level for f in check({"venue": {"allow_short": False}})] == ["error"]
 
 
 def test_shift_signal_is_a_deprecated_alias_of_lag_bars():
@@ -288,7 +293,8 @@ def test_apply_execution_lag_shape():
 
 def test_default_run_records_and_states_its_timing(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="quantbox.execution"):
-        result, store = _run_pipeline(tmp_path, {})
+        # full_report: the heavy HTML report is opt-in (TOM-1365) and must state the timing too
+        result, store = _run_pipeline(tmp_path, {"full_report": True})
     assert "SAME-BAR" not in caplog.text
     assert result.notes["execution"] == {
         "lag_bars": 1,
@@ -345,7 +351,7 @@ plugins:
     manifest = json.loads((tmp_path / "artifacts" / result.run_id / "run_manifest.json").read_text())
     assert manifest["execution"]["lag_bars"] == 1
     assert manifest["execution"]["same_bar"] is False
-    assert manifest["venue"] == {"declared": True, "allow_shorts": False}
+    assert manifest["venue"] == {"declared": True, "allow_shorts": False, "max_leverage": 99.0}
     assert manifest["metrics"]["execution_lag_bars"] == 1.0
 
 
@@ -397,7 +403,7 @@ def test_shorts_traded_without_a_venue_block_warn_and_are_measured(tmp_path, cap
     assert "no `venue:` block is declared" in caplog.text
     assert result.metrics["traded_short_gross_share"] == pytest.approx(1.0)
     assert result.metrics["traded_mean_net_exposure"] < 0
-    assert result.notes["venue"] == {"declared": False, "allow_shorts": True}
+    assert result.notes["venue"] == {"declared": False, "allow_shorts": True, "max_leverage": 99.0}
 
 
 def test_declared_short_venue_is_quiet(tmp_path, caplog):

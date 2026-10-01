@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "quantbox/run@1",
+  "title": "quantbox run manifest (run@1)",
+  "description": "The machine-readable record of one run: <run_dir>/run_manifest.json, also what `quantbox run --json` prints. VERSIONING: `schema` names the MAJOR version and readers check it. Adding a field is a MINOR change: it keeps `quantbox/run@1`, bumps `x-schema-minor` here and is safe for every run@1 reader (unknown keys are allowed). Renaming a field, removing one, or changing what one MEANS is a MAJOR change: it ships as `quantbox/run@2`. Paths under `files` are relative to the run directory.",
+  "x-schema-minor": 1,
+  "type": "object",
+  "required": [
+    "schema",
+    "run_id",
+    "asof",
+    "mode",
+    "pipeline",
+    "config",
+    "git",
+    "engine",
+    "dataset",
+    "funding",
+    "n_trials",
+    "metrics",
+    "files"
+  ],
+  "properties": {
+    "schema": {"const": "quantbox/run@1"},
+    "run_id": {"type": "string", "minLength": 1},
+    "asof": {"type": "string"},
+    "mode": {"type": "string"},
+    "pipeline": {"type": "string"},
+    "config": {
+      "type": "object",
+      "required": ["sha256"],
+      "properties": {
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "sha256 of the resolved config (sorted-key JSON)."},
+        "path": {"type": ["string", "null"]},
+        "file_sha256": {"type": ["string", "null"]}
+      }
+    },
+    "git": {
+      "type": "object",
+      "required": ["commit"],
+      "properties": {
+        "commit": {"type": ["string", "null"], "description": "git sha of the working tree the run was launched from; null outside a repo."},
+        "dirty": {"type": "boolean"}
+      }
+    },
+    "engine": {
+      "description": "The backtest engine that simulated the book; null for runs that simulate nothing (trading, allocation).",
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "required": ["name", "version"],
+          "properties": {
+            "name": {"type": "string", "enum": ["vectorbt", "rsims"]},
+            "version": {"type": ["string", "null"]}
+          }
+        }
+      ]
+    },
+    "dataset": {
+      "type": "object",
+      "required": ["name", "sha256", "source"],
+      "properties": {
+        "name": {"type": ["string", "null"]},
+        "sha256": {"type": ["string", "null"], "description": "Content hash of the data the run read, when the runner can know it."},
+        "source": {"enum": ["lock", "inline"], "description": "lock: loaded by name at the build pinned in datasets.lock; inline: paths or a plugin named in the config."},
+        "tier": {"type": "string"}
+      }
+    },
+    "funding": {
+      "type": "object",
+      "required": ["modelled", "source_path", "sha256"],
+      "properties": {
+        "modelled": {"type": "boolean", "description": "true only when the engine charged a funding series."},
+        "source_path": {"type": ["string", "null"]},
+        "sha256": {"type": ["string", "null"]}
+      }
+    },
+    "execution": {
+      "type": "object",
+      "required": ["lag_bars", "description"],
+      "properties": {
+        "lag_bars": {"type": "integer", "minimum": 0},
+        "fill": {"type": "string"},
+        "same_bar": {"type": "boolean"},
+        "description": {"type": "string"}
+      }
+    },
+    "venue": {
+      "type": "object",
+      "required": ["allow_shorts", "max_leverage"],
+      "properties": {
+        "declared": {"type": "boolean"},
+        "allow_shorts": {"type": "boolean"},
+        "max_leverage": {"type": "number", "description": "The gross cap applied to the traded book (the default when the config sets none)."}
+      }
+    },
+    "overlays": {
+      "type": "array",
+      "description": "The overlay chain the pipeline applied to the decided weights, in order (minor 1). The traded_weights file is the book AFTER this chain, the venue/risk transforms and the execution lag. Absent from runs whose pipeline applies no overlays.",
+      "items": {
+        "type": "object",
+        "required": ["name", "params"],
+        "properties": {
+          "name": {"type": "string"},
+          "version": {"type": ["string", "null"]},
+          "params": {"type": "object"}
+        }
+      }
+    },
+    "n_trials": {"type": ["integer", "null"], "minimum": 1, "description": "How many configurations were tried to reach this one; null when unknown."},
+    "metrics": {"type": "object"},
+    "files": {
+      "type": "object",
+      "required": ["returns", "traded_weights", "metrics"],
+      "properties": {
+        "returns": {"$ref": "#/$defs/relpath"},
+        "traded_weights": {"$ref": "#/$defs/relpath"},
+        "metrics": {"$ref": "#/$defs/relpath"}
+      }
+    }
+  },
+  "if": {"properties": {"engine": {"type": "object"}}, "required": ["engine"]},
+  "then": {
+    "required": ["execution", "venue"],
+    "properties": {
+      "files": {
+        "properties": {
+          "returns": {"type": "string"},
+          "traded_weights": {"type": "string"},
+          "metrics": {"type": "string"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "relpath": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "string", "minLength": 1, "not": {"pattern": "^(/|[A-Za-z]:)"}}
+      ]
+    }
+  }
+}

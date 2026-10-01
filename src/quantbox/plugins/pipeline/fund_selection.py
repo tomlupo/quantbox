@@ -22,14 +22,21 @@ class FundSelectionPipeline:
         params_schema={
             "type": "object",
             "properties": {
-                "top_n": {"type": "integer", "minimum": 1, "default": 5},
+                "top_n": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 5,
+                    "description": "Number of top-ranked symbols allocated to.",
+                },
                 "universe": {
                     "type": "object",
+                    "description": "Universe passed to the data plugin's load_universe() (symbols).",
                     "properties": {"symbols": {"type": "array", "items": {"type": "string"}}},
                     "required": ["symbols"],
                 },
                 "prices": {
                     "type": "object",
+                    "description": "Market-data request passed to the data plugin's load_market_data().",
                     "properties": {"lookback_days": {"type": "integer", "minimum": 30, "default": 365}},
                 },
             },

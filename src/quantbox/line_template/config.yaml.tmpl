@@ -1,0 +1,41 @@
+# {{SLUG}}: the base config. Every arm in arms.yaml is this file plus overrides.
+#
+# The dataset is read BY NAME: the bytes are the build pinned in datasets.lock (the
+# lock nearest this file), rooted at $QUANTBOX_DATASETS_ROOT. What a run will read:
+#     uv run quantbox dataset resolve {{DATASET}} -c config.yaml
+run:
+  mode: backtest
+  asof: "{{ASOF}}"
+  pipeline: backtest.pipeline.v1
+
+artifacts:
+  root: "./artifacts/base"
+
+plugins:
+  pipeline:
+    name: backtest.pipeline.v1
+    params:
+      engine: rsims
+      fees: 0.0005
+      rebalancing_freq: 1
+      execution:
+        lag_bars: 1          # next-bar execution; stated, never inherited
+      venue:
+        allow_shorts: false
+
+  strategies:
+    - name: strategy.trend_catcher_simple.v1
+      weight: 1.0
+      params:
+        side: long
+        regime_ticker: BTC
+        regime_filter_ma: 30
+        signal_ma: 10
+        universe_top_n_volume: 5
+        max_positions: 4
+        position_size: 0.25
+
+  data:
+    name: local_file_data
+    params_init:
+      dataset: {{DATASET}}

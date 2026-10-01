@@ -135,8 +135,27 @@ def _read_via_pandas(path: str, ext: str, asof: str | None, symbols: list[str] |
     return df
 
 
-def _load_pinned_dataset(name: str) -> Any:
-    """A quantbox-datasets Dataset, served at the build pinned in the nearest ``datasets.lock``."""
+def _resolve_pinned(name: str, lock: str | None = None) -> dict[str, Any]:
+    """Where a by-name dataset will be read from, refused when its bytes are not the pin.
+
+    :func:`quantbox.dataset_lock.resolve_dataset` — the root from ``$QUANTBOX_DATASETS_ROOT``,
+    the pin from *lock* (default: the nearest ``datasets.lock``).
+    """
+    from quantbox.dataset_lock import require_match, resolve_dataset
+
+    return require_match(resolve_dataset(name, lock=lock))
+
+
+def _load_pinned_dataset(
+    name: str, lock: str | None = None, resolved: dict[str, Any] | None = None
+) -> tuple[Any, dict[str, Any]]:
+    """A quantbox-datasets Dataset and the resolution it was served from.
+
+    Resolved by :func:`_resolve_pinned` (unless *resolved* already is) and refused
+    before any read when the bytes are not the pinned build.
+    """
+    if resolved is None:
+        resolved = _resolve_pinned(name, lock)
     try:
         from quantbox_datasets.lock import load
     except ImportError as exc:
@@ -145,7 +164,7 @@ def _load_pinned_dataset(name: str) -> Any:
             "quantbox does not depend on it — install it from its clone and point "
             "QUANTBOX_DATASETS_ROOT at <clone>/datasets"
         ) from exc
-    return load(name)
+    return load(name, root=resolved["root"], sha256=resolved["sha256"], pinned=False), resolved
 
 
 def _clip_frame(df: pd.DataFrame, asof: str | None) -> pd.DataFrame:
@@ -195,9 +214,10 @@ class LocalFileDataPlugin:
               prices_path: ./data/prices.parquet
               volume_path: ./data/volume.parquet
 
-    Or, for a quantbox-datasets dataset, by name — served at the build pinned in the
-    consumer's ``datasets.lock`` (``quantbox-datasets pin <name>``); the ``*_path``
-    params are then ignored::
+    Or, for a quantbox-datasets dataset, by name — rooted at ``$QUANTBOX_DATASETS_ROOT``
+    and served at the build pinned in the ``datasets.lock`` nearest the config
+    (``quantbox-datasets pin <name>``); ``quantbox dataset resolve <name> -c <config> --json`` shows
+    what will be read. The ``*_path`` params are then ignored::
 
             params_init:
               dataset: etf-daily
@@ -211,6 +231,26 @@ class LocalFileDataPlugin:
         description="Load market data from local Parquet/CSV files via DuckDB",
         inputs=(),
         outputs=("universe", "prices", "volume", "market_cap", "funding_rates", "fx"),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "prices_path": {"description": "Parquet/CSV of close prices (wide or long)."},
+                "volume_path": {"description": "Parquet/CSV of volume."},
+                "market_cap_path": {"description": "Parquet/CSV of market cap."},
+                "universe_path": {"description": "Parquet/CSV listing the universe symbols."},
+                "funding_rates_path": {"description": "Parquet/CSV of funding rates."},
+                "fx_path": {"description": "Parquet/CSV of FX rates."},
+                "dataset": {
+                    "description": "quantbox-datasets name served at the build pinned in datasets.lock; *_path are then ignored."
+                },
+                "dataset_lock": {
+                    "description": "datasets.lock that pins `dataset`; the runner defaults it to the lock nearest the config."
+                },
+                "mode": {
+                    "description": "Accepted for compatibility and unused: the run mode reaches the plugin per request."
+                },
+            },
+        },
     )
 
     prices_path: str | None = None
@@ -220,13 +260,45 @@ class LocalFileDataPlugin:
     funding_rates_path: str | None = None
     fx_path: str | None = None
     dataset: str | None = None
+    # The datasets.lock pinning ``dataset``; the runner sets it to the lock nearest the
+    # config, so a run resolves the same build from any working directory.
+    dataset_lock: str | None = None
     mode: str | None = None
     _dataset: Any = field(default=None, init=False, repr=False)
+    #: The file each key was ACTUALLY read from by the last ``load_market_data``
+    #: call — load-time ``params`` override the constructor paths, so these,
+    #: not the fields above, are what the run manifest hashes (TOM-1348).
+    loaded_paths: dict[str, str | None] = field(default_factory=dict, init=False, repr=False)
+    # What ``quantbox dataset resolve -c <config> --json`` reports; the runner records it in the manifest.
+    dataset_resolution: dict[str, Any] | None = field(default=None, init=False, repr=False)
 
     def _pinned(self) -> Any:
         if self._dataset is None:
-            self._dataset = _load_pinned_dataset(self.dataset)
+            self._dataset, self.dataset_resolution = _load_pinned_dataset(
+                self.dataset, self.dataset_lock, self.dataset_resolution
+            )
         return self._dataset
+
+    def planned_paths(self, params: dict[str, Any]) -> dict[str, str | None]:
+        """The file ``prices`` and ``funding_rates`` are read from for load *params* — nothing read.
+
+        :meth:`load_market_data` records exactly this as ``loaded_paths``, and
+        ``quantbox config explain`` asks for it before a run. A by-name dataset is
+        RESOLVED here (refused when its bytes are not the pin), never loaded: the
+        paths are the build actually served (possibly restored from git history),
+        and the ``*_path`` params are ignored.
+        """
+        if self.dataset:
+            if self.dataset_resolution is None:
+                self.dataset_resolution = _resolve_pinned(self.dataset, self.dataset_lock)
+            served = self.dataset_resolution.get("path")
+            return {
+                "prices": str(Path(served) / "prices.parquet") if served else None,
+                "funding_rates": self.dataset_resolution.get("funding_rates"),
+            }
+        ppath = params.get("prices_path") or params.get("path") or self.prices_path
+        fpath = params.get("funding_rates_path") or self.funding_rates_path
+        return {"prices": str(ppath) if ppath else None, "funding_rates": str(fpath) if fpath else None}
 
     def load_universe(self, params: dict[str, Any]) -> pd.DataFrame:
         """Load trading universe from file or params.
@@ -287,6 +359,7 @@ class LocalFileDataPlugin:
 
         if self.dataset:
             ds = self._pinned()
+            self.loaded_paths = self.planned_paths(params)
             return {
                 key: _select_cols(_clip_frame(getattr(ds, key), asof))
                 for key in ("prices", "volume", "market_cap", "funding_rates")
@@ -295,7 +368,8 @@ class LocalFileDataPlugin:
         result: dict[str, pd.DataFrame] = {}
 
         # Prices
-        ppath = params.get("prices_path") or params.get("path") or self.prices_path
+        self.loaded_paths = self.planned_paths(params)
+        ppath, fpath = self.loaded_paths["prices"], self.loaded_paths["funding_rates"]
         if ppath:
             result["prices"] = _select_cols(_read_file(ppath, asof=asof, symbols=symbols))
         else:
@@ -316,7 +390,6 @@ class LocalFileDataPlugin:
             result["market_cap"] = pd.DataFrame()
 
         # Funding rates
-        fpath = params.get("funding_rates_path") or self.funding_rates_path
         if fpath:
             result["funding_rates"] = _select_cols(_read_file(fpath, asof=asof, symbols=symbols))
         else:

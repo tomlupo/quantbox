@@ -1,7 +1,27 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
+
+#: The UTC start timestamp that ends every run id (``asof__pipeline__cfghash__ts``).
+RUN_TS_FORMAT = "%Y%m%dT%H%M%SZ"
+
+
+def run_started_at(run_id: str) -> datetime | None:
+    """When the run started, parsed from its id's last ``__`` segment; None if it carries none.
+
+    The way to order runs in time. A run id sorts by asof, pipeline and config
+    hash before its timestamp, so a name sort does not put the newest run last;
+    a directory mtime moves on every copy or sync.
+    """
+    _, sep, ts = run_id.rpartition("__")
+    if not sep:
+        return None
+    try:
+        return datetime.strptime(ts, RUN_TS_FORMAT).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
 
 
 def find_latest_run(artifacts_root: str | Path, pipeline_name: str) -> tuple[str, Path] | None:
@@ -22,7 +42,10 @@ def find_latest_run(artifacts_root: str | Path, pipeline_name: str) -> tuple[str
             obj = json.loads(info.read_text(encoding="utf-8"))
             pname = obj.get("pipeline") or obj.get("pipeline_name")
             if pname == pipeline_name:
-                candidates.append((d.stat().st_mtime, d.name, d))
+                started = run_started_at(d.name)
+                # the run id's own timestamp; mtime only for a dir that carries none
+                when = started.timestamp() if started else d.stat().st_mtime
+                candidates.append((when, d.name, d))
         except Exception:
             continue
 

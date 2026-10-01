@@ -316,6 +316,33 @@ class BeGlobalStrategy:
         core_compat=">=0.1,<0.2",
         description="BeGlobal core-satellite multi-asset strategy with dual momentum and volatility targeting",
         tags=("multi-asset", "etf", "core-satellite", "momentum"),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "risk_profile": {
+                    "enum": ["safe", "bond_plus", "mixed", "profit", "profit_plus"],
+                    "description": "Base allocation profile of the core portfolio.",
+                },
+                "core_weight": {
+                    "description": "Share of the book held in the risk-profile core; the rest is the momentum satellite."
+                },
+                "momentum_lookback": {"description": "Bars of the dual-momentum lookback."},
+                "short_momentum_lookback": {"description": "Bars of the short-term momentum lookback."},
+                "strength_lookback_periods": {"description": "Lookbacks averaged into the relative-strength score."},
+                "strength_top_n": {"description": "Number of strongest assets held in the satellite."},
+                "trend_short_ma": {"description": "Short moving average of the trend filter."},
+                "trend_long_ma": {"description": "Long moving average of the trend filter."},
+                "target_volatility": {"description": "Annualised portfolio volatility target."},
+                "vol_lookback": {"description": "Bars of the realised-volatility window."},
+                "annualize": {
+                    "description": "Bars per year for vol annualisation; null = the pipeline-derived value (fallback 252)."
+                },
+                "rebalance_threshold": {
+                    "description": "Rebalance only when a weight drifts more than this from target."
+                },
+                "output_periods": {"description": "Number of most recent bars returned in the weights output."},
+            },
+        },
     )
 
     # Risk profile

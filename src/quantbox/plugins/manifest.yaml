@@ -10,6 +10,7 @@ plugins:
       - binance.live_data.v1
       - binance.futures_data.v1
       - hyperliquid.data.v1
+      - hyperliquid.data.cached.v1
       - kraken.live_data.v1
       - data.synthetic.v1
     brokers:
@@ -35,6 +36,10 @@ plugins:
     monitors:
       - monitor.drawdown.v1
       - monitor.signal_decay.v1
+    overlays:
+      - overlay.reversal_derisk.v1
+      - overlay.regime_reweight.v1
+      - overlay.corr_gross_cap.v1
     validation:
       - validation.walk_forward.v1
       - validation.statistical.v1
@@ -45,16 +50,21 @@ plugins:
     strategies:
       - strategy.altcoin_crash_bounce.v62
       - strategy.beglobal.v1
+      - strategy.carry.v1
       - strategy.crypto_trend.v1
-      # strategy.carver_trend.v1 — DEPRECATED 2026-07-09 (obsidian-vaults#114:
-      # ~12x under-deployment); superseded by strategy.carver_trend.v2. Still
-      # registered in builtins.py for historical reproducibility, but removed
-      # from the active manifest so new profiles don't select it.
+      # DEPRECATED 2026-07-09 (obsidian-vaults#114: ~12x under-deployment) —
+      # use strategy.carver_trend.v2. Kept registered for historical
+      # reproducibility; the deprecation is carried by the plugin's own
+      # description and runtime warning. This list mirrors builtins.py exactly
+      # (tests/pipeline/test_pipeline_smoke.py fails when they disagree).
+      - strategy.carver_trend.v1
       - strategy.carver_trend.v2
       - strategy.momentum_long_short.v1
       - strategy.cross_asset_momentum.v1
       - strategy.crypto_regime_trend.v1
+      - strategy.dual_momentum.v1
       - strategy.eth_mean_reversion_24h.v1
+      - strategy.frozen_weights.v1
       - strategy.hmm_regime_allocation.v1
       - strategy.portfolio_optimizer.v1
       - strategy.ml_prediction.v1
@@ -62,7 +72,9 @@ plugins:
       - strategy.static_weights.v1
       - strategy.trend_catcher.v1
       - strategy.trend_catcher_simple.v1
+      - strategy.trend_following.v1
       - strategy.vol_matched_buy_hold.v1
+      - strategy.vol_targeting.v1
     rebalancing:
       - rebalancing.standard.v1
       - rebalancing.futures.v1

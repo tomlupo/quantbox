@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "quantbox/explain@1",
+  "title": "quantbox config explain (explain@1)",
+  "description": "What `quantbox config explain <config> --json` prints: how the runner will resolve a config, without running it. Fields shared with quantbox/run@1 (asof, mode, pipeline, config_hash, config.sha256, plugins, engine, dataset.{name,sha256,source,tier}, funding, execution, venue, overlays, n_trials) carry the SAME names and meanings as run@1, so a plan and the manifest of the run it plans compare key by key. One is a plan rather than a record: funding.modelled is true when the engine charges funding and a funding file exists. When ok is false, `errors` says why the run could not start and the plan fields may be absent. VERSIONING: as run@1 — adding a field bumps x-schema-minor; renaming, removing or re-meaning one ships as explain@2.",
+  "x-schema-minor": 0,
+  "type": "object",
+  "required": ["schema", "ok", "errors"],
+  "properties": {
+    "schema": {"const": "quantbox/explain@1"},
+    "ok": {"type": "boolean", "description": "true when every plugin id, the dataset and the pipeline params resolve; the CLI exits non-zero otherwise."},
+    "errors": {"type": "array", "items": {"type": "string"}},
+    "plugins_resolved": {"type": "boolean", "description": "Every plugin id the config names resolves — including publishers, validation and monitors, which a run resolves only after the pipeline."},
+    "plugin_ids": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["role", "group", "name", "resolved"],
+        "properties": {
+          "role": {"type": "string"},
+          "group": {"type": "string"},
+          "name": {"type": ["string", "null"]},
+          "resolved": {"type": "boolean"},
+          "error": {"type": "string"}
+        }
+      }
+    },
+    "asof": {"type": "string"},
+    "mode": {"type": "string"},
+    "pipeline": {"type": "string"},
+    "config_hash": {"type": "string"},
+    "config": {"$ref": "quantbox/run@1#/properties/config"},
+    "plugins": {"type": "object"},
+    "engine": {"$ref": "quantbox/run@1#/properties/engine"},
+    "dataset": {
+      "allOf": [{"$ref": "quantbox/run@1#/properties/dataset"}],
+      "properties": {"market": {"type": ["string", "null"], "description": "The dataset's market (its manifest.yaml), for a dataset read by name; else null."}}
+    },
+    "funding": {"$ref": "quantbox/run@1#/properties/funding"},
+    "execution": {"$ref": "quantbox/run@1#/properties/execution"},
+    "venue": {"$ref": "quantbox/run@1#/properties/venue"},
+    "overlays": {"$ref": "quantbox/run@1#/properties/overlays"},
+    "n_trials": {"$ref": "quantbox/run@1#/properties/n_trials"},
+    "strategies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "params_init", "params"],
+        "properties": {
+          "name": {"type": "string"},
+          "version": {"type": ["string", "null"]},
+          "weight": {"type": "number"},
+          "variant": {"type": "string", "description": "Set for a strategy of a multi-variant run."},
+          "params_init": {"type": "object", "description": "Constructor params as instantiated, defaults filled."},
+          "params": {"type": "object", "description": "Run-time params from the config."}
+        }
+      }
+    },
+    "artifacts_root": {"type": "string", "description": "Absolute directory the run will write artifacts/<run_id>/ under."}
+  },
+  "if": {"properties": {"ok": {"const": true}}},
+  "then": {
+    "required": ["plugins_resolved", "plugin_ids", "asof", "mode", "pipeline", "config_hash", "config", "plugins", "engine", "dataset", "funding", "n_trials", "strategies", "artifacts_root"]
+  }
+}

@@ -1,0 +1,124 @@
+{
+  "schema": "quantbox/run@1",
+  "run_id": "2024-02-09__backtest_pipeline_v1__ccd90b192d7d__20261001T074159Z",
+  "asof": "2024-02-09",
+  "mode": "backtest",
+  "pipeline": "backtest.pipeline.v1",
+  "config_hash": "ccd90b192d7d",
+  "config": {
+    "path": null,
+    "sha256": "ccd90b192d7d1c83cb66a2a5dc84ddcfd2fa203d0195a3479c40c2f62f48086d",
+    "file_sha256": null,
+    "git_blob_sha": null
+  },
+  "git": {
+    "repo_root": null,
+    "branch": null,
+    "commit": "0000000000000000000000000000000000000000",
+    "dirty": false
+  },
+  "installed_packages": {},
+  "plugins": {
+    "pipeline": "backtest.pipeline.v1",
+    "data": "local_file_data",
+    "broker": null
+  },
+  "plugin_versions": {
+    "pipeline": {
+      "name": "backtest.pipeline.v1",
+      "kind": "pipeline",
+      "version": "0.2.0",
+      "schema_version": "v1",
+      "core_compat": ">=0.1,<0.2"
+    },
+    "data": {
+      "name": "local_file_data",
+      "kind": "data",
+      "version": "0.2.0",
+      "schema_version": "v1",
+      "core_compat": ">=0.1.0"
+    },
+    "broker": null,
+    "risk": [],
+    "strategies": [
+      {
+        "name": "strategy.static_weights.v1",
+        "kind": "strategy",
+        "version": "0.1.0",
+        "schema_version": "v1",
+        "core_compat": ">=0.2.0"
+      }
+    ],
+    "aggregator": null,
+    "rebalancer": null
+  },
+  "engine": {
+    "name": "rsims",
+    "version": "0.7.0"
+  },
+  "dataset": {
+    "tier": "raw",
+    "warning": "no dataset plugin used",
+    "name": "prices.parquet",
+    "sha256": "c2c910679a9c1254766b54d0db87c93baca48a39b4c180f2e52f8884e2544cda",
+    "source": "inline"
+  },
+  "funding": {
+    "modelled": true,
+    "source_path": "funding.parquet",
+    "sha256": "2d271bbaa814a243d1c0089db9c7385f6129996b75ed1c43560cbaad24499c89"
+  },
+  "n_trials": 3,
+  "capability_results": {},
+  "artifacts": {
+    "strategy_weights": "strategy_weights.parquet",
+    "aggregated_weights": "aggregated_weights.parquet",
+    "weights_history": "weights_history.parquet",
+    "traded_weights": "traded_weights.parquet",
+    "portfolio_daily": "portfolio_daily.parquet",
+    "returns": "returns.parquet",
+    "metrics": "metrics.json"
+  },
+  "files": {
+    "returns": "returns.parquet",
+    "traded_weights": "traded_weights.parquet",
+    "metrics": "metrics.json"
+  },
+  "metrics": {
+    "n_strategies": 1.0,
+    "n_assets": 2.0,
+    "n_dates": 40.0,
+    "total_return": -0.14692603224076517,
+    "cagr": -0.7829024339328287,
+    "sharpe": -9.355910125627055,
+    "sortino": -12.180585748113547,
+    "max_drawdown": -0.15080205883256248,
+    "max_drawdown_duration_days": 37.0,
+    "annual_volatility": 0.15734144378047363,
+    "calmar": -5.19158982306797,
+    "win_rate": 0.28205128205128205,
+    "profit_factor": 0.264105037654571,
+    "var_95": -0.018378685763734404,
+    "cvar_95": -0.021992121244332197,
+    "execution_lag_bars": 1.0,
+    "traded_mean_gross_exposure": 0.975,
+    "traded_mean_net_exposure": 0.975,
+    "traded_short_gross_share": 0.0,
+    "traded_mean_turnover": 0.025,
+    "traded_flat_bar_share": 0.025,
+    "target_short_gross_share": 0.0,
+    "target_mean_net_exposure": 1.0
+  },
+  "warnings": [],
+  "execution": {
+    "lag_bars": 1,
+    "fill": "close",
+    "same_bar": false,
+    "description": "next-bar (lag_bars=1): weights decided on bar t fill at the close of bar t+1 bar later"
+  },
+  "venue": {
+    "declared": true,
+    "allow_shorts": false,
+    "max_leverage": 1.5
+  }
+}

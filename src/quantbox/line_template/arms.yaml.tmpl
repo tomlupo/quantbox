@@ -1,0 +1,11 @@
+# {{SLUG}}: the arms, declared once (format: the `quantbox.arms` module docstring).
+#     uv run quantbox arms -c arms.yaml
+# Writes artifacts/arms/arms_summary.json (quantbox/arms@1) and one run manifest per arm.
+base: config.yaml
+overrides:
+  baseline: {}
+  signal-ma-20: {plugins.strategies.0.params.signal_ma: 20}
+# Timing is the base's execution block; `execution:` here may only restate it.
+# n_trials: every arm and probe tried for this idea, including ones not listed here
+parallel: {max_workers: 2}
+artifacts: {root: ./artifacts/arms}

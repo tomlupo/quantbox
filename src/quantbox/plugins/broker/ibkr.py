@@ -55,11 +55,30 @@ class IBKRBroker:
         params_schema={
             "type": "object",
             "properties": {
-                "host": {"type": "string", "default": "127.0.0.1"},
-                "port": {"type": "integer", "default": 7497},
-                "client_id": {"type": "integer", "default": 7},
-                "account": {"type": ["string", "null"]},
-                "readonly": {"type": "boolean", "default": False},
+                "host": {
+                    "type": "string",
+                    "default": "127.0.0.1",
+                    "description": "TWS / IB Gateway host.",
+                },
+                "port": {
+                    "type": "integer",
+                    "default": 7497,
+                    "description": "TWS / IB Gateway port (7497 paper, 7496 live).",
+                },
+                "client_id": {
+                    "type": "integer",
+                    "default": 7,
+                    "description": "IB API client id.",
+                },
+                "account": {
+                    "type": ["string", "null"],
+                    "description": "IB account id; null = the default account.",
+                },
+                "readonly": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Block order placement (reads only).",
+                },
             },
         },
         examples=(
@@ -158,6 +177,8 @@ class IBKRBroker:
                         "side": side,
                         "qty": float(f.execution.shares),
                         "price": float(f.execution.price),
+                        # An executed fill says so: a status-less row is UNKNOWN to the pipeline (TOM-1336).
+                        "status": "FILLED",
                     }
                 )
 

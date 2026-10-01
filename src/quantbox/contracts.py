@@ -42,6 +42,9 @@ classes with a class-level ``meta = PluginMeta(...)`` attribute.
 
 **MonitorPlugin** — checks run results for anomalies:
     check(result, history, params) → [alerts]
+
+**OverlayPlugin** — modifies decided weights before execution (chained):
+    apply(weights, data, params) → DataFrame (same index and columns)
 """
 
 from __future__ import annotations
@@ -63,6 +66,7 @@ PluginKind = Literal[
     "feature",
     "validation",
     "monitor",
+    "overlay",
     "dataset",
 ]
 PipelineKind = Literal["research", "trading"]
@@ -99,7 +103,10 @@ class PluginMeta:
         tags: Searchable tags (e.g. ("crypto", "futures")).
         capabilities: Supported modes/features (e.g. ("paper", "live")).
         schema_version: Version of the artifact schema this plugin produces.
-        params_schema: JSON Schema for plugin parameters (LLM-friendly).
+        params_schema: JSON Schema for plugin parameters (LLM-friendly). Required
+            for every registered plugin: each key a config may set is a property
+            with a description. ``quantbox.params_schema.resolve_params_schema``
+            completes constructor params (type, default) from the signature.
         inputs: Artifact names this plugin expects as input.
         outputs: Artifact names this plugin produces.
         examples: Minimal YAML config snippets showing usage.
@@ -333,6 +340,23 @@ class MonitorPlugin(Protocol):
         history: list[RunResult] | None,
         params: dict[str, Any],
     ) -> list[dict[str, Any]]: ...
+
+
+class OverlayPlugin(Protocol):
+    """Modifies a base strategy's DECIDED weights before execution (ADR-0004).
+
+    ``weights`` is the aggregated decided book (date x symbol); ``data`` is the
+    market-data dict the strategies saw. Row ``t`` of the result may use data up
+    to and including bar ``t`` and must stay on row ``t``: an overlay never
+    shifts its own output. The run's execution convention
+    (``execution.lag_bars``) moves the whole overlaid book onto the fill bar
+    afterwards, once, for every overlay alike. The result has the input's
+    index and columns; overlays chain in config order.
+    """
+
+    meta: PluginMeta
+
+    def apply(self, weights: pd.DataFrame, data: dict[str, Any], params: dict[str, Any]) -> pd.DataFrame: ...
 
 
 class PipelinePlugin(Protocol):

@@ -34,6 +34,15 @@ class VolMatchedBuyHoldStrategy:
         schema_version="v1",
         description="Buy-and-hold a single asset, scaled to a target annualized volatility.",
         tags=("benchmark", "buy-and-hold", "vol-matched"),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "ticker": {"description": "Asset held."},
+                "target_annual_vol": {"description": "Annualised volatility the position is scaled to."},
+                "vol_lookback": {"description": "Bars of the volatility estimate; null = full history."},
+                "trading_days": {"description": "Bars per year; null = the pipeline-derived value (fallback 252)."},
+            },
+        },
     )
 
     ticker: str = "BTC"

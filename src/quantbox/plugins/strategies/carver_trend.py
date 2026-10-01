@@ -425,8 +425,7 @@ class CarverTrendStrategy:
     Carver-Style Trend Following Strategy.
 
     .. deprecated::
-        ``strategy.carver_trend.v1`` is DEPRECATED as of 2026-07-09 and is
-        removed from the active plugin manifest. It sizes positions by the full
+        ``strategy.carver_trend.v1`` is DEPRECATED as of 2026-07-09. It sizes positions by the full
         universe column count rather than the per-date active count, causing a
         ~12x under-deployment (obsidian-vaults#114). Do NOT use it for new
         research or any paper/live book. The canonical successor is
@@ -464,25 +463,109 @@ class CarverTrendStrategy:
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "target_vol": {"type": "number", "minimum": 0.01, "maximum": 1.0, "default": 0.25},
-                "vol_lookback": {"type": "integer", "minimum": 10, "maximum": 252, "default": 36},
-                "idm": {"type": ["number", "null"], "minimum": 0.5, "maximum": 5.0, "default": None},
-                "max_position": {"type": "number", "minimum": 0.0, "maximum": 2.0, "default": 1.0},
-                "max_gross": {"type": "number", "minimum": 0.0, "maximum": 5.0, "default": 2.0},
-                "allow_shorts": {"type": "boolean", "default": True},
-                "ewmac_weight": {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.6},
-                "breakout_weight": {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.4},
+                "target_vol": {
+                    "type": "number",
+                    "minimum": 0.01,
+                    "maximum": 1.0,
+                    "default": 0.25,
+                    "description": "Annualised volatility target per instrument.",
+                },
+                "vol_lookback": {
+                    "type": "integer",
+                    "minimum": 10,
+                    "maximum": 252,
+                    "default": 36,
+                    "description": "Bars of the volatility estimate.",
+                },
+                "idm": {
+                    "type": ["number", "null"],
+                    "minimum": 0.5,
+                    "maximum": 5.0,
+                    "default": None,
+                    "description": "Instrument diversification multiplier; null = estimated from correlations.",
+                },
+                "max_position": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 2.0,
+                    "default": 1.0,
+                    "description": "Cap on the absolute weight of one instrument.",
+                },
+                "max_gross": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 5.0,
+                    "default": 2.0,
+                    "description": "Cap on gross exposure (sum of absolute weights).",
+                },
+                "allow_shorts": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Allow negative weights; false makes the strategy long-only.",
+                },
+                "ewmac_weight": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "default": 0.6,
+                    "description": "Forecast weight of the EWMAC rules.",
+                },
+                "breakout_weight": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "default": 0.4,
+                    "description": "Forecast weight of the breakout rules.",
+                },
                 "use_bollinger_feature": {
                     "type": "boolean",
                     "default": False,
                     "description": "When True, applies Strategy v2 weights (ewmac=0.4, breakout=0.3, bollinger=0.3) and overrides ewmac_weight/breakout_weight.",
                 },
-                "bollinger_n_std": {"type": "number", "minimum": 0.5, "maximum": 4.0, "default": 2.0},
-                "use_universe_selection": {"type": "boolean", "default": False},
-                "top_by_mcap": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 30},
-                "top_by_volume": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 10},
-                "volume_is_dollar": {"type": "boolean", "default": True},
-                "output_periods": {"type": "integer", "minimum": 1, "maximum": 365, "default": 30},
+                "bollinger_n_std": {
+                    "type": "number",
+                    "minimum": 0.5,
+                    "maximum": 4.0,
+                    "default": 2.0,
+                    "description": "Band width (standard deviations) of the Bollinger feature.",
+                },
+                "use_universe_selection": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Select a dynamic universe (top_by_mcap, then top_by_volume) instead of trading every column.",
+                },
+                "top_by_mcap": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000,
+                    "default": 30,
+                    "description": "Universe pre-filter: keep the top N coins by market cap.",
+                },
+                "top_by_volume": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000,
+                    "default": 10,
+                    "description": "Universe: of those, keep the top N by volume.",
+                },
+                "volume_is_dollar": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "True when the data's volume is already quote-currency notional; False multiplies by price.",
+                },
+                "output_periods": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 30,
+                    "description": "Number of most recent bars returned in the weights output.",
+                },
+                "annualize": {
+                    "description": "Bars per year for vol annualisation; null = the pipeline-derived value (fallback 252)."
+                },
+                "bollinger_windows": {"description": "Bollinger feature windows."},
+                "breakout_windows": {"description": "Breakout rule lookback windows."},
+                "ewmac_spans": {"description": "EWMAC (fast, slow) span pairs."},
+                "exclude_tickers": {"description": "Tickers never traded (stablecoins by default)."},
             },
         },
         examples=(
@@ -537,8 +620,8 @@ class CarverTrendStrategy:
     def __post_init__(self) -> None:
         warnings.warn(
             "strategy.carver_trend.v1 is DEPRECATED (obsidian-vaults#114: "
-            "~12x under-deployment from full-universe sizing) and removed from "
-            "the active manifest. Use strategy.carver_trend.v2 instead. This "
+            "~12x under-deployment from full-universe sizing). "
+            "Use strategy.carver_trend.v2 instead. This "
             "plugin is retained only for historical backtest reproducibility.",
             DeprecationWarning,
             stacklevel=2,

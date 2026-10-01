@@ -163,6 +163,22 @@ class DeflatedSharpeBLPValidation:
             "probability (DSR) in [0, 1], not a Sharpe-valued number."
         ),
         tags=("validation", "statistics", "sharpe", "dsr", "psr", "multiple-testing"),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "confidence": {"type": "number", "default": 0.95, "description": "Confidence level of the DSR test."},
+                "trading_days": {"type": "integer", "default": 365, "description": "Bars per year for annualisation."},
+                "n_trials": {
+                    "type": "number",
+                    "default": 1,
+                    "description": "Number of strategy configurations tried (integral; non-integral is refused).",
+                },
+                "trial_sharpes": {
+                    "type": ["array", "null"],
+                    "description": "Sharpe ratios of all trials, for the variance of the max-Sharpe estimator.",
+                },
+            },
+        },
     )
 
     @staticmethod
