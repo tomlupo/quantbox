@@ -3,7 +3,7 @@
   "$id": "quantbox/run@1",
   "title": "quantbox run manifest (run@1)",
   "description": "The machine-readable record of one run: <run_dir>/run_manifest.json, also what `quantbox run --json` prints. VERSIONING: `schema` names the MAJOR version and readers check it. Adding a field is a MINOR change: it keeps `quantbox/run@1`, bumps `x-schema-minor` here and is safe for every run@1 reader (unknown keys are allowed). Renaming a field, removing one, or changing what one MEANS is a MAJOR change: it ships as `quantbox/run@2`. Paths under `files` are relative to the run directory.",
-  "x-schema-minor": 0,
+  "x-schema-minor": 1,
   "type": "object",
   "required": [
     "schema",
@@ -93,6 +93,19 @@
         "declared": {"type": "boolean"},
         "allow_shorts": {"type": "boolean"},
         "max_leverage": {"type": "number", "description": "The gross cap applied to the traded book (the default when the config sets none)."}
+      }
+    },
+    "overlays": {
+      "type": "array",
+      "description": "The overlay chain the pipeline applied to the decided weights, in order (minor 1). The traded_weights file is the book AFTER this chain, the venue/risk transforms and the execution lag. Absent from runs whose pipeline applies no overlays.",
+      "items": {
+        "type": "object",
+        "required": ["name", "params"],
+        "properties": {
+          "name": {"type": "string"},
+          "version": {"type": ["string", "null"]},
+          "params": {"type": "object"}
+        }
       }
     },
     "n_trials": {"type": ["integer", "null"], "minimum": 1, "description": "How many configurations were tried to reach this one; null when unknown."},
