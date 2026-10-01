@@ -10,6 +10,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# uv's default 30s HTTP timeout let one slow wheel fetch (cffi, via ccxt in
+# `--extra full`) fail pipeline-smoke before any test ran (run 36833635610).
+env:
+  UV_HTTP_TIMEOUT: "120"
+
 jobs:
   lint:
     runs-on: ubuntu-latest
