@@ -183,6 +183,26 @@ class HyperliquidBroker:
         tags=("live", "futures", "hyperliquid", "decentralized"),
         capabilities=("live", "futures", "shorts", "leverage"),
         schema_version="v1",
+        params_schema={
+            "type": "object",
+            "properties": {
+                "wallet_address": {
+                    "type": "string",
+                    "description": "Main wallet address; empty = read HYPERLIQUID_WALLET from the environment.",
+                },
+                "private_key": {
+                    "type": "string",
+                    "description": "API-wallet private key; empty = read HYPERLIQUID_PRIVATE_KEY from the environment.",
+                },
+                "testnet": {"type": "boolean", "description": "Trade on the Hyperliquid testnet."},
+                "risk": {
+                    "type": "object",
+                    "description": "Python-only: a RiskConfig object (position/leverage/loss limits); default limits apply.",
+                },
+                "telegram_token": {"type": "string", "description": "Telegram bot token for fill notifications."},
+                "telegram_chat_id": {"type": "string", "description": "Telegram chat id for fill notifications."},
+            },
+        },
     )
 
     # Credentials

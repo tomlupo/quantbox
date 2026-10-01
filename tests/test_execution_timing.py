@@ -257,10 +257,15 @@ def test_validate_config_reports_execution_and_venue_problems():
             "plugins": {"pipeline": {"name": "backtest.pipeline.v1", "params": params}, "data": {"name": "x"}},
         }
 
-    assert validate_config(cfg({})) == []
-    assert [f.level for f in validate_config(cfg({"execution": {"lag_bars": 0}}))] == ["warning"]
-    assert [f.level for f in validate_config(cfg({"execution": {"lag_bars": -1}}))] == ["error"]
-    assert [f.level for f in validate_config(cfg({"venue": {"allow_short": False}}))] == ["error"]
+    # The pipeline's own resolver, alone: the params-schema check (TOM-1350) reports the
+    # same nested typos again and is covered in test_params_schema.py.
+    def check(params):
+        return validate_config(cfg(params), check_params=False)
+
+    assert check({}) == []
+    assert [f.level for f in check({"execution": {"lag_bars": 0}})] == ["warning"]
+    assert [f.level for f in check({"execution": {"lag_bars": -1}})] == ["error"]
+    assert [f.level for f in check({"venue": {"allow_short": False}})] == ["error"]
 
 
 def test_shift_signal_is_a_deprecated_alias_of_lag_bars():

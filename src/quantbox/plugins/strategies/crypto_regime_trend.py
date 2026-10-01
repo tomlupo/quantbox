@@ -270,6 +270,53 @@ class CryptoRegimeTrendStrategy:
         core_compat=">=0.1,<0.2",
         description="BTC regime-based long/short trend following with multi-window ensemble",
         tags=("crypto", "trend", "regime", "long-short"),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "regime_window": {"description": "Moving average of the BTC regime filter."},
+                "trend_window": {"description": "Moving average of the per-coin trend signal."},
+                "btc_ticker": {"description": "Ticker of the regime asset."},
+                "use_ensemble": {"description": "Average signals over window_pairs instead of a single window."},
+                "window_pairs": {"description": "(fast, slow) moving-average pairs of the ensemble."},
+                "long_max": {"description": "Maximum long positions."},
+                "short_max": {"description": "Maximum short positions."},
+                "coins_to_trade": {"description": "Universe size by market cap."},
+                "exclude_tickers": {"description": "Tickers never traded (stablecoins by default)."},
+                "volume_is_dollar": {
+                    "description": "True when the data's volume is already quote-currency notional; False multiplies by price."
+                },
+                "volume_rolling_window": {"description": "Rank volume on its N-bar rolling mean (1 = spot volume)."},
+                "min_listing_days": {"description": "Exclude a coin for this many days after its first valid price."},
+                "hysteresis_rank_band": {
+                    "description": "A coin that entered the universe stays while ranked within top_N + this band."
+                },
+                "weighting": {"enum": ["equal", "inverse_atr"], "description": "Position weighting scheme."},
+                "atr_window": {"description": "ATR window for inverse_atr weighting."},
+                "vol_targets": {
+                    "description": "Volatility-target tracks computed ('off' or a percent string like '50')."
+                },
+                "tranches": {"description": "Tranche counts computed per vol-target track."},
+                "vol_lookback": {"description": "Bars of the volatility estimate used by vol targeting."},
+                "position_weight": {
+                    "description": "Fixed weight per active position instead of per-leg normalisation; null disables."
+                },
+                "inv_vol_track": {
+                    "description": "Add an 'inv_vol' track derived from the 'off' track (needs 'off' in vol_targets)."
+                },
+                "clip_vol_scaler": {"description": "[low, high] clip of the vol-target scaler; null = no clipping."},
+                "output_periods": {"description": "Number of most recent bars returned in the weights output."},
+                "normalize_weights": {"description": "Normalise each leg's weights to sum to one."},
+                "output_track": {
+                    "description": "(vol_target, tranches) slice returned as weights; null = the first track."
+                },
+                "filtered_coins_market_cap": {"type": "integer", "description": "Alias of coins_to_trade."},
+                "portfolio_coins_max_long": {"type": "integer", "description": "Alias of long_max."},
+                "portfolio_coins_max_short": {"type": "integer", "description": "Alias of short_max."},
+                "portfolio_coins_max": {"type": "integer", "description": "Alias of long_max."},
+                "last_x_days": {"type": "integer", "description": "Alias of output_periods."},
+                "periods": {"type": "integer", "description": "Alias of output_periods."},
+            },
+        },
     )
 
     # Regime parameters

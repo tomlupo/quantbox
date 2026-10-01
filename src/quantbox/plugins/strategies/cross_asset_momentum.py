@@ -311,6 +311,30 @@ class CrossAssetMomentumStrategy:
         capabilities=("backtest", "live"),
         inputs=("prices",),
         outputs=("weights",),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "momentum_windows": {"description": "Lookbacks averaged into the momentum score."},
+                "winsorize_pct": {"description": "Winsorise momentum scores at this tail fraction."},
+                "top_n": {"description": "Number of top-momentum assets held."},
+                "top_n_assets": {"type": "integer", "description": "Alias of top_n (quantlab compatibility)."},
+                "ewma_lambda": {"description": "Decay of the EWMA volatility estimate."},
+                "ewma_min_periods": {"description": "Minimum bars before the EWMA volatility is used."},
+                "annualize": {
+                    "description": "Bars per year for vol annualisation; null = the pipeline-derived value (fallback 252)."
+                },
+                "trend_filter_window": {"description": "Moving average of the trend filter."},
+                "enable_trend_filter": {"description": "Hold only assets above their trend_filter_window average."},
+                "core_weight": {"description": "Share of the book allocated to the momentum selection."},
+                "risk_off_ticker": {
+                    "description": "Asset that absorbs the unallocated weight (e.g. a bond ETF); null disables."
+                },
+                "exclude_tickers": {"description": "Tickers never traded (stablecoins by default)."},
+                "output_periods": {"description": "Number of most recent bars returned in the weights output."},
+                "last_x_days": {"type": "integer", "description": "Alias of output_periods (quantlab compatibility)."},
+                "periods": {"type": "integer", "description": "Alias of output_periods (quantlab compatibility)."},
+            },
+        },
     )
 
     # Momentum parameters

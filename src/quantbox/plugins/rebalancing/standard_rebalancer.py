@@ -89,6 +89,71 @@ class StandardRebalancer:
         core_compat=">=0.1,<0.2",
         description="Standard rebalancer: risk transforms + order generation",
         tags=("rebalancing", "trading"),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "capital_at_risk": {
+                    "type": "number",
+                    "default": 1.0,
+                    "description": "Fraction of portfolio value the targets are sized against (pipeline value if unset).",
+                },
+                "tranches": {
+                    "type": "integer",
+                    "default": 1,
+                    "description": "Average targets over N tranches (rolling mean).",
+                },
+                "max_leverage": {
+                    "type": "number",
+                    "default": 1,
+                    "description": "Cap on gross leverage of the targets.",
+                },
+                "min_trade_size": {
+                    "type": "number",
+                    "default": 0.01,
+                    "description": "Minimum abs(weight delta) to trade.",
+                },
+                "exclusions": {
+                    "type": "array",
+                    "default": [],
+                    "description": "Assets never traded (pipeline value if unset).",
+                },
+                "strategy_weights": {
+                    "type": "object",
+                    "default": {},
+                    "description": "Per-strategy weight overrides used with tranches (pipeline value if unset).",
+                },
+                "equity_reconciliation_tolerance": {
+                    "type": "number",
+                    "default": 0.005,
+                    "description": "Relative tolerance of the live pre-trade reconciliation against broker equity.",
+                },
+                "require_equity_reconciliation": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Require the live pre-trade reconciliation against broker equity.",
+                },
+                "stable_coin_symbol": {
+                    "type": "string",
+                    "default": "USDC",
+                    "description": "Cash asset of the book (pipeline value if unset).",
+                },
+                "allow_short": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "False clips negative targets to zero.",
+                },
+                "min_notional": {
+                    "type": "number",
+                    "default": 1.0,
+                    "description": "Orders below this notional are dropped.",
+                },
+                "scaling_factor_min": {
+                    "type": "number",
+                    "default": 0.9,
+                    "description": "Lowest scale-down applied to buys when cash is short.",
+                },
+            },
+        },
     )
 
     def generate_orders(

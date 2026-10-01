@@ -85,12 +85,14 @@ class CarryStrategy:
                     "minimum": 1,
                     "maximum": 10,
                     "default": 3,
+                    "description": "Number of highest-funding perps held long.",
                 },
                 "top_n_short": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 10,
                     "default": 3,
+                    "description": "Number of lowest-funding perps held short.",
                 },
                 "min_signal_annualized": {
                     "type": "number",
@@ -130,6 +132,10 @@ class CarryStrategy:
                     "default": 365,
                     "description": "Number of trailing days to include in returned weights DataFrame.",
                 },
+                "annualize": {
+                    "description": "Bars per year for vol annualisation; null = the pipeline-derived value (fallback 252)."
+                },
+                "exclude_tickers": {"description": "Tickers never traded (stablecoins by default)."},
             },
         },
         examples=(

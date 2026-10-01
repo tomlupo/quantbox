@@ -327,6 +327,28 @@ class MomentumLongShortStrategy:
         core_compat=">=0.1,<0.2",
         description="Long-short momentum strategy - market-neutral crypto factor",
         tags=("crypto", "momentum", "long-short"),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "momentum_windows": {"description": "Lookbacks of the momentum score."},
+                "momentum_weights": {"description": "Weights of each momentum window; null = equal."},
+                "n_long": {"description": "Number of top-momentum assets held long."},
+                "n_short": {"description": "Number of bottom-momentum assets held short."},
+                "net_exposure": {"description": "Net exposure target: 0 = market neutral, 0.5 = long biased."},
+                "vol_lookback": {"description": "Bars of the volatility estimate."},
+                "trend_filter_window": {"description": "Moving average of the trend filter."},
+                "enable_trend_filter": {"description": "Gate longs/shorts on the trend filter."},
+                "enable_vol_targeting": {"description": "Scale the book to target_vol."},
+                "target_vol": {"description": "Annualised volatility target when vol targeting is on."},
+                "max_leverage": {"description": "Cap on gross leverage after vol targeting."},
+                "rebalance_frequency": {"enum": ["D", "W", "M"], "description": "Signal rebalance frequency."},
+                "annualize": {
+                    "description": "Bars per year for vol annualisation; null = the pipeline-derived value (fallback 252)."
+                },
+                "output_periods": {"description": "Number of most recent bars returned in the weights output."},
+                "exclude_tickers": {"description": "Tickers never traded (stablecoins by default)."},
+            },
+        },
     )
 
     # Momentum parameters

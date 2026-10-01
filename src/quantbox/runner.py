@@ -29,7 +29,7 @@ from .llm_utils import event_line, load_schema, validate_table
 from .plugin_manifest import load_manifest, resolve_profile
 from .store import FileArtifactStore
 from .strict import get_capability
-from .validate import validate_config
+from .validate import check_plugin_params, validate_config
 
 logger = logging.getLogger(__name__)
 
@@ -358,10 +358,19 @@ def run_from_config(
                 if key in prof and key not in cfg["plugins"]:
                     cfg["plugins"][key] = prof[key]
     # Basic config validation (LLM-friendly)
-    findings = validate_config(cfg)
+    findings = validate_config(cfg, check_params=False)
     if any(f.level == "error" for f in findings):
         msgs = "; ".join(f.message for f in findings)
         raise ConfigValidationError(f"config_validation_failed: {msgs}", findings=findings)
+    # Plugin params (TOM-1350): `quantbox validate` REFUSES an unknown or invalid
+    # param; a run only warns. Configs in use today carry keys their plugins have
+    # always ignored silently, and turning that into a refusal here would halt a
+    # live book on its next pin bump rather than at a deliberate migration.
+    try:
+        for f in check_plugin_params(cfg["plugins"], registry):
+            logger.warning("config params: %s", f.message)
+    except Exception as exc:  # a params check must never be what breaks a run
+        logger.warning("config params: not checked (%s)", exc)
 
     mode: Mode = run_cfg["mode"]
     asof: str = run_cfg["asof"]

@@ -32,7 +32,12 @@ class PaperBrokerStub:
         tags=("paper", "stub"),
         capabilities=("paper",),
         schema_version="v1",
-        params_schema={"type": "object", "properties": {"starting_cash_usd": {"type": "number", "default": 100000}}},
+        params_schema={
+            "type": "object",
+            "properties": {
+                "starting_cash_usd": {"description": "Starting cash (USD)."},
+            },
+        },
         examples=(
             "plugins:\n  broker:\n    name: binance.paper.stub.v1\n    params_init:\n      starting_cash_usd: 100000",
         ),

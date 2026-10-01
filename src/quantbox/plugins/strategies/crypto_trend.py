@@ -433,6 +433,46 @@ class CryptoTrendStrategy:
         core_compat=">=0.1,<0.2",
         description="Crypto trend catcher - multi-asset volatility-targeted trend following",
         tags=("crypto", "trend", "momentum"),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "lookback_windows": {"description": "Donchian/trend lookback windows of the signal ensemble."},
+                "vol_targets": {
+                    "description": "Volatility-target tracks computed ('off' or a percent string like '50')."
+                },
+                "tranches": {"description": "Tranche counts computed per vol-target track."},
+                "top_by_mcap": {"description": "Universe pre-filter: keep the top N coins by market cap."},
+                "top_by_volume": {"description": "Universe: of those, keep the top N by volume."},
+                "exclude_tickers": {"description": "Tickers never traded (stablecoins by default)."},
+                "vol_lookback": {"description": "Bars of the volatility estimate used by vol targeting."},
+                "output_periods": {"description": "Number of most recent bars returned in the weights output."},
+                "normalize_weights": {"description": "Normalise weights to sum to one per track."},
+                "use_duckdb": {"description": "Compute the signal panel with DuckDB."},
+                "use_trailing_stop": {"description": "Exit on the trailing stop as well as the trend signal."},
+                "inv_vol_track": {
+                    "description": "Add an 'inv_vol' track derived from the 'off' track (needs 'off' in vol_targets)."
+                },
+                "clip_vol_scaler": {"description": "[low, high] clip of the vol-target scaler; null = no clipping."},
+                "regime_ticker": {
+                    "description": "Ticker of the diagnostic donchian overlay; null disables it (never affects weights)."
+                },
+                "output_track": {"description": "(vol_target, tranches) slice returned as weights."},
+                "volume_is_dollar": {
+                    "description": "True when the data's volume is already quote-currency notional; False multiplies by price."
+                },
+                "volume_rolling_window": {"description": "Rank volume on its N-bar rolling mean (1 = spot volume)."},
+                "min_listing_days": {"description": "Exclude a coin for this many days after its first valid price."},
+                "hysteresis_rank_band": {
+                    "description": "A coin that entered the universe stays while ranked within top_N + this band."
+                },
+                "tickers_to_exclude": {"type": "array", "description": "Alias of exclude_tickers (quantlab)."},
+                "filtered_coins_market_cap": {"type": "integer", "description": "Alias of top_by_mcap (quantlab)."},
+                "portfolio_coins_max": {"type": "integer", "description": "Alias of top_by_volume (quantlab)."},
+                "last_x_days": {"type": "integer", "description": "Alias of output_periods (quantlab)."},
+                "periods": {"type": "integer", "description": "Alias of output_periods (quantlab)."},
+                "normalize": {"type": "boolean", "description": "Alias of normalize_weights (quantlab)."},
+            },
+        },
     )
 
     # Strategy parameters

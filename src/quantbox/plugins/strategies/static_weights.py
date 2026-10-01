@@ -25,6 +25,13 @@ class StaticWeightsStrategy:
         schema_version="v1",
         description="Holds a fixed weight allocation (e.g. BTC buy-and-hold) across all bars.",
         tags=("baseline", "buy-and-hold", "static"),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "weights": {"description": "Constant target weights {ticker: weight} held every bar."},
+                "normalise": {"description": "Renormalise the held weights to sum to one."},
+            },
+        },
     )
 
     weights: dict[str, float] = field(default_factory=dict)

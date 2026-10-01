@@ -29,7 +29,13 @@ def _check_legacy_dataset_params(cfg: dict) -> None:
         )
 
 
-def validate_config(cfg: dict[str, Any]) -> list[ValidationFinding]:
+def validate_config(cfg: dict[str, Any], registry: Any = None, *, check_params: bool = True) -> list[ValidationFinding]:
+    """Findings for a run config.
+
+    ``check_params`` checks every plugin block's ``params_init`` / ``params``
+    against that plugin's params schema (see ``check_plugin_params``);
+    ``registry`` defaults to ``PluginRegistry.discover()``.
+    """
     _check_legacy_dataset_params(cfg)
     findings: list[ValidationFinding] = []
     for k in ("run", "artifacts", "plugins"):
@@ -59,6 +65,92 @@ def validate_config(cfg: dict[str, Any]) -> list[ValidationFinding]:
                     if "pipeline" not in prof or "data" not in prof:
                         findings.append(ValidationFinding("error", f"profile_missing_required_plugins:{profile}"))
         findings.extend(_check_backtest_execution(plugins))
+        if check_params:
+            findings.extend(check_plugin_params(plugins, registry))
+    return findings
+
+
+# config slot -> (registry group, is a list of blocks)
+_PARAM_SLOTS: dict[str, tuple[str, bool]] = {
+    "pipeline": ("pipeline", False),
+    "data": ("data", False),
+    "broker": ("broker", False),
+    "rebalancing": ("rebalancing", False),
+    "aggregator": ("strategy", False),
+    "strategies": ("strategy", True),
+    "risk": ("risk", True),
+    "publishers": ("publisher", True),
+    "validation": ("validation", True),
+    "monitors": ("monitor", True),
+}
+
+
+def _plugin_blocks(plugins: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
+    """(where, group, block) for every named plugin block, backtest variants included."""
+    out: list[tuple[str, str, dict[str, Any]]] = []
+    for slot, (group, is_list) in _PARAM_SLOTS.items():
+        val = plugins.get(slot)
+        items = (val or []) if is_list else [val]
+        for i, block in enumerate(items):
+            if isinstance(block, dict) and block.get("name"):
+                out.append((f"plugins.{slot}[{i}]" if is_list else f"plugins.{slot}", group, block))
+    pipeline = plugins.get("pipeline")
+    variants = ((pipeline or {}).get("params") or {}).get("variants") if isinstance(pipeline, dict) else None
+    for i, v in enumerate(variants or []):
+        strat = v.get("strategy") if isinstance(v, dict) else None
+        if isinstance(strat, dict) and strat.get("name"):
+            out.append((f"plugins.pipeline.params.variants[{i}].strategy", "strategy", strat))
+    return out
+
+
+def check_plugin_params(plugins: dict[str, Any], registry: Any = None) -> list[ValidationFinding]:
+    """Every key a config sets on a plugin must be a property of that plugin's params schema."""
+    import difflib
+
+    from .params_schema import PLUGIN_GROUPS, check_params, resolve_params_schema
+
+    blocks = _plugin_blocks(plugins)
+    if not blocks:
+        return []
+    if registry is None:
+        from .registry import PluginRegistry
+
+        try:
+            registry = PluginRegistry.discover()
+        except Exception as exc:
+            return [ValidationFinding("warning", f"params_not_checked: plugin registry failed to load ({exc})")]
+
+    findings: list[ValidationFinding] = []
+    for where, group, block in blocks:
+        name = block["name"]
+        cls = (getattr(registry, PLUGIN_GROUPS[group], None) or {}).get(name)
+        if cls is None:
+            findings.append(ValidationFinding("warning", f"params_not_checked:{name}: not a registered {group} plugin"))
+            continue
+        schema = resolve_params_schema(cls)
+        if schema is None:
+            findings.append(
+                ValidationFinding("warning", f"params_not_checked:{name}: plugin declares no params_schema")
+            )
+            continue
+        props = schema.get("properties", {})
+        for channel in ("params_init", "params"):
+            params = block.get(channel) or {}
+            if not isinstance(params, dict):
+                findings.append(ValidationFinding("error", f"{where}.{channel} must be a mapping ({name})"))
+                continue
+            unknown, violations = check_params(schema, params)
+            for key in unknown:
+                close = difflib.get_close_matches(key, list(props), n=1)
+                hint = f"; did you mean '{close[0]}'?" if close else ""
+                findings.append(
+                    ValidationFinding(
+                        "error",
+                        f"unknown_param: '{key}' is not a parameter of plugin '{name}' ({where}.{channel}){hint}",
+                    )
+                )
+            for msg in violations:
+                findings.append(ValidationFinding("error", f"invalid_param: plugin '{name}' ({where}.{channel}) {msg}"))
     return findings
 
 

@@ -168,6 +168,23 @@ class PortfolioOptimizerStrategy:
         core_compat=">=0.1,<0.2",
         description="Mean-variance portfolio optimizer (max Sharpe, min variance, risk parity, equal weight)",
         tags=("optimization", "mean-variance", "multi-asset"),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "method": {
+                    "enum": ["max_sharpe", "min_variance", "equal_weight", "risk_parity", "inverse_vol"],
+                    "description": "Optimisation objective.",
+                },
+                "lookback": {"description": "Bars of returns used to estimate means and covariances."},
+                "risk_free_rate": {"description": "Annual risk-free rate for max_sharpe."},
+                "trading_days": {"description": "Bars per year; null = the pipeline-derived value (fallback 252)."},
+                "min_weight": {"description": "Lower bound per asset weight."},
+                "max_weight": {"description": "Upper bound per asset weight."},
+                "rolling": {"description": "Re-optimise through history (every rebalance_every bars) instead of once."},
+                "rebalance_every": {"description": "Bars between re-optimisations when rolling."},
+                "output_periods": {"description": "Number of most recent bars returned in the weights output."},
+            },
+        },
     )
 
     method: str = "max_sharpe"
