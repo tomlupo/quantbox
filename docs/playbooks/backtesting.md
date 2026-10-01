@@ -151,7 +151,12 @@ between deciding and filling. It is applied in exactly one place
 (`BacktestPipeline._align_for_engine`, after aggregation, venue clipping and
 risk transforms, before the engine), so it holds for the vectorbt `from_orders`
 branch, the vectorbt order-func (`threshold`) branch, rsims and the variants
-flow alike. `quantbox sweep` (`analysis.parameter_grid`) uses the same setting.
+flow alike. `quantbox sweep` (`analysis.parameter_grid`) uses the same setting,
+and so do the Python helpers `backtest()` and `optimize()`
+(`quantbox.plugins.backtesting`): keyword `lag_bars=`, same default, same
+same-bar warning, and the result carries the same `execution` record. Before
+TOM-1337 those two helpers traded same-bar; pass `lag_bars=0` to reproduce one
+of their old numbers.
 
 ```yaml
 plugins:
