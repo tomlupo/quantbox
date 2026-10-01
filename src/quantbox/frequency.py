@@ -50,6 +50,31 @@ _ALWAYS_OPEN_CALENDARS = frozenset({"24/7", "always_open", "ALWAYS_OPEN"})
 _REFERENCE_YEAR_START = "2023-01-01"
 _REFERENCE_YEAR_END = "2023-12-31"
 
+# Semantic spellings of a bar size → ccxt interval. The ONE table: the data
+# sources' `normalize_data_frequency` and `_parse_bar_size` both read it, so a
+# `prices.frequency` that loads data also resolves an annualisation (TOM-1338).
+FREQUENCY_ALIASES: dict[str, str] = {
+    "daily": "1d",
+    "day": "1d",
+    "d": "1d",
+    "1day": "1d",
+    "hourly": "1h",
+    "hour": "1h",
+    "h": "1h",
+    "1hour": "1h",
+    "4hourly": "4h",
+    "4hour": "4h",
+    "weekly": "1w",
+    "week": "1w",
+    "w": "1w",
+    "monthly": "1M",
+    "month": "1M",
+    "1min": "1m",
+    "5min": "5m",
+    "15min": "15m",
+    "30min": "30m",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class Frequency:
@@ -204,6 +229,10 @@ def _parse_bar_size(s: str | pd.Timedelta) -> pd.Timedelta:
         return s
     if not isinstance(s, str) or not s:
         raise TypeError(f"_parse_bar_size: expected str|Timedelta, got {type(s).__name__}")
+    # Semantic aliases ("daily", "hourly", ...) the data sources already accept for
+    # `prices.frequency`. Looked up case-insensitively, but a canonical spec is
+    # never case-folded: "1M" (month) and "1m" (minute) are different bars.
+    s = FREQUENCY_ALIASES.get(s.strip().lower(), s)
     if s.endswith("M"):
         # Calendar month — pd.Timedelta has no months; approximate at 30 days.
         n = int(s[:-1]) if s[:-1] else 1

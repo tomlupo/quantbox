@@ -125,3 +125,41 @@ def test_explicit_strategy_value_is_not_overwritten_by_trading(tmp_path):
     """An explicit `_pipeline_annualize` in a strategy's params wins in trading, as in backtest."""
     assert _annualize_from_trading(tmp_path, {}, {"_pipeline_annualize": 252.0}) == 252.0
     assert _annualize_from_backtest(tmp_path, {}, {"_pipeline_annualize": 252.0}) == 252.0
+
+
+# The data sources accept semantic aliases for `prices.frequency` ("daily",
+# "hourly", ...) via `normalize_data_frequency`. The shared resolver must accept
+# the SAME spellings, or a config that loads data fine crashes in Stage 2.
+ALIAS_CONFIGS = {
+    "daily": ("daily", 365.0),
+    "Daily_mixed_case": ("Daily", 365.0),
+    "hourly": ("hourly", 8760.0),
+    "weekly": ("weekly", 365.0 / 7),
+}
+
+
+@pytest.mark.parametrize(("freq", "expected"), ALIAS_CONFIGS.values(), ids=ALIAS_CONFIGS.keys())
+def test_prices_frequency_alias_resolves_in_both_pipelines(tmp_path, freq, expected):
+    pipeline_params = {"prices": {"frequency": freq, "lookback_days": 90}}
+    tr = _annualize_from_trading(tmp_path, pipeline_params, {})
+    bt = _annualize_from_backtest(tmp_path, pipeline_params, {})
+    assert tr == pytest.approx(expected)
+    assert tr == bt
+
+
+@pytest.mark.parametrize(
+    ("spec", "expected"),
+    [
+        ({"frequency": "daily"}, 365.0),
+        ({"frequency": {"bar_size": "hourly", "calendar": "24/7"}}, 8760.0),
+        # The alias table must not fold the month spelling into minutes:
+        # "1M" lowercased is "1m", which is MINUTES.
+        ({"frequency": "1M"}, 365.0 / 30),
+        ({"frequency": "1m"}, 365.0 * 24 * 60),
+    ],
+    ids=["explicit_daily", "dict_hourly", "1M_stays_month", "1m_stays_minute"],
+)
+def test_resolver_accepts_aliases_without_case_folding_canonical_specs(spec, expected):
+    from quantbox.frequency import resolve_pipeline_frequency
+
+    assert resolve_pipeline_frequency(spec, {}).bars_per_year() == pytest.approx(expected)
