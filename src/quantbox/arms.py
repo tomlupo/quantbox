@@ -265,6 +265,21 @@ def plan_workers(n_arms: int, *, max_workers: int, memory_budget_gb: float, arm_
     return max(1, min(max_workers, n_arms, by_memory))
 
 
+def _pool_kwargs(workers: int) -> dict[str, Any]:
+    """Executor settings for a parallel batch.
+
+    spawn: no inherited threads or locks. One arm per child on Python 3.11+, so
+    an arm's memory goes back to the OS before the next arm starts in that slot;
+    3.10 has no ``max_tasks_per_child``, so there a worker serves arms in turn.
+    """
+    import multiprocessing
+
+    kwargs: dict[str, Any] = {"max_workers": workers, "mp_context": multiprocessing.get_context("spawn")}
+    if sys.version_info >= (3, 11):
+        kwargs["max_tasks_per_child"] = 1
+    return kwargs
+
+
 def _run_one(name: str, cfg: dict[str, Any], config_path: str | None) -> dict[str, Any]:
     """Run one arm; never raises, so one arm's failure cannot hide another's result.
 
@@ -328,14 +343,9 @@ def run_arms(
         for name, cfg in jobs:
             results[name] = _run_one(name, cfg, config_path)
     else:
-        import multiprocessing
         from concurrent.futures import ProcessPoolExecutor
 
-        # spawn: no inherited threads or locks; one arm per child, so its memory
-        # is returned to the OS before the next arm starts in that slot.
-        with ProcessPoolExecutor(
-            max_workers=workers, mp_context=multiprocessing.get_context("spawn"), max_tasks_per_child=1
-        ) as pool:
+        with ProcessPoolExecutor(**_pool_kwargs(workers)) as pool:
             futures = {name: pool.submit(_run_one, name, cfg, config_path) for name, cfg in jobs}
             for name, fut in futures.items():
                 try:

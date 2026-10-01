@@ -403,3 +403,29 @@ def test_a_source_strategy_runs_as_a_variant(tmp_path):
     ]
     result = run_from_config(cfg, PluginRegistry.discover(), config_path=base_path)
     assert result.notes["variants"] == ["half", "full"]
+
+
+# --- the worker pool honours requires-python >=3.10 (PR #222 review BLOCKER) ---
+
+
+@pytest.mark.parametrize(
+    ("version", "recycles"),
+    [((3, 10, 20), False), ((3, 11, 0), True), ((3, 12, 3), True)],
+)
+def test_the_arm_pool_only_asks_for_child_recycling_where_python_has_it(monkeypatch, version, recycles):
+    """``max_tasks_per_child`` is 3.11+; on 3.10 passing it is a TypeError that
+    kills every parallel batch after its directory already exists."""
+    import inspect
+    from concurrent.futures import ProcessPoolExecutor
+
+    from quantbox import arms
+
+    # Unpatched: every kwarg handed over is one THIS interpreter's executor accepts.
+    accepted = inspect.signature(ProcessPoolExecutor.__init__).parameters
+    assert set(arms._pool_kwargs(2)) <= set(accepted)
+
+    monkeypatch.setattr(arms.sys, "version_info", version)
+    kwargs = arms._pool_kwargs(2)
+    assert kwargs["max_workers"] == 2
+    assert kwargs["mp_context"].get_start_method() == "spawn"
+    assert ("max_tasks_per_child" in kwargs) is recycles
