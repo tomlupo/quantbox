@@ -1,0 +1,92 @@
+---
+line: {{SLUG}}
+status: active                   # active | paused | concluded | abandoned | superseded
+reproducibility_class: pinned    # pinned | snapshot-frozen | live-data | historical
+question: "{{QUESTION}}"
+started: {{STARTED}}
+tracker: null
+# Filled at conclude: the engine commit the conclusion was produced against, and when.
+provenance:
+  engine_commit: TBD
+  ran_at: TBD
+repro_note: null
+---
+
+# {{SLUG}}
+
+{{QUESTION}}
+
+## What is pinned
+
+The values live in one place each; this table only says where.
+
+| What | Where |
+|---|---|
+| quantbox (engine): the commit a tag names, the tag beside it | `pyproject.toml` (`[tool.quantbox-line]`) |
+| quantbox-datasets (the reader) | `pyproject.toml` |
+| every transitive dependency, exactly | `pyproject.toml` `[tool.uv] constraint-dependencies`, `uv.lock` |
+| the data: sha256 of each dataset's `prices.parquet` | `datasets.lock` |
+| the timing (`execution.lag_bars`) | `config.yaml`, `arms.yaml` |
+
+## Reproduce
+
+```bash
+export QUANTBOX_DATASETS_ROOT=/path/to/quantbox-datasets/datasets
+uv sync
+uv run quantbox run -c config.yaml            # the base run
+uv run quantbox arms -c arms.yaml             # every arm, one summary
+uv run pytest -m reproduction                 # re-run + diff against expected_metrics.json
+```
+
+The first time, capture the golden once the run is the one you mean:
+`QUANTBOX_CAPTURE_GOLDEN=1 uv run pytest -m reproduction`, then commit
+`expected_metrics.json`.
+
+## Repin
+
+Moving the engine is one command, which rewrites the quantbox SHA and tag, re-derives
+every exact pin from the new ref and refreshes `uv.lock`:
+
+```bash
+quantbox line repin . --ref vX.Y.Z      # omit --ref for the latest tag
+uv sync
+uv run pytest -m reproduction           # red = the engine moved a number: a finding, not a nuisance
+```
+
+## Pre-registration
+
+Written and **committed on its own BEFORE the first measured run**, one block per
+hypothesis. The prose is for people; the fenced block is what the pre-run gate reads.
+Every `<...>` below is a placeholder, and the gate refuses a run while any is left.
+
+```yaml
+prereg:
+  id: <hypothesis-id>
+  book: <a books[].name from system.yaml>
+  primary_dataset: {{DATASET}}
+  secondary_datasets: []          # robustness only; never decides the verdict
+  runs: [artifacts]               # where THIS hypothesis's runs land
+  criterion:
+    pass_rule: <all legs | k of n arms>
+    legs:
+      - name: <leg>
+        metric: <metric>
+        threshold: <number>
+        versus: baseline
+  claim_test:                     # a significance test of the CLAIM, not only of the Sharpe
+    method: paired-stationary-block-bootstrap
+    draws: <number>
+    mean_block: <number>
+    seed: <number>
+    min_probability: <number in (0, 1]>
+  ex_largest_episode:
+    relabel_to: inconclusive
+  n_trials: <every arm and probe, including earlier configs for the same idea>
+  liveness:                       # every key of system.yaml `liveness`, never looser
+    <key>: <number>
+```
+
+## Findings
+
+Results are written only as finding files: `findings/YYYY-MM-DD-<verdict>-<slug>.md`.
+Scratch work lives in `scratch/` (ignored) and is deletable.

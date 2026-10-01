@@ -19,6 +19,7 @@ How-tos for extending, operating, and integrating QuantBox. Each is self-contain
 | Playbook | When to use |
 |---|---|
 | [backtesting.md](backtesting.md) | Running backtests with vectorbt or rsims engines |
+| [research-line.md](research-line.md) | Creating a pinned research line and moving its quantbox pin |
 | [trading-bridge.md](trading-bridge.md) | Research-to-trading pipeline, instrument maps, FX |
 | [approval-gate.md](approval-gate.md) | Pre-trade human approval mechanism |
 | [multi-repo-workflow.md](multi-repo-workflow.md) | Versioning and promotion across quantbox / quantbox-live / quantbox-lab |

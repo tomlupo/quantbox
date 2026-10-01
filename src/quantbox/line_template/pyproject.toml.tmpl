@@ -1,0 +1,33 @@
+# Research line {{SLUG}} (Model C): its own pins, its own lock, nothing shared.
+# Move the engine with ONE command; it also re-derives every pin below and re-locks:
+#     quantbox line repin . --ref vX.Y.Z
+[project]
+name = "{{SLUG}}"
+version = "0.1.0"
+description = "{{QUESTION}}"
+requires-python = ">={{PYTHON}},<{{PYTHON_NEXT}}"
+dependencies = [
+    # quantbox is pinned to the COMMIT its tag names (a tag can move); the tag is in the comment.
+    "quantbox{{EXTRAS}} @ git+{{QUANTBOX_URL}}@{{QUANTBOX_SHA}}",  # {{QUANTBOX_REF}}
+    "quantbox-datasets @ git+{{DATASETS_URL}}@{{DATASETS_SHA}}",
+]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.quantbox-line]
+quantbox-ref = "{{QUANTBOX_REF}}"
+quantbox-sha = "{{QUANTBOX_SHA}}"
+
+[tool.uv]
+package = false
+# Every transitive dependency, exactly: first the versions quantbox's own uv.lock was
+# tested with at the pinned ref, then the line's resolution for the rest.
+{{PINS}}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# No `addopts` deselection: a bare `pytest` runs everything, the reproduction included.
+markers = [
+    "reproduction: re-runs config.yaml and diffs its metrics against expected_metrics.json",
+]

@@ -54,7 +54,7 @@ dev = [
 ]
 
 [tool.uv_build]
-package-data = { quantbox = ["artifact_schemas/*.schema.json"], "quantbox.plugins" = ["manifest.yaml", "manifest.schema.json"] }
+package-data = { quantbox = ["artifact_schemas/*.schema.json", "line_template/*.tmpl"], "quantbox.plugins" = ["manifest.yaml", "manifest.schema.json"] }
 
 [tool.ruff]
 target-version = "py310"

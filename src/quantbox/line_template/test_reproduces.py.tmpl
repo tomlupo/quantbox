@@ -1,0 +1,69 @@
+"""{{SLUG}} reproduces: re-run config.yaml at the pinned engine and diff its metrics.
+
+    uv run pytest -m reproduction                               # the check
+    QUANTBOX_CAPTURE_GOLDEN=1 uv run pytest -m reproduction     # (re)write the golden
+
+The golden is ``expected_metrics.json``: the ``metrics`` of the run manifest
+(``quantbox run --json``, quantbox/run@1). Writing it is a decision, not a fix: a
+number that moved after ``quantbox line repin`` is a finding to record, never a
+tolerance to loosen.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+LINE = Path(__file__).resolve().parents[1]
+CONFIG = LINE / "config.yaml"
+GOLDEN = LINE / "expected_metrics.json"
+RTOL, ATOL = 1e-6, 1e-9
+
+
+def _run_manifest() -> dict:
+    cli = Path(sys.executable).parent / "quantbox"
+    proc = subprocess.run(
+        [str(cli), "run", "-c", str(CONFIG), "--json"],
+        cwd=LINE,
+        capture_output=True,
+        text=True,
+        timeout=1800,
+        check=False,
+    )
+    assert proc.returncode == 0, f"quantbox run failed:\n{proc.stderr[-4000:]}"
+    return json.loads(proc.stdout)
+
+
+def _same(got, want) -> bool:
+    numbers = (int, float)
+    if isinstance(want, numbers) and isinstance(got, numbers) and not isinstance(want, bool):
+        if math.isnan(want) or math.isnan(got):
+            return math.isnan(want) and math.isnan(got)
+        return math.isclose(got, want, rel_tol=RTOL, abs_tol=ATOL)
+    return got == want
+
+
+@pytest.mark.reproduction
+def test_metrics_match_golden() -> None:
+    manifest = _run_manifest()
+    assert manifest["schema"] == "quantbox/run@1"
+    actual = manifest["metrics"]
+    assert actual, "the run produced no metrics"
+
+    if os.environ.get("QUANTBOX_CAPTURE_GOLDEN") == "1":
+        GOLDEN.write_text(json.dumps(actual, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return
+    assert GOLDEN.is_file(), (
+        f"no golden yet: {GOLDEN.name} is missing. Capture it once the run is the one you mean:\n"
+        "  QUANTBOX_CAPTURE_GOLDEN=1 uv run pytest -m reproduction"
+    )
+    expected = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    assert sorted(actual) == sorted(expected), "the metric set changed"
+    moved = {k: (expected[k], actual[k]) for k in expected if not _same(actual[k], expected[k])}
+    assert not moved, f"metrics moved (expected, got): {moved}"

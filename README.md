@@ -86,6 +86,8 @@ quantbox report export <run-or-arms-dir> --format qute-research/finding-report@1
                                    # the data the qute-research finding page renders
 quantbox config explain <config> --json  # what a run WOULD do (quantbox/explain@1), nothing simulated
 quantbox approve --run-dir <path>  # write approval file for a run's orders
+quantbox new line <slug>           # scaffold a pinned research line (docs/playbooks/research-line.md)
+quantbox line repin <dir> --ref vX # move a line's quantbox pin, re-derive its exact pins, re-lock
 quantbox warehouse tables          # list warehouse tables
 quantbox warehouse query -q <sql>  # run SQL against the artifact warehouse
 ```
