@@ -79,7 +79,10 @@ _INIT_ONLY_GROUPS = {"data", "broker"}
 # Keys a pipeline ASSIGNS into a plugin's params; a config's copy is overwritten.
 _PIPELINE_INJECTED = {"rebalancing": {"mode", "strategy_results"}}
 # Plugins whose module hands ``params`` to a reader elsewhere.
-_READ_ELSEWHERE = {"backtest.pipeline.v1": ("quantbox.frequency",)}
+_READ_ELSEWHERE = {
+    "backtest.pipeline.v1": ("quantbox.frequency",),
+    "trade.full_pipeline.v1": ("quantbox.frequency",),
+}
 
 
 def _ast_of(module_name: str):

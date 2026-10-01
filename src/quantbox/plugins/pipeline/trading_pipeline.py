@@ -528,6 +528,18 @@ class TradingPipeline:
                     },
                     "description": "List of strategy configs to run.",
                 },
+                "frequency": {
+                    "type": ["string", "object"],
+                    "description": (
+                        "Bar frequency: '1h' or {bar_size, calendar}. Wins over prices.frequency + "
+                        "market_calendar; its bars_per_year is the strategy annualize."
+                    ),
+                },
+                "market_calendar": {
+                    "type": "string",
+                    "default": "24/7",
+                    "description": "Calendar used with prices.frequency when `frequency` is absent (e.g. NYSE).",
+                },
                 "strategy_weights": {
                     "type": "object",
                     "description": "Override strategy-level weights {name: weight}.",
