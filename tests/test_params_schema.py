@@ -168,6 +168,14 @@ def test_validate_checks_params_init_and_variants():
     assert any("'top_n'" in m and "variants[0]" in m for m in msgs), msgs
 
 
+def test_params_init_accepts_constructor_params_only():
+    """params_init goes to the constructor: a run-time key there would raise TypeError at run."""
+    cfg = _config({})
+    cfg["plugins"]["pipeline"]["params_init"] = {"engine": "rsims"}
+    msgs = [f.message for f in validate_config(cfg, REG) if f.level == "error"]
+    assert any("'engine'" in m and "params_init" in m and "run-time param" in m for m in msgs), msgs
+
+
 def test_validate_unregistered_plugin_is_a_warning_not_an_error():
     cfg = _config({})
     cfg["plugins"]["strategies"] = [{"name": "lab.strategy.elsewhere.v1", "params": {"x": 1}}]

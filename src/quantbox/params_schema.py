@@ -1,16 +1,16 @@
 """Plugin parameter schemas — the params contract, resolved in one place (TOM-1350).
 
-Every plugin declares ``meta.params_schema`` (a JSON Schema object). For a
-dataclass plugin the schema is completed from the dataclass itself: each init
-field that is not private contributes its JSON type and its default, so the two
-cannot drift apart. The declaration supplies what a dataclass cannot carry —
-descriptions, bounds, enums — and every key a plugin reads from ``params`` at
-run time that is not a field.
+Every plugin declares ``meta.params_schema`` (a JSON Schema object). The schema
+is completed from the plugin's constructor: each parameter that is not private
+contributes its JSON type and its default, so the two cannot drift apart. The
+declaration supplies what a signature cannot carry — descriptions, bounds, enums
+— and every key a plugin reads from ``params`` at run time that is not a
+constructor parameter.
 
 The resolved schema is CLOSED: a key that is not a property is an unknown
-parameter, and ``quantbox validate`` refuses it. A plugin reads both config
-channels (``params_init`` -> constructor, ``params`` -> run time) against the
-same property set.
+parameter, and ``quantbox validate`` refuses it. ``params`` (run time) is checked
+against the whole property set; ``params_init`` goes to the constructor, so it is
+checked against the constructor's parameters alone.
 """
 
 from __future__ import annotations
@@ -161,11 +161,18 @@ def describe_params(schema: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def check_params(schema: dict[str, Any], params: dict[str, Any]) -> tuple[list[str], list[str]]:
-    """(unknown keys, value violations) of ``params`` against a resolved schema."""
+def check_params(
+    schema: dict[str, Any], params: dict[str, Any], allowed: set[str] | None = None
+) -> tuple[list[str], list[str]]:
+    """(unknown keys, value violations) of ``params`` against a resolved schema.
+
+    ``allowed`` narrows the accepted keys below the property set (the constructor's
+    parameters, for ``params_init``).
+    """
     props = schema.get("properties", {})
-    unknown = [k for k in params if k not in props]
-    known = {k: v for k, v in params.items() if k in props}
+    accepted = set(props) if allowed is None else set(props) & allowed
+    unknown = [k for k in params if k not in accepted]
+    known = {k: v for k, v in params.items() if k in accepted}
     validator = Draft202012Validator({**schema, "required": []})
     violations = []
     for err in sorted(validator.iter_errors(known), key=lambda e: list(e.path)):

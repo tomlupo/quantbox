@@ -107,7 +107,7 @@ def check_plugin_params(plugins: dict[str, Any], registry: Any = None) -> list[V
     """Every key a config sets on a plugin must be a property of that plugin's params schema."""
     import difflib
 
-    from .params_schema import PLUGIN_GROUPS, check_params, resolve_params_schema
+    from .params_schema import PLUGIN_GROUPS, check_params, config_fields, resolve_params_schema
 
     blocks = _plugin_blocks(plugins)
     if not blocks:
@@ -134,15 +134,20 @@ def check_plugin_params(plugins: dict[str, Any], registry: Any = None) -> list[V
             )
             continue
         props = schema.get("properties", {})
+        init_names = {p.name for p in config_fields(cls)}
         for channel in ("params_init", "params"):
             params = block.get(channel) or {}
             if not isinstance(params, dict):
                 findings.append(ValidationFinding("error", f"{where}.{channel} must be a mapping ({name})"))
                 continue
-            unknown, violations = check_params(schema, params)
+            allowed = init_names if channel == "params_init" else None
+            unknown, violations = check_params(schema, params, allowed)
             for key in unknown:
-                close = difflib.get_close_matches(key, list(props), n=1)
-                hint = f"; did you mean '{close[0]}'?" if close else ""
+                if key in props:
+                    hint = "; it is a run-time param, set it under params"
+                else:
+                    close = difflib.get_close_matches(key, list(props), n=1)
+                    hint = f"; did you mean '{close[0]}'?" if close else ""
                 findings.append(
                     ValidationFinding(
                         "error",
