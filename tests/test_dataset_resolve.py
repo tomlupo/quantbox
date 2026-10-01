@@ -288,6 +288,23 @@ def test_runner_resolves_the_lock_next_to_the_config_not_the_cwd(root, tmp_path,
     assert manifest["dataset"]["resolved"]["matches"] is True
 
 
+def test_an_unpinned_dataset_is_recorded_raw_and_strict_mode_is_unchanged(root, tmp_path, monkeypatch, fake_datasets):
+    _build(root, "etf-daily")
+    monkeypatch.chdir(tmp_path)  # no datasets.lock anywhere above
+
+    manifest = _run(tmp_path / "config.yaml", tmp_path / "artifacts")
+    assert manifest["dataset"]["tier"] == "raw"
+    assert manifest["dataset"]["resolved"]["sha256"] is None
+
+    # Strict mode rejected every by-name dataset before TOM-1349; whether a lock pin is
+    # enough evidence for it is a separate decision, so a pinned one is still rejected.
+    (tmp_path / "datasets.lock").write_text(f"etf-daily: {_sha(root / 'etf-daily' / 'prices.parquet')}\n")
+    cfg = _config(tmp_path / "strict")
+    cfg["run"]["strict"] = True
+    with pytest.raises(RuntimeError, match="strict mode"):
+        run_from_config(cfg, PluginRegistry.discover(), config_path=tmp_path / "config.yaml")
+
+
 class _InlinePinnedData:
     """The deprecated style: an inline root + expected_prices_sha256 (dataset.curated.v1's params)."""
 

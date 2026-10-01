@@ -295,7 +295,9 @@ def _dataset_block(data: Any) -> dict[str, Any]:
     """
     resolution = getattr(data, "dataset_resolution", None)
     if isinstance(resolution, dict):
-        return {"tier": "lock", "id": resolution["name"], "resolved": resolution}
+        if resolution["sha256"]:
+            return {"tier": "lock", "id": resolution["name"], "resolved": resolution}
+        return {"tier": "raw", "warning": "dataset not pinned in datasets.lock", "resolved": resolution}
     plugin = None
     if hasattr(data, "resolve"):
         try:
@@ -618,10 +620,12 @@ def run_from_config(
 
     strict_mode = bool(cfg.get("run", {}).get("strict")) or result.mode == "promotion"
     if strict_mode:
-        if manifest["dataset"]["tier"] == "raw":
+        # "lock" (a by-name dataset verified against datasets.lock, TOM-1349) was "raw" before
+        # it had a tier of its own; accepting it in strict mode is a separate decision.
+        if manifest["dataset"]["tier"] in ("raw", "lock"):
             store.put_json("run_manifest", manifest)
             raise RuntimeError(
-                "strict mode rejects Tier-0 raw ingest — see "
+                f"strict mode rejects Tier-0 raw ingest (dataset tier {manifest['dataset']['tier']!r}) — see "
                 "quantbox-qute/docs/decisions/0004-quantbox-dataset-plugin-tiers.md"
             )
         failures = [c for c, r in manifest["capability_results"].items() if not r["passed"]]
