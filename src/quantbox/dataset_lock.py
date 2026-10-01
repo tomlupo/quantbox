@@ -92,6 +92,10 @@ def resolve_dataset(name: str, *, lock: str | Path | None = None, start: str | P
     ``funding_rates`` (its file, or None). A mismatch is reported in ``matches`` and
     ``error``, never raised here — :func:`require_match` is the gate.
     """
+    # A name is one directory under the root: an absolute name, a separator or ``..``
+    # would read (and record as pinned) bytes from outside $QUANTBOX_DATASETS_ROOT.
+    if not name or name in (".", "..") or "/" in name or "\\" in name or Path(name).is_absolute():
+        raise DatasetResolveError(f"dataset name {name!r} must be one directory name under the datasets root")
     root = datasets_root()
     lock_path = Path(lock).resolve() if lock is not None else find_lock(start)
     pinned = None

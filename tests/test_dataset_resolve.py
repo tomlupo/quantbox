@@ -357,3 +357,65 @@ def test_resolve_does_not_depend_on_a_copy_of_the_root(root, tmp_path, monkeypat
         outs.append(_resolve_json("etf-daily")[1]["path"])
 
     assert outs == [str(root / "etf-daily")] * 2
+
+
+def test_a_restored_pin_is_what_the_run_reads_not_the_moved_on_checkout(root, tmp_path, monkeypatch):
+    """PR #212 review: after a restore the run must read the pinned build, not $ROOT/<name>.
+
+    The stub keeps the real library's contract: ``quantbox_datasets.lock.load(name, root=,
+    sha256=)`` calls ``load_dataset``, which, given a sha, serves
+    ``resolve_pinned_dataset(<root>/<name>, sha)`` — the build restored from git history.
+    So load() must receive the env root AND the pin; a restored ``path`` is a cache entry
+    named by the sha, not a root, and is never passed.
+    """
+    pinned = _build(tmp_path / "history", "etf-daily")
+    (root / "etf-daily").mkdir(parents=True)
+    pd.DataFrame({"AAA": [1.0]}, index=pd.date_range("2025-01-01", periods=1, name="date")).to_parquet(
+        root / "etf-daily" / "prices.parquet"
+    )  # the checkout has moved on
+    (tmp_path / "datasets.lock").write_text(f"etf-daily: {pinned}\n")
+    _fake_restore(monkeypatch, lambda path, sha: tmp_path / "history" / "etf-daily")
+
+    calls: list[tuple[str, dict]] = []
+    module = types.ModuleType("quantbox_datasets.lock")
+
+    def load(name, **kwargs):
+        calls.append((name, kwargs))
+        path = Path(kwargs["root"]) / name
+        if kwargs.get("sha256"):
+            path = Path(sys.modules["quantbox_datasets.dataset"].resolve_pinned_dataset(path, kwargs["sha256"]))
+        return _ParquetDataset(path)
+
+    module.load = load
+    monkeypatch.setitem(sys.modules, "quantbox_datasets.lock", module)
+    monkeypatch.chdir(tmp_path)
+
+    from quantbox.plugins.datasources.local_file_data import _load_pinned_dataset
+
+    dataset, resolved = _load_pinned_dataset("etf-daily")
+
+    assert resolved["restored"] is True and resolved["path"] == str(tmp_path / "history" / "etf-daily")
+    assert calls == [("etf-daily", {"root": str(root), "sha256": pinned, "pinned": False})]
+    pd.testing.assert_frame_equal(
+        dataset.prices, pd.read_parquet(tmp_path / "history" / "etf-daily" / "prices.parquet")
+    )
+
+    manifest = _run(tmp_path / "config.yaml", tmp_path / "artifacts")
+    assert manifest["dataset"]["resolved"]["path"] == str(tmp_path / "history" / "etf-daily")
+    assert manifest["dataset"]["resolved"]["actual_sha256"] == pinned
+    assert calls[-1][1]["sha256"] == pinned
+
+
+@pytest.mark.parametrize("name", ["../escape", "..", ".", "/abs/escape", "a/b", "a\\b", ""])
+def test_a_dataset_name_that_is_not_one_directory_under_the_root_is_refused(root, tmp_path, monkeypatch, name):
+    """PR #212 review: a name must not reach outside $QUANTBOX_DATASETS_ROOT."""
+    _build(tmp_path, "escape")  # a real dataset just outside the root
+    _build(root / "a", "b")  # and one nested a level down
+    monkeypatch.chdir(tmp_path)
+
+    from quantbox.dataset_lock import DatasetResolveError, resolve_dataset
+
+    with pytest.raises(DatasetResolveError, match="dataset name"):
+        resolve_dataset(name)
+    result = CliRunner().invoke(app, ["dataset", "resolve", name, "--json"])
+    assert result.exit_code == 1
