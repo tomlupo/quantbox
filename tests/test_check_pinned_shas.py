@@ -25,9 +25,15 @@ FAKE_SHA = "0123456789abcdef0123456789abcdef01234567"
 def _no_hook_git_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Under the pre-push hook GIT_DIR etc. are exported, and would aim every git
     call here at the real quantbox repo. The script scrubs them itself; the test
-    helpers rely on this."""
+    helpers rely on this.
+
+    The box's own git config is shut out too, so every box runs the same git: a
+    developer's ``init.defaultBranch=main`` once hid that CI's git (no such key,
+    so ``master``) gave the bare origin a HEAD naming a branch that never exists."""
     for k in [k for k in os.environ if k.startswith("GIT_")]:
         monkeypatch.delenv(k)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -44,7 +50,9 @@ def _commit(repo: Path, msg: str) -> str:
 @pytest.fixture
 def world(tmp_path: Path) -> dict[str, Path]:
     origin = tmp_path / "origin.git"
-    _git(tmp_path, "init", "-q", "--bare", str(origin))
+    # -b main: origin's HEAD must name the branch the tests push, or a --depth=1
+    # clone (single-branch of HEAD) fetches nothing and is not even shallow.
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
     work = tmp_path / "work"
     _git(tmp_path, "init", "-q", "-b", "main", str(work))
     _git(work, "remote", "add", "origin", str(origin))
