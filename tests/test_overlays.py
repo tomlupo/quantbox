@@ -262,6 +262,54 @@ def test_an_identity_overlay_leaves_a_sparse_book_bit_for_bit(tmp_path, engine, 
     assert over_res.metrics == base_res.metrics
 
 
+class _SparseHoldA:
+    """A strategy that speaks once: A=1.0 on bar 0, NaN ("no new target") after."""
+
+    meta = type("M", (), {"name": "strategy.sparse_hold_a.v1"})()
+
+    def run(self, data: Any, params: Any = None) -> dict[str, Any]:
+        w = pd.DataFrame(np.nan, index=_prices().index, columns=["A", "USD"])
+        w.iloc[0] = [1.0, 0.0]
+        return {"weights": w}
+
+
+def _sparse_traded(tmp_path, sub, engine, lag, chain):
+    store = FileArtifactStore(str(tmp_path / sub), "run")
+    BacktestPipeline().run(
+        mode="backtest",
+        asof="2024-02-09",
+        params={
+            "fees": 0.0,
+            "engine": engine,
+            "execution": {"lag_bars": lag},
+            "strategies": [{"name": "strategy.sparse_hold_a.v1", "weight": 1.0}],
+        },
+        data=_Data(),
+        store=store,
+        broker=None,
+        risk=[],
+        strategies=[_SparseHoldA()],
+        overlays=chain,
+    )
+    return store.read_parquet("traded_weights").set_index("date")
+
+
+@pytest.mark.parametrize("lag", [0, 1, 2])
+def test_an_expired_overlay_returns_a_sparse_hold_book_to_its_base_position(tmp_path, lag):
+    """vectorbt reads NaN as "hold the last target": once the de-risk window closes,
+    the book must go BACK to the base 1.0, not hold the last reduced 0.5 forever."""
+    traded = _sparse_traded(tmp_path, "over", "vectorbt", lag, [(ReversalDeriskOverlay(), DERISK)])
+    np.testing.assert_array_equal(traded["A"].to_numpy(), _expected_a(lag))
+
+
+@pytest.mark.parametrize("lag", [0, 1])
+def test_an_expired_overlay_on_a_sparse_flat_book_matches_the_base_run(tmp_path, lag):
+    """rsims reads NaN as "flat": scaling a flat cell changes nothing, so the book is the base one."""
+    base = _sparse_traded(tmp_path, "base", "rsims", lag, None)
+    over = _sparse_traded(tmp_path, "over", "rsims", lag, [(ReversalDeriskOverlay(), DERISK)])
+    pd.testing.assert_frame_equal(over, base)
+
+
 # ----------------------------------------------------------------------
 # The other two overlays, known answers
 # ----------------------------------------------------------------------

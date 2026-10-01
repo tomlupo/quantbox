@@ -1109,12 +1109,22 @@ class BacktestPipeline:
         materialised value goes back to NaN — no overlay touched it, and the
         book downstream is the one the run without overlays builds. A cell the
         chain CHANGED keeps the overlay's number.
+
+        Under a HOLD policy (vectorbt) a NaN resolves to the PREVIOUS row's
+        value, so "untouched" alone is not enough: the first bar after an
+        overlay window closes is untouched yet must stay explicit, or the engine
+        holds the last REDUCED weight instead of returning to the base one. A
+        NaN goes back only where the previous row was untouched too. Under the
+        FLAT policy (rsims) a NaN resolves to 0 whatever came before.
         """
         if not chain:
             return weights, []
         materialised = materialise_nan_policy(weights, engine)
         out, record = apply_overlays(materialised, market_data, chain)
-        untouched = weights.isna() & out.eq(materialised)
+        same = out.eq(materialised) | (out.isna() & materialised.isna())
+        untouched = weights.isna() & same
+        if engine == "vectorbt":
+            untouched &= same.shift(1, fill_value=True)
         return out.mask(untouched), record
 
     # ==================================================================
