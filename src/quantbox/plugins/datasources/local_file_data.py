@@ -305,6 +305,14 @@ class LocalFileDataPlugin:
 
         if self.dataset:
             ds = self._pinned()
+            # The build actually served (possibly restored from git history), so the
+            # run manifest hashes those files, not the *_path params ignored here.
+            resolution = self.dataset_resolution or {}
+            served = resolution.get("path")
+            self.loaded_paths = {
+                "prices": str(Path(served) / "prices.parquet") if served else None,
+                "funding_rates": resolution.get("funding_rates"),
+            }
             return {
                 key: _select_cols(_clip_frame(getattr(ds, key), asof))
                 for key in ("prices", "volume", "market_cap", "funding_rates")

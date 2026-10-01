@@ -92,7 +92,11 @@ def _effective_path(data: Any, key: str, attr: str) -> str | None:
 def dataset_fields(data: Any, dataset_block: dict[str, Any]) -> dict[str, Any]:
     """``{name, sha256, source}`` from what the runner already knows about the data plugin.
 
-    ``lock``: the plugin loaded a dataset by name (``params_init.dataset``).
+    ``lock``: the plugin loaded a dataset by name (``params_init.dataset``). The
+    sha256 is the hash of the prices.parquet the resolution served
+    (:func:`quantbox.dataset_lock.resolve_dataset`, recorded as
+    ``dataset.resolved``) — equal to the pin whenever one exists, since the
+    loader refuses a mismatch; null only when the dataset was never resolved.
     ``inline``: everything else — paths in the config, or a plugin. The sha256 is
     the dataset plugin's manifest hash, else the content hash of the prices file
     the plugin actually loaded, else
@@ -100,7 +104,13 @@ def dataset_fields(data: Any, dataset_block: dict[str, Any]) -> dict[str, Any]:
     """
     pinned = getattr(data, "dataset", None)
     if isinstance(pinned, str) and pinned:
-        return {"name": pinned, "sha256": None, "source": "lock"}
+        resolution = dataset_block.get("resolved")
+        if not isinstance(resolution, dict):
+            resolution = getattr(data, "dataset_resolution", None)
+        sha = None
+        if isinstance(resolution, dict):
+            sha = resolution.get("actual_sha256") or resolution.get("sha256")
+        return {"name": pinned, "sha256": sha, "source": "lock"}
     if dataset_block.get("tier") == "plugin":
         manifest = dataset_block.get("manifest") or {}
         return {"name": dataset_block.get("id"), "sha256": manifest.get("sha256"), "source": "inline"}

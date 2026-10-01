@@ -159,6 +159,65 @@ def test_manifest_hashes_the_files_actually_loaded_not_the_constructor_paths(tmp
     assert validate_run_manifest(manifest) == []
 
 
+def _by_name_dataset(tmp_path: Path, monkeypatch, name: str = "toy-daily") -> Path:
+    """A dataset under $QUANTBOX_DATASETS_ROOT, served by a stand-in quantbox_datasets.lock."""
+    import sys
+    import types
+
+    prices_long, funding_long = _write_inputs(tmp_path)
+    ds_dir = tmp_path / "datasets" / name
+    ds_dir.mkdir(parents=True)
+    wide = pd.read_parquet(prices_long).pivot(index="date", columns="symbol", values="close")
+    fwide = pd.read_parquet(funding_long).pivot(index="date", columns="symbol", values="rate")
+    for frame in (wide, fwide):
+        frame.columns.name = None
+    wide.to_parquet(ds_dir / "prices.parquet")
+    fwide.to_parquet(ds_dir / "funding_rates.parquet")
+    monkeypatch.setenv("QUANTBOX_DATASETS_ROOT", str(tmp_path / "datasets"))
+
+    class _Dataset:
+        prices = pd.read_parquet(ds_dir / "prices.parquet")
+        volume = pd.DataFrame()
+        market_cap = pd.DataFrame()
+        funding_rates = pd.read_parquet(ds_dir / "funding_rates.parquet")
+        universe = pd.DataFrame({"symbol": list(prices.columns)})
+
+    module = types.ModuleType("quantbox_datasets.lock")
+    module.load = lambda name, **kwargs: _Dataset()
+    monkeypatch.setitem(sys.modules, "quantbox_datasets", types.ModuleType("quantbox_datasets"))
+    monkeypatch.setitem(sys.modules, "quantbox_datasets.lock", module)
+    return ds_dir
+
+
+@pytest.mark.parametrize("pinned", [True, False])
+def test_a_lock_resolved_run_records_the_dataset_hash(tmp_path, monkeypatch, pinned):
+    """A by-name dataset (TOM-1349) fills run@1's dataset {name, sha256, source}
+    from its resolution: the hash of the prices.parquet actually served, which is
+    the pin in datasets.lock when there is one — never null.
+    """
+    ds_dir = _by_name_dataset(tmp_path, monkeypatch)
+    served = _sha256(ds_dir / "prices.parquet")
+    config_dir = tmp_path / "lab"
+    config_dir.mkdir()
+    if pinned:
+        (config_dir / "datasets.lock").write_text(f"toy-daily: {served}\n")
+    monkeypatch.chdir(config_dir)
+    cfg = _config(tmp_path, "vectorbt")
+    cfg["plugins"]["data"]["params_init"] = {"dataset": "toy-daily"}
+
+    result = run_from_config(cfg, PluginRegistry.discover(), config_path=config_dir / "run.yaml")
+    manifest = json.loads((tmp_path / "artifacts" / result.run_id / "run_manifest.json").read_text())
+
+    dataset = manifest["dataset"]
+    assert (dataset["name"], dataset["source"], dataset["sha256"]) == ("toy-daily", "lock", served)
+    assert dataset["resolved"]["actual_sha256"] == served
+    assert dataset["resolved"]["sha256"] == (served if pinned else None)
+    assert dataset["tier"] == ("lock" if pinned else "raw")
+    assert manifest["funding"]["source_path"] == str(ds_dir / "funding_rates.parquet")
+    assert manifest["funding"]["sha256"] == _sha256(ds_dir / "funding_rates.parquet")
+    assert validate_run_manifest(manifest) == []
+
+
 def _strict_loads(text: str):
     def refuse(token):
         raise ValueError(f"non-standard JSON token {token!r}")
