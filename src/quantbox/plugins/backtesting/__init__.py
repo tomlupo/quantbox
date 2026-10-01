@@ -34,7 +34,6 @@ from .metrics import (
 )
 from .optimizer import optimize
 from .rsims_engine import fixed_commission_backtest_with_funding, positions_from_no_trade_buffer
-from .vectorbt_engine import run as run_vectorbt
 
 __all__ = [
     "backtest",
@@ -50,6 +49,17 @@ __all__ = [
     "compute_rolling_sharpe",
     "compute_var",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    # ``run_vectorbt`` is resolved lazily so this package (and the rsims engine,
+    # metrics, optimizer) imports without the [vectorbt] extra. Without it,
+    # asking for the name raises MissingExtraError naming the extra.
+    if name == "run_vectorbt":
+        from .vectorbt_engine import run
+
+        return run
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def backtest(
@@ -94,6 +104,8 @@ def backtest(
         ``"metrics"`` — dict of performance metrics,
         ``"returns"`` — daily returns Series.
     """
+    from .vectorbt_engine import run as run_vectorbt
+
     pf = run_vectorbt(
         prices,
         weights,

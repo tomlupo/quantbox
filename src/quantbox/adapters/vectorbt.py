@@ -13,7 +13,12 @@ For the L1 backtest convenience layer, see ``quantbox.bt``.
 
 from __future__ import annotations
 
-import vectorbt as vbt
+from quantbox.exceptions import MissingExtraError
+
+try:
+    import vectorbt as vbt
+except ModuleNotFoundError as exc:  # vectorbt ships in the [vectorbt] extra
+    raise MissingExtraError("vectorbt", "quantbox.adapters.vectorbt", exc.name) from exc
 
 __all__ = ["vbt", "from_signals_with_costs"]
 

@@ -44,7 +44,6 @@ import pandas as pd
 
 from quantbox.execution import apply_execution_lag, resolve_sweep_lag_bars, warn_if_same_bar
 from quantbox.parquet_io import read_parquet
-from quantbox.plugins.backtesting.vectorbt_engine import run as _run_backtest
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +127,10 @@ def sweep(
         Columns: sweep keys, slice-decoded keys (e.g. ``vol_target``,
         ``tranches``), then the requested ``metrics``.
     """
+    # Lazy: the engine is the [vectorbt] extra; asking for a sweep without it
+    # raises MissingExtraError naming the extra, before any strategy runs.
+    from quantbox.plugins.backtesting.vectorbt_engine import run as _run_backtest
+
     prices = data["prices"]
     backtest_kwargs = dict(backtest_kwargs or {})
     lag = resolve_sweep_lag_bars(lag_bars, shift_signal)

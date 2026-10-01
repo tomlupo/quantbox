@@ -38,16 +38,22 @@ import warnings
 
 import numpy as np
 import pandas as pd
-import vectorbt as vbt
-from numba import njit
-from vectorbt.portfolio.enums import Direction, SizeType
-from vectorbt.portfolio.nb import (
-    get_col_elem_nb,
-    get_elem_nb,
-    order_nb,
-    order_nothing_nb,
-    sort_call_seq_nb,
-)
+
+from quantbox.exceptions import MissingExtraError
+
+try:
+    import vectorbt as vbt
+    from numba import njit
+    from vectorbt.portfolio.enums import Direction, SizeType
+    from vectorbt.portfolio.nb import (
+        get_col_elem_nb,
+        get_elem_nb,
+        order_nb,
+        order_nothing_nb,
+        sort_call_seq_nb,
+    )
+except ModuleNotFoundError as exc:  # vectorbt + numba ship in the [vectorbt] extra
+    raise MissingExtraError("vectorbt", "the vectorbt backtest engine", exc.name) from exc
 
 from quantbox.frequency import parse_rebalance_offset  # noqa: E402
 

@@ -2929,9 +2929,9 @@ dependencies = [
     { name = "duckdb" },
     { name = "httpx" },
     { name = "jsonschema" },
-    { name = "numba" },
     { name = "pandas" },
     { name = "pandas-market-calendars" },
+    { name = "plotly" },
     { name = "pyarrow" },
     { name = "pycoingecko" },
     { name = "pyyaml" },
@@ -2940,7 +2940,6 @@ dependencies = [
     { name = "statsmodels" },
     { name = "tenacity" },
     { name = "typer" },
-    { name = "vectorbt" },
 ]
 
 [package.optional-dependencies]
@@ -2954,9 +2953,11 @@ full = [
     { name = "arch" },
     { name = "ccxt" },
     { name = "ib-insync" },
+    { name = "numba" },
     { name = "python-binance" },
     { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scikit-learn", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "vectorbt" },
 ]
 ibkr = [
     { name = "ib-insync" },
@@ -2968,6 +2969,10 @@ ml = [
 simulation = [
     { name = "arch" },
 ]
+vectorbt = [
+    { name = "numba" },
+    { name = "vectorbt" },
+]
 viz = [
     { name = "matplotlib" },
     { name = "seaborn" },
@@ -2976,8 +2981,10 @@ viz = [
 [package.dev-dependencies]
 dev = [
     { name = "commitizen" },
+    { name = "numba" },
     { name = "pytest" },
     { name = "ruff" },
+    { name = "vectorbt" },
 ]
 
 [package.metadata]
@@ -2992,9 +2999,11 @@ requires-dist = [
     { name = "ib-insync", marker = "extra == 'ibkr'" },
     { name = "jsonschema", specifier = ">=4.26.0" },
     { name = "matplotlib", marker = "extra == 'viz'", specifier = ">=3.10.9" },
-    { name = "numba", specifier = ">=0.67.0" },
+    { name = "numba", marker = "extra == 'full'", specifier = ">=0.67.0" },
+    { name = "numba", marker = "extra == 'vectorbt'", specifier = ">=0.67.0" },
     { name = "pandas", specifier = ">=2.3.3" },
     { name = "pandas-market-calendars", specifier = ">=5.4.0" },
+    { name = "plotly", specifier = ">=6.5.2" },
     { name = "pyarrow", specifier = ">=25.0.1" },
     { name = "pycoingecko", specifier = ">=3.2.0" },
     { name = "python-binance", marker = "extra == 'binance'" },
@@ -3007,15 +3016,18 @@ requires-dist = [
     { name = "statsmodels", specifier = ">=0.15.0" },
     { name = "tenacity", specifier = ">=9.1.4" },
     { name = "typer", specifier = ">=0.27.2" },
-    { name = "vectorbt", specifier = ">=1.0.0" },
+    { name = "vectorbt", marker = "extra == 'full'", specifier = ">=1.0.0" },
+    { name = "vectorbt", marker = "extra == 'vectorbt'", specifier = ">=1.0.0" },
 ]
-provides-extras = ["ibkr", "binance", "ccxt", "ml", "simulation", "viz", "full"]
+provides-extras = ["vectorbt", "ibkr", "binance", "ccxt", "ml", "simulation", "viz", "full"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "commitizen", specifier = ">=4.18.1" },
+    { name = "numba", specifier = ">=0.67.0" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "ruff", specifier = ">=0.16.8" },
+    { name = "vectorbt", specifier = ">=1.0.0" },
 ]
 
 [[package]]

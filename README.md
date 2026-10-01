@@ -15,7 +15,8 @@ Quant research and trading framework with a plugin architecture. Config-driven p
 uv venv && source .venv/bin/activate
 uv sync
 
-# Optional extras for broker adapters:
+# Optional extras:
+uv sync --extra vectorbt  # vectorbt backtest engine (quantbox.bt, engine: vectorbt, sweeps)
 uv sync --extra ccxt      # Binance, Hyperliquid (via ccxt)
 uv sync --extra ibkr      # Interactive Brokers
 uv sync --extra binance   # python-binance
