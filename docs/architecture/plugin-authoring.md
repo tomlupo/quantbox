@@ -94,7 +94,7 @@ Key requirements:
 
 - Class is a `@dataclass`.
 - `meta` is a **class attribute**, not an instance attribute. The runner reads it before instantiation.
-- `params_schema` is a JSON Schema — used by `quantbox validate` and the LLM-facing skill layer.
+- `params_schema` is a JSON Schema, **mandatory** — `quantbox validate` refuses a config key that is not one of its properties, and `quantbox plugins schema --json` publishes it to the LLM-facing layer. Constructor params are completed from the signature (type, default); see `docs/playbooks/add-a-plugin.md`.
 - Return shape matches `meta.outputs` and the schema in `src/quantbox/artifact_schemas/{output}.schema.json`.
 
 ---
