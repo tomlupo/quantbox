@@ -38,6 +38,13 @@ class RegimeValidation:
             "and time allocation."
         ),
         tags=("validation", "regime", "market-conditions"),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "window": {"type": "integer", "default": 60, "description": "Bars of the rolling regime classifier."},
+                "trading_days": {"type": "integer", "default": 365, "description": "Bars per year for annualisation."},
+            },
+        },
     )
 
     def validate(

@@ -32,10 +32,10 @@ plugins:
   strategies:
     - name: strategy.cross_asset_momentum.v1
       weight: 1.0
-      params:
-        windows: [10, 20]
-        long_only: true
-        position_size: 0.2
+      # Plugin defaults (momentum_windows [21, 63]) produced the goldens. The keys
+      # this block used to carry (windows, long_only, position_size) were never
+      # parameters of the plugin and were silently ignored.
+      params: {}
 
   data:
     name: local_file_data

@@ -206,21 +206,53 @@ class AllocationsToOrdersPipeline:
                     "type": ["string", "null"],
                     "description": "Auto-resolve: latest:<pipeline_id> (e.g. latest:fund_selection.simple.v1)",
                 },
-                "allocations_artifact": {"type": "string", "default": "allocations.parquet"},
-                "approval_required": {"type": "boolean", "default": False},
-                "approval_path": {
-                    "type": ["string", "null"],
-                    "description": "Path to approval JSON. If null, defaults to ./approvals/<orders_digest>.json",
+                "allocations_artifact": {
+                    "type": "string",
+                    "default": "allocations.parquet",
+                    "description": "File name of the allocations artifact inside the resolved run directory.",
+                },
+                "approval_required": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Refuse to execute unless the orders carry an approval (quantbox approve).",
+                },
+                "approval_ok": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Approval verdict consulted when approval_required is true.",
+                },
+                "fx": {
+                    "type": "object",
+                    "default": {},
+                    "description": "FX request passed to the data plugin's load_fx() for non-USD instruments.",
                 },
                 "instrument_map": {"type": ["string", "null"], "description": "YAML/CSV with symbol metadata"},
                 "prices": {
                     "type": "object",
+                    "description": "Market-data request passed to the data plugin's load_market_data().",
                     "properties": {"lookback_days": {"type": "integer", "minimum": 1, "default": 5}},
                 },
-                "base_currency": {"type": "string", "default": "USD"},
-                "min_abs_qty": {"type": "number", "minimum": 0, "default": 0.0},
-                "allow_short": {"type": "boolean", "default": False},
-                "cash_fallback_usd": {"type": "number", "default": 100000.0},
+                "base_currency": {
+                    "type": "string",
+                    "default": "USD",
+                    "description": "Currency the book is valued in.",
+                },
+                "min_abs_qty": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 0.0,
+                    "description": "Orders with abs(quantity) below this are dropped.",
+                },
+                "allow_short": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "False clips negative target weights to zero.",
+                },
+                "cash_fallback_usd": {
+                    "type": "number",
+                    "default": 100000.0,
+                    "description": "Cash assumed when no broker is attached (research runs).",
+                },
                 "equity_reconciliation_tolerance": {
                     "type": "number",
                     "default": DEFAULT_RECONCILIATION_TOLERANCE,

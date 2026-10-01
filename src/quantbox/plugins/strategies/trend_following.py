@@ -53,6 +53,24 @@ class TrendFollowingStrategy:
         capabilities=("backtest", "live"),
         inputs=("prices",),
         outputs=("weights",),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "risk_off_ticker": {
+                    "type": ["string", "object", "null"],
+                    "description": "Risk-off ticker for every asset, or {ticker: risk_off, default: risk_off}.",
+                },
+                "signal_columns": {
+                    "items": {"type": "string"},
+                    "description": "TSMOM composite signals to build weights from (one weights frame each).",
+                },
+                "tsmom_kwargs": {
+                    "type": "object",
+                    "default": {},
+                    "description": "Extra keyword arguments for compute_tsmom().",
+                },
+            },
+        },
     )
 
     signal_columns: list[str] = field(default_factory=lambda: ["TF_fast", "TF_slow", "TF"])

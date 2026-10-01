@@ -100,7 +100,12 @@ class HyperliquidDataPlugin:
         schema_version="v1",
         params_schema={
             "type": "object",
-            "properties": {},
+            "properties": {
+                "mcap_provider": {
+                    "type": ["object", "null"],
+                    "description": "Python-only: an injected market-cap provider object; not settable from YAML.",
+                },
+            },
         },
         outputs=("universe", "prices", "volume", "funding_rates", "market_cap", "screen_volume"),
         examples=("plugins:\n  data:\n    name: hyperliquid.data.v1\n    params_init: {}",),

@@ -31,6 +31,25 @@ class SimPaperBroker:
         tags=("paper",),
         capabilities=("paper",),
         schema_version="v1",
+        params_schema={
+            "type": "object",
+            "properties": {
+                "cash": {"description": "Starting cash (quote currency)."},
+                "quote_currency": {"description": "Cash currency."},
+                "spread_bps": {"description": "Half-spread charged on fills, in bps."},
+                "slippage_bps": {"description": "Fixed market impact on fills, in bps."},
+                "impact_factor": {"description": "Size-dependent impact: bps per $10k notional."},
+                "max_impact_bps": {"description": "Cap on the size-dependent impact, in bps."},
+                "maker_fee_bps": {"description": "Maker fee, in bps."},
+                "taker_fee_bps": {"description": "Taker fee, in bps."},
+                "assume_taker": {"description": "Charge the taker fee on every fill."},
+                "state_file": {
+                    "description": "JSON file persisting positions and cash between runs; null = in memory."
+                },
+                "positions": {"description": "Starting positions {symbol: quantity}."},
+                "prices": {"description": "Starting mark prices {symbol: price}."},
+            },
+        },
     )
     cash: float = 100_000.0
     quote_currency: str = "USDT"

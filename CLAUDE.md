@@ -95,6 +95,7 @@ cookbook/
 uv run quantbox plugins list               # list all plugins
 uv run quantbox plugins list --json         # JSON output
 uv run quantbox plugins info --name <id>    # plugin details
+uv run quantbox plugins schema --json       # every plugin: id, status, params JSON Schema
 uv run quantbox validate -c <config>        # validate config
 uv run quantbox run -c <config>             # run pipeline
 uv run quantbox run --dry-run -c <config>   # dry run

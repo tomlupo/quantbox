@@ -528,6 +528,18 @@ class TradingPipeline:
                     },
                     "description": "List of strategy configs to run.",
                 },
+                "frequency": {
+                    "type": ["string", "object"],
+                    "description": (
+                        "Bar frequency: '1h' or {bar_size, calendar}. Wins over prices.frequency + "
+                        "market_calendar; its bars_per_year is the strategy annualize."
+                    ),
+                },
+                "market_calendar": {
+                    "type": "string",
+                    "default": "24/7",
+                    "description": "Calendar used with prices.frequency when `frequency` is absent (e.g. NYSE).",
+                },
                 "strategy_weights": {
                     "type": "object",
                     "description": "Override strategy-level weights {name: weight}.",
@@ -537,8 +549,13 @@ class TradingPipeline:
                     "minimum": 0,
                     "maximum": 1,
                     "default": 1.0,
+                    "description": "Fraction of portfolio value the target weights are sized against.",
                 },
-                "stable_coin_symbol": {"type": "string", "default": "USDC"},
+                "stable_coin_symbol": {
+                    "type": "string",
+                    "default": "USDC",
+                    "description": "Cash asset of the book; never traded, excluded from orders.",
+                },
                 "equity_reconciliation_tolerance": {
                     "type": "number",
                     "default": DEFAULT_RECONCILIATION_TOLERANCE,
@@ -561,6 +578,7 @@ class TradingPipeline:
                 },
                 "risk": {
                     "type": "object",
+                    "description": "Risk transforms applied to aggregated weights; also handed to risk plugins.",
                     "properties": {
                         "tranches": {"type": "integer", "minimum": 1, "default": 1},
                         "max_leverage": {"type": "number", "minimum": 0, "default": 1},
@@ -573,14 +591,58 @@ class TradingPipeline:
                     "default": 0.01,
                     "description": "Min abs(weight delta) to consider a trade.",
                 },
-                "min_notional": {"type": "number", "minimum": 0, "default": 1.0},
+                "min_notional": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 1.0,
+                    "description": "Orders below this notional (quote currency) are dropped.",
+                },
                 "scaling_factor_min": {
                     "type": "number",
                     "minimum": 0,
                     "maximum": 1,
                     "default": 0.9,
+                    "description": "Lowest scale-down applied to buys when cash is short before orders are dropped.",
                 },
-                "trading_enabled": {"type": "boolean", "default": True},
+                "trading_enabled": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "False computes targets and orders but sends nothing to the broker.",
+                },
+                "universe": {
+                    "type": "object",
+                    "default": {},
+                    "description": (
+                        "Universe selection params for the data plugin's load_universe(); also carries "
+                        "token_policy / token_policy_file."
+                    ),
+                },
+                "prices": {
+                    "type": "object",
+                    "default": {"lookback_days": 365},
+                    "description": "Market-data request passed to the data plugin's load_market_data().",
+                },
+                "book_key": {
+                    "type": "string",
+                    "description": "Book identity namespacing the token-policy store, working orders and recon ledger.",
+                },
+                "data_dir": {
+                    "type": "string",
+                    "default": "data",
+                    "description": "Root for per-book state (working orders) when reconciliation.data_dir is unset.",
+                },
+                "staleness_factor": {
+                    "type": "number",
+                    "default": 2.0,
+                    "description": "Market data older than this many bar intervals marks the run data_stale.",
+                },
+                "reconciliation": {
+                    "type": "object",
+                    "description": (
+                        "Order/fill reconciliation block: book_key, data_dir, mode (observe|enforce), "
+                        "tolerances, enforce_acknowledged. Absent = no reconciliation."
+                    ),
+                },
                 "exclusions": {
                     "type": "array",
                     "items": {"type": "string"},

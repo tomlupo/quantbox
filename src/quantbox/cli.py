@@ -79,6 +79,28 @@ def cmd_plugins_info(reg: PluginRegistry, name: str, as_json: bool = False):
     raise PluginNotFoundError(name, "any", all_names)
 
 
+def cmd_plugins_schema(reg: PluginRegistry, name: str | None = None, as_json: bool = False):
+    """Every registered plugin with id, status and its params JSON Schema (TOM-1350)."""
+    from .params_schema import catalog
+
+    payload = catalog(reg)
+    if name:
+        payload["plugins"] = [p for p in payload["plugins"] if p["id"] == name]
+        if not payload["plugins"]:
+            all_names = sorted({p["id"] for p in catalog(reg)["plugins"]})
+            raise PluginNotFoundError(name, "any", all_names)
+    if as_json:
+        print(_as_json(payload))
+        return
+    for p in payload["plugins"]:
+        print(f"{p['id']}  [{p['group']}, {p['status']}]")
+        if p["params"] is None:
+            print("  (no params_schema declared)")
+            continue
+        for row in p["params"]:
+            print(f"  - {row['name']}: {row['type']} = {row['default']!r}  {row['description']}")
+
+
 def cmd_plugins_doctor(as_json: bool = False, strict: bool = False):
     import importlib.metadata
 
@@ -257,8 +279,8 @@ def cmd_plugins_doctor(as_json: bool = False, strict: bool = False):
 
 @app.command()
 def plugins(
-    action: str = typer.Argument(help="Action: list, info, or doctor"),
-    name: str = typer.Option(None, help="Plugin name (required for 'info')"),
+    action: str = typer.Argument(help="Action: list, info, schema, or doctor"),
+    name: str = typer.Option(None, help="Plugin name (required for 'info', optional filter for 'schema')"),
     json: bool = typer.Option(False, "--json", help="Output as JSON"),
     strict: bool = typer.Option(False, help="Exit non-zero on warnings (doctor only)"),
 ):
@@ -270,10 +292,12 @@ def plugins(
         if not name:
             raise typer.BadParameter("--name is required for 'plugins info'")
         cmd_plugins_info(reg, name, as_json=json)
+    elif action == "schema":
+        cmd_plugins_schema(reg, name, as_json=json)
     elif action == "doctor":
         cmd_plugins_doctor(as_json=json, strict=strict)
     else:
-        raise typer.BadParameter(f"Unknown action: {action}. Use list, info, or doctor.")
+        raise typer.BadParameter(f"Unknown action: {action}. Use list, info, schema, or doctor.")
 
 
 @app.command()
@@ -291,8 +315,13 @@ def validate(
     else:
         for f in findings:
             print(f.level.upper() + ":", f.message)
-    if any(f.level == "error" for f in findings):
+    n_errors = sum(1 for f in findings if f.level == "error")
+    if n_errors:
+        if not json:
+            print(f"INVALID: {config} has {n_errors} error(s)")
         raise SystemExit(2)
+    if not json:
+        print(f"OK: {config} is valid")
 
 
 @app.command()

@@ -49,6 +49,17 @@ class TurnoverValidation:
             "cost-adjusted returns and Sharpe, and breakeven transaction cost."
         ),
         tags=("validation", "turnover", "costs"),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "cost_bps": {
+                    "type": "number",
+                    "default": 10,
+                    "description": "Round-trip cost assumed per unit turnover, in bps.",
+                },
+                "trading_days": {"type": "integer", "default": 365, "description": "Bars per year for annualisation."},
+            },
+        },
     )
 
     def validate(

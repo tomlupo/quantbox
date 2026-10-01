@@ -37,6 +37,14 @@ class WalkForwardValidation:
             "computes in-sample vs out-of-sample Sharpe, and flags overfitting."
         ),
         tags=("validation", "overfitting", "walk-forward"),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "n_splits": {"type": "integer", "default": 5, "description": "Walk-forward folds."},
+                "train_ratio": {"type": "number", "default": 0.7, "description": "In-sample share of each fold."},
+                "trading_days": {"type": "integer", "default": 365, "description": "Bars per year for annualisation."},
+            },
+        },
     )
 
     def validate(
