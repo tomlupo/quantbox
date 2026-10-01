@@ -41,6 +41,8 @@ import math
 import numpy as np
 from scipy.stats import norm
 
+from .dsr import DEGENERATE_RTOL
+
 
 def newey_west_auto_lags(n: int) -> int:
     """Newey-West (1994) automatic lag truncation: floor(4 * (n/100)^(2/9))."""
@@ -109,8 +111,11 @@ def newey_west_tstat(returns, lags: int | None = None, *, allow_nonfinite_drop: 
     mu = float(r.mean())
     base["mean_return"] = mu
 
-    # Zero-variance series: statsmodels would divide by a zero SE. Guard first.
-    if r.std(ddof=0) == 0:
+    # Zero-variance series: statsmodels would divide by a zero SE. Guard first,
+    # RELATIVELY (see dsr.DEGENERATE_RTOL): a constant series does not reliably
+    # come out with std == 0.0 — `[0.001] * 337` gives ~2e-19, which statsmodels
+    # turned into a t-stat of 3.5e16 (29 of 48 constant series probed, TOM-1351).
+    if r.std(ddof=0) <= DEGENERATE_RTOL * float(np.mean(np.abs(r))):
         return base
 
     import statsmodels.api as sm
@@ -215,6 +220,12 @@ def factor_regression(y, factors, factor_names: list[str], lags: int | None = No
     try:
         fit = sm.OLS(y, X).fit(cov_type="HAC", cov_kwds={"maxlags": lags, "use_correction": False})
     except (np.linalg.LinAlgError, ValueError):
+        return base
+
+    # A perfect fit (residuals cancelled to noise — a constant y, or y built
+    # exactly from the factors) has no HAC variance; statsmodels would return a
+    # noise-sized SE and an alpha t-stat of ~1e16 (TOM-1351). Refuse it.
+    if float(np.std(fit.resid)) <= DEGENERATE_RTOL * float(np.mean(np.abs(y))):
         return base
 
     var_diag = np.asarray(fit.bse, dtype=float) ** 2
