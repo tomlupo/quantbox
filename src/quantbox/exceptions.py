@@ -7,7 +7,8 @@ Hierarchy::
     ├── PluginNotFoundError     — plugin name not in registry
     ├── PluginLoadError         — entry point or import failed
     ├── DataLoadError           — data plugin couldn't fetch/load data
-    └── BrokerExecutionError    — broker failed to place/fill orders
+    ├── BrokerExecutionError    — broker failed to place/fill orders
+    └── MissingExtraError       — an optional extra (e.g. ``[vectorbt]``) is not installed
 
 All exceptions carry structured context in ``details`` for LLM agents
 to parse and recover from programmatically.
@@ -115,3 +116,28 @@ class BrokerExecutionError(QuantboxError):
         msg = f"broker_execution_failed ({broker_name}): {message}"
         super().__init__(msg, details={"broker_name": broker_name, **kwargs})
         self.broker_name = broker_name
+
+
+class MissingExtraError(QuantboxError, ImportError):
+    """A feature needs an optional extra that is not installed.
+
+    Also an ``ImportError``, so ``except ImportError`` callers keep working;
+    the message names the extra to install, never just the missing module.
+
+    Attributes:
+        extra: The extra to install (e.g. ``"vectorbt"``).
+        feature: What was asked for (e.g. ``"the vectorbt backtest engine"``).
+    """
+
+    def __init__(self, extra: str, feature: str, missing: str | None = None) -> None:
+        msg = (
+            f"missing_extra: {feature} needs the [{extra}] extra, which is not installed. "
+            f"Install it with `uv add 'quantbox[{extra}]'` (or `pip install 'quantbox[{extra}]'`); "
+            f"[full] includes it."
+        )
+        if missing:
+            msg += f" (missing module: {missing})"
+        super().__init__(msg, details={"extra": extra, "feature": feature, "missing": missing})
+        self.extra = extra
+        self.feature = feature
+        self.name = missing

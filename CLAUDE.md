@@ -211,6 +211,7 @@ Quantbox uses custom exceptions (see `quantbox.exceptions`):
 | `PluginLoadError` | Entry point import failed | Check dependencies (`uv sync --extra full`) |
 | `DataLoadError` | Data plugin can't fetch data | Check API keys, network, date range |
 | `BrokerExecutionError` | Order placement failed | Check broker credentials and balances |
+| `MissingExtraError` | Feature needs an uninstalled extra (e.g. vectorbt engine → `[vectorbt]`) | Install the extra it names; also an `ImportError` |
 
 ## Development rules
 
