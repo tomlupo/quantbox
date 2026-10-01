@@ -68,13 +68,14 @@ from quantbox.execution import (
     describe_execution,
     execution_record,
     exposure_metrics,
+    lag_buy_and_hold,
     materialise_nan_policy,
     resolve_allow_shorts,
     resolve_lag_bars,
     warn_if_same_bar,
     warn_on_shorts,
 )
-from quantbox.frequency import Frequency
+from quantbox.frequency import Frequency, resolve_pipeline_frequency
 from quantbox.plugins.datasources._utils import interval_step, normalize_data_frequency
 
 logger = logging.getLogger(__name__)
@@ -416,7 +417,7 @@ class BacktestPipeline:
                 fees=fees,
                 fixed_fees=fixed_fees,
                 slippage=slippage_val,
-                rebalancing_freq=rebalancing_freq,
+                rebalancing_freq=lag_buy_and_hold(bt_prices.index, rebalancing_freq, lag_bars),
                 threshold=threshold,
                 trading_days=trading_days,
             )
@@ -795,7 +796,7 @@ class BacktestPipeline:
                 fees=v_fees,
                 fixed_fees=v_fixed,
                 slippage=v_slip,
-                rebalancing_freq=v_freq,
+                rebalancing_freq=lag_buy_and_hold(bt_p.index, v_freq, lag_bars),
                 threshold=v_thresh,
                 trading_days=trading_days,
             )
@@ -1220,21 +1221,9 @@ class BacktestPipeline:
     ) -> Frequency:
         """Resolve a `Frequency` from pipeline params.
 
-        Accepts (in priority order):
-          1. ``params['frequency']`` — full spec, str or dict
-             - dict: ``{'bar_size': '1h', 'calendar': 'NYSE'}``
-             - str: ``'1h'`` (calendar falls through to ``market_calendar`` or '24/7')
-          2. ``prices.frequency`` + optional ``params['market_calendar']`` shorthand
-          3. Default: ``Frequency('1d', '24/7')`` — preserves pre-PR-B crypto-friendly behaviour
-
-        The derived `bars_per_year` is used as the DEFAULT for `trading_days`
-        and is injected into each strategy's params as `_pipeline_annualize`,
-        so the two cannot silently drift apart.
+        Delegates to `quantbox.frequency.resolve_pipeline_frequency`, which the
+        trading pipeline calls too, so `_pipeline_annualize` is the same value
+        in backtest and paper/live (TOM-1338). The resolution order is stated
+        there. The derived `bars_per_year` is also the DEFAULT `trading_days`.
         """
-        explicit = params.get("frequency")
-        if explicit is not None:
-            return Frequency.parse(explicit)
-
-        bar_size = prices_params.get("frequency", "1d")
-        calendar = params.get("market_calendar", "24/7")
-        return Frequency.parse({"bar_size": bar_size, "calendar": calendar})
+        return resolve_pipeline_frequency(params, prices_params)

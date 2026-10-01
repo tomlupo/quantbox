@@ -52,10 +52,24 @@ def _resample_to_freq(
     return prices.resample(freq.upper()).last().dropna(how="all")
 
 
+def _smoothed_returns_frame(prices: pd.DataFrame, roll: int = 1) -> pd.DataFrame:
+    """Overlapping ``roll``-period returns, rescaled to one-period variance.
+
+    ``pct_change(roll)`` is (approximately) a sum of ``roll`` one-period
+    returns, whose variance is ``roll * sigma^2``. Dividing by
+    ``sqrt(roll)`` makes its covariance the Bartlett / Newey-West
+    (lag ``roll - 1``) estimate of the ONE-period covariance, so the
+    per-period annualisation factor applies unchanged. Dividing by
+    ``roll`` instead (the old convention) understated variance by
+    exactly ``1 / roll`` (TOM-1339).
+    """
+    rets = prices.pct_change(periods=roll) / np.sqrt(roll)
+    return rets.iloc[roll:]
+
+
 def _smoothed_returns(prices: pd.DataFrame, roll: int = 1) -> np.ndarray:
-    """Average rolling returns. Returns numpy array (n_obs, n_assets)."""
-    rets = prices.pct_change(periods=roll) / roll
-    return rets.iloc[roll:].values
+    """:func:`_smoothed_returns_frame` as a numpy array (n_obs, n_assets)."""
+    return _smoothed_returns_frame(prices, roll=roll).values
 
 
 # --- OAS shrinkage (vectorized) ---
@@ -696,11 +710,10 @@ def _compute_ewma_lw_at_date(
     else:
         prices_resampled = prices_slice
 
-    # ``smoothed_returns`` convention: pct_change(periods=roll) / roll.
-    # For roll=1 this is the plain pct_change; for roll=3 it is the
-    # Bartlett-lag-2 rolling-sum on daily-scale.
-    rets = prices_resampled.pct_change(periods=roll) / roll
-    rets = rets.iloc[roll:].dropna(how="any")
+    # Same convention as the sample estimators: for roll=1 the plain
+    # pct_change; for roll=3 the Bartlett-lag-2 rolling sum, scaled back
+    # to one-period variance.
+    rets = _smoothed_returns_frame(prices_resampled, roll=roll).dropna(how="any")
 
     if rets.empty:
         p = prices_resampled.shape[1]

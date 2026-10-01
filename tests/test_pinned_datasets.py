@@ -57,13 +57,19 @@ def fake_lock(monkeypatch):
     return calls
 
 
-def test_local_file_data_loads_dataset_by_name(fake_lock):
+def test_local_file_data_loads_dataset_by_name(fake_lock, tmp_path, monkeypatch):
+    root = tmp_path / "datasets"
+    (root / "etf-daily").mkdir(parents=True)
+    _FakeDataset().prices.to_parquet(root / "etf-daily" / "prices.parquet")
+    monkeypatch.setenv("QUANTBOX_DATASETS_ROOT", str(root))
+    monkeypatch.chdir(tmp_path)  # no datasets.lock above: unpinned
+
     plugin = LocalFileDataPlugin(dataset="etf-daily")
     universe = plugin.load_universe({})
     data = plugin.load_market_data(universe[universe["symbol"] != "CCC"], "2026-01-03", {})
 
-    assert [name for name, _ in fake_lock] == ["etf-daily"]  # loaded once, pinned (no pinned=False)
-    assert fake_lock[0][1] == {}
+    # Loaded once, at the root and pin quantbox resolved (TOM-1349) — never a second lookup.
+    assert fake_lock == [("etf-daily", {"root": str(root), "sha256": None, "pinned": False})]
     assert list(universe["symbol"]) == ["AAA", "BBB", "CCC"]
     assert list(data["prices"].columns) == ["AAA", "BBB"]
     assert data["prices"].index.max() == pd.Timestamp("2026-01-03", tz="UTC")  # asof cut, UTC like file reads

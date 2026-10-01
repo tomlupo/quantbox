@@ -77,7 +77,7 @@ Recommended template for capability skills:
 | Task shape | Use | Code |
 |---|---|---|
 | "Quick check" | L0/L1 | [helper or vbt] |
-| "Compare two ideas" | L2 | quantbox.compare |
+| "Compare two ideas" | L3 (L2 not built) | two plugin `.run()` calls |
 | "Log this for record" | L4 | YAML + run_from_config |
 | "Production" | L5 | quantbox run --strict |
 

@@ -1,7 +1,8 @@
 """Parameter optimization for backtesting strategies.
 
 Provides grid search and walk-forward optimization over strategy parameters,
-wrapping the existing ``backtest()`` function::
+wrapping the existing ``backtest()`` function (same execution timing,
+next-bar by default)::
 
     from quantbox.plugins.backtesting import optimize
 
@@ -20,10 +21,12 @@ from typing import Any
 
 import pandas as pd
 
+from quantbox.execution import execution_record, resolve_lag_bars, warn_if_same_bar
+
 
 def _backtest_lazy():
     """Lazy import to avoid circular dependency with __init__.py."""
-    from quantbox.plugins.backtesting import backtest as _bt
+    from quantbox.plugins.backtesting import _backtest as _bt
 
     return _bt
 
@@ -42,6 +45,7 @@ def optimize(
     trading_days: int = 365,
     train_size: int = 252,
     test_size: int = 63,
+    lag_bars: int | None = None,
 ) -> dict[str, Any]:
     """Optimize strategy parameters via grid search or walk-forward.
 
@@ -56,23 +60,35 @@ def optimize(
             Forwarded to ``backtest()``.
         train_size: Training window in rows (walk-forward only).
         test_size: Test window in rows (walk-forward only).
+        lag_bars: Execution lag, as in ``backtest()``: default 1 (next-bar),
+            ``0`` = same-bar (warned once per call). Applied inside each
+            window, so a walk-forward test window starts flat for
+            ``lag_bars`` bars.
 
     Returns:
-        ``{"best_params", "best_metric", "all_results"}`` for grid search, or
-        ``{"best_params", "best_metric", "all_results", "oos_results"}``
-        for walk-forward.
+        ``{"best_params", "best_metric", "all_results", "execution"}`` for grid
+        search, or ``{"best_params", "best_metric", "all_results",
+        "oos_results", "execution"}`` for walk-forward. ``"execution"`` is the
+        timing used (as ``run_manifest.json``).
     """
+    lag = resolve_lag_bars(None if lag_bars is None else {"lag_bars": lag_bars})
+    warn_if_same_bar(lag, where="optimize()")
     bt_kwargs = dict(
+        lag_bars=lag,
         fees=fees,
         fixed_fees=fixed_fees,
         slippage=slippage,
         rebalancing_freq=rebalancing_freq,
+        threshold=None,
+        use_numba=True,
         trading_days=trading_days,
     )
 
     if method == "walk_forward":
-        return _walk_forward(prices, weights_fn, param_grid, metric, bt_kwargs, train_size, test_size)
-    return _grid_search(prices, weights_fn, param_grid, metric, bt_kwargs)
+        result = _walk_forward(prices, weights_fn, param_grid, metric, bt_kwargs, train_size, test_size)
+    else:
+        result = _grid_search(prices, weights_fn, param_grid, metric, bt_kwargs)
+    return {**result, "execution": execution_record(lag)}
 
 
 def _grid_search(

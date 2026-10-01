@@ -144,6 +144,27 @@ def apply_execution_lag(
     return lagged
 
 
+def lag_buy_and_hold(
+    index: pd.Index,
+    rebalancing_freq: Any,
+    lag_bars: int,
+) -> Any:
+    """Move a buy-and-hold book's ONE trade to the first bar a decision exists.
+
+    ``rebalancing_freq=None`` (buy-and-hold) trades on the engine's first bar
+    only. After :func:`apply_execution_lag` that bar is flat — no decision is
+    behind it yet — so a lagged buy-and-hold would never enter and return 0%.
+    Its one trade belongs at ``index[lag_bars]``, the close the bar-0 decision
+    fills at. Every other schedule is returned unchanged (with an integer or
+    dated schedule the first scheduled bar may be flat, which is the documented
+    "lost first period"); so is ``lag_bars == 0``. A window no longer than
+    ``lag_bars`` has no fill bar and gets an empty schedule.
+    """
+    if rebalancing_freq is not None or lag_bars == 0:
+        return rebalancing_freq
+    return [index[lag_bars]] if len(index) > lag_bars else []
+
+
 def materialise_nan_policy(weights: pd.DataFrame, engine: str | None) -> pd.DataFrame:
     """Make the NaN policy an engine ALREADY applies explicit in the frame it is handed.
 

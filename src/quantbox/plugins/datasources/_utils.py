@@ -18,6 +18,7 @@ import duckdb
 import httpx
 import pandas as pd
 
+from quantbox.frequency import FREQUENCY_ALIASES
 from quantbox.parquet_io import read_parquet
 
 # Transient-error retry lives in the central quantbox.retry module now; keep the
@@ -101,27 +102,8 @@ def validate_ohlcv(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
 # Data Frequency Normalization
 # ============================================================================
 
-FREQUENCY_ALIASES: dict[str, str] = {
-    "daily": "1d",
-    "day": "1d",
-    "d": "1d",
-    "1day": "1d",
-    "hourly": "1h",
-    "hour": "1h",
-    "h": "1h",
-    "1hour": "1h",
-    "4hourly": "4h",
-    "4hour": "4h",
-    "weekly": "1w",
-    "week": "1w",
-    "w": "1w",
-    "monthly": "1M",
-    "month": "1M",
-    "1min": "1m",
-    "5min": "5m",
-    "15min": "15m",
-    "30min": "30m",
-}
+# FREQUENCY_ALIASES lives in quantbox.frequency (imported above) — the pipelines'
+# annualisation resolver reads the same table (TOM-1338).
 
 _VALID_INTERVALS = {"1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"}
 
