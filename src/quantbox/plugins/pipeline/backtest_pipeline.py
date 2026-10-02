@@ -76,7 +76,6 @@ from quantbox.execution import (
     materialise_nan_policy,
     resolve_allow_shorts,
     resolve_lag_bars,
-    warn_if_same_bar,
     warn_on_shorts,
 )
 from quantbox.frequency import Frequency, resolve_pipeline_frequency
@@ -471,7 +470,6 @@ class BacktestPipeline:
 
         lag_bars = plan["execution"]["lag_bars"]
         allow_shorts, venue_declared = plan["venue"]["allow_shorts"], plan["venue"]["declared"]
-        warn_if_same_bar(lag_bars, where=f"{self.meta.name} run {store.run_id}")
         logger.info("Execution timing: %s", describe_execution(lag_bars))
 
         # --- Stage 1: Universe & Market Data ---

@@ -42,7 +42,7 @@ from typing import Any
 
 import pandas as pd
 
-from quantbox.execution import apply_execution_lag, resolve_sweep_lag_bars, warn_if_same_bar
+from quantbox.execution import apply_execution_lag, resolve_sweep_lag_bars
 from quantbox.parquet_io import read_parquet
 
 logger = logging.getLogger(__name__)
@@ -115,8 +115,8 @@ def sweep(
     lag_bars
         Execution lag in bars — the SAME convention as ``execution.lag_bars``
         in ``quantbox run`` (:mod:`quantbox.execution`). Default 1: weights
-        decided on bar t fill at the close of bar t+1. 0 = same-bar, logged
-        as a warning.
+        decided on bar t fill at the close of bar t+1; also the minimum, 0
+        (same-bar) raises ``ValueError``.
     shift_signal
         DEPRECATED alias of ``lag_bars`` (emits ``DeprecationWarning``).
 
@@ -134,7 +134,6 @@ def sweep(
     prices = data["prices"]
     backtest_kwargs = dict(backtest_kwargs or {})
     lag = resolve_sweep_lag_bars(lag_bars, shift_signal)
-    warn_if_same_bar(lag, where="parameter_grid.sweep")
 
     # Defensive: strip index.freq so vbt's wrapper.freq lookup doesn't trip on
     # a `<Day>` offset (vbt + recent pandas can't convert it to a Timedelta).

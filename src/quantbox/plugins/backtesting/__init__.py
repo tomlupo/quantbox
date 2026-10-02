@@ -19,7 +19,7 @@ Quick start::
 ``backtest()`` and ``optimize()`` follow the one execution-timing convention
 (:mod:`quantbox.execution`): weights decided on bar ``t`` fill at the close of
 bar ``t + lag_bars``, default 1 (next-bar), exactly as ``quantbox run -c``.
-``lag_bars=0`` reproduces the old same-bar numbers, loudly.
+``lag_bars=0`` (same-bar) is refused (docs/adr/0005).
 """
 
 from __future__ import annotations
@@ -33,7 +33,6 @@ from quantbox.execution import (
     execution_record,
     lag_buy_and_hold,
     resolve_lag_bars,
-    warn_if_same_bar,
 )
 
 from .metrics import (
@@ -88,8 +87,6 @@ def _lag_for_engine(
     REBALANCE, not one bar. Cells stay NaN, so the engine's forward-fill is
     unchanged; only the decision moves ``lag_bars`` bars later.
     """
-    if lag_bars == 0:
-        return weights
 
     def one(w: pd.DataFrame) -> pd.DataFrame:
         return apply_execution_lag(w.reindex(prices.index.union(w.index)), lag_bars)
@@ -176,8 +173,8 @@ def backtest(
     lag_bars : int | None
         Execution lag (:mod:`quantbox.execution`): weights decided on bar ``t``
         fill at the close of bar ``t + lag_bars``. ``None`` = the default, 1
-        (next-bar), the same as ``quantbox run -c``. ``0`` = same-bar, logged
-        as a look-ahead warning; use it only to reproduce an old number.
+        (next-bar), the same as ``quantbox run -c``; also the minimum — ``0``
+        (same-bar) raises ``ValueError``.
 
     Returns
     -------
@@ -188,7 +185,6 @@ def backtest(
         ``"execution"`` — the execution timing used (as ``run_manifest.json``).
     """
     lag = resolve_lag_bars(None if lag_bars is None else {"lag_bars": lag_bars})
-    warn_if_same_bar(lag, where="backtest()")
     return _backtest(
         prices,
         weights,

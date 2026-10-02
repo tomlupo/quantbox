@@ -246,14 +246,7 @@ def _check_backtest_execution(plugins: dict[str, Any]) -> list[ValidationFinding
     params = pipeline.get("params") or {}
     findings: list[ValidationFinding] = []
     try:
-        if resolve_lag_bars(params.get("execution")) == 0:
-            findings.append(
-                ValidationFinding(
-                    "warning",
-                    "execution.lag_bars=0: SAME-BAR fills (look-ahead for close-based signals); "
-                    "use only to reproduce a historical number",
-                )
-            )
+        resolve_lag_bars(params.get("execution"))
         resolve_allow_shorts(params.get("venue"), params.get("risk"))
     except ValueError as exc:
         findings.append(ValidationFinding("error", str(exc)))

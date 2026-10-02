@@ -21,7 +21,7 @@ from typing import Any
 
 import pandas as pd
 
-from quantbox.execution import execution_record, resolve_lag_bars, warn_if_same_bar
+from quantbox.execution import execution_record, resolve_lag_bars
 
 
 def _backtest_lazy():
@@ -60,8 +60,8 @@ def optimize(
             Forwarded to ``backtest()``.
         train_size: Training window in rows (walk-forward only).
         test_size: Test window in rows (walk-forward only).
-        lag_bars: Execution lag, as in ``backtest()``: default 1 (next-bar),
-            ``0`` = same-bar (warned once per call). Applied inside each
+        lag_bars: Execution lag, as in ``backtest()``: default and minimum 1
+            (next-bar); ``0`` raises. Applied inside each
             window, so a walk-forward test window starts flat for
             ``lag_bars`` bars.
 
@@ -72,7 +72,6 @@ def optimize(
         timing used (as ``run_manifest.json``).
     """
     lag = resolve_lag_bars(None if lag_bars is None else {"lag_bars": lag_bars})
-    warn_if_same_bar(lag, where="optimize()")
     bt_kwargs = dict(
         lag_bars=lag,
         fees=fees,
