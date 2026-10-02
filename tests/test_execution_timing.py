@@ -6,9 +6,10 @@ book's total return says exactly whether it held `A` across the jump.
 
 Both engines are same-bar primitives (row ``t`` fills at ``close[t]``), so:
 
-* a weight DECIDED on bar ``J-1`` (last bar before the jump), traded
-  same-bar, buys at close[J-1]=100 and earns the +10%;
-* under the default ``lag_bars: 1`` that same decision fills at close[J]=110
+* a weight DECIDED on bar ``J-1`` (last bar before the jump) would, traded
+  same-bar, buy at close[J-1]=100 and earn the +10% — which is why
+  ``lag_bars: 0`` is refused (docs/adr/0005);
+* under the default ``lag_bars: 1`` that decision fills at close[J]=110
   — AFTER the jump — and earns ~0;
 * a weight decided on bar ``J-2`` fills at close[J-1] under the default and
   earns the jump.
@@ -39,6 +40,7 @@ from quantbox.execution import (
 from quantbox.plugins.pipeline.backtest_pipeline import BacktestPipeline
 from quantbox.store import FileArtifactStore
 
+REFUSED = "lag_bars must be >= 1"
 N = 40
 J = 20
 JUMP = 0.10
@@ -122,17 +124,11 @@ def test_default_a_decision_one_bar_earlier_earns_the_jump(tmp_path, branch):
 
 
 @pytest.mark.parametrize("branch", BRANCHES)
-def test_lag_zero_reproduces_the_historical_same_bar_behaviour_exactly(tmp_path, branch):
-    """PINNED back-compat: `lag_bars: 0` reproduces the pre-change RETURNS and hands the engine the decided weights unshifted.
-
-    Same-bar, the J-1 decision buys at close[J-1] and earns the whole jump, and
-    the engine receives the decided weights unshifted.
-    """
-    result, store = _run_pipeline(tmp_path, {**BRANCHES[branch], "execution": {"lag_bars": 0}}, decided_on=J - 1)
-    assert result.metrics["total_return"] == pytest.approx(JUMP, abs=1e-9)
-    traded = store.read_parquet("traded_weights").set_index("date")
-    decided = store.read_parquet("weights_history").set_index("date")
-    pd.testing.assert_frame_equal(traded, decided, check_freq=False)
+def test_same_bar_is_refused_on_every_engine_branch_and_writes_nothing(tmp_path, branch):
+    """`lag_bars: 0` is refused, not warned (docs/adr/0005): no branch may fill at the close it decided on."""
+    with pytest.raises(ValueError, match=REFUSED):
+        _run_pipeline(tmp_path, {**BRANCHES[branch], "execution": {"lag_bars": 0}}, decided_on=J - 1)
+    assert not list(tmp_path.rglob("*.parquet"))
 
 
 def test_lag_two_waits_two_bars(tmp_path):
@@ -142,7 +138,7 @@ def test_lag_two_waits_two_bars(tmp_path):
     assert early.metrics["total_return"] == pytest.approx(JUMP, abs=1e-9)
 
 
-@pytest.mark.parametrize(("lag", "expected"), [(None, 0.0), (1, 0.0), (0, JUMP)])
+@pytest.mark.parametrize(("lag", "expected"), [(None, 0.0), (1, 0.0), (2, 0.0)])
 def test_the_sweep_path_agrees_with_the_pipeline_on_the_same_toy(tmp_path, lag, expected):
     grid = sweep(
         strategy_cls=_FixedWeights,
@@ -158,6 +154,19 @@ def test_the_sweep_path_agrees_with_the_pipeline_on_the_same_toy(tmp_path, lag, 
     pipeline_return = _run_pipeline(tmp_path, params, decided_on=J - 1)[0].metrics["total_return"]
     assert sweep_return == pytest.approx(expected, abs=1e-9)
     assert sweep_return == pytest.approx(pipeline_return, abs=1e-9)
+
+
+def test_the_sweep_path_refuses_same_bar():
+    with pytest.raises(ValueError, match=REFUSED):
+        sweep(
+            strategy_cls=_FixedWeights,
+            base_params={},
+            sweep_params={"decided_on": [J - 1]},
+            data={"prices": _prices()},
+            backtest_kwargs={"fees": 0.0, "rebalancing_freq": 1},
+            metrics=["total_return"],
+            lag_bars=0,
+        )
 
 
 def test_a_lagged_weight_never_lands_on_a_bar_without_a_price():
@@ -201,7 +210,7 @@ def test_variant_level_execution_override_is_refused(tmp_path):
             mode="backtest",
             asof="2024-02-09",
             params={
-                "variants": [{"name": "v", "strategy": {"name": "v"}, "overrides": {"execution": {"lag_bars": 0}}}]
+                "variants": [{"name": "v", "strategy": {"name": "v"}, "overrides": {"execution": {"lag_bars": 2}}}]
             },
             data=_Data(),
             store=FileArtifactStore(str(tmp_path), "run"),
@@ -263,7 +272,7 @@ def test_validate_config_reports_execution_and_venue_problems():
         return validate_config(cfg(params), check_params=False)
 
     assert check({}) == []
-    assert [f.level for f in check({"execution": {"lag_bars": 0}})] == ["warning"]
+    assert [f.level for f in check({"execution": {"lag_bars": 0}})] == ["error"]
     assert [f.level for f in check({"execution": {"lag_bars": -1}})] == ["error"]
     assert [f.level for f in check({"venue": {"allow_short": False}})] == ["error"]
 
@@ -272,9 +281,11 @@ def test_shift_signal_is_a_deprecated_alias_of_lag_bars():
     assert resolve_sweep_lag_bars(None, None) == 1
     assert resolve_sweep_lag_bars(2, None) == 2
     with pytest.warns(DeprecationWarning, match="shift_signal"):
-        assert resolve_sweep_lag_bars(None, 0) == 0
+        assert resolve_sweep_lag_bars(None, 1) == 1
     with pytest.warns(DeprecationWarning), pytest.raises(ValueError, match="contradicts"):
-        resolve_sweep_lag_bars(1, 0)
+        resolve_sweep_lag_bars(1, 2)
+    with pytest.warns(DeprecationWarning), pytest.raises(ValueError, match=REFUSED):
+        resolve_sweep_lag_bars(None, 0)
 
 
 def test_apply_execution_lag_shape():
@@ -282,7 +293,12 @@ def test_apply_execution_lag_shape():
     lagged = apply_execution_lag(w, 1)
     assert lagged.iloc[0].tolist() == [0.0, 0.0]
     assert lagged.iloc[4, 0] == 1.0 and lagged.iloc[3, 0] == 0.0
-    assert apply_execution_lag(w, 0) is w
+    for bad in (0, -1):
+        with pytest.raises(ValueError, match=REFUSED):
+            apply_execution_lag(w, bad)
+    for bad in (1.0, True):
+        with pytest.raises(ValueError, match="must be an integer >= 1"):
+            apply_execution_lag(w, bad)
     assert apply_execution_lag(w, 1, fill_leading=None).iloc[0].isna().all()
 
 
@@ -295,7 +311,6 @@ def test_default_run_records_and_states_its_timing(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="quantbox.execution"):
         # full_report: the heavy HTML report is opt-in (TOM-1365) and must state the timing too
         result, store = _run_pipeline(tmp_path, {"full_report": True})
-    assert "SAME-BAR" not in caplog.text
     assert result.notes["execution"] == {
         "lag_bars": 1,
         "fill": "close",
@@ -308,15 +323,6 @@ def test_default_run_records_and_states_its_timing(tmp_path, caplog):
     assert report["execution"].startswith("next-bar (lag_bars=1)")
     assert report["reproducibility"]["engine_config"]["execution"]["lag_bars"] == 1
     assert "metaItem('Execution', D.execution" in (store.root / "report.html").read_text()
-
-
-def test_same_bar_run_is_loud_and_recorded(tmp_path, caplog):
-    with caplog.at_level(logging.WARNING, logger="quantbox.execution"):
-        result, store = _run_pipeline(tmp_path, {"execution": {"lag_bars": 0}})
-    assert "execution.lag_bars=0 (SAME-BAR)" in caplog.text
-    assert result.notes["execution"]["same_bar"] is True
-    assert result.metrics["execution_lag_bars"] == 0.0
-    assert "**Execution timing:** SAME-BAR (lag_bars=0)" in (store.root / "summary.md").read_text()
 
 
 def test_run_manifest_carries_execution_and_venue(tmp_path):
@@ -540,7 +546,7 @@ def test_mid_series_nan_rows_rsims_saved_book_is_the_flat_book(tmp_path):
 
 def test_materialising_the_nan_policy_does_not_change_vectorbt_numbers():
     """The engine receives the materialised frame; its result must equal the raw-NaN frame's."""
-    from quantbox.plugins.backtesting import run_vectorbt
+    from quantbox.plugins.backtesting.vectorbt_engine import run as run_vectorbt
 
     w = _weights_decided_on(0)
     w.iloc[15:21] = np.nan
@@ -560,7 +566,12 @@ def test_materialising_the_nan_policy_does_not_change_vectorbt_numbers():
 
 @pytest.mark.parametrize(
     ("block", "message"),
-    [({"lag_bar": 0}, "unknown key"), (0, "must be a mapping"), ({"lag_bars": "0"}, "must be an integer")],
+    [
+        ({"lag_bar": 0}, "unknown key"),
+        (0, "must be a mapping"),
+        ({"lag_bars": "0"}, "must be an integer"),
+        ({"lag_bars": 0}, REFUSED),
+    ],
 )
 def test_sweep_cli_refuses_a_malformed_execution_block_before_any_work(tmp_path, block, message):
     import yaml
@@ -604,9 +615,9 @@ def test_sweep_cli_resolves_the_whole_execution_block_before_any_other_work(tmp_
 
     monkeypatch.setattr(execution, "resolve_lag_bars", spy)
     cfg = tmp_path / "sweep.yaml"
-    cfg.write_text(yaml.safe_dump({"strategy": "strategy.nope.v1", "data": {}, "execution": {"lag_bars": 0}}))
+    cfg.write_text(yaml.safe_dump({"strategy": "strategy.nope.v1", "data": {}, "execution": {"lag_bars": 2}}))
     CliRunner().invoke(app, ["sweep", "-c", str(cfg)])
-    assert seen == [({"lag_bars": 0}, 0)]
+    assert seen == [({"lag_bars": 2}, 2)]
 
 
 def test_sweep_cli_hands_the_resolved_lag_to_run_grid():

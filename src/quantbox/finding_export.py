@@ -16,7 +16,13 @@ It reads runs through their ``quantbox/run@1`` manifest only (``files.returns``,
   name) is one arm, named after the child.
 
 It never recomputes an engine metric: Sharpe, CAGR, drawdown in ``kpis`` and
-``metrics`` are the engine's numbers. Equity, drawdown and the per-year returns
+``metrics`` are the engine's numbers.
+
+A RESEARCH run (``run.kind: research`` — same-bar under the explicit override,
+docs/adr/0006) is never exported as a backtest: its hero cards do not report
+the finding's ``backtest_sharpe`` and are toned ``bad``, the chart title and
+provenance say research, and ``audit.axes`` carries a failed "Execution timing"
+axis with the recorded reason. Equity, drawdown and the per-year returns
 in ``robustness`` are compounded from the run's own returns file.
 """
 
@@ -33,6 +39,7 @@ import pandas as pd
 from .parquet_io import read_parquet
 from .run_history import run_started_at
 from .run_manifest import SCHEMA_ID as RUN_SCHEMA_ID
+from .run_manifest import research_note, run_kind
 
 SCHEMA_ID = "qute-research/finding-report@1"
 FORMATS = (SCHEMA_ID,)
@@ -199,11 +206,15 @@ def _series_block(arms: list[Arm]) -> dict[str, Any]:
                 "benchmark": "bench" in arm.name.lower(),
             }
         )
-    return {"title": "Equity (growth of 1)", "dates": _date_labels(pd.DatetimeIndex(frame.index)), "lines": lines}
+    title = "Equity (growth of 1)"
+    if any(run_kind(a.manifest) == "research" for a in arms):
+        title += " — RESEARCH run, same-bar fills, not a backtest"
+    return {"title": title, "dates": _date_labels(pd.DatetimeIndex(frame.index)), "lines": lines}
 
 
 def _kpis(arm: Arm) -> list[dict[str, Any]]:
     m = arm.metrics
+    research = run_kind(arm.manifest) == "research"
     kpis = []
     for key, label, fmt, finding_key in (
         ("sharpe", "Sharpe", "num", "backtest_sharpe"),
@@ -213,11 +224,35 @@ def _kpis(arm: Arm) -> list[dict[str, Any]]:
         value = _num(m.get(key))
         if value is None:
             continue
+        if research:
+            # Not "Sharpe": the renderer reads that label as the finding's backtest_sharpe.
+            kpis.append(
+                {
+                    "label": f"Same-bar {label} (research)",
+                    "value": value,
+                    "format": fmt,
+                    "tone": "bad",
+                    "note": f"{arm.name} — RESEARCH run, same-bar fills, not a backtest",
+                }
+            )
+            continue
         kpi = {"label": label, "value": value, "format": fmt, "note": arm.name}
         if finding_key:
             kpi["key"] = finding_key
         kpis.append(kpi)
     return kpis
+
+
+def _audit_block(arms: list[Arm]) -> dict[str, Any] | None:
+    """A failed "Execution timing" axis per research run: the page must not read as a backtest."""
+    axes, seen = [], set()
+    for arm in arms:
+        note = research_note(arm.manifest)
+        if note is None or arm.run_dir in seen:
+            continue
+        seen.add(arm.run_dir)
+        axes.append({"name": "Execution timing", "status": "fail", "note": f"{arm.name.split('/')[0]}: {note}"})
+    return {"axes": axes} if axes else None
 
 
 def _metrics_block(arms: list[Arm]) -> dict[str, Any] | None:
@@ -271,8 +306,11 @@ _PROVENANCE: tuple[tuple[str, Any], ...] = (
             else None
         ),
     ),
+    ("run.kind", run_kind),
     ("execution", lambda m: (m.get("execution") or {}).get("description")),
     ("execution.lag_bars", lambda m: (m.get("execution") or {}).get("lag_bars")),
+    ("execution.same_bar", lambda m: (m.get("execution") or {}).get("same_bar")),
+    ("execution.same_bar_reason", lambda m: (m.get("execution") or {}).get("same_bar_reason")),
     ("venue.allow_shorts", lambda m: (m.get("venue") or {}).get("allow_shorts")),
     ("venue.max_leverage", lambda m: (m.get("venue") or {}).get("max_leverage")),
     ("dataset", lambda m: (m.get("dataset") or {}).get("name")),
@@ -326,7 +364,11 @@ def export_finding_report(path: str | Path, *, primary: str | None = None) -> di
     if kpis:
         payload["kpis"] = kpis
     payload["series"] = _series_block(arms)
-    for key, block in (("metrics", _metrics_block(arms)), ("robustness", _robustness_block(arms))):
+    for key, block in (
+        ("metrics", _metrics_block(arms)),
+        ("robustness", _robustness_block(arms)),
+        ("audit", _audit_block(arms)),
+    ):
         if block is not None:
             payload[key] = block
     payload["tables"] = [_provenance_table(arms)]

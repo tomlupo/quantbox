@@ -27,6 +27,7 @@ from .contracts import (
     StrategyPlugin,
 )
 from .exceptions import ConfigValidationError, PluginNotFoundError
+from .execution import run_record
 from .llm_utils import event_line, load_schema, validate_table
 from .plugin_manifest import load_manifest, resolve_profile
 from .run_history import RUN_TS_FORMAT
@@ -577,13 +578,22 @@ def resolve_run(
 
 
 def strict_refusal(cfg: dict[str, Any], mode: str, dataset_tier: str | None) -> str | None:
-    """Why ``run.strict`` (or a promotion run) refuses this dataset tier, or None.
+    """Why ``run.strict`` (or a promotion run) refuses this config, or None.
+
+    Refused: a same-bar RESEARCH run (docs/adr/0006), and a raw dataset tier.
 
     One check for :func:`run_from_config` and ``quantbox config explain``: the run
     raises it after writing its manifest, explain reports it before any work (TOM-1362).
     """
     if not (bool(cfg.get("run", {}).get("strict")) or mode == "promotion"):
         return None
+    pipeline_params = ((cfg.get("plugins") or {}).get("pipeline") or {}).get("params") or {}
+    same_bar = (pipeline_params.get("execution") or {}).get("same_bar") if isinstance(pipeline_params, dict) else None
+    if isinstance(same_bar, dict) and same_bar.get("allow") is True:
+        return (
+            "strict mode refuses a same-bar run: execution.same_bar makes it a RESEARCH run, not a "
+            "backtest (docs/adr/0006-same-bar-explicit-override.md)"
+        )
     # "lock" (a by-name dataset verified against datasets.lock, TOM-1349) was "raw" before
     # it had a tier of its own; accepting it in strict mode is a separate decision.
     if dataset_tier in ("raw", "lock"):
@@ -789,6 +799,9 @@ def run_from_config(
     for block in ("execution", "venue", "overlays"):
         if block in notes:
             manifest[block] = notes[block]
+    if "execution" in manifest:
+        # research (same-bar, docs/adr/0006) or backtest — what every reader of a result checks.
+        manifest["run"] = run_record(manifest["execution"])
 
     # Validate artifacts against JSON schemas when available (best-effort)
     from importlib.resources import files as _res_files

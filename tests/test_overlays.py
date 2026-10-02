@@ -107,7 +107,7 @@ def test_reversal_derisk_halves_exactly_the_window_starting_on_the_flip_bar():
 
 
 @pytest.mark.parametrize("engine", ["vectorbt", "rsims"])
-@pytest.mark.parametrize("lag", [0, 1, 2])
+@pytest.mark.parametrize("lag", [1, 2])
 def test_overlay_effect_lands_on_the_execution_conventions_bar_with_no_extra_shift(tmp_path, engine, lag):
     result, store = _pipeline_run(
         tmp_path, {"engine": engine, "execution": {"lag_bars": lag}}, [(ReversalDeriskOverlay(), DERISK)]
@@ -294,7 +294,7 @@ def _sparse_traded(tmp_path, sub, engine, lag, chain):
     return store.read_parquet("traded_weights").set_index("date")
 
 
-@pytest.mark.parametrize("lag", [0, 1, 2])
+@pytest.mark.parametrize("lag", [1, 2])
 def test_an_expired_overlay_returns_a_sparse_hold_book_to_its_base_position(tmp_path, lag):
     """vectorbt reads NaN as "hold the last target": once the de-risk window closes,
     the book must go BACK to the base 1.0, not hold the last reduced 0.5 forever."""
@@ -302,7 +302,7 @@ def test_an_expired_overlay_returns_a_sparse_hold_book_to_its_base_position(tmp_
     np.testing.assert_array_equal(traded["A"].to_numpy(), _expected_a(lag))
 
 
-@pytest.mark.parametrize("lag", [0, 1])
+@pytest.mark.parametrize("lag", [1, 2])
 def test_an_expired_overlay_on_a_sparse_flat_book_matches_the_base_run(tmp_path, lag):
     """rsims reads NaN as "flat": scaling a flat cell changes nothing, so the book is the base one."""
     base = _sparse_traded(tmp_path, "base", "rsims", lag, None)

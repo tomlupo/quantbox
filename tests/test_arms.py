@@ -151,7 +151,7 @@ def test_grid_is_the_cartesian_product_with_readable_names(tmp_path):
         ({"overrides": {"a": {"plugins.strategies.7.params.frac": 1}}}, "index 7"),
         ({"overrides": {"a": {"plugins.nope.params": 1}}}, "nope"),
         ({"overrides": {"a/b": {"plugins.pipeline.params.fees": 0.0}}}, "arm name"),
-        ({"overrides": {"a": {"plugins.pipeline.params.execution.lag_bars": 0}}}, "execution"),
+        ({"overrides": {"a": {"plugins.pipeline.params.execution.lag_bars": 2}}}, "execution"),
         ({"overrides": {"a": {"run.n_trials": 3}}}, "n_trials"),
         ({"overrides": {"a": {"plugins.pipeline.params.fees": 0.0}}, "n_trials": 0}, "n_trials"),
         ({"overrides": {"a": {"x": 1}, "b": {"x": 2}}, "n_trials": 1}, "n_trials"),
@@ -294,12 +294,21 @@ def test_the_arms_execution_block_is_the_timing_of_every_arm(tmp_path):
     _write_base(tmp_path)
     arms_path = _write_arms(
         tmp_path,
-        {"execution": {"lag_bars": 0}, "grid": {"plugins.strategies.0.params.frac": [0.5, 1.0]}},
+        {"execution": {"lag_bars": 2}, "grid": {"plugins.strategies.0.params.frac": [0.5, 1.0]}},
     )
     summary = run_arms(load_arms(arms_path), max_workers=1)
-    assert summary["execution"]["lag_bars"] == 0
+    assert summary["execution"]["lag_bars"] == 2
     for arm in summary["arms"]:
-        assert _manifest(Path(summary["path"]), arm)["execution"]["lag_bars"] == 0
+        assert _manifest(Path(summary["path"]), arm)["execution"]["lag_bars"] == 2
+
+
+def test_the_arms_execution_block_refuses_same_bar(tmp_path):
+    _write_base(tmp_path)
+    arms_path = _write_arms(
+        tmp_path, {"execution": {"lag_bars": 0}, "overrides": {"a": {"plugins.pipeline.params.fees": 0.0}}}
+    )
+    with pytest.raises(ValueError, match="lag_bars must be >= 1"):
+        load_arms(arms_path)
 
 
 def test_the_arms_execution_block_must_agree_with_the_base(tmp_path):
@@ -308,7 +317,7 @@ def test_the_arms_execution_block_must_agree_with_the_base(tmp_path):
     base["plugins"]["pipeline"]["params"]["execution"] = {"lag_bars": 2}
     base_path.write_text(yaml.safe_dump(base))
     arms_path = _write_arms(
-        tmp_path, {"execution": {"lag_bars": 0}, "overrides": {"a": {"plugins.pipeline.params.fees": 0.0}}}
+        tmp_path, {"execution": {"lag_bars": 3}, "overrides": {"a": {"plugins.pipeline.params.fees": 0.0}}}
     )
     with pytest.raises(ValueError, match="contradicts"):
         load_arms(arms_path)
@@ -347,7 +356,7 @@ def fake_quantbox_datasets(monkeypatch):
     monkeypatch.setitem(sys.modules, "quantbox_datasets.lock", lock)
 
 
-@pytest.mark.parametrize("lag", [0, 1])
+@pytest.mark.parametrize("lag", [1, 2])
 def test_a_source_strategy_runs_in_a_sweep_and_its_manifest_records_the_timing(tmp_path, fake_quantbox_datasets, lag):
     (tmp_path / "frac_strategy.py").write_text(_SOURCE_STRATEGY)
     cfg = {

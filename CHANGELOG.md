@@ -29,6 +29,28 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.9.0 (2026-10-02)
+
+### BREAKING CHANGE
+
+- a config or call with lag_bars 0 (or shift_signal 0) now
+raises ValueError instead of warning.
+- from quantbox.plugins.backtesting import run_vectorbt /
+fixed_commission_backtest_with_funding now raises ImportError; import from
+the engine module and pass already-lagged weights.
+- quantbox.bt.run and
+adapters.vectorbt.from_signals_with_costs now fill signals next-bar
+(lag_bars=1 default, 0 refused): the same inputs return different numbers,
+one bar later.
+
+### Feat
+
+- **execution**: same-bar runs only under an explicit override, as research (TOM-1399) (#230)
+
+### Fix
+
+- **execution**: next-bar is mandatory — lag_bars 0 refused everywhere, L1 helpers lag, same-bar primitives leave the public surface (#229)
+
 ## v0.8.0 (2026-10-01)
 
 ### BREAKING CHANGE

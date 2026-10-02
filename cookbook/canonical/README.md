@@ -17,10 +17,6 @@ canonical/
 ├── expected/              # goldens for the configs as written (default: next-bar execution)
 │   ├── momentum.json
 │   └── trend_catcher_simple.json
-├── expected_same_bar/     # FROZEN pre-`execution.lag_bars` goldens — never regenerate;
-│   │                      # the test reruns each config with `lag_bars: 0` against them
-│   ├── momentum.json
-│   └── trend_catcher_simple.json
 ├── run_all.py             # run + diff every canonical (no pytest needed)
 └── regen_goldens.py       # re-bless every golden after an intentional change
 ```

@@ -81,6 +81,7 @@ def run(
     prices: pd.DataFrame,
     signals: pd.DataFrame,
     *,
+    lag_bars: int = 1,
     fees: float = 0.001,
     slippage: float = 0.0005,
     freq: str = "1D",
@@ -89,11 +90,16 @@ def run(
 
     Treats ``signals > 0`` as entries and ``signals <= 0`` as exits. For
     short-side trading, position-sizing rules, or rebalancing strategies,
-    use ``quantbox.adapters.vectorbt.vbt`` directly or escalate to L3/L4.
+    escalate to ``quantbox.plugins.backtesting.backtest`` or L3/L4.
+
+    Next-bar, always: a signal computed with data through close ``t`` trades
+    at close ``t + lag_bars``; ``lag_bars=0`` (same-bar) raises — quick
+    calculations included (docs/adr/0005).
 
     Args:
         prices: Wide-format close prices (date index × symbol columns).
         signals: Same shape as prices; positive = long, non-positive = flat.
+        lag_bars: Execution lag in bars (default and minimum 1).
         fees: Per-trade fee fraction (default 0.001 = 10 bps).
         slippage: Per-trade slippage fraction (default 0.0005 = 5 bps).
         freq: Frequency string for vbt (default ``"1D"``).
@@ -108,14 +114,7 @@ def run(
         >>> result = qbt.run(prices, signals)
         >>> print(result.metrics)
     """
-    from .adapters.vectorbt import vbt  # lazy: vectorbt is the [vectorbt] extra
+    from .adapters.vectorbt import from_signals_with_costs  # lazy: the [vectorbt] extra
 
-    portfolio = vbt.Portfolio.from_signals(
-        close=prices,
-        entries=signals > 0,
-        exits=signals <= 0,
-        fees=fees,
-        slippage=slippage,
-        freq=freq,
-    )
+    portfolio = from_signals_with_costs(prices, signals, lag_bars=lag_bars, fees=fees, slippage=slippage, freq=freq)
     return BacktestResult(portfolio=portfolio)
