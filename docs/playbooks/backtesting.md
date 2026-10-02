@@ -165,7 +165,10 @@ branch, the vectorbt order-func (`threshold`) branch, rsims and the variants
 flow alike. `quantbox sweep` (`analysis.parameter_grid`) uses the same setting,
 and so do the Python helpers `backtest()` and `optimize()`
 (`quantbox.plugins.backtesting`): keyword `lag_bars=`, same default, same
-refusal of `0`, and the result carries the same `execution` record.
+refusal of `0`, and the result carries the same `execution` record. The L1
+signal helpers `quantbox.bt.run` and
+`quantbox.adapters.vectorbt.from_signals_with_costs` lag their signals the
+same way (`lag_bars=`, default 1, `0` refused).
 
 ```yaml
 plugins:
@@ -235,6 +238,10 @@ reach the `DatasetManifest`, so the venue has to be declared in the config.
 > older than that — and is then a record of a look-ahead, not a result. `sweep`'s
 > `shift_signal` (Python kwarg and `backtest.shift_signal` in sweep YAML) still
 > works as a deprecated alias of `execution.lag_bars`; sweep numbers are unchanged.
+> The L1 signal helpers `quantbox.bt.run` and
+> `adapters.vectorbt.from_signals_with_costs` were same-bar too, with no lag
+> setting at all; since ADR-0005 they fill next-bar, so **the same inputs return
+> different numbers** — one bar later, which is the correct number.
 >
 > **Do not quote an old-vs-new delta as "the size of the look-ahead".** The lag
 > sets the first `lag_bars` rows flat, and with an integer `rebalancing_freq`

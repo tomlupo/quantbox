@@ -59,9 +59,13 @@ manifest schema and readers of old manifests do not change.
 - Code that imported `run_vectorbt` or `fixed_commission_backtest_with_funding`
   from `quantbox.plugins.backtesting` breaks at import. The fix is `backtest()`,
   or the module path plus an explicit `apply_execution_lag`.
-- A caller that imports an engine primitive from its module and hands it raw
-  weights still gets same-bar numbers. That is the one bypass left; it needs a
-  deliberate import of an internal module, and its docstring says so.
+- `quantbox.bt.run` and `from_signals_with_costs` now fill next-bar, so the
+  same inputs return different numbers than before — one bar later.
+- Two bypasses are left, both outside quantbox's control and both documented:
+  a caller that imports an engine primitive from its module and hands it raw
+  weights, and the L0 `vbt` re-export (`quantbox.adapters.vectorbt.vbt`),
+  which fills whatever it is handed. Every L0 example lags its signals one bar
+  first.
 - `run_manifest.schema.json` keeps `lag_bars` minimum 0 so manifests written
   before this decision still validate.
 
