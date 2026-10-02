@@ -258,7 +258,7 @@ def test_variants_under_rsims_are_refused_by_explain_and_run(tmp_path):
 @pytest.mark.parametrize("key", ["execution", "venue"])
 def test_run_level_keys_in_a_variant_are_refused_by_explain_and_run(tmp_path, where, key):
     cfg, config_path = _inline_config(tmp_path, "vectorbt")
-    block = {"lag_bars": 0} if key == "execution" else {"allow_shorts": True}
+    block = {"lag_bars": 2} if key == "execution" else {"allow_shorts": True}
     v = _variant(overrides={key: block}) if where == "overrides" else _variant(**{key: block})
     cfg["plugins"]["pipeline"]["params"]["variants"] = [v]
     _both_refuse(cfg, config_path, f"'{key}' is run-level")

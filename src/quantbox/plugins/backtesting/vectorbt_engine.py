@@ -11,11 +11,20 @@ Features
 - Proportional fees, fixed fees, slippage.
 - Multi-strategy grouping via MultiIndex columns.
 
+Execution timing
+----------------
+An ENGINE PRIMITIVE: row ``t`` of ``weights`` fills at ``close[t]``, so the
+weights must already be lagged (``quantbox.execution.apply_execution_lag``).
+Research code calls ``quantbox.plugins.backtesting.backtest`` instead, which
+lags them — next-bar, ``lag_bars >= 1`` (docs/adr/0005).
+
 Examples
 --------
 ::
 
-    from quantbox.plugins.backtesting import run_vectorbt
+    from quantbox.plugins.backtesting.vectorbt_engine import run as run_vectorbt
+
+    weights = apply_execution_lag(decided_weights, 1)  # next-bar
 
     # Buy-and-hold
     pf = run_vectorbt(prices, weights, rebalancing_freq=None)

@@ -43,8 +43,9 @@ import vectorbt as vbt
 __all__ = ["vbt", "from_signals_with_costs"]
 
 
-def from_signals_with_costs(prices, signals, *, fees=0.001, slippage=0.0005, freq="1D"):
-    """Convenience: vbt.Portfolio.from_signals with sensible cost defaults."""
+def from_signals_with_costs(prices, signals, *, lag_bars=1, fees=0.001, slippage=0.0005, freq="1D"):
+    """Convenience: vbt.Portfolio.from_signals with cost defaults, signals traded next-bar."""
+    signals = apply_execution_lag(signals.astype(float), resolve_lag_bars({"lag_bars": lag_bars}))
     return vbt.Portfolio.from_signals(
         close=prices,
         entries=signals > 0,

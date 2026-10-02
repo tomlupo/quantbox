@@ -19,7 +19,7 @@ Quick start::
 ``backtest()`` and ``optimize()`` follow the one execution-timing convention
 (:mod:`quantbox.execution`): weights decided on bar ``t`` fill at the close of
 bar ``t + lag_bars``, default 1 (next-bar), exactly as ``quantbox run -c``.
-``lag_bars=0`` reproduces the old same-bar numbers, loudly.
+``lag_bars=0`` (same-bar) is refused (docs/adr/0005).
 """
 
 from __future__ import annotations
@@ -33,7 +33,6 @@ from quantbox.execution import (
     execution_record,
     lag_buy_and_hold,
     resolve_lag_bars,
-    warn_if_same_bar,
 )
 
 from .metrics import (
@@ -46,13 +45,11 @@ from .metrics import (
     compute_var,
 )
 from .optimizer import optimize
-from .rsims_engine import fixed_commission_backtest_with_funding, positions_from_no_trade_buffer
+from .rsims_engine import positions_from_no_trade_buffer
 
 __all__ = [
     "backtest",
     "optimize",
-    "run_vectorbt",
-    "fixed_commission_backtest_with_funding",
     "positions_from_no_trade_buffer",
     "compute_backtest_metrics",
     "compute_cvar",
@@ -64,14 +61,25 @@ __all__ = [
 ]
 
 
-def __getattr__(name: str) -> Any:
-    # ``run_vectorbt`` is resolved lazily so this package (and the rsims engine,
-    # metrics, optimizer) imports without the [vectorbt] extra. Without it,
-    # asking for the name raises MissingExtraError naming the extra.
-    if name == "run_vectorbt":
-        from .vectorbt_engine import run
+# The engine primitives fill row t at close[t] and expect weights ALREADY
+# lagged; exported here, a quick calculation reached them with raw weights and
+# came out same-bar. They stay importable from their modules for the pipeline
+# and engine tests, and asking for them here says where the lagged path is.
+_ENGINE_PRIMITIVES = {
+    "run_vectorbt": "quantbox.plugins.backtesting.vectorbt_engine.run",
+    "fixed_commission_backtest_with_funding": (
+        "quantbox.plugins.backtesting.rsims_engine.fixed_commission_backtest_with_funding"
+    ),
+}
 
-        return run
+
+def __getattr__(name: str) -> Any:
+    if name in _ENGINE_PRIMITIVES:
+        raise ImportError(
+            f"{name} is no longer exported from {__name__} (docs/adr/0005-next-bar-is-mandatory.md): "
+            "it fills at the close the weights were decided on. Use backtest(prices, weights) — "
+            f"next-bar, lag_bars >= 1 — or, for weights you have lagged yourself, {_ENGINE_PRIMITIVES[name]}."
+        )
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -88,8 +96,6 @@ def _lag_for_engine(
     REBALANCE, not one bar. Cells stay NaN, so the engine's forward-fill is
     unchanged; only the decision moves ``lag_bars`` bars later.
     """
-    if lag_bars == 0:
-        return weights
 
     def one(w: pd.DataFrame) -> pd.DataFrame:
         return apply_execution_lag(w.reindex(prices.index.union(w.index)), lag_bars)
@@ -112,7 +118,7 @@ def _backtest(
     use_numba: bool,
     trading_days: int,
 ) -> dict[str, Any]:
-    """``backtest()`` with an already-resolved ``lag_bars`` and no warning (``optimize()`` warns once)."""
+    """``backtest()`` with an already-resolved ``lag_bars`` (``optimize()`` resolves it once per call)."""
     from .vectorbt_engine import run as run_vectorbt
 
     grid = prices.index
@@ -176,8 +182,8 @@ def backtest(
     lag_bars : int | None
         Execution lag (:mod:`quantbox.execution`): weights decided on bar ``t``
         fill at the close of bar ``t + lag_bars``. ``None`` = the default, 1
-        (next-bar), the same as ``quantbox run -c``. ``0`` = same-bar, logged
-        as a look-ahead warning; use it only to reproduce an old number.
+        (next-bar), the same as ``quantbox run -c``; also the minimum — ``0``
+        (same-bar) raises ``ValueError``.
 
     Returns
     -------
@@ -188,7 +194,6 @@ def backtest(
         ``"execution"`` — the execution timing used (as ``run_manifest.json``).
     """
     lag = resolve_lag_bars(None if lag_bars is None else {"lag_bars": lag_bars})
-    warn_if_same_bar(lag, where="backtest()")
     return _backtest(
         prices,
         weights,

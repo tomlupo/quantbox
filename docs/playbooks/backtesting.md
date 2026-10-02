@@ -165,9 +165,10 @@ branch, the vectorbt order-func (`threshold`) branch, rsims and the variants
 flow alike. `quantbox sweep` (`analysis.parameter_grid`) uses the same setting,
 and so do the Python helpers `backtest()` and `optimize()`
 (`quantbox.plugins.backtesting`): keyword `lag_bars=`, same default, same
-same-bar warning, and the result carries the same `execution` record. Before
-TOM-1337 those two helpers traded same-bar; pass `lag_bars=0` to reproduce one
-of their old numbers.
+refusal of `0`, and the result carries the same `execution` record. The L1
+signal helpers `quantbox.bt.run` and
+`quantbox.adapters.vectorbt.from_signals_with_costs` lag their signals the
+same way (`lag_bars=`, default 1, `0` refused).
 
 ```yaml
 plugins:
@@ -175,17 +176,17 @@ plugins:
     name: backtest.pipeline.v1
     params:
       execution:
-        lag_bars: 1          # int >= 0, default 1
+        lag_bars: 1          # int >= 1, default 1
       venue:
         allow_shorts: false  # bool, no default — absent means "not declared"
 ```
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `execution.lag_bars` | int ≥ 0 | `1` | Weights decided with data through bar `t` fill at the **close of bar `t + lag_bars`**. `0` = same-bar: the signal is filled at the very close it was computed from, which no order could have achieved. Allowed only when written explicitly; the run then logs an `EXECUTION TIMING … SAME-BAR` warning, `quantbox validate` reports a warning, and the manifest records `same_bar: true`. |
+| `execution.lag_bars` | int ≥ 1 | `1` | Weights decided with data through bar `t` fill at the **close of bar `t + lag_bars`**. `0` (same-bar — the signal filled at the very close it was computed from, which no order could have achieved) is **refused** by every entry point and is an error in `quantbox validate` ([ADR-0005](../adr/0005-next-bar-is-mandatory.md)). |
 | `venue.allow_shorts` | bool | — | `false`: negative **target** weights are clipped to `0` *before* tranching and the leverage cap. **The long side is not re-normalised** — the book carries less gross; it is never re-levered to refill it. `true`: shorts pass through. Must not contradict an explicit `risk.allow_short` (the run refuses). |
 
-Unknown keys, non-integers, booleans and negative lags are **refused**
+Unknown keys, non-integers, booleans, `0` and negative lags are **refused**
 (`ConfigValidationError` from the runner, `ValueError` from the pipeline, before
 any data is loaded) — a typo never falls back to a default. `execution` and
 `venue` are run-level: a variant that tries to override either is refused.
@@ -194,10 +195,11 @@ any data is loaded) — a typo never falls back to a default. `execution` and
 wants given data through `t`; internal lags inside a *signal* or an *estimator*
 (e.g. `weights.shift(1) * returns` to estimate realised vol causally) are fine
 and unaffected. A strategy that already shifts the weights it returns would be
-lagged twice — remove that shift rather than setting `lag_bars: 0`.
+lagged twice — remove that shift; `lag_bars: 0` is not a way out.
 
 **Where it is recorded.** `run_manifest.json` carries
-`execution: {lag_bars, fill: "close", same_bar, description}` and
+`execution: {lag_bars, fill: "close", same_bar, description}` (`same_bar` is
+always `false` now; the key stays for manifest-schema compatibility) and
 `venue: {declared, allow_shorts, max_leverage}`; `metrics.json` carries `execution_lag_bars`;
 `summary.md` has an **Execution timing** line, the HTML report states it in the
 masthead and the reproducibility appendix, and the CLI prints `EXECUTION: …`
@@ -229,16 +231,17 @@ reach the `DatasetManifest`, so the venue has to be declared in the config.
 > **MIGRATION — default changed from same-bar to next-bar.** Until this
 > release `quantbox run -c` handed strategy weights to the engine unshifted,
 > while `quantbox sweep` shifted them by one bar. **Every historical backtest
-> number produced by `quantbox run -c` was same-bar.** To reproduce an old
-> number, set `execution.lag_bars: 0`. What that reproduces, precisely: the
-> **historical metric keys** (`total_return`, `cagr`, `sharpe`, … — the 12 keys
-> `metrics.json` carried before) and the returns / equity series, pinned by the
-> frozen goldens in `cookbook/canonical/expected_same_bar/`. It does **not** make
-> the run directory byte-identical to an old one: `metrics.json` gains the
-> `execution_lag_bars` / `traded_*` / `target_*` keys, a `traded_weights`
-> artifact appears, and the report is built from the traded weights. `sweep`'s
+> number produced by `quantbox run -c` was same-bar.** v0.8.0 still let
+> `execution.lag_bars: 0` reproduce such a number, with a warning; since
+> [ADR-0005](../adr/0005-next-bar-is-mandatory.md) `0` is refused everywhere
+> and an old same-bar number is reproduced only by pinning a quantbox release
+> older than that — and is then a record of a look-ahead, not a result. `sweep`'s
 > `shift_signal` (Python kwarg and `backtest.shift_signal` in sweep YAML) still
 > works as a deprecated alias of `execution.lag_bars`; sweep numbers are unchanged.
+> The L1 signal helpers `quantbox.bt.run` and
+> `adapters.vectorbt.from_signals_with_costs` were same-bar too, with no lag
+> setting at all; since ADR-0005 they fill next-bar, so **the same inputs return
+> different numbers** — one bar later, which is the correct number.
 >
 > **Do not quote an old-vs-new delta as "the size of the look-ahead".** The lag
 > sets the first `lag_bars` rows flat, and with an integer `rebalancing_freq`

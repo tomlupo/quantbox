@@ -12,11 +12,12 @@ strategy weights into a simulated book (``backtest.pipeline.v1`` and
 
     execution:
       lag_bars: 1      # weights decided with data through bar t trade at the
-                       # CLOSE of bar t + lag_bars. Default 1. 0 = same-bar.
+                       # CLOSE of bar t + lag_bars. Default and minimum 1.
 
-``lag_bars: 0`` stays possible — historical numbers must be reproducible on
-purpose — but only when written explicitly, and then it is loud
-(:func:`warn_if_same_bar`) and recorded in ``run_manifest.json``.
+``lag_bars: 0`` (same-bar) is REFUSED, not warned (docs/adr/0005): a fill at
+the close the signal was computed from is an order nobody could have placed,
+so no number it produces is a backtest. Execution is always at least one bar
+later.
 
 Venue constraints live here too, because they answer the same question
 ("could this book have existed?"):
@@ -38,6 +39,7 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 DEFAULT_LAG_BARS = 1
+MIN_LAG_BARS = 1
 
 EXECUTION_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -45,14 +47,12 @@ EXECUTION_SCHEMA: dict[str, Any] = {
     "properties": {
         "lag_bars": {
             "type": "integer",
-            "minimum": 0,
+            "minimum": MIN_LAG_BARS,
             "default": DEFAULT_LAG_BARS,
             "description": (
                 "Execution lag in bars. Weights decided with data through bar t are filled at the "
-                "CLOSE of bar t+lag_bars. Default 1 (next-bar). 0 = same-bar fill: the fill price is "
-                "part of the information set that chose the weight (look-ahead for any close-based "
-                "signal); allowed only when written explicitly, logged as a warning and recorded in "
-                "run_manifest.json."
+                "CLOSE of bar t+lag_bars. Default and minimum 1 (next-bar). 0 (same-bar) is refused: "
+                "the fill price would be part of the information set that chose the weight."
             ),
         },
     },
@@ -96,11 +96,21 @@ def resolve_lag_bars(execution_cfg: Any) -> int:
     if unknown:
         raise ValueError(f"execution: unknown key(s) {unknown}; the only key is 'lag_bars'")
     lag = execution_cfg.get("lag_bars", DEFAULT_LAG_BARS)
-    if not _is_int(lag):
-        raise ValueError(f"execution.lag_bars must be an integer >= 0, got {lag!r}")
-    if lag < 0:
-        raise ValueError(f"execution.lag_bars must be >= 0 (a negative lag trades on the future), got {lag}")
+    _check_lag(lag)
     return int(lag)
+
+
+def _check_lag(lag: Any) -> None:
+    """Raise unless ``lag`` is an integer >= 1 — the one refusal every entry point shares."""
+    if not _is_int(lag):
+        raise ValueError(f"execution.lag_bars must be an integer >= {MIN_LAG_BARS}, got {lag!r}")
+    if lag < MIN_LAG_BARS:
+        raise ValueError(
+            f"execution.lag_bars must be >= {MIN_LAG_BARS}, got {lag}: weights decided on bar t fill at "
+            "the close of bar t+1 at the earliest. A smaller lag fills at (0, same-bar) or before "
+            "(negative) the close the signal was computed from — look-ahead — and is refused, not "
+            "warned (docs/adr/0005-next-bar-is-mandatory.md)."
+        )
 
 
 def resolve_sweep_lag_bars(lag_bars: int | None, shift_signal: int | None) -> int:
@@ -134,10 +144,10 @@ def apply_execution_lag(
     decision behind them; they are set to ``fill_leading`` (0.0 = flat, the
     default) or left NaN with ``fill_leading=None``.
 
-    ``lag_bars == 0`` returns the frame unchanged (same-bar; see module doc).
+    A lag below 1 is refused here too, so a caller that skips
+    :func:`resolve_lag_bars` cannot hand the engine a same-bar book.
     """
-    if lag_bars == 0:
-        return weights
+    _check_lag(lag_bars)
     lagged = weights.shift(lag_bars)
     if fill_leading is not None:
         lagged.iloc[:lag_bars] = fill_leading
@@ -157,10 +167,10 @@ def lag_buy_and_hold(
     Its one trade belongs at ``index[lag_bars]``, the close the bar-0 decision
     fills at. Every other schedule is returned unchanged (with an integer or
     dated schedule the first scheduled bar may be flat, which is the documented
-    "lost first period"); so is ``lag_bars == 0``. A window no longer than
+    "lost first period"). A window no longer than
     ``lag_bars`` has no fill bar and gets an empty schedule.
     """
-    if rebalancing_freq is not None or lag_bars == 0:
+    if rebalancing_freq is not None:
         return rebalancing_freq
     return [index[lag_bars]] if len(index) > lag_bars else []
 
@@ -192,25 +202,10 @@ def materialise_nan_policy(weights: pd.DataFrame, engine: str | None) -> pd.Data
 
 def describe_execution(lag_bars: int) -> str:
     """The execution timing in words — for logs, summary.md, the report header."""
-    if lag_bars == 0:
-        return (
-            "SAME-BAR (lag_bars=0): weights decided on bar t fill at close[t] — "
-            "look-ahead for any signal that uses close[t]"
-        )
     bars = "bar" if lag_bars == 1 else "bars"
     return (
         f"next-bar (lag_bars={lag_bars}): weights decided on bar t fill at the close of bar t+{lag_bars} {bars} later"
     )
-
-
-def warn_if_same_bar(lag_bars: int, *, where: str) -> None:
-    if lag_bars == 0:
-        logger.warning(
-            "EXECUTION TIMING — %s runs with execution.lag_bars=0 (SAME-BAR): weights decided on bar t "
-            "are filled at close[t]. For any signal built from close[t] this is look-ahead and the "
-            "result is NOT tradeable. Use only to reproduce a historical same-bar number.",
-            where,
-        )
 
 
 def execution_record(lag_bars: int) -> dict[str, Any]:
@@ -218,7 +213,7 @@ def execution_record(lag_bars: int) -> dict[str, Any]:
     return {
         "lag_bars": int(lag_bars),
         "fill": "close",
-        "same_bar": lag_bars == 0,
+        "same_bar": False,  # lag_bars >= 1 always (ADR-0005); key kept for the manifest schema
         "description": describe_execution(lag_bars),
     }
 

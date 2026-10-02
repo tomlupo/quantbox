@@ -76,7 +76,6 @@ from quantbox.execution import (
     materialise_nan_policy,
     resolve_allow_shorts,
     resolve_lag_bars,
-    warn_if_same_bar,
     warn_on_shorts,
 )
 from quantbox.frequency import Frequency, resolve_pipeline_frequency
@@ -471,7 +470,6 @@ class BacktestPipeline:
 
         lag_bars = plan["execution"]["lag_bars"]
         allow_shorts, venue_declared = plan["venue"]["allow_shorts"], plan["venue"]["declared"]
-        warn_if_same_bar(lag_bars, where=f"{self.meta.name} run {store.run_id}")
         logger.info("Execution timing: %s", describe_execution(lag_bars))
 
         # --- Stage 1: Universe & Market Data ---
@@ -1428,7 +1426,8 @@ class BacktestPipeline:
         threshold,
         trading_days: int,
     ) -> dict[str, Any]:
-        from quantbox.plugins.backtesting import compute_backtest_metrics, run_vectorbt
+        from quantbox.plugins.backtesting import compute_backtest_metrics
+        from quantbox.plugins.backtesting.vectorbt_engine import run as run_vectorbt
 
         pf = run_vectorbt(
             prices,
@@ -1475,10 +1474,8 @@ class BacktestPipeline:
         equity_basis: str,
         trading_days: int,
     ) -> dict[str, Any]:
-        from quantbox.plugins.backtesting import (
-            compute_backtest_metrics,
-            fixed_commission_backtest_with_funding,
-        )
+        from quantbox.plugins.backtesting import compute_backtest_metrics
+        from quantbox.plugins.backtesting.rsims_engine import fixed_commission_backtest_with_funding
 
         results_df = fixed_commission_backtest_with_funding(
             prices=prices,

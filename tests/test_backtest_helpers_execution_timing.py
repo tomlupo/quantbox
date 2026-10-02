@@ -1,13 +1,11 @@
 """`backtest()` and `optimize()` take the same execution timing as the pipeline (TOM-1337).
 
 Same toy as ``test_execution_timing``: one asset `A` jumps +10% on bar ``J``.
-A weight decided on ``J-1`` earns the jump only when it is filled same-bar;
-under the default next-bar convention it fills at close[J], after the jump.
+A weight decided on ``J-1`` fills at close[J], after the jump, so it earns
+nothing; same-bar (which would earn it) is refused (docs/adr/0005).
 """
 
 from __future__ import annotations
-
-import logging
 
 import pandas as pd
 import pytest
@@ -20,7 +18,7 @@ def _decided_fn(prices, params):
     return _weights_decided_on(params["decided_on"]).loc[prices.index]
 
 
-@pytest.mark.parametrize(("lag", "expected"), [(None, 0.0), (1, 0.0), (0, JUMP)])
+@pytest.mark.parametrize(("lag", "expected"), [(None, 0.0), (1, 0.0), (2, 0.0)])
 def test_backtest_agrees_with_the_pipeline_on_the_toy(tmp_path, lag, expected):
     kwargs = {} if lag is None else {"lag_bars": lag}
     result = backtest(_prices(), _weights_decided_on(J - 1), fees=0.0, **kwargs)
@@ -47,7 +45,8 @@ def test_each_strategy_of_a_dict_is_lagged_on_the_engine_grid():
     assert pd.isna(lagged["late"]["A"].iloc[J - 1])  # no decision here: the engine ffills it
     assert lagged["late"]["A"].iloc[J] == 1.0  # one PRICE bar later, not one weights row later
     assert lagged["same"]["A"].iloc[J - 1] == 1.0
-    assert _lag_for_engine(prices, sparse, 0) is sparse
+    with pytest.raises(ValueError, match="lag_bars must be >= 1"):
+        _lag_for_engine(prices, sparse, 0)
 
 
 def test_backtest_records_the_execution_timing():
@@ -55,20 +54,13 @@ def test_backtest_records_the_execution_timing():
     assert "next-bar (lag_bars=1)" in backtest(_prices(), _weights_decided_on(J - 1))["execution"]["description"]
 
 
-def test_backtest_same_bar_is_loud(caplog):
-    with caplog.at_level(logging.WARNING):
-        result = backtest(_prices(), _weights_decided_on(J - 1), fees=0.0, lag_bars=0)
-    assert "execution.lag_bars=0 (SAME-BAR)" in caplog.text
-    assert result["execution"]["same_bar"] is True
-
-
-@pytest.mark.parametrize("bad", [-1, 1.0, "1", True])
+@pytest.mark.parametrize("bad", [0, -1, 1.0, "1", True])
 def test_backtest_refuses_a_malformed_lag(bad):
     with pytest.raises(ValueError):
         backtest(_prices(), _weights_decided_on(J - 1), lag_bars=bad)
 
 
-@pytest.mark.parametrize(("lag", "expected"), [(None, 0.0), (0, JUMP)])
+@pytest.mark.parametrize(("lag", "expected"), [(None, 0.0), (2, 0.0)])
 def test_optimize_agrees_with_the_pipeline_on_the_toy(tmp_path, lag, expected):
     kwargs = {} if lag is None else {"lag_bars": lag}
     result = optimize(_prices(), _decided_fn, {"decided_on": [J - 1]}, metric="total_return", fees=0.0, **kwargs)
@@ -79,10 +71,41 @@ def test_optimize_agrees_with_the_pipeline_on_the_toy(tmp_path, lag, expected):
     assert result["execution"]["lag_bars"] == (1 if lag is None else lag)
 
 
-def test_optimize_same_bar_warns_once(caplog):
-    with caplog.at_level(logging.WARNING):
+def test_optimize_refuses_same_bar():
+    with pytest.raises(ValueError, match="lag_bars must be >= 1"):
         optimize(_prices(), _decided_fn, {"decided_on": [J - 1, J - 2, J - 3]}, fees=0.0, lag_bars=0)
-    assert caplog.text.count("execution.lag_bars=0 (SAME-BAR)") == 1
+
+
+@pytest.mark.parametrize("helper", ["bt.run", "from_signals_with_costs"])
+def test_the_signal_helpers_trade_next_bar_and_refuse_same_bar(helper):
+    """The L1 signal helpers used to fill at the signal's own close (ADR-0005).
+
+    A signal switched on at ``J-1`` must buy at close[J], after the jump.
+    """
+    if helper == "bt.run":
+        import quantbox.bt as qbt
+
+        def go(**kw):
+            return qbt.run(_prices(), _weights_decided_on(J - 1), fees=0.0, slippage=0.0, **kw).portfolio
+    else:
+        from quantbox.adapters.vectorbt import from_signals_with_costs
+
+        def go(**kw):
+            return from_signals_with_costs(_prices(), _weights_decided_on(J - 1), fees=0.0, slippage=0.0, **kw)
+
+    assert float(go().total_return().iloc[0]) == pytest.approx(0.0, abs=1e-9)
+    for bad in (0, -1):
+        with pytest.raises(ValueError, match="lag_bars must be >= 1"):
+            go(lag_bars=bad)
+
+
+@pytest.mark.parametrize("name", ["run_vectorbt", "fixed_commission_backtest_with_funding"])
+def test_the_same_bar_engine_primitives_are_not_exported(name):
+    import quantbox.plugins.backtesting as b
+
+    assert name not in b.__all__
+    with pytest.raises(ImportError, match="backtest"):
+        getattr(b, name)
 
 
 def test_optimize_walk_forward_records_the_execution_timing():
@@ -97,8 +120,8 @@ def _hold_prices() -> pd.DataFrame:
     return pd.DataFrame({"A": [100.0, 100.0, 110.0, 121.0, 133.1]}, index=idx)
 
 
-@pytest.mark.parametrize("lag", [0, 1])
-def test_buy_and_hold_enters_on_the_lagged_bar(lag):
+@pytest.mark.parametrize(("lag", "expected"), [(1, 0.331), (2, 0.21)])
+def test_buy_and_hold_enters_on_the_lagged_bar(lag, expected):
     """``rebalancing_freq=None`` trades once: the decision on bar 0 fills at close[lag].
 
     Lagging the weights alone left the one scheduled trade on bar 0, where the
@@ -107,10 +130,10 @@ def test_buy_and_hold_enters_on_the_lagged_bar(lag):
     prices = _hold_prices()
     weights = pd.DataFrame({"A": 1.0}, index=prices.index)
     result = backtest(prices, weights, fees=0.0, rebalancing_freq=None, lag_bars=lag)
-    assert result["metrics"]["total_return"] == pytest.approx(0.331, abs=1e-9)
+    assert result["metrics"]["total_return"] == pytest.approx(expected, abs=1e-9)
 
 
-@pytest.mark.parametrize("lag", [None, 0, 1, 2])
+@pytest.mark.parametrize("lag", [None, 1, 2])
 def test_buy_and_hold_agrees_with_the_pipeline(tmp_path, lag):
     """Both doors enter a buy-and-hold book at close[lag_bars]; the toy's later jump is earned."""
     kwargs = {} if lag is None else {"lag_bars": lag}
