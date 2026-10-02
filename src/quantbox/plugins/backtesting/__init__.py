@@ -19,7 +19,9 @@ Quick start::
 ``backtest()`` and ``optimize()`` follow the one execution-timing convention
 (:mod:`quantbox.execution`): weights decided on bar ``t`` fill at the close of
 bar ``t + lag_bars``, default 1 (next-bar), exactly as ``quantbox run -c``.
-``lag_bars=0`` (same-bar) is refused (docs/adr/0005).
+``lag_bars=0`` (same-bar) is refused (docs/adr/0005) unless the call also
+passes ``allow_same_bar=True, same_bar_reason="..."`` — the explicit override
+(docs/adr/0006); the result then says ``run: {kind: research}``.
 """
 
 from __future__ import annotations
@@ -29,10 +31,12 @@ from typing import Any
 import pandas as pd
 
 from quantbox.execution import (
+    ExecutionTiming,
     apply_execution_lag,
-    execution_record,
+    helper_execution,
     lag_buy_and_hold,
-    resolve_lag_bars,
+    run_record,
+    timing_record,
 )
 
 from .metrics import (
@@ -86,7 +90,7 @@ def __getattr__(name: str) -> Any:
 def _lag_for_engine(
     prices: pd.DataFrame,
     weights: dict[str, pd.DataFrame] | pd.DataFrame,
-    lag_bars: int,
+    lag_bars: int | ExecutionTiming,
 ) -> dict[str, pd.DataFrame] | pd.DataFrame:
     """Apply the execution lag on the engine's own bar grid.
 
@@ -97,8 +101,10 @@ def _lag_for_engine(
     unchanged; only the decision moves ``lag_bars`` bars later.
     """
 
+    timing = lag_bars if isinstance(lag_bars, ExecutionTiming) else ExecutionTiming(lag_bars)
+
     def one(w: pd.DataFrame) -> pd.DataFrame:
-        return apply_execution_lag(w.reindex(prices.index.union(w.index)), lag_bars)
+        return apply_execution_lag(w.reindex(prices.index.union(w.index)), timing.lag_bars, same_bar=timing.same_bar)
 
     if isinstance(weights, dict):
         return {name: one(w) for name, w in weights.items()}
@@ -109,7 +115,7 @@ def _backtest(
     prices: pd.DataFrame,
     weights: dict[str, pd.DataFrame] | pd.DataFrame,
     *,
-    lag_bars: int,
+    timing: ExecutionTiming,
     fees: float,
     fixed_fees: float,
     slippage: float,
@@ -118,7 +124,7 @@ def _backtest(
     use_numba: bool,
     trading_days: int,
 ) -> dict[str, Any]:
-    """``backtest()`` with an already-resolved ``lag_bars`` (``optimize()`` resolves it once per call)."""
+    """``backtest()`` with an already-resolved timing (``optimize()`` resolves it once per call)."""
     from .vectorbt_engine import run as run_vectorbt
 
     grid = prices.index
@@ -126,8 +132,8 @@ def _backtest(
         grid = grid.union(w.index)  # the engine's own bar grid
     pf = run_vectorbt(
         prices,
-        _lag_for_engine(prices, weights, lag_bars),
-        rebalancing_freq=lag_buy_and_hold(pd.to_datetime(grid), rebalancing_freq, lag_bars),
+        _lag_for_engine(prices, weights, timing),
+        rebalancing_freq=lag_buy_and_hold(pd.to_datetime(grid), rebalancing_freq, timing.lag_bars),
         threshold=threshold,
         fees=fees,
         fixed_fees=fixed_fees,
@@ -135,11 +141,13 @@ def _backtest(
         use_numba=use_numba,
     )
     metrics = compute_backtest_metrics(pf, trading_days=trading_days)
+    execution = timing_record(timing)
     return {
         "vbt_portfolio": pf,
         "metrics": metrics,
         "returns": pf.returns(),
-        "execution": execution_record(lag_bars),
+        "execution": execution,
+        "run": run_record(execution),
     }
 
 
@@ -155,6 +163,8 @@ def backtest(
     use_numba: bool = True,
     trading_days: int = 365,
     lag_bars: int | None = None,
+    allow_same_bar: bool = False,
+    same_bar_reason: str | None = None,
 ) -> dict[str, Any]:
     """High-level backtest using the vectorbt engine.
 
@@ -183,7 +193,11 @@ def backtest(
         Execution lag (:mod:`quantbox.execution`): weights decided on bar ``t``
         fill at the close of bar ``t + lag_bars``. ``None`` = the default, 1
         (next-bar), the same as ``quantbox run -c``; also the minimum — ``0``
-        (same-bar) raises ``ValueError``.
+        (same-bar) raises ``ValueError`` unless the override below is given.
+    allow_same_bar, same_bar_reason : bool, str | None
+        The explicit same-bar override (docs/adr/0006), the keywords of
+        ``execution.same_bar: {allow, reason}``: only with ``lag_bars=0`` and a
+        non-empty reason. The result is then RESEARCH, not a backtest.
 
     Returns
     -------
@@ -191,13 +205,13 @@ def backtest(
         ``"vbt_portfolio"`` — the vbt.Portfolio object,
         ``"metrics"`` — dict of performance metrics,
         ``"returns"`` — daily returns Series,
-        ``"execution"`` — the execution timing used (as ``run_manifest.json``).
+        ``"execution"`` — the execution timing used (as ``run_manifest.json``);
+        ``"run"`` — ``{"kind": "backtest" | "research"}`` (as ``run_manifest.json``).
     """
-    lag = resolve_lag_bars(None if lag_bars is None else {"lag_bars": lag_bars})
     return _backtest(
         prices,
         weights,
-        lag_bars=lag,
+        timing=helper_execution(lag_bars, allow_same_bar, same_bar_reason),
         fees=fees,
         fixed_fees=fixed_fees,
         slippage=slippage,

@@ -1,9 +1,17 @@
 ---
 adr: 0005
 title: Next-bar execution is mandatory — lag_bars 0 is refused
-status: accepted
+status: amended by ADR-0006
 date: 2026-10-02
+amended_by: 0006-same-bar-explicit-override.md
 ---
+
+> **Amended by [ADR-0006](0006-same-bar-explicit-override.md) (2026-10-02).**
+> Next-bar stays mandatory. But "There is no opt-out flag" and the rejected
+> `allow_same_bar` alternative below are superseded: `lag_bars: 0` runs under
+> the explicit `execution.same_bar: {allow: true, reason}` override, and such a
+> run is RESEARCH, not a backtest. ADR-0006 is the authority on same-bar; the
+> superseded text is kept below, struck through, as the record.
 
 # ADR-0005: Next-bar execution is mandatory — `lag_bars: 0` is refused
 
@@ -40,12 +48,14 @@ by contract and take weights already lagged. They are no longer exported from
 `ImportError` that points at `backtest()`); they stay importable from their
 own modules for the pipeline and the engine tests.
 
-There is no opt-out flag. The same-bar warning (`warn_if_same_bar`), the
+~~There is no opt-out flag.~~ *(Superseded by ADR-0006: the explicit
+`execution.same_bar` override.)* The same-bar warning (`warn_if_same_bar`), the
 frozen same-bar canonical goldens (`cookbook/canonical/expected_same_bar/`)
 and the test that reproduced them are deleted.
 
-`run_manifest.json` keeps `execution.same_bar` (always `false`) so the
-manifest schema and readers of old manifests do not change.
+`run_manifest.json` keeps `execution.same_bar` (always `false` under this
+ADR; `true` only under ADR-0006's override) so the manifest schema and readers
+of old manifests do not change.
 
 ## Consequences
 
@@ -71,9 +81,12 @@ manifest schema and readers of old manifests do not change.
 
 ## Alternatives considered
 
-- **An opt-in flag (`allow_same_bar: true`)** to keep historical numbers
+- ~~**An opt-in flag (`allow_same_bar: true`)** to keep historical numbers
   reproducible on the current release. Rejected: it is the v0.8.0 warning
-  with one more key, and a same-bar number is not a result worth reproducing.
+  with one more key, and a same-bar number is not a result worth reproducing.~~
+  *(Superseded by ADR-0006. An opt-in now exists, for data where same-bar is
+  closer to reality, not for reproducing history. It labels the run research,
+  which the v0.8.0 warning never did.)*
 - **Lagging inside the engine primitives.** Rejected: every caller that
   already lags (the pipeline, `backtest()`, labs) would silently trade two
   bars late. Removing the public name fails loudly instead.

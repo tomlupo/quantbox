@@ -3,7 +3,7 @@
   "$id": "quantbox/run@1",
   "title": "quantbox run manifest (run@1)",
   "description": "The machine-readable record of one run: <run_dir>/run_manifest.json, also what `quantbox run --json` prints. VERSIONING: `schema` names the MAJOR version and readers check it. Adding a field is a MINOR change: it keeps `quantbox/run@1`, bumps `x-schema-minor` here and is safe for every run@1 reader (unknown keys are allowed). Renaming a field, removing one, or changing what one MEANS is a MAJOR change: it ships as `quantbox/run@2`. Paths under `files` are relative to the run directory.",
-  "x-schema-minor": 1,
+  "x-schema-minor": 2,
   "type": "object",
   "required": [
     "schema",
@@ -80,10 +80,19 @@
       "type": "object",
       "required": ["lag_bars", "description"],
       "properties": {
-        "lag_bars": {"type": "integer", "minimum": 0, "description": "0 only in manifests written before ADR-0005; runs now refuse it"},
+        "lag_bars": {"type": "integer", "minimum": 0, "description": "0 in a same-bar RESEARCH run granted by execution.same_bar (ADR-0006, minor 2), and in manifests written before ADR-0005; a bare 0 is refused"},
         "fill": {"type": "string"},
         "same_bar": {"type": "boolean"},
+        "same_bar_reason": {"type": "string", "minLength": 1, "description": "Why the config granted the same-bar override (execution.same_bar.reason, ADR-0006). Present exactly when the run was same-bar under the override (minor 2)."},
         "description": {"type": "string"}
+      }
+    },
+    "run": {
+      "type": "object",
+      "required": ["kind"],
+      "description": "What the result IS (minor 2, ADR-0006). research: a same-bar run under execution.same_bar — it may inform a question and is never presented as a backtest result; backtest: next-bar. Written by every run that records `execution`; absent from manifests written before minor 2.",
+      "properties": {
+        "kind": {"enum": ["backtest", "research"]}
       }
     },
     "venue": {
@@ -120,6 +129,31 @@
       }
     }
   },
+  "allOf": [
+    {
+      "description": "A same-bar override (same_bar_reason) is a research run, and says so.",
+      "if": {"properties": {"execution": {"required": ["same_bar_reason"]}}, "required": ["execution"]},
+      "then": {
+        "required": ["run"],
+        "properties": {
+          "run": {"properties": {"kind": {"const": "research"}}},
+          "execution": {"properties": {"same_bar": {"const": true}, "lag_bars": {"const": 0}}}
+        }
+      }
+    },
+    {
+      "description": "A research run is same-bar with a recorded reason (the next entry: a backtest is never same-bar).",
+      "if": {"properties": {"run": {"properties": {"kind": {"const": "research"}}}}, "required": ["run"]},
+      "then": {
+        "required": ["execution"],
+        "properties": {"execution": {"required": ["same_bar", "same_bar_reason"], "properties": {"same_bar": {"const": true}}}}
+      }
+    },
+    {
+      "if": {"properties": {"run": {"properties": {"kind": {"const": "backtest"}}}}, "required": ["run"]},
+      "then": {"properties": {"execution": {"properties": {"same_bar": {"const": false}}}}}
+    }
+  ],
   "if": {"properties": {"engine": {"type": "object"}}, "required": ["engine"]},
   "then": {
     "required": ["execution", "venue"],

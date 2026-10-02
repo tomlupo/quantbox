@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "quantbox/explain@1",
   "title": "quantbox config explain (explain@1)",
-  "description": "What `quantbox config explain <config> --json` prints: how the runner will resolve a config, without running it. Fields shared with quantbox/run@1 (asof, mode, pipeline, config_hash, config.sha256, plugins, engine, dataset.{name,sha256,source,tier}, funding, execution, venue, overlays, n_trials) carry the SAME names and meanings as run@1, so a plan and the manifest of the run it plans compare key by key. One is a plan rather than a record: funding.modelled is true when the engine charges funding and a funding file exists. When ok is false, `errors` says why the run could not start and the plan fields may be absent. VERSIONING: as run@1 — adding a field bumps x-schema-minor; renaming, removing or re-meaning one ships as explain@2.",
-  "x-schema-minor": 0,
+  "description": "What `quantbox config explain <config> --json` prints: how the runner will resolve a config, without running it. Fields shared with quantbox/run@1 (asof, mode, pipeline, config_hash, config.sha256, plugins, engine, dataset.{name,sha256,source,tier}, funding, execution, run, venue, overlays, n_trials) carry the SAME names and meanings as run@1, so a plan and the manifest of the run it plans compare key by key. One is a plan rather than a record: funding.modelled is true when the engine charges funding and a funding file exists. When ok is false, `errors` says why the run could not start and the plan fields may be absent. VERSIONING: as run@1 — adding a field bumps x-schema-minor; renaming, removing or re-meaning one ships as explain@2.",
+  "x-schema-minor": 1,
   "type": "object",
   "required": ["schema", "ok", "errors"],
   "properties": {
@@ -38,6 +38,7 @@
     },
     "funding": {"$ref": "quantbox/run@1#/properties/funding"},
     "execution": {"$ref": "quantbox/run@1#/properties/execution"},
+    "run": {"$ref": "quantbox/run@1#/properties/run"},
     "venue": {"$ref": "quantbox/run@1#/properties/venue"},
     "overlays": {"$ref": "quantbox/run@1#/properties/overlays"},
     "n_trials": {"$ref": "quantbox/run@1#/properties/n_trials"},

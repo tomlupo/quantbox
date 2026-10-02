@@ -16,8 +16,15 @@ strategy weights into a simulated book (``backtest.pipeline.v1`` and
 
 ``lag_bars: 0`` (same-bar) is REFUSED, not warned (docs/adr/0005): a fill at
 the close the signal was computed from is an order nobody could have placed,
-so no number it produces is a backtest. Execution is always at least one bar
-later.
+so no number it produces is a backtest. Execution is at least one bar later —
+unless the SAME block carries the explicit override (docs/adr/0006)::
+
+    execution:
+      lag_bars: 0
+      same_bar: {allow: true, reason: "monthly-only data: ..."}
+
+which is an allowance against best practice, recorded with its reason, and
+classifies the run as RESEARCH, never a backtest (:func:`run_record`).
 
 Venue constraints live here too, because they answer the same question
 ("could this book have existed?"):
@@ -32,6 +39,7 @@ from __future__ import annotations
 import logging
 import warnings
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
@@ -41,18 +49,37 @@ logger = logging.getLogger(__name__)
 DEFAULT_LAG_BARS = 1
 MIN_LAG_BARS = 1
 
+#: How the override is spelled in an error message — every refusal names it.
+SAME_BAR_OVERRIDE = 'execution.same_bar: {allow: true, reason: "<why same-bar is closer to reality here>"}'
+
 EXECUTION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
         "lag_bars": {
             "type": "integer",
-            "minimum": MIN_LAG_BARS,
+            "minimum": 0,
             "default": DEFAULT_LAG_BARS,
             "description": (
                 "Execution lag in bars. Weights decided with data through bar t are filled at the "
-                "CLOSE of bar t+lag_bars. Default and minimum 1 (next-bar). 0 (same-bar) is refused: "
-                "the fill price would be part of the information set that chose the weight."
+                "CLOSE of bar t+lag_bars. Default and minimum 1 (next-bar). 0 (same-bar) is refused "
+                "unless `same_bar` grants it: the fill price would be part of the information set "
+                "that chose the weight."
+            ),
+        },
+        "same_bar": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["allow", "reason"],
+            "properties": {
+                "allow": {"type": "boolean"},
+                "reason": {"type": "string", "minLength": 1},
+            },
+            "description": (
+                "The explicit override that lets lag_bars 0 run (docs/adr/0006), against best "
+                "practice — e.g. monthly-only data, where the period's close is the only price. "
+                "Valid only with lag_bars 0; the reason is recorded in run_manifest.json and the run "
+                "is classified run.kind: research, not a backtest."
             ),
         },
     },
@@ -80,8 +107,27 @@ def _is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def resolve_lag_bars(execution_cfg: Any) -> int:
-    """Validate an ``execution:`` block and return ``lag_bars`` (default 1).
+@dataclass(frozen=True)
+class SameBarOverride:
+    """A granted ``execution.same_bar`` override: the one thing that lets ``lag_bars`` be 0.
+
+    Only :func:`resolve_execution` builds one from config, after checking it;
+    :func:`apply_execution_lag` asks for it by type, so a bare ``0`` never fills.
+    """
+
+    reason: str
+
+
+@dataclass(frozen=True)
+class ExecutionTiming:
+    """A resolved ``execution:`` block."""
+
+    lag_bars: int
+    same_bar: SameBarOverride | None = None
+
+
+def resolve_execution(execution_cfg: Any) -> ExecutionTiming:
+    """Validate an ``execution:`` block and return the timing it declares.
 
     Raises ``ValueError`` on anything that is not exactly the declared shape —
     an unknown key is refused rather than ignored, because a typo
@@ -89,28 +135,75 @@ def resolve_lag_bars(execution_cfg: Any) -> int:
     convention gets believed instead of applied.
     """
     if execution_cfg is None:
-        return DEFAULT_LAG_BARS
+        return ExecutionTiming(DEFAULT_LAG_BARS)
     if not isinstance(execution_cfg, Mapping):
         raise ValueError(f"execution must be a mapping like {{lag_bars: 1}}, got {execution_cfg!r}")
-    unknown = sorted(set(execution_cfg) - {"lag_bars"})
+    unknown = sorted(set(execution_cfg) - {"lag_bars", "same_bar"})
     if unknown:
-        raise ValueError(f"execution: unknown key(s) {unknown}; the only key is 'lag_bars'")
+        raise ValueError(f"execution: unknown key(s) {unknown}; the keys are 'lag_bars' and 'same_bar'")
     lag = execution_cfg.get("lag_bars", DEFAULT_LAG_BARS)
-    _check_lag(lag)
-    return int(lag)
+    same_bar = _resolve_same_bar(execution_cfg.get("same_bar"))
+    _check_lag(lag, same_bar)
+    if same_bar is not None and lag != 0:
+        raise ValueError(
+            f"execution.same_bar is valid only with lag_bars 0, got lag_bars={lag!r}: the override "
+            "would classify a next-bar run as research. Delete the same_bar block."
+        )
+    return ExecutionTiming(int(lag), same_bar)
 
 
-def _check_lag(lag: Any) -> None:
-    """Raise unless ``lag`` is an integer >= 1 — the one refusal every entry point shares."""
+def resolve_lag_bars(execution_cfg: Any) -> int:
+    """:func:`resolve_execution`, ``lag_bars`` only — for a caller that never fills a book."""
+    return resolve_execution(execution_cfg).lag_bars
+
+
+def _resolve_same_bar(block: Any) -> SameBarOverride | None:
+    """``execution.same_bar`` -> the granted override, or None (absent, or ``allow: false``)."""
+    if block is None:
+        return None
+    if not isinstance(block, Mapping):
+        raise ValueError(f"execution.same_bar must be a mapping like {{allow: true, reason: ...}}, got {block!r}")
+    unknown = sorted(set(block) - {"allow", "reason"})
+    if unknown:
+        raise ValueError(f"execution.same_bar: unknown key(s) {unknown}; the keys are 'allow' and 'reason'")
+    allow = block.get("allow")
+    if not isinstance(allow, bool):
+        raise ValueError(f"execution.same_bar.allow must be true or false, got {allow!r}")
+    reason = block.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError(
+            f"execution.same_bar.reason must be a non-empty string, got {reason!r}: same-bar is an "
+            "allowance against best practice, and the reason is what the manifest records for it."
+        )
+    return SameBarOverride(reason.strip()) if allow else None
+
+
+def _check_lag(lag: Any, same_bar: SameBarOverride | None = None) -> None:
+    """Raise unless ``lag`` is an integer >= 1, or 0 under a granted override — THE gate every entry point shares."""
     if not _is_int(lag):
         raise ValueError(f"execution.lag_bars must be an integer >= {MIN_LAG_BARS}, got {lag!r}")
+    if lag == 0 and isinstance(same_bar, SameBarOverride):
+        return
     if lag < MIN_LAG_BARS:
         raise ValueError(
             f"execution.lag_bars must be >= {MIN_LAG_BARS}, got {lag}: weights decided on bar t fill at "
             "the close of bar t+1 at the earliest. A smaller lag fills at (0, same-bar) or before "
             "(negative) the close the signal was computed from — look-ahead — and is refused, not "
-            "warned (docs/adr/0005-next-bar-is-mandatory.md)."
+            "warned (docs/adr/0005-next-bar-is-mandatory.md). Same-bar runs ONLY with the explicit "
+            f"override {SAME_BAR_OVERRIDE} next to lag_bars: 0 (backtest()/optimize(): "
+            "allow_same_bar=True, same_bar_reason=...), and is then a RESEARCH run, not a backtest "
+            "(docs/adr/0006-same-bar-explicit-override.md)."
         )
+
+
+def helper_execution(lag_bars: int | None, allow_same_bar: bool, same_bar_reason: str | None) -> ExecutionTiming:
+    """The ``backtest()`` / ``optimize()`` keywords as an ``execution:`` block, through the same resolver."""
+    cfg: dict[str, Any] = {}
+    if lag_bars is not None:
+        cfg["lag_bars"] = lag_bars
+    if allow_same_bar or same_bar_reason is not None:
+        cfg["same_bar"] = {"allow": bool(allow_same_bar), "reason": same_bar_reason}
+    return resolve_execution(cfg)
 
 
 def resolve_sweep_lag_bars(lag_bars: int | None, shift_signal: int | None) -> int:
@@ -135,6 +228,7 @@ def apply_execution_lag(
     weights: pd.DataFrame,
     lag_bars: int,
     *,
+    same_bar: SameBarOverride | None = None,
     fill_leading: float | None = 0.0,
 ) -> pd.DataFrame:
     """Shift decided weights forward by ``lag_bars`` rows — THE execution lag.
@@ -145,9 +239,10 @@ def apply_execution_lag(
     default) or left NaN with ``fill_leading=None``.
 
     A lag below 1 is refused here too, so a caller that skips
-    :func:`resolve_lag_bars` cannot hand the engine a same-bar book.
+    :func:`resolve_execution` cannot hand the engine a same-bar book; ``0``
+    passes only with the :class:`SameBarOverride` that resolver granted.
     """
-    _check_lag(lag_bars)
+    _check_lag(lag_bars, same_bar)
     lagged = weights.shift(lag_bars)
     if fill_leading is not None:
         lagged.iloc[:lag_bars] = fill_leading
@@ -200,22 +295,48 @@ def materialise_nan_policy(weights: pd.DataFrame, engine: str | None) -> pd.Data
     raise ValueError(f"Unknown engine: {engine!r}. Use 'vectorbt' or 'rsims'.")
 
 
-def describe_execution(lag_bars: int) -> str:
+def describe_execution(lag_bars: int, same_bar: SameBarOverride | None = None) -> str:
     """The execution timing in words — for logs, summary.md, the report header."""
+    if lag_bars == 0:
+        reason = same_bar.reason if same_bar is not None else "no override recorded"
+        return (
+            "same-bar (lag_bars=0): weights decided on bar t fill at the close of bar t — RESEARCH run, "
+            f"not a backtest; allowed by execution.same_bar: {reason}"
+        )
     bars = "bar" if lag_bars == 1 else "bars"
     return (
         f"next-bar (lag_bars={lag_bars}): weights decided on bar t fill at the close of bar t+{lag_bars} {bars} later"
     )
 
 
-def execution_record(lag_bars: int) -> dict[str, Any]:
+def execution_record(lag_bars: int, same_bar: SameBarOverride | None = None) -> dict[str, Any]:
     """The block written to ``run_manifest.json`` / ``RunResult.notes['execution']``."""
-    return {
+    _check_lag(lag_bars, same_bar)
+    record: dict[str, Any] = {
         "lag_bars": int(lag_bars),
         "fill": "close",
-        "same_bar": False,  # lag_bars >= 1 always (ADR-0005); key kept for the manifest schema
-        "description": describe_execution(lag_bars),
+        "same_bar": lag_bars == 0,
+        "description": describe_execution(lag_bars, same_bar),
     }
+    if same_bar is not None:
+        record["same_bar_reason"] = same_bar.reason
+    return record
+
+
+def timing_record(timing: ExecutionTiming) -> dict[str, Any]:
+    """:func:`execution_record` of a resolved timing."""
+    return execution_record(timing.lag_bars, timing.same_bar)
+
+
+def run_record(execution: Mapping[str, Any]) -> dict[str, str]:
+    """The run@1 ``run`` block an execution record implies: ``{"kind": "research" | "backtest"}``.
+
+    A same-bar run is RESEARCH (docs/adr/0006): it may inform a question, it
+    is never presented as a backtest result. Every reader that shows a result
+    (the manifest, ``config explain``, the finding-report export, the gates)
+    reads this one classification.
+    """
+    return {"kind": "research" if execution.get("same_bar") else "backtest"}
 
 
 # ----------------------------------------------------------------------
