@@ -96,19 +96,21 @@ def resolve_lag_bars(execution_cfg: Any) -> int:
     if unknown:
         raise ValueError(f"execution: unknown key(s) {unknown}; the only key is 'lag_bars'")
     lag = execution_cfg.get("lag_bars", DEFAULT_LAG_BARS)
-    if not _is_int(lag):
-        raise ValueError(f"execution.lag_bars must be an integer >= {MIN_LAG_BARS}, got {lag!r}")
-    if lag < MIN_LAG_BARS:
-        raise ValueError(_refuse_lag(lag))
+    _check_lag(lag)
     return int(lag)
 
 
-def _refuse_lag(lag: int) -> str:
-    return (
-        f"execution.lag_bars must be >= {MIN_LAG_BARS}, got {lag}: weights decided on bar t fill at the "
-        "close of bar t+1 at the earliest. lag_bars=0 fills at the close the signal was computed from "
-        "(same-bar look-ahead) and is refused, not warned (docs/adr/0005-next-bar-is-mandatory.md)."
-    )
+def _check_lag(lag: Any) -> None:
+    """Raise unless ``lag`` is an integer >= 1 — the one refusal every entry point shares."""
+    if not _is_int(lag):
+        raise ValueError(f"execution.lag_bars must be an integer >= {MIN_LAG_BARS}, got {lag!r}")
+    if lag < MIN_LAG_BARS:
+        raise ValueError(
+            f"execution.lag_bars must be >= {MIN_LAG_BARS}, got {lag}: weights decided on bar t fill at "
+            "the close of bar t+1 at the earliest. A smaller lag fills at (0, same-bar) or before "
+            "(negative) the close the signal was computed from — look-ahead — and is refused, not "
+            "warned (docs/adr/0005-next-bar-is-mandatory.md)."
+        )
 
 
 def resolve_sweep_lag_bars(lag_bars: int | None, shift_signal: int | None) -> int:
@@ -145,8 +147,7 @@ def apply_execution_lag(
     A lag below 1 is refused here too, so a caller that skips
     :func:`resolve_lag_bars` cannot hand the engine a same-bar book.
     """
-    if not _is_int(lag_bars) or lag_bars < MIN_LAG_BARS:
-        raise ValueError(_refuse_lag(lag_bars))
+    _check_lag(lag_bars)
     lagged = weights.shift(lag_bars)
     if fill_leading is not None:
         lagged.iloc[:lag_bars] = fill_leading
@@ -212,7 +213,7 @@ def execution_record(lag_bars: int) -> dict[str, Any]:
     return {
         "lag_bars": int(lag_bars),
         "fill": "close",
-        "same_bar": lag_bars == 0,
+        "same_bar": False,  # lag_bars >= 1 always (ADR-0005); key kept for the manifest schema
         "description": describe_execution(lag_bars),
     }
 

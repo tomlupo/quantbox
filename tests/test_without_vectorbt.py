@@ -114,7 +114,7 @@ def test_cli_plugins_list_without_vectorbt():
 @pytest.mark.parametrize(
     "snippet",
     [
-        "from quantbox.plugins.backtesting import run_vectorbt",
+        "from quantbox.plugins.backtesting.vectorbt_engine import run",
         "import quantbox.plugins.backtesting as b; b.backtest(None, None)",
         "from quantbox.adapters.vectorbt import vbt",
         "import pandas as pd, quantbox.bt as qbt; qbt.run(pd.DataFrame(), pd.DataFrame())",

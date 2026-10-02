@@ -45,13 +45,11 @@ from .metrics import (
     compute_var,
 )
 from .optimizer import optimize
-from .rsims_engine import fixed_commission_backtest_with_funding, positions_from_no_trade_buffer
+from .rsims_engine import positions_from_no_trade_buffer
 
 __all__ = [
     "backtest",
     "optimize",
-    "run_vectorbt",
-    "fixed_commission_backtest_with_funding",
     "positions_from_no_trade_buffer",
     "compute_backtest_metrics",
     "compute_cvar",
@@ -63,14 +61,25 @@ __all__ = [
 ]
 
 
-def __getattr__(name: str) -> Any:
-    # ``run_vectorbt`` is resolved lazily so this package (and the rsims engine,
-    # metrics, optimizer) imports without the [vectorbt] extra. Without it,
-    # asking for the name raises MissingExtraError naming the extra.
-    if name == "run_vectorbt":
-        from .vectorbt_engine import run
+# The engine primitives fill row t at close[t] and expect weights ALREADY
+# lagged; exported here, a quick calculation reached them with raw weights and
+# came out same-bar. They stay importable from their modules for the pipeline
+# and engine tests, and asking for them here says where the lagged path is.
+_ENGINE_PRIMITIVES = {
+    "run_vectorbt": "quantbox.plugins.backtesting.vectorbt_engine.run",
+    "fixed_commission_backtest_with_funding": (
+        "quantbox.plugins.backtesting.rsims_engine.fixed_commission_backtest_with_funding"
+    ),
+}
 
-        return run
+
+def __getattr__(name: str) -> Any:
+    if name in _ENGINE_PRIMITIVES:
+        raise ImportError(
+            f"{name} is no longer exported from {__name__} (docs/adr/0005-next-bar-is-mandatory.md): "
+            "it fills at the close the weights were decided on. Use backtest(prices, weights) — "
+            f"next-bar, lag_bars >= 1 — or, for weights you have lagged yourself, {_ENGINE_PRIMITIVES[name]}."
+        )
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -109,7 +118,7 @@ def _backtest(
     use_numba: bool,
     trading_days: int,
 ) -> dict[str, Any]:
-    """``backtest()`` with an already-resolved ``lag_bars`` and no warning (``optimize()`` warns once)."""
+    """``backtest()`` with an already-resolved ``lag_bars`` (``optimize()`` resolves it once per call)."""
     from .vectorbt_engine import run as run_vectorbt
 
     grid = prices.index

@@ -1426,7 +1426,8 @@ class BacktestPipeline:
         threshold,
         trading_days: int,
     ) -> dict[str, Any]:
-        from quantbox.plugins.backtesting import compute_backtest_metrics, run_vectorbt
+        from quantbox.plugins.backtesting import compute_backtest_metrics
+        from quantbox.plugins.backtesting.vectorbt_engine import run as run_vectorbt
 
         pf = run_vectorbt(
             prices,
@@ -1473,10 +1474,8 @@ class BacktestPipeline:
         equity_basis: str,
         trading_days: int,
     ) -> dict[str, Any]:
-        from quantbox.plugins.backtesting import (
-            compute_backtest_metrics,
-            fixed_commission_backtest_with_funding,
-        )
+        from quantbox.plugins.backtesting import compute_backtest_metrics
+        from quantbox.plugins.backtesting.rsims_engine import fixed_commission_backtest_with_funding
 
         results_df = fixed_commission_backtest_with_funding(
             prices=prices,

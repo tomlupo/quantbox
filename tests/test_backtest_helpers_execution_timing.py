@@ -76,6 +76,38 @@ def test_optimize_refuses_same_bar():
         optimize(_prices(), _decided_fn, {"decided_on": [J - 1, J - 2, J - 3]}, fees=0.0, lag_bars=0)
 
 
+@pytest.mark.parametrize("helper", ["bt.run", "from_signals_with_costs"])
+def test_the_signal_helpers_trade_next_bar_and_refuse_same_bar(helper):
+    """The L1 signal helpers used to fill at the signal's own close (ADR-0005).
+
+    A signal switched on at ``J-1`` must buy at close[J], after the jump.
+    """
+    if helper == "bt.run":
+        import quantbox.bt as qbt
+
+        def go(**kw):
+            return qbt.run(_prices(), _weights_decided_on(J - 1), fees=0.0, slippage=0.0, **kw).portfolio
+    else:
+        from quantbox.adapters.vectorbt import from_signals_with_costs
+
+        def go(**kw):
+            return from_signals_with_costs(_prices(), _weights_decided_on(J - 1), fees=0.0, slippage=0.0, **kw)
+
+    assert float(go().total_return().iloc[0]) == pytest.approx(0.0, abs=1e-9)
+    for bad in (0, -1):
+        with pytest.raises(ValueError, match="lag_bars must be >= 1"):
+            go(lag_bars=bad)
+
+
+@pytest.mark.parametrize("name", ["run_vectorbt", "fixed_commission_backtest_with_funding"])
+def test_the_same_bar_engine_primitives_are_not_exported(name):
+    import quantbox.plugins.backtesting as b
+
+    assert name not in b.__all__
+    with pytest.raises(ImportError, match="backtest"):
+        getattr(b, name)
+
+
 def test_optimize_walk_forward_records_the_execution_timing():
     result = optimize(
         _prices(), _decided_fn, {"decided_on": [J - 1]}, method="walk_forward", train_size=10, test_size=10, fees=0.0

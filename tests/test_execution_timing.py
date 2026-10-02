@@ -293,8 +293,11 @@ def test_apply_execution_lag_shape():
     lagged = apply_execution_lag(w, 1)
     assert lagged.iloc[0].tolist() == [0.0, 0.0]
     assert lagged.iloc[4, 0] == 1.0 and lagged.iloc[3, 0] == 0.0
-    for bad in (0, -1, 1.0, True):
-        with pytest.raises(ValueError, match="lag_bars must be >= 1"):
+    for bad in (0, -1):
+        with pytest.raises(ValueError, match=REFUSED):
+            apply_execution_lag(w, bad)
+    for bad in (1.0, True):
+        with pytest.raises(ValueError, match="must be an integer >= 1"):
             apply_execution_lag(w, bad)
     assert apply_execution_lag(w, 1, fill_leading=None).iloc[0].isna().all()
 
@@ -308,7 +311,6 @@ def test_default_run_records_and_states_its_timing(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="quantbox.execution"):
         # full_report: the heavy HTML report is opt-in (TOM-1365) and must state the timing too
         result, store = _run_pipeline(tmp_path, {"full_report": True})
-    assert "SAME-BAR" not in caplog.text
     assert result.notes["execution"] == {
         "lag_bars": 1,
         "fill": "close",
@@ -544,7 +546,7 @@ def test_mid_series_nan_rows_rsims_saved_book_is_the_flat_book(tmp_path):
 
 def test_materialising_the_nan_policy_does_not_change_vectorbt_numbers():
     """The engine receives the materialised frame; its result must equal the raw-NaN frame's."""
-    from quantbox.plugins.backtesting import run_vectorbt
+    from quantbox.plugins.backtesting.vectorbt_engine import run as run_vectorbt
 
     w = _weights_decided_on(0)
     w.iloc[15:21] = np.nan
@@ -564,7 +566,12 @@ def test_materialising_the_nan_policy_does_not_change_vectorbt_numbers():
 
 @pytest.mark.parametrize(
     ("block", "message"),
-    [({"lag_bar": 0}, "unknown key"), (0, "must be a mapping"), ({"lag_bars": "0"}, "must be an integer")],
+    [
+        ({"lag_bar": 0}, "unknown key"),
+        (0, "must be a mapping"),
+        ({"lag_bars": "0"}, "must be an integer"),
+        ({"lag_bars": 0}, REFUSED),
+    ],
 )
 def test_sweep_cli_refuses_a_malformed_execution_block_before_any_work(tmp_path, block, message):
     import yaml

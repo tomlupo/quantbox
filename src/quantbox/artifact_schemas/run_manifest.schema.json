@@ -80,7 +80,7 @@
       "type": "object",
       "required": ["lag_bars", "description"],
       "properties": {
-        "lag_bars": {"type": "integer", "minimum": 0},
+        "lag_bars": {"type": "integer", "minimum": 0, "description": "0 only in manifests written before ADR-0005; runs now refuse it"},
         "fill": {"type": "string"},
         "same_bar": {"type": "boolean"},
         "description": {"type": "string"}
