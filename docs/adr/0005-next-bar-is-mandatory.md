@@ -61,7 +61,7 @@ manifest schema and readers of old manifests do not change.
   or the module path plus an explicit `apply_execution_lag`.
 - `quantbox.bt.run` and `from_signals_with_costs` now fill next-bar, so the
   same inputs return different numbers than before — one bar later.
-- Two bypasses are left, both outside quantbox's control and both documented:
+- Two bypasses are left, both documented:
   a caller that imports an engine primitive from its module and hands it raw
   weights, and the L0 `vbt` re-export (`quantbox.adapters.vectorbt.vbt`),
   which fills whatever it is handed. Every L0 example lags its signals one bar
@@ -77,9 +77,3 @@ manifest schema and readers of old manifests do not change.
 - **Lagging inside the engine primitives.** Rejected: every caller that
   already lags (the pipeline, `backtest()`, labs) would silently trade two
   bars late. Removing the public name fails loudly instead.
-- The engine primitives (`vectorbt_engine.run`, the rsims engine) fill row
-  `t` at `close[t]` by contract and take weights that are ALREADY lagged; a
-  caller that hands them decided weights directly bypasses this ADR. Use
-  `backtest()` or the pipeline instead. robo-lab called the vectorbt
-  primitive with unshifted weights in `scripts/run_backtest_report.py`
-  (fixed there separately).

@@ -8,7 +8,7 @@ QuantBox exposes every capability at multiple layers so users (humans, scripts, 
 
 | Layer | API shape | When to use | Example |
 |---|---|---|---|
-| **L0** Re-exports | `from quantbox.adapters.vectorbt import vbt` | Quick experiment, throwaway script. Pure pass-through to the underlying lib — it fills the bar it is handed, so lag the signal yourself ([ADR-0005](../adr/0005-next-bar-is-mandatory.md)). | `vbt.Portfolio.from_signals(prices, signals.shift(1, fill_value=False))` |
+| **L0** Re-exports | `from quantbox.adapters.vectorbt import vbt` | Quick experiment, throwaway script. Pure pass-through to the underlying lib — it fills the bar it is handed, so lag the signal yourself ([ADR-0005](../adr/0005-next-bar-is-mandatory.md)). | `vbt.Portfolio.from_signals(prices, (signals > 0).shift(1, fill_value=False))` |
 | **L1** Convenience helpers | `quantbox.bt.run(...)` (the only L1 namespace today) | Common idiom — one function call. No plugin/config layer. | `qbt.run(prices, signals, fees=0.001)` |
 | **L2** Composable units (not built) | — | Building a notebook, composing two ideas, no run_id ceremony. Until it exists, use L3. | — |
 | **L3** Plugin instances | Instantiate `Strategy()`, `DataPlugin()`, call directly | You want validation and contracts but not the YAML/runner. | `MyStrat().run(data, params)` |
@@ -81,25 +81,9 @@ If a user has to write `import vectorbt as vbt` to bypass quantbox, the adapter 
 
 The rule: one function call covers the most common idiom for that capability. No plugin, no config, no manifest.
 
-```python
-# bt.py (sketch — the code is the authority)
-import pandas as pd
-from .adapters.vectorbt import from_signals_with_costs
-from .execution import DEFAULT_LAG_BARS
-
-
-def run(
-    prices: pd.DataFrame,
-    signals: pd.DataFrame,
-    *,
-    lag_bars: int = DEFAULT_LAG_BARS,  # next-bar always; 0 raises (ADR-0005)
-    fees: float = 0.001,
-    slippage: float = 0.0005,
-    freq: str = "1D",
-) -> "Result":
-    pf = from_signals_with_costs(prices, signals, lag_bars=lag_bars, fees=fees, slippage=slippage, freq=freq)
-    return Result(portfolio=pf, metrics=pf.stats())
-```
+`quantbox.bt.run` (`src/quantbox/bt.py`) delegates to
+`adapters.vectorbt.from_signals_with_costs`: next-bar always, `lag_bars=0`
+raises ([ADR-0005](../adr/0005-next-bar-is-mandatory.md)).
 
 Users:
 
