@@ -67,15 +67,15 @@ from quantbox.exceptions import DataLoadError, MissingExtraError
 from quantbox.execution import (
     EXECUTION_SCHEMA,
     VENUE_SCHEMA,
+    SameBarOverride,
     apply_execution_lag,
     clip_shorts,
-    describe_execution,
-    execution_record,
     exposure_metrics,
     lag_buy_and_hold,
     materialise_nan_policy,
     resolve_allow_shorts,
-    resolve_lag_bars,
+    resolve_execution,
+    timing_record,
     warn_on_shorts,
 )
 from quantbox.frequency import Frequency, resolve_pipeline_frequency
@@ -321,7 +321,7 @@ class BacktestPipeline:
                 },
                 "execution": {
                     **EXECUTION_SCHEMA,
-                    "description": "Run-level execution timing (lag_bars).",
+                    "description": "Run-level execution timing (lag_bars; same_bar = the explicit lag 0 override).",
                 },
                 "venue": {
                     **VENUE_SCHEMA,
@@ -379,7 +379,7 @@ class BacktestPipeline:
             raise ValueError(f"Unknown engine: {engine!r}. Use 'vectorbt' or 'rsims'.")
         if not _engine_installed(engine):
             raise MissingExtraError(engine, f"the {engine} backtest engine", engine)
-        lag_bars = resolve_lag_bars(params.get("execution"))
+        timing = resolve_execution(params.get("execution"))
         allow_shorts, venue_declared = resolve_allow_shorts(params.get("venue"), params.get("risk"))
         load_params = dict(params.get("prices", {"lookback_days": 365}))
         freq = self._resolve_frequency(params, load_params)
@@ -405,7 +405,9 @@ class BacktestPipeline:
         risk_cfg = _variant_risk_cfg(params.get("risk") or {}, variants[0]) if variants else params.get("risk", {})
         return {
             "engine": engine,
-            "execution": execution_record(lag_bars),
+            "execution": timing_record(timing),
+            # The resolved timing itself: a same-bar run carries the granted override to the lag.
+            "timing": timing,
             "venue": {
                 "declared": venue_declared,
                 "allow_shorts": allow_shorts,
@@ -468,9 +470,13 @@ class BacktestPipeline:
         rebalancing_freq = params.get("rebalancing_freq", 1)
         threshold = params.get("threshold")
 
-        lag_bars = plan["execution"]["lag_bars"]
+        lag_bars, same_bar = plan["timing"].lag_bars, plan["timing"].same_bar
         allow_shorts, venue_declared = plan["venue"]["allow_shorts"], plan["venue"]["declared"]
-        logger.info("Execution timing: %s", describe_execution(lag_bars))
+        logger.info("Execution timing: %s", plan["execution"]["description"])
+        if same_bar is not None:
+            logger.warning(
+                "SAME-BAR override (docs/adr/0006): this is a RESEARCH run, not a backtest — %s", same_bar.reason
+            )
 
         # --- Stage 1: Universe & Market Data ---
         universe_params = params.get("universe", {})
@@ -639,7 +645,9 @@ class BacktestPipeline:
         weights_history = self._apply_venue_and_risk(weights_history, risk_cfg, allow_shorts, venue_declared)
 
         # --- Stage 5: Execution lag, then run backtest engine ---
-        bt_prices, bt_weights = self._align_for_engine(prices_wide, weights_history, lag_bars, engine=engine)
+        bt_prices, bt_weights = self._align_for_engine(
+            prices_wide, weights_history, lag_bars, engine=engine, same_bar=same_bar
+        )
         common_cols = [c for c in weights_history.columns if c in prices_wide.columns]
         a_traded = store.put_parquet("traded_weights", bt_weights.rename_axis("date").reset_index())
 
@@ -723,7 +731,7 @@ class BacktestPipeline:
             params=params,
             period_start=period_start,
             period_end=period_end,
-            execution=execution_record(lag_bars),
+            execution=plan["execution"],
         )
 
         store.put_text(
@@ -735,7 +743,7 @@ class BacktestPipeline:
                 strategy_names=report_strategy_names,
                 period_start=period_start,
                 period_end=period_end,
-                execution=describe_execution(lag_bars),
+                execution=plan["execution"]["description"],
             ),
         )
         # The heavy HTML report is opt-in; the slim finding_report.json is written by the runner.
@@ -760,7 +768,7 @@ class BacktestPipeline:
                     strategy_details=strategy_details,
                     narrative=narrative,
                     reproducibility=reproducibility,
-                    execution=describe_execution(lag_bars),
+                    execution=plan["execution"]["description"],
                 )
                 store.put_text("report_data.json", report_data_to_json(rd))
                 store.put_text("report.html", generate_html_report(rd))
@@ -1027,7 +1035,9 @@ class BacktestPipeline:
 
             # Stage 5: execution lag + align, then engine
             try:
-                bt_p, bt_w = self._align_for_engine(prices_wide, wh, lag_bars, engine=engine)
+                bt_p, bt_w = self._align_for_engine(
+                    prices_wide, wh, lag_bars, engine=engine, same_bar=plan["timing"].same_bar
+                )
             except ValueError as exc:
                 raise ValueError(f"Variant {vname!r}: {exc}") from exc
 
@@ -1146,7 +1156,7 @@ class BacktestPipeline:
                 period_start=period_start,
                 period_end=period_end,
                 variant_results=variant_results,
-                execution=execution_record(lag_bars),
+                execution=plan["execution"],
             )
             store.put_text(
                 "summary.md",
@@ -1157,7 +1167,7 @@ class BacktestPipeline:
                     strategy_names=list(variant_results.keys()),
                     period_start=period_start,
                     period_end=period_end,
-                    execution=describe_execution(lag_bars),
+                    execution=plan["execution"]["description"],
                 ),
             )
             if plan["full_report"]:  # the heavy HTML report is opt-in
@@ -1180,7 +1190,7 @@ class BacktestPipeline:
                     variant_results=variant_results,
                     narrative=narrative,
                     reproducibility=reproducibility,
-                    execution=describe_execution(lag_bars),
+                    execution=plan["execution"]["description"],
                 )
                 store.put_text("report_data.json", report_data_to_json(rd))
                 store.put_text("report.html", generate_html_report(rd))
@@ -1309,6 +1319,7 @@ class BacktestPipeline:
         lag_bars: int,
         *,
         engine: str | None = "vectorbt",
+        same_bar: SameBarOverride | None = None,
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Align prices/weights for the engine and apply the execution lag.
 
@@ -1331,7 +1342,7 @@ class BacktestPipeline:
             raise ValueError("No overlapping tickers between prices and weights")
 
         bt_prices = prices_wide.loc[common_idx, common_cols]
-        bt_weights = apply_execution_lag(weights.loc[common_idx, common_cols], lag_bars)
+        bt_weights = apply_execution_lag(weights.loc[common_idx, common_cols], lag_bars, same_bar=same_bar)
 
         # Drop columns with < 50% non-null prices first so a newly-listed coin
         # doesn't truncate the entire simulation window to its listing date.

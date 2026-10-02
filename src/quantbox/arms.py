@@ -43,7 +43,7 @@ from typing import Any
 
 import yaml
 
-from .execution import execution_record, resolve_lag_bars
+from .execution import resolve_execution, timing_record
 
 ARMS_SCHEMA_ID = "quantbox/arms@1"
 SUMMARY_FILE = "arms_summary.json"
@@ -120,14 +120,15 @@ def load_arms(path: str | Path) -> ArmsSpec:
     # ONE timing for the batch. The block goes through the same resolver as
     # `quantbox run` and `quantbox sweep`; it must not contradict the base.
     if "execution" in raw:
-        lag = resolve_lag_bars(raw["execution"])
+        timing = resolve_execution(raw["execution"])
         params = _pipeline_params(base)
-        if "execution" in params and resolve_lag_bars(params["execution"]) != lag:
+        if "execution" in params and resolve_execution(params["execution"]) != timing:
             raise ValueError(
-                f"{path}: execution.lag_bars={lag} contradicts the base config's "
+                f"{path}: execution {dict(raw['execution'])!r} contradicts the base config's "
                 f"plugins.pipeline.params.execution {params['execution']!r}"
             )
-        params["execution"] = {"lag_bars": lag}
+        # the whole block: a same-bar override (docs/adr/0006) travels with its lag
+        params["execution"] = copy.deepcopy(dict(raw["execution"]))
 
     n_trials = raw.get("n_trials")
     if n_trials is not None and (not isinstance(n_trials, int) or isinstance(n_trials, bool) or n_trials < 1):
@@ -388,7 +389,7 @@ def run_arms(
         "status": "failed" if failed else "ok",
         "failed": failed,
         "n_trials": arms[0][1]["run"]["n_trials"],
-        "execution": execution_record(resolve_lag_bars(_pipeline_params(copy.deepcopy(spec.base)).get("execution"))),
+        "execution": timing_record(resolve_execution(_pipeline_params(copy.deepcopy(spec.base)).get("execution"))),
         "parallel": {
             "workers": workers,
             "max_workers": max_w,

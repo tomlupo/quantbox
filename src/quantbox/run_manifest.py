@@ -44,6 +44,33 @@ def validate_run_manifest(manifest: dict[str, Any]) -> list[str]:
     ]
 
 
+def run_kind(manifest: dict[str, Any]) -> str | None:
+    """``research`` or ``backtest`` — what a run's result IS (docs/adr/0006); None when it simulated nothing.
+
+    ``run.kind`` when the manifest carries it (minor 2). An older manifest that
+    recorded ``execution.same_bar: true`` (v0.8.0 let ``lag_bars: 0`` run with a
+    warning) is research too: it filled at the close it decided on.
+    """
+    kind = (manifest.get("run") or {}).get("kind")
+    if kind:
+        return str(kind)
+    execution = manifest.get("execution")
+    if not isinstance(execution, dict):
+        return None
+    return "research" if execution.get("same_bar") else "backtest"
+
+
+def research_note(manifest: dict[str, Any]) -> str | None:
+    """The one sentence every reader prints next to a research run's numbers; None for anything else."""
+    if run_kind(manifest) != "research":
+        return None
+    reason = (manifest.get("execution") or {}).get("same_bar_reason") or "no reason recorded (written before ADR-0006)"
+    return (
+        "RESEARCH run, not a backtest: same-bar fills (lag_bars 0) under the explicit execution.same_bar "
+        f"override — {reason}"
+    )
+
+
 def run_files(manifest: dict[str, Any]) -> dict[str, str | None]:
     """The canonical files a manifest lists, relative to its run directory."""
     return dict(manifest.get("files") or {})

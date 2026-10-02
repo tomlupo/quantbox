@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from . import run_manifest as _rm
+from .execution import run_record
 from .overlays import overlay_record
 from .runner import (
     _config_block,
@@ -64,6 +65,7 @@ SHARED_FIELDS: tuple[str, ...] = (
     "engine",
     "funding",
     "execution",
+    "run",
     "venue",
     "overlays",
     "n_trials",
@@ -182,7 +184,7 @@ def explain_config(
     dataset = _dataset_block(data)
     refusal = strict_refusal(cfg, resolved.mode, dataset.get("tier"))
     if refusal:
-        errors.append(f"dataset: {refusal}")
+        errors.append(f"strict: {refusal}")
         return doc
     dataset.update(_rm.dataset_fields(data, dataset))
     resolution = getattr(data, "dataset_resolution", None)
@@ -217,6 +219,7 @@ def explain_config(
     )
     if plan:
         doc["execution"] = plan["execution"]
+        doc["run"] = run_record(plan["execution"])
         doc["venue"] = plan["venue"]
     if getattr(pipeline, "accepts_overlays", False):
         # A pipeline that applies overlays records the chain, empty or not (run@1 minor 1).
