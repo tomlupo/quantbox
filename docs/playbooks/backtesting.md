@@ -142,13 +142,14 @@ Reading a dataset without it raises an ImportError naming both.
 |---|---|---|
 | `engine` | `vectorbt` | `"vectorbt"` or `"rsims"` |
 | `fees` | `0.001` | Trading fee per side (0.001 = 10 bps) |
-| `rebalancing_freq` | `1` | Rebalance every N days, or `"1W"`, `"1M"` |
+| `rebalancing_freq` | `1` | Rebalance every N days, or `"1W"`, `"1M"`; a calendar date that is not a bar trades on the next bar ([ADR-0007](../adr/0007-instrument-calendar-and-financing.md)) |
 | `threshold` | (none) | Drift threshold for rebalancing-bands mode |
 | `trading_days` | `365` | Days per year for annualization |
 | `universe.top_n` | — | Universe size (top N by volume/mcap) |
 | `prices.lookback_days` | — | Price history window |
 | `execution.lag_bars` | `1` | Bars between deciding a weight and filling it — see [Execution timing and venue constraints](#execution-timing-and-venue-constraints) |
 | `venue.allow_shorts` | (unset) | Whether the venue can hold shorts — same section |
+| `venue.financing` | (unset) | What borrowed / idle cash costs — [Missing prices and financing](#missing-prices-and-financing) |
 | `risk.max_leverage` | `99` | Gross cap per bar; only ever scales DOWN (both engines) |
 | `risk.allow_short` | `false` | Legacy short switch (both engines); prefer `venue.allow_shorts` |
 | `risk.tranches` | `1` | Rolling-mean tranching of target weights (both engines) |
@@ -202,10 +203,44 @@ same-bar override is not one either: it is for data, not for strategies).
 **Where it is recorded.** `run_manifest.json` carries
 `execution: {lag_bars, fill: "close", same_bar, description}` (`same_bar` is
 `true`, with `same_bar_reason`, only under the override), `run: {kind}`
-(`backtest` or `research`) and `venue: {declared, allow_shorts, max_leverage}`; `metrics.json` carries `execution_lag_bars`;
+(`backtest` or `research`) and `venue: {declared, allow_shorts, max_leverage, financing}`; `metrics.json` carries `execution_lag_bars`;
 `summary.md` has an **Execution timing** line, the HTML report states it in the
 masthead and the reproducibility appendix, and the CLI prints `EXECUTION: …`
 under `METRICS:`. Sweep grids carry a `lag_bars` column.
+
+#### Missing prices and financing
+
+[ADR-0007](../adr/0007-instrument-calendar-and-financing.md) (TOM-1429). Right after the lag,
+each instrument gets a **life window**, from its first valid price to its last:
+
+- **Inside** the window, a bar with no price (a holiday, a gap) is forward-filled and the
+  target weight is **kept**.
+- **Outside** it (before listing, after delisting), the weight is forced to 0, and that
+  override is counted and logged.
+
+Both counts are written per instrument to `data_validation.json`
+(`quantbox/data-validation@1`). The totals go to `run_manifest.json` `data_validation` and to
+`metrics.json` (`calendar_ffilled_bars`, `calendar_targeted_outside_window_bars`).
+
+```yaml
+      venue:
+        allow_shorts: true
+        financing:
+          rate: "LT12TRUU Index"   # ticker in the prices (cash TR index) | annual number (0.0 = free)
+          borrow_spread_bps: 0     # borrowed cash: rate + spread
+          lend_spread_bps: 0       # idle cash:     rate - spread
+```
+
+With `financing`, the residual `1 - sum(w)` is held as two synthetic cash legs. Idle cash
+earns `rate - lend_spread`, and borrowed cash pays `rate + borrow_spread`. Both legs trade
+without fees, so a book whose weights sum above 1 is held in full.
+
+**Without** `financing`, a **vectorbt** run whose traded book needs net exposure above 1 on
+a rebalance bar is **refused** before the engine runs. vectorbt cannot take cash below zero,
+and it used to cut the last buys silently. rsims has no cash floor and is not refused.
+
+Every vectorbt run (without `threshold`) records `engine_underfilled_rebalances` and
+`engine_max_fill_gap`. They compare the book held after each rebalance with its target.
 
 #### Same-bar research runs: the explicit override
 
