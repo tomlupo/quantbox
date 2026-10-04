@@ -70,6 +70,7 @@ src/quantbox/              ← installable library (uv add quantbox)
   parquet_io.py            Teardown-safe parquet reads (every pandas read routes here)
   schemas.py               Runtime schema validation
   exceptions.py            QuantboxError hierarchy (see "Error handling")
+  engine/                  The engine seam: decided weights → traded book; vectorbt + rsims adapters (ADR-0008)
   artifact_schemas/        JSON schemas for artifacts (bundled as package data)
   plugins/
     manifest.yaml          Builtin plugin list + profiles — THE catalogue (bundled as package data)

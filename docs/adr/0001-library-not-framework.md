@@ -9,6 +9,12 @@ status_changes:
 
 # ADR-0001: Composing framework, not competing framework
 
+> **Amended by [ADR-0008](0008-engine-seam.md) (2026-10-04, proposed).** Book
+> simulation has two implementations (vectorbt, rsims), so it sits behind one
+> engine seam (`quantbox.engine`). The native vectorbt portfolio stays
+> reachable (`book.native`), and `quantbox.adapters.vectorbt` still re-exports
+> vectorbt at L0. The rest of this ADR is unchanged.
+
 ## Context
 
 QuantBox started as "config-driven quant framework" — plugins, registry, runner, mode separation, opinionated runtime. As the surface grew, we faced friction:

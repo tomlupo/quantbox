@@ -1,8 +1,9 @@
 """Backtesting pipeline plugin.
 
 Uses the same config format as :class:`TradingPipeline` but replaces
-broker execution with a historical simulation via the vectorbt or rsims
-backtesting engines.
+broker execution with a historical simulation through the engine seam
+(:mod:`quantbox.engine`, docs/adr/0008): vectorbt or rsims, chosen by
+``engine:`` alone.
 
 Workflow
 -------
@@ -12,10 +13,10 @@ Workflow
    (``plugins.overlays``, ADR-0004) modifies the decided book in config order
 4. Apply venue constraint (``venue.allow_shorts``) then risk transforms
    (tranching, leverage cap)
-5. Apply the execution lag (``execution.lag_bars``, default 1 = next-bar) —
-   the ONE place decided weights become traded weights; see
-   :mod:`quantbox.execution`
-6. Run backtest engine over full history
+5-6. Hand the decided book to the engine seam
+   (:func:`quantbox.engine.simulate_book`): calendars, the execution lag
+   (``execution.lag_bars``, default 1 = next-bar), leverage, financing legs,
+   then the engine adapter — the ONE place decided weights become traded weights
 7. Compute performance + traded-book metrics
 8. Save artifacts (weights_history = decided targets, traded_weights = what
    the engine received, returns, metrics, portfolio_daily)
@@ -43,8 +44,6 @@ the same::
 
 from __future__ import annotations
 
-import importlib
-import importlib.util
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,35 +62,21 @@ from quantbox.contracts import (
     RunResult,
     StrategyPlugin,
 )
-from quantbox.exceptions import DataLoadError, MissingExtraError
+from quantbox.engine import DEFAULT_ENGINE, Costs, EngineAdapter, TradedBook, engine_names, get_engine, simulate_book
+from quantbox.exceptions import DataLoadError
 from quantbox.execution import (
     EXECUTION_SCHEMA,
     VENUE_SCHEMA,
     clip_shorts,
     exposure_metrics,
-    materialise_nan_policy,
     resolve_allow_shorts,
     resolve_execution,
     timing_record,
     warn_on_shorts,
 )
-from quantbox.execution_schedule import schedule_book
-from quantbox.financing import (
-    ASSUMED_FREE,
-    CASH_LEGS,
-    Financing,
-    add_cash_legs,
-    resolve_financing,
-    resolve_leverage,
-)
+from quantbox.financing import ASSUMED_FREE, resolve_financing, resolve_leverage
 from quantbox.frequency import Frequency, resolve_pipeline_frequency
-from quantbox.instrument_calendar import (
-    DATA_VALIDATION_SCHEMA,
-    calendar_summary,
-    execution_bars,
-    execution_calendar_report,
-    instrument_calendar,
-)
+from quantbox.instrument_calendar import calendar_summary
 from quantbox.overlays import OverlayLink, apply_overlays
 from quantbox.plugins.datasources._utils import interval_step, normalize_data_frequency
 from quantbox.strategy_runner import build_strategy_context, run_strategies
@@ -109,13 +94,6 @@ def _variant_risk_cfg(base_risk_cfg: dict[str, Any], variant: dict[str, Any]) ->
     return {**base_risk_cfg, **((variant.get("overrides") or {}).get("risk") or {})}
 
 
-def _engine_installed(engine: str) -> bool:
-    """Whether *engine*'s optional extra is importable (vectorbt is the ``[vectorbt]`` extra)."""
-    if engine == "vectorbt":
-        return importlib.util.find_spec("vectorbt") is not None
-    return True
-
-
 def _number(key: str, value: Any, *, cast: type = float, where: str = "") -> Any:
     """``cast(value)``, refused with the param's *key* when it is not a number.
 
@@ -129,7 +107,7 @@ def _number(key: str, value: Any, *, cast: type = float, where: str = "") -> Any
 
 
 def _plan_variants(
-    variants: list[dict[str, Any]], engine: str, venue_declared: bool, costs: dict[str, float]
+    variants: list[dict[str, Any]], venue_declared: bool, costs: dict[str, float]
 ) -> dict[str, dict[str, float]]:
     """Refuse a variants block the run could not honour; the per-variant costs it will use.
 
@@ -137,8 +115,6 @@ def _plan_variants(
     was loaded, so ``quantbox config explain`` said ok for configs the run
     then refused (TOM-1362).
     """
-    if variants and engine != "vectorbt":
-        raise ValueError(f"Variants flow currently supports engine='vectorbt' only (got {engine!r})")
     out: dict[str, dict[str, float]] = {}
     for v in variants:
         vname = str(v.get("name"))
@@ -162,6 +138,11 @@ def _plan_variants(
     return out
 
 
+def _vbt_portfolio(book: TradedBook) -> Any:
+    """The native object the HTML report plots (``pf.plot()``), when the engine's native is a vbt.Portfolio."""
+    return book.native if book.native_key == "vbt_portfolio" else None
+
+
 @dataclass
 class BacktestPipeline:
     meta = PluginMeta(
@@ -171,7 +152,7 @@ class BacktestPipeline:
         core_compat=">=0.1,<0.2",
         description=(
             "Backtesting pipeline: same config as TradingPipeline but "
-            "routes weights through vectorbt or rsims backtesting engines "
+            "routes weights through the engine seam (vectorbt or rsims) "
             "instead of broker execution."
         ),
         tags=("backtesting", "research", "crypto"),
@@ -182,9 +163,12 @@ class BacktestPipeline:
             "properties": {
                 "engine": {
                     "type": "string",
-                    "enum": ["vectorbt", "rsims"],
-                    "default": "vectorbt",
-                    "description": "Backtesting engine to use.",
+                    "enum": engine_names(),
+                    "default": DEFAULT_ENGINE,
+                    "description": (
+                        "Engine adapter behind the seam (quantbox.engine, docs/adr/0008). Changing it alone "
+                        "changes nothing else in the run: single run and variants both run on either."
+                    ),
                 },
                 "fees": {
                     "type": "number",
@@ -384,15 +368,12 @@ class BacktestPipeline:
         explain`` calls this same method, so a config the run would refuse on its
         params is refused BEFORE any data is loaded, by one check shared by both
         (TOM-1362). Raises ``ValueError`` on an unknown engine, a malformed
-        ``execution`` / ``venue`` / ``frequency``, a non-numeric cost, or a
-        ``variants`` block the run cannot honour; ``MissingExtraError`` when the
-        engine's extra is not installed.
+        ``execution`` / ``venue`` / ``frequency``, a non-numeric cost or engine
+        parameter, or a ``variants`` block the run cannot honour;
+        ``MissingExtraError`` when the engine's extra is not installed.
         """
-        engine = str(params.get("engine", "vectorbt")).lower()
-        if engine not in ("vectorbt", "rsims"):
-            raise ValueError(f"Unknown engine: {engine!r}. Use 'vectorbt' or 'rsims'.")
-        if not _engine_installed(engine):
-            raise MissingExtraError(engine, f"the {engine} backtest engine", engine)
+        adapter = get_engine(params.get("engine", DEFAULT_ENGINE))
+        engine = adapter.name
         timing = resolve_execution(params.get("execution"))
         allow_shorts, venue_declared = resolve_allow_shorts(params.get("venue"), params.get("risk"))
         financing = resolve_financing((params.get("venue") or {}).get("financing"))
@@ -409,17 +390,13 @@ class BacktestPipeline:
             "slippage": _number("slippage", params.get("slippage", 0.0)),
         }
         trading_days = _number("trading_days", params.get("trading_days", round(bars_per_year)), cast=int)
-        if engine == "rsims":  # only the rsims branch reads these
-            costs.update(
-                trade_buffer=_number("trade_buffer", params.get("trade_buffer", 0.0)),
-                initial_cash=_number("initial_cash", params.get("initial_cash", 10000)),
-                margin=_number("margin", params.get("margin", 0.0)),
-            )
+        # The adapter reads its own params (rsims: trade_buffer, initial_cash, margin, ...).
+        engine_params = adapter.plan_params(params)
         full_report = params.get("full_report", False)
         if not isinstance(full_report, bool):  # a truthy "no" must not write tens of MB
             raise ValueError(f"'full_report' must be true or false, got {full_report!r}")
         variants = params.get("variants") or []
-        variant_costs = _plan_variants(variants, engine, venue_declared, costs)
+        variant_costs = _plan_variants(variants, venue_declared, costs)
         # The run's files are the PRIMARY (first) variant's book, so its cap is the one recorded.
         risk_cfg = _variant_risk_cfg(params.get("risk") or {}, variants[0]) if variants else params.get("risk", {})
         return {
@@ -437,13 +414,13 @@ class BacktestPipeline:
                 "financing": financing.record() if financing is not None else None,
             },
             "financing": financing,
-            # rsims charges the funding series it is handed; vectorbt charges none, and
-            # the variants flow runs vectorbt only (refused above for any other engine).
-            "charges_funding": engine == "rsims" and not variants,
+            # Whether the engine charges the funding series it is handed (rsims does, vectorbt does not).
+            "charges_funding": adapter.charges_funding,
             "frequency": freq,
             "bars_per_year": bars_per_year,
             "trading_days": trading_days,
             "costs": costs,
+            "engine_params": engine_params,
             "variant_costs": variant_costs,
             # What data.load_market_data receives (before the warmup lookback and mode are added).
             "load_params": load_params,
@@ -490,7 +467,6 @@ class BacktestPipeline:
         plan = self.plan(params)
         engine = plan["engine"]
         costs = plan["costs"]
-        fees, fixed_fees, slippage_val = costs["fees"], costs["fixed_fees"], costs["slippage"]
         rebalancing_freq = params.get("rebalancing_freq", 1)
         threshold = params.get("threshold")
 
@@ -595,9 +571,6 @@ class BacktestPipeline:
                 variant_plugins=variant_plugins,
                 risk=risk,
                 engine=engine,
-                fees=fees,
-                fixed_fees=fixed_fees,
-                slippage_val=slippage_val,
                 rebalancing_freq=rebalancing_freq,
                 threshold=threshold,
                 trading_days=trading_days,
@@ -638,7 +611,7 @@ class BacktestPipeline:
         # --- Stage 3b: the overlay chain modifies the DECIDED book ---
         base_weights = weights_history
         weights_history, overlays_applied = self._apply_overlay_stage(
-            weights_history, market_data, overlay_chain, engine
+            weights_history, market_data, overlay_chain, get_engine(engine)
         )
         overlay_artifacts: dict[str, str] = {}
         if overlays_applied:
@@ -663,13 +636,13 @@ class BacktestPipeline:
         target_stats = exposure_metrics(weights_history, "target")
         weights_history = self._apply_venue_and_risk(weights_history, risk_cfg, allow_shorts, venue_declared)
 
-        # --- Stage 5: Execution lag + instrument calendar, financing legs, then the engine ---
-        book = self._engine_book(prices_wide, weights_history, plan, rebalancing_freq, where="")
-        bt_prices, bt_weights = book["prices"], book["weights"]
+        # --- Stage 5-6: the engine seam — calendars, the lag, leverage, financing legs, the engine ---
+        book = self._simulate(prices_wide, weights_history, market_data, plan, costs, rebalancing_freq, threshold)
+        bt_prices, bt_weights = book.prices, book.weights
         common_cols = [c for c in weights_history.columns if c in prices_wide.columns]
         a_traded = store.put_parquet("traded_weights", bt_weights.rename_axis("date").reset_index())
-        a_validation = store.put_json("data_validation", book["data_validation"])
-        a_schedule = store.put_parquet("rebalance_schedule", book["schedule"])
+        a_validation = store.put_json("data_validation", book.data_validation)
+        a_schedule = store.put_parquet("rebalance_schedule", book.schedule)
 
         logger.info(
             "Backtest window: %d dates x %d assets, engine=%s",
@@ -678,52 +651,14 @@ class BacktestPipeline:
             engine,
         )
 
-        eng_prices, eng_weights = book["engine_prices"], book["engine_weights"]
-        funding_modelled = False
-        if engine == "vectorbt":
-            result_data = self._run_vectorbt(
-                eng_prices,
-                eng_weights,
-                fees=fees,
-                fixed_fees=fixed_fees,
-                slippage=slippage_val,
-                orders=book["orders"],
-                threshold=threshold,
-                trading_days=trading_days,
-            )
-        elif engine == "rsims":
-            funding_wide = market_data.get("funding_rates", pd.DataFrame())
-            if funding_wide.empty:
-                bt_funding = pd.DataFrame(0.0, index=eng_prices.index, columns=eng_prices.columns)
-            else:
-                # The financing cash legs are not in the funding file: they get 0 here.
-                bt_funding = funding_wide.reindex(index=eng_prices.index, columns=eng_prices.columns).fillna(0.0)
-                funding_modelled = True
-
-            result_data = self._run_rsims(
-                eng_prices,
-                eng_weights,
-                bt_funding,
-                orders=book["orders"],
-                fees=fees,
-                trade_buffer=costs["trade_buffer"],
-                initial_cash=costs["initial_cash"],
-                margin=costs["margin"],
-                capitalise_profits=bool(params.get("capitalise_profits", False)),
-                equity_basis=str(params.get("equity_basis", "rsims")),
-                trading_days=trading_days,
-            )
-        else:
-            raise ValueError(f"Unknown engine: {engine!r}. Use 'vectorbt' or 'rsims'.")
-
         # --- Stage 6: Save artifacts ---
-        returns_series = result_data["returns"]
+        returns_series = book.returns
         metrics = {
-            **result_data["metrics"],
+            **book.metrics,
             **self._book_metrics(target_stats, bt_weights, lag_bars, allow_shorts, venue_declared, "single run"),
-            **book["metrics"],
+            **book.book_metrics,
         }
-        portfolio_daily = result_data["portfolio_daily"]
+        portfolio_daily = book.portfolio_daily
 
         a_returns = store.put_parquet("returns", returns_series.to_frame("returns").reset_index())
         a_port = store.put_parquet("portfolio_daily", portfolio_daily.reset_index())
@@ -788,7 +723,7 @@ class BacktestPipeline:
                     strategy_names=report_strategy_names,
                     period_start=period_start,
                     period_end=period_end,
-                    vbt_portfolio=result_data.get("vbt_portfolio"),
+                    vbt_portfolio=_vbt_portfolio(book),
                     strategy_details=strategy_details,
                     narrative=narrative,
                     reproducibility=reproducibility,
@@ -843,9 +778,9 @@ class BacktestPipeline:
                 "engine": engine,
                 "execution": plan["execution"],
                 "venue": plan["venue"],
-                "funding": {"modelled": funding_modelled},
-                "financing": book["financing"],
-                "data_validation": self._validation_note(book["data_validation"]),
+                "funding": {"modelled": book.funding_modelled},
+                "financing": book.financing,
+                "data_validation": self._validation_note(book.data_validation),
                 "overlays": overlays_applied,
                 "risk_findings": risk_findings,
             },
@@ -927,9 +862,6 @@ class BacktestPipeline:
         variant_plugins: dict[str, StrategyPlugin],
         risk: list[RiskPlugin],
         engine: str,
-        fees: float,
-        fixed_fees: float,
-        slippage_val: float,
         rebalancing_freq: Any,
         threshold: Any,
         trading_days: int,
@@ -945,8 +877,8 @@ class BacktestPipeline:
         Each variant has: name, strategy (registry name), optional strategy.params,
         optional overrides (fees, threshold, rebalancing_freq, risk: {...}).
         Reuses the one strategy runner, _aggregate_weights_history,
-        _apply_risk_transforms_ts, and _run_vectorbt for parity with the
-        single-variant path.
+        _apply_risk_transforms_ts and the engine seam (:meth:`_simulate`) for
+        parity with the single-variant path — on either engine.
         """
         prices_wide = market_data["prices"]
         base_risk_cfg = dict(params.get("risk", {}) or {})
@@ -974,7 +906,6 @@ class BacktestPipeline:
             # non-numeric costs, before any data was loaded (TOM-1362).
             ov = dict(v.get("overrides", {}) or {})
             v_costs = plan["variant_costs"][vname]
-            v_fees, v_fixed, v_slip = v_costs["fees"], v_costs["fixed_fees"], v_costs["slippage"]
             v_freq = ov.get("rebalancing_freq", rebalancing_freq)
             v_thresh = ov.get("threshold", threshold)
             v_risk_cfg = _variant_risk_cfg(base_risk_cfg, v)
@@ -987,31 +918,21 @@ class BacktestPipeline:
             # Stage 3: aggregate (trivial for single strategy)
             wh = self._aggregate_weights_history(s_results, {"_strategies_cfg": v_strategies_cfg})
             # Stage 3b: the overlay chain is run-level — every variant gets the same one.
-            wh, overlays_applied = self._apply_overlay_stage(wh, market_data, overlay_chain, engine)
+            wh, overlays_applied = self._apply_overlay_stage(wh, market_data, overlay_chain, get_engine(engine))
 
             # Stage 4: venue constraint + risk transforms
             v_allow_shorts = allow_shorts if venue_declared else bool(v_risk_cfg.get("allow_short", False))
             v_target_stats = exposure_metrics(wh, "target")
             wh = self._apply_venue_and_risk(wh, v_risk_cfg, v_allow_shorts, venue_declared)
 
-            # Stage 5: execution lag + instrument calendar, financing legs, then engine
+            # Stage 5-6: the engine seam, exactly as the single run
+            where = f"Variant {vname!r}: "
             try:
-                book = self._engine_book(prices_wide, wh, plan, v_freq, where=f"Variant {vname!r}: ")
+                res = self._simulate(prices_wide, wh, market_data, plan, v_costs, v_freq, v_thresh, where=where)
             except ValueError as exc:
                 msg = str(exc)
                 raise ValueError(msg if msg.startswith("Variant") else f"Variant {vname!r}: {msg}") from exc
-            bt_p, bt_w = book["prices"], book["weights"]
-
-            res = self._run_vectorbt(  # plan() refused any other engine for a variants run
-                book["engine_prices"],
-                book["engine_weights"],
-                fees=v_fees,
-                fixed_fees=v_fixed,
-                slippage=v_slip,
-                orders=book["orders"],
-                threshold=v_thresh,
-                trading_days=trading_days,
-            )
+            bt_p, bt_w = res.prices, res.weights
 
             details_by_strategy = {
                 k: (info.get("result") or {}).get("details", {}) or {} for k, info in s_results.items()
@@ -1020,26 +941,27 @@ class BacktestPipeline:
             variant_results[vname] = {
                 "name": vname,
                 "strategy_name": sname,
-                "returns": res["returns"],
+                "returns": res.returns,
                 "metrics": {
-                    **res["metrics"],
+                    **res.metrics,
                     **self._book_metrics(
                         v_target_stats, bt_w, lag_bars, v_allow_shorts, venue_declared, f"variant {vname!r}"
                     ),
-                    **book["metrics"],
+                    **res.book_metrics,
                 },
-                "data_validation": book["data_validation"],
-                "schedule": book["schedule"],
-                "financing": book["financing"],
-                "portfolio_daily": res["portfolio_daily"],
-                "vbt_portfolio": res.get("vbt_portfolio"),
+                "data_validation": res.data_validation,
+                "schedule": res.schedule,
+                "financing": res.financing,
+                "funding_modelled": res.funding_modelled,
+                "portfolio_daily": res.portfolio_daily,
+                "vbt_portfolio": _vbt_portfolio(res),
                 # TRADED weights (post venue/risk/lag) — what the engine filled.
                 "weights_history": bt_w,
                 "bt_prices": bt_p,
                 "strategy_details": details_by_strategy,
                 "config": {
                     "strategy_params": strat_params,
-                    "fees": v_fees,
+                    "fees": v_costs["fees"],
                     "rebalancing_freq": v_freq,
                     "threshold": v_thresh,
                     "risk": v_risk_cfg,
@@ -1053,9 +975,9 @@ class BacktestPipeline:
             logger.info(
                 "Variant %r done — total_return=%.4f sharpe=%.4f maxdd=%.4f",
                 vname,
-                res["metrics"].get("total_return", 0),
-                res["metrics"].get("sharpe", 0),
-                res["metrics"].get("max_drawdown", 0),
+                res.metrics.get("total_return", 0),
+                res.metrics.get("sharpe", 0),
+                res.metrics.get("max_drawdown", 0),
             )
 
         if not variant_results:
@@ -1220,7 +1142,8 @@ class BacktestPipeline:
                 "execution": plan["execution"],
                 # The run's files are the PRIMARY (first) variant's book; plan() records its cap.
                 "venue": plan["venue"],
-                "funding": {"modelled": False},  # variants run vectorbt only, which charges no funding
+                # The primary variant's book, as every other file of the run.
+                "funding": {"modelled": primary["funding_modelled"]},
                 "financing": primary["financing"],
                 "data_validation": self._validation_note(validation),
                 "variants": list(variant_results.keys()),
@@ -1237,15 +1160,15 @@ class BacktestPipeline:
         weights: pd.DataFrame,
         market_data: dict[str, Any],
         chain: list[OverlayLink],
-        engine: str,
+        engine: EngineAdapter,
     ) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
         """Run the overlay chain on the decided weights; a no-op without overlays.
 
-        The engine's NaN policy is materialised FIRST: a NaN cell means "hold"
-        to vectorbt and "flat" to rsims, and an overlay multiplying a NaN would
+        The engine adapter's NaN policy is materialised FIRST: a NaN cell means
+        "hold" to vectorbt and "flat" to rsims, and an overlay multiplying a NaN would
         lose its effect on exactly the bars it targets. The policy is idempotent,
         so the engine later receives the same book it would have built itself.
-        No lag is applied here — :meth:`_engine_book` schedules and lags the overlaid book once.
+        No lag is applied here — the engine seam schedules and lags the overlaid book once.
 
         The filled value must not LEAK past the chain, though: the risk
         transforms run on the decided book BEFORE the engine resolves its NaNs,
@@ -1264,11 +1187,11 @@ class BacktestPipeline:
         """
         if not chain:
             return weights, []
-        materialised = materialise_nan_policy(weights, engine)
+        materialised = engine.materialise_nan(weights)
         out, record = apply_overlays(materialised, market_data, chain)
         same = out.eq(materialised) | (out.isna() & materialised.isna())
         untouched = weights.isna() & same
-        if engine == "vectorbt":
+        if engine.nan_policy == "hold":
             untouched &= same.shift(1, fill_value=True)
         return out.mask(untouched), record
 
@@ -1297,176 +1220,41 @@ class BacktestPipeline:
             weights = clip_shorts(weights)
         return self._apply_risk_transforms_ts(weights, risk_cfg, allow_short=allow_shorts)
 
-    def _engine_book(
-        self,
+    @staticmethod
+    def _simulate(
         prices_wide: pd.DataFrame,
         weights: pd.DataFrame,
+        market_data: dict[str, Any],
         plan: dict[str, Any],
+        costs: dict[str, float],
         rebalancing_freq: Any,
+        threshold: Any,
         *,
-        where: str,
-    ) -> dict[str, Any]:
-        """Decided weights -> the book the engine trades, for every engine the same way (docs/adr/0007).
+        where: str = "",
+    ) -> TradedBook:
+        """The decided book through the engine seam (:func:`quantbox.engine.simulate_book`).
 
-        This is the ONLY place decided weights become traded weights, shared by
-        the single-run and variants flows and so by every engine branch:
-
-        1. each instrument's calendar (:func:`quantbox.instrument_calendar.instrument_calendar`)
-           and the EXECUTION calendar (``execution.calendar``,
-           :func:`~quantbox.instrument_calendar.execution_bars`);
-        2. decision bars, the execution lag counted in execution bars, per-instrument
-           deferral of unprinted orders, ``venue.leverage``, input staleness
-           (:func:`quantbox.execution_schedule.schedule_book`);
-        3. financing: with ``venue.financing`` (or ``venue.leverage: borrow`` on
-           vectorbt, at an assumed rate of 0) the LEND/BORROW cash legs are appended
-           (:func:`quantbox.financing.add_cash_legs`).
-
-        ``prices`` / ``weights`` are the REAL book (``weights`` = what is held after
-        each bar's orders, saved as ``traded_weights``); ``engine_prices`` /
-        ``engine_weights`` / ``orders`` carry the cash legs.
+        The ONLY place decided weights become traded weights, shared by the
+        single-run and variants flows and by every engine: calendars, the
+        execution lag, ``venue.leverage``, financing legs and the adapter
+        (docs/adr/0007, 0008). The engine reads the funding series only when it
+        charges funding.
         """
-        engine, timing = plan["engine"], plan["timing"]
-        leverage = plan["venue"]["leverage"]
-        financing: Financing | None = plan.get("financing")
-        common_idx = prices_wide.index.intersection(weights.index)
-        common_cols = [c for c in weights.columns if c in prices_wide.columns]
-        if not common_cols:
-            raise ValueError("No overlapping tickers between prices and weights")
-        alignment = self._index_alignment(prices_wide.index, weights, common_idx, where)
-
-        cal = instrument_calendar(prices_wide.loc[common_idx, common_cols])
-        reference = None
-        if timing.calendar in prices_wide.columns:
-            reference = prices_wide[timing.calendar]
-        exec_bars = execution_bars(cal, timing.calendar, reference)
-        book = schedule_book(
-            weights.loc[common_idx, common_cols],
-            cal,
-            exec_bars,
-            rebalancing_freq,
-            timing.lag_bars,
-            engine=engine,
-            leverage=leverage,
-            weight_rows=weights[common_cols],
+        return simulate_book(
+            prices_wide,
+            weights,
+            engine=plan["engine"],
+            timing=plan["timing"],
+            costs=Costs(fees=costs["fees"], fixed_fees=costs["fixed_fees"], slippage=costs["slippage"]),
+            rebalancing_freq=rebalancing_freq,
+            threshold=threshold,
+            leverage=plan["venue"]["leverage"],
+            financing=plan.get("financing"),
+            funding=market_data.get("funding_rates"),
+            engine_params=plan["engine_params"],
+            trading_days=plan["trading_days"],
+            where=where,
         )
-        bt_prices, bt_weights, orders = cal.prices, book.weights, book.orders
-
-        exec_report = execution_calendar_report(exec_bars, timing.calendar)
-        calendar = cal.report
-        for name, extra in book.report["instruments"].items():
-            calendar["instruments"].setdefault(name, {}).update(extra)
-        timing_report = {k: v for k, v in book.report["timing"].items()}
-        lev = book.report["leverage"]
-        metrics: dict[str, float] = {
-            "calendar_ffilled_bars": float(calendar["totals"]["ffilled_bars"]),
-            "calendar_targeted_outside_window_bars": float(timing_report["targeted_outside_window_bars"]),
-            "calendar_deferred_trades": float(timing_report["deferred_trades"]),
-            "calendar_legacy_coverage_drop": float(calendar["legacy_coverage_drop"]["count"]),
-            "execution_calendar_bars": float(exec_report["execution_bars"]),
-            "execution_calendar_bar_share": exec_report["execution_bars"] / max(exec_report["total_bars"], 1),
-            "decision_stale_inputs": float(book.report["staleness"]["stale_decisions"]),
-            "decision_max_staleness_bars": float(book.report["staleness"]["max_bars"]),
-            "index_price_bars_dropped": float(alignment["price_bars_dropped"]),
-            "index_weight_rows_dropped": float(alignment["weight_rows_dropped"]),
-            "leverage_rebalances_above_net_1": float(lev["rebalances_above_net_1"]),
-            "leverage_scaled_rebalances": float(lev["scaled_rebalances"]),
-            "leverage_scale_mean": lev["scale_mean"],
-            "leverage_scale_min": lev["scale_min"],
-            "leverage_scaled_after_deferral": float(lev["scaled_after_deferral"]),
-            "leverage_buys_zeroed_rebalances": float(lev["buys_zeroed_rebalances"]),
-            "leverage_max_net_exposure_held": lev["max_net_exposure_held"],
-        }
-        age = book.report["weight_age"]
-        if age["measured"]:  # no metric at all when unmeasured: a 0 would read as clean
-            metrics["decision_stale_weights"] = float(age["stale_decisions"])
-            metrics["decision_stale_weights_held_bars_max"] = float(age["stale_held_bars_max"])
-        legs = financing is not None and not (financing.assumed and engine == "rsims")
-        if not legs:
-            # rsims is a margin simulator: an assumed rate of 0 is what it already does, no legs needed.
-            eng_prices, eng_weights, eng_orders = bt_prices, bt_weights, orders
-            fin_record = {"modelled": False} if financing is None else {"modelled": False, **financing.record()}
-        else:
-            eng_prices, eng_weights, fin_record = add_cash_legs(bt_prices, bt_weights, financing, prices_wide)
-            fin_record = {"modelled": True, **fin_record}
-            eng_orders = orders.copy()
-            traded_bar = orders.any(axis=1)
-            for leg in CASH_LEGS:
-                eng_orders[leg] = traded_bar
-            metrics.update(
-                financing_mean_cash_weight=fin_record["mean_cash_weight"],
-                financing_min_cash_weight=fin_record["min_cash_weight"],
-                financing_borrow_bar_share=fin_record["borrow_bar_share"],
-                financing_rate_stale_bars_at_end=float(fin_record["rate_stale_bars_at_end"]),
-            )
-        if financing is not None and financing.assumed and lev["rebalances_above_net_1"]:
-            logger.warning(
-                "FINANCING — %s%d rebalance(s) HOLD net exposure above 1 (max %.4f) under venue.leverage: borrow "
-                "with NO venue.financing block: borrowing is ASSUMED FREE (rate 0), recorded as "
-                "venue.financing.assumed in the manifest. Declare venue.financing to price it.",
-                where,
-                lev["rebalances_above_net_1"],
-                lev["max_net_exposure_held"],
-            )
-        return {
-            "prices": bt_prices,
-            "weights": bt_weights,
-            "engine_prices": eng_prices,
-            "engine_weights": eng_weights,
-            "orders": eng_orders,
-            "schedule": book.schedule,
-            "financing": fin_record,
-            "metrics": metrics,
-            "data_validation": {
-                "schema": DATA_VALIDATION_SCHEMA,
-                "calendar": calendar,
-                "execution_calendar": exec_report,
-                "timing": timing_report,
-                "staleness": book.report["staleness"],
-                "weight_age": book.report["weight_age"],
-                "index_alignment": alignment,
-                "leverage": lev,
-            },
-        }
-
-    @staticmethod
-    def _index_alignment(
-        price_index: pd.Index, weights: pd.DataFrame, common_idx: pd.Index, where: str
-    ) -> dict[str, Any]:
-        """What the price/weight index INTERSECTION drops (``data_validation.json`` ``index_alignment``).
-
-        The backtest runs on the bars where both prices and a strategy weight
-        row exist (unchanged here — a separate card). Price bars before the
-        strategy's first row are its warm-up (counted, not warned); any OTHER
-        dropped price bar — a strategy that writes rows only on its stamp dates
-        shrinks the whole panel to them — is warned. Weight rows on dates with
-        no price bar (the weekend rows of a 7-day panel) are counted only: a
-        weight step stamped there is the weight age's to judge (``TIMING:``).
-        """
-        first_row = weights.index.min() if len(weights.index) else None
-        dropped_prices = price_index.difference(common_idx)
-        warmup = dropped_prices[dropped_prices < first_row] if first_row is not None else dropped_prices[:0]
-        shrink = dropped_prices.difference(warmup)
-        dropped_rows = weights.index.difference(common_idx)
-        record = {
-            "price_bars": int(len(price_index)),
-            "weight_rows": int(len(weights.index)),
-            "bars_used": int(len(common_idx)),
-            "warmup_price_bars_dropped": int(len(warmup)),
-            "price_bars_dropped": int(len(shrink)),
-            "first_price_bars_dropped": [pd.Timestamp(t).isoformat() for t in shrink[:5]],
-            "weight_rows_dropped": int(len(dropped_rows)),
-        }
-        if len(shrink):
-            logger.warning(
-                "INDEX: %sthe backtest runs only on the %d bar(s) that carry a strategy weight row: %d price bar(s) "
-                "after the strategy's first row have none and were DROPPED (first %s). Write a weight row on every "
-                "price bar.",
-                where,
-                len(common_idx),
-                len(shrink),
-                record["first_price_bars_dropped"],
-            )
-        return record
 
     @staticmethod
     def _validation_note(validation: dict[str, Any]) -> dict[str, Any]:
@@ -1555,135 +1343,6 @@ class BacktestPipeline:
         w = w.mul(scale, axis=0)
 
         return w
-
-    # ==================================================================
-    # Engine runners
-    # ==================================================================
-    def _run_vectorbt(
-        self,
-        prices: pd.DataFrame,
-        weights: pd.DataFrame,
-        *,
-        fees: float,
-        fixed_fees: float,
-        slippage: float,
-        orders: pd.DataFrame,
-        threshold,
-        trading_days: int,
-    ) -> dict[str, Any]:
-        from quantbox.plugins.backtesting import compute_backtest_metrics
-        from quantbox.plugins.backtesting.vectorbt_engine import rebalance_fill_gaps
-        from quantbox.plugins.backtesting.vectorbt_engine import run as run_vectorbt
-
-        pf = run_vectorbt(
-            prices,
-            weights,
-            orders=orders,
-            threshold=threshold,
-            fees=fees,
-            fixed_fees=fixed_fees,
-            slippage=slippage,
-            fee_free=[c for c in CASH_LEGS if c in weights.columns],
-            residual_legs=CASH_LEGS if all(c in weights.columns for c in CASH_LEGS) else (),
-        )
-
-        metrics = compute_backtest_metrics(pf, trading_days=trading_days)
-        # Measured, not assumed: did the engine hold the book it was handed after each rebalance?
-        # It is the backstop for every way a book can ask for more cash than it has, so it runs on every
-        # run. A threshold run skips rebalances by design: there, only the bars the engine traded count.
-        # The cash legs are the engine's residual by construction; the real cells are the check.
-        real_orders = orders.drop(columns=[c for c in CASH_LEGS if c in orders.columns])
-        bars = prices.index[orders.any(axis=1).to_numpy()]
-        if threshold is not None:
-            traded_rows = sorted(set(pf.orders.values["idx"].tolist()))
-            bars = bars.intersection(prices.index[traded_rows])
-        gaps = rebalance_fill_gaps(pf, weights, bars, real_orders)
-        allowed = 1e-6 + 2.0 * (fees + slippage) * gaps["turnover"] + (1e-3 if fixed_fees else 0.0)
-        under = gaps["gap"] > allowed
-        metrics["engine_underfilled_rebalances"] = float(under.sum())
-        metrics["engine_max_fill_gap"] = float(gaps["gap"].max()) if len(gaps) else 0.0
-        if under.any():
-            logger.warning(
-                "ENGINE: on %d of %d rebalance bar(s) the vectorbt book held is NOT the target "
-                "(max sum|held - target| %.4f on %s) — buys were cut for lack of cash",
-                int(under.sum()),
-                len(gaps),
-                gaps["gap"].max(),
-                gaps["gap"].idxmax(),
-            )
-        returns = pf.returns()
-
-        # Build portfolio_daily DataFrame
-        equity = pf.value()
-        if isinstance(equity, pd.DataFrame):
-            equity = equity.iloc[:, 0]
-        portfolio_daily = pd.DataFrame(
-            {
-                "date": equity.index,
-                "portfolio_value": equity.values,
-            }
-        ).set_index("date")
-
-        return {
-            "returns": returns,
-            "metrics": metrics,
-            "portfolio_daily": portfolio_daily,
-            "vbt_portfolio": pf,
-        }
-
-    def _run_rsims(
-        self,
-        prices: pd.DataFrame,
-        weights: pd.DataFrame,
-        funding: pd.DataFrame,
-        *,
-        orders: pd.DataFrame,
-        fees: float,
-        trade_buffer: float,
-        initial_cash: float,
-        margin: float,
-        capitalise_profits: bool,
-        equity_basis: str,
-        trading_days: int,
-    ) -> dict[str, Any]:
-        from quantbox.plugins.backtesting import compute_backtest_metrics
-        from quantbox.plugins.backtesting.rsims_engine import fixed_commission_backtest_with_funding
-
-        results_df = fixed_commission_backtest_with_funding(
-            prices=prices,
-            target_weights=weights,
-            funding_rates=funding,
-            trade_buffer=trade_buffer,
-            initial_cash=initial_cash,
-            margin=margin,
-            commission_pct=fees,
-            capitalise_profits=capitalise_profits,
-            equity_basis=equity_basis,
-            fee_free=[c for c in CASH_LEGS if c in weights.columns],
-            orders=orders,
-        )
-
-        # Build equity curve (same as quantlab validation script)
-        margin_totals = results_df.groupby(results_df.index)["Margin"].sum().to_frame("TotalMargin")
-        cash_balance = results_df[results_df["ticker"] == "Cash"][["Value"]].rename(columns={"Value": "Cash"})
-        equity_curve = cash_balance.join(margin_totals, how="left")
-        equity_curve["TotalMargin"] = equity_curve["TotalMargin"].fillna(0)
-        equity_curve["portfolio_value"] = equity_curve["Cash"] + equity_curve["TotalMargin"]
-
-        returns = equity_curve["portfolio_value"].ffill().pct_change(fill_method=None).dropna()
-        returns.name = None
-
-        metrics = compute_backtest_metrics(returns, trading_days=trading_days)
-
-        portfolio_daily = equity_curve[["portfolio_value"]].copy()
-        portfolio_daily.index.name = "date"
-
-        return {
-            "returns": returns,
-            "metrics": metrics,
-            "portfolio_daily": portfolio_daily,
-            "rsims_results": results_df,
-        }
 
     # ==================================================================
     # Frequency resolution (issue #20)

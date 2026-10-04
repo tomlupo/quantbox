@@ -161,11 +161,12 @@ Reading a dataset without it raises an ImportError naming both.
 Both engines are **same-bar primitives**: the weight row they are handed for bar
 `t` is filled at `close[t]`. Strategies decide `weights[t]` with data through
 `close[t]`, so the pipeline — not the strategy, not the engine — owns the delay
-between deciding and filling. It is applied in exactly one place
-(`BacktestPipeline._engine_book`, after aggregation, venue clipping and
-risk transforms, before the engine), so it holds for the vectorbt `from_orders`
-branch, the vectorbt order-func (`threshold`) branch, rsims and the variants
-flow alike. `quantbox sweep` (`analysis.parameter_grid`) uses the same setting,
+between deciding and filling. It is applied in exactly one place, inside
+the engine seam (`quantbox.engine._lag.lag_positions`, docs/adr/0008: after
+aggregation, venue clipping and risk transforms, before any engine adapter),
+so it holds for the vectorbt `from_orders` branch, the vectorbt order-func
+(`threshold`) branch, rsims, the variants flow, the sweep, `backtest()` and
+`optimize()` alike. `quantbox sweep` (`analysis.parameter_grid`) uses the same setting,
 and so do the Python helpers `backtest()` and `optimize()`
 (`quantbox.plugins.backtesting`): keyword `lag_bars=`, same default, same
 refusal of `0`, and the result carries the same `execution` record. The L1
@@ -315,7 +316,7 @@ engines have always answered that differently: **vectorbt forward-fills** (holds
 the last target; leading NaN → 0) while **rsims treats NaN as 0** (goes flat).
 This pipeline does not change either engine's numbers; it materialises the
 policy the chosen engine already applies into the frame it hands over
-(`quantbox.execution.materialise_nan_policy`), so `traded_weights` and the
+(`quantbox.engine.EngineAdapter.materialise_nan`), so `traded_weights` and the
 `traded_*` metrics describe the book that engine actually traded — and never
 contain NaN. The disagreement itself is a **known issue**: the same config with
 mid-series NaN weights gives different books on the two engines. Emit explicit
@@ -360,7 +361,7 @@ reach the `DatasetManifest`, so the venue has to be declared in the config.
 > same-bar with only the first rebalance zeroed −0.1553 — there the lost first
 > period ALONE moves the number by more than the whole same-bar → next-bar delta.
 > Buy-and-hold (`rebalancing_freq: null`) is the exception: its one trade moves
-> to bar `lag_bars` (`quantbox.execution.lag_buy_and_hold`) — on bar 0 it would
+> to bar `lag_bars` (`quantbox.engine.lag_buy_and_hold`) — on bar 0 it would
 > trade the flat row and never enter.
 
 ### Arms: one base config, many runs

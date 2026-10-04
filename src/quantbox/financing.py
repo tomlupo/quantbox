@@ -32,7 +32,7 @@ Both legs trade without fees or slippage. The rate and spreads accrue ACT/365
 on the calendar time between bars; a ticker rate is its own bar return.
 
 Whether a book may hold net exposure above 1 at all is ``venue.leverage``
-(:mod:`quantbox.execution_schedule`): ``normalize`` (the vectorbt default)
+(:mod:`quantbox.engine.schedule`): ``normalize`` (the vectorbt default)
 scales such a decision to net 1; ``borrow`` holds it, financed by this block —
 or, without one, at an ASSUMED rate of 0 (:data:`ASSUMED_FREE`), recorded as
 ``assumed: true`` in the manifest and warned about. rsims is a margin
@@ -145,10 +145,13 @@ class Financing:
 ASSUMED_FREE = Financing(rate_ticker=None, rate_annual=0.0, assumed=True)
 
 
-def resolve_leverage(value: Any, engine: str) -> str:
-    """``venue.leverage`` -> ``normalize`` | ``borrow``; absent: normalize on vectorbt, borrow on rsims."""
+def resolve_leverage(value: Any, engine: str | None) -> str:
+    """``venue.leverage`` -> ``normalize`` | ``borrow``; absent: the engine adapter's ``default_leverage``
+    (normalize on vectorbt, borrow on rsims)."""
     if value is None:
-        return "borrow" if engine == "rsims" else "normalize"
+        from quantbox.engine.registry import get_engine
+
+        return get_engine(engine, require_installed=False).default_leverage
     if value not in LEVERAGE_MODES:
         raise ValueError(f"venue.leverage must be one of {list(LEVERAGE_MODES)}, got {value!r}")
     return str(value)

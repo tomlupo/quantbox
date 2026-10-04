@@ -1,7 +1,7 @@
 """
 Quantbox backtesting engines.
 
-Two engines are provided:
+Two engines are provided, behind one seam (:mod:`quantbox.engine`, docs/adr/0008):
 
 * **vectorbt** — Numba-accelerated, supports periodic + threshold rebalancing,
   multi-strategy grouping.  Best for fast iteration on spot/equity strategies.
@@ -15,6 +15,7 @@ Quick start::
 
     result = backtest(prices, weights, fees=0.001, rebalancing_freq='1W')
     print(result["metrics"])
+    result = backtest(prices, weights, engine="rsims")  # the same call, the other engine
 
 ``backtest()`` and ``optimize()`` follow the one execution-timing convention
 (:mod:`quantbox.execution`): weights decided on bar ``t`` fill at the close of
@@ -30,14 +31,7 @@ from typing import Any
 
 import pandas as pd
 
-from quantbox.execution import (
-    ExecutionTiming,
-    apply_execution_lag,
-    helper_execution,
-    lag_buy_and_hold,
-    run_record,
-    timing_record,
-)
+from quantbox.execution import ExecutionTiming, helper_execution, run_record
 from quantbox.metrics import (
     compute_backtest_metrics,
     compute_cvar,
@@ -92,23 +86,11 @@ def _lag_for_engine(
     weights: dict[str, pd.DataFrame] | pd.DataFrame,
     lag_bars: int | ExecutionTiming,
 ) -> dict[str, pd.DataFrame] | pd.DataFrame:
-    """Apply the execution lag on the engine's own bar grid.
-
-    The vectorbt engine trades on ``prices.index | weights.index`` and
-    forward-fills weights onto it, so a sparse weights frame (rebalance dates
-    only) is first put on that grid — otherwise ``shift(1)`` would lag by one
-    REBALANCE, not one bar. Cells stay NaN, so the engine's forward-fill is
-    unchanged; only the decision moves ``lag_bars`` bars later.
-    """
+    """The seam's lag on the engine's own bar grid (:func:`quantbox.engine.book._lag_on_grid`)."""
+    from quantbox.engine.book import _lag_on_grid
 
     timing = lag_bars if isinstance(lag_bars, ExecutionTiming) else ExecutionTiming(lag_bars)
-
-    def one(w: pd.DataFrame) -> pd.DataFrame:
-        return apply_execution_lag(w.reindex(prices.index.union(w.index)), timing.lag_bars, same_bar=timing.same_bar)
-
-    if isinstance(weights, dict):
-        return {name: one(w) for name, w in weights.items()}
-    return one(weights)
+    return _lag_on_grid(prices, weights, timing)
 
 
 def _backtest(
@@ -116,38 +98,38 @@ def _backtest(
     weights: dict[str, pd.DataFrame] | pd.DataFrame,
     *,
     timing: ExecutionTiming,
+    engine: str,
     fees: float,
     fixed_fees: float,
     slippage: float,
     rebalancing_freq: int | str | list | None,
     threshold: float | None,
-    use_numba: bool,
+    engine_params: dict[str, Any] | None,
     trading_days: int,
 ) -> dict[str, Any]:
     """``backtest()`` with an already-resolved timing (``optimize()`` resolves it once per call)."""
-    from .vectorbt_engine import run as run_vectorbt
+    from quantbox.engine import Costs, simulate_weights
 
-    grid = prices.index
-    for w in weights.values() if isinstance(weights, dict) else [weights]:
-        grid = grid.union(w.index)  # the engine's own bar grid
-    pf = run_vectorbt(
+    book = simulate_weights(
         prices,
-        _lag_for_engine(prices, weights, timing),
-        rebalancing_freq=lag_buy_and_hold(pd.to_datetime(grid), rebalancing_freq, timing.lag_bars),
+        weights,
+        engine=engine,
+        timing=timing,
+        costs=Costs(fees=fees, fixed_fees=fixed_fees, slippage=slippage),
+        rebalancing_freq=rebalancing_freq,
         threshold=threshold,
-        fees=fees,
-        fixed_fees=fixed_fees,
-        slippage=slippage,
-        use_numba=use_numba,
+        engine_params=engine_params,
+        trading_days=trading_days,
     )
-    metrics = compute_backtest_metrics(pf, trading_days=trading_days)
-    execution = timing_record(timing)
     return {
-        "vbt_portfolio": pf,
-        "metrics": metrics,
-        "returns": pf.returns(),
-        "execution": execution,
-        "run": run_record(execution),
+        "engine": book.engine,
+        "book": book,
+        "native": book.native,
+        book.native_key: book.native,  # the pre-seam name: vbt_portfolio (vectorbt), rsims_results (rsims)
+        "metrics": book.metrics,
+        "returns": book.returns,
+        "execution": book.execution,
+        "run": run_record(book.execution),
     }
 
 
@@ -155,18 +137,20 @@ def backtest(
     prices: pd.DataFrame,
     weights: dict[str, pd.DataFrame] | pd.DataFrame,
     *,
+    engine: str = "vectorbt",
     fees: float = 0.001,
     fixed_fees: float = 0.0,
     slippage: float = 0.0,
     rebalancing_freq: int | str | list | None = 1,
     threshold: float | None = None,
-    use_numba: bool = True,
+    use_numba: bool | None = None,
+    engine_params: dict[str, Any] | None = None,
     trading_days: int = 365,
     lag_bars: int | None = None,
     allow_same_bar: bool = False,
     same_bar_reason: str | None = None,
 ) -> dict[str, Any]:
-    """High-level backtest using the vectorbt engine.
+    """High-level backtest through the engine seam (:mod:`quantbox.engine`, docs/adr/0008).
 
     Parameters
     ----------
@@ -174,19 +158,27 @@ def backtest(
         Asset prices (index=dates, columns=tickers).
     weights : dict | pd.DataFrame
         Target weights, as DECIDED: row ``t`` uses data through ``close[t]``.
+    engine : str
+        The engine adapter: ``"vectorbt"`` (default, the ``[vectorbt]`` extra)
+        or ``"rsims"``. The rest of the call does not change with it.
     fees : float
         Proportional fee rate.
     fixed_fees : float
-        Fixed fee per order.
+        Fixed fee per order (vectorbt).
     slippage : float
-        Slippage rate.
+        Slippage rate (vectorbt).
     rebalancing_freq : None | int | str | list
-        Rebalancing schedule. ``None`` = buy-and-hold: one trade, at
-        ``close[lag_bars]`` (:func:`quantbox.execution.lag_buy_and_hold`).
+        Rebalancing schedule (vectorbt; rsims trades every bar). ``None`` =
+        buy-and-hold: one trade, at ``close[lag_bars]``
+        (:func:`quantbox.engine.lag_buy_and_hold`).
     threshold : float | None
-        Deviation threshold for rebalancing bands.
-    use_numba : bool
-        Enable Numba JIT.
+        Deviation threshold for rebalancing bands (vectorbt).
+    use_numba : bool | None
+        Numba JIT (vectorbt); shorthand for ``engine_params={"use_numba": ...}``.
+    engine_params : dict | None
+        The adapter's own parameters (rsims: ``trade_buffer``, ``initial_cash``,
+        ``margin``, ``capitalise_profits``, ``equity_basis``); a key the
+        adapter does not own is refused.
     trading_days : int
         Annualization factor for metrics (365 for crypto).
     lag_bars : int | None
@@ -202,21 +194,27 @@ def backtest(
     Returns
     -------
     dict
-        ``"vbt_portfolio"`` — the vbt.Portfolio object,
-        ``"metrics"`` — dict of performance metrics,
-        ``"returns"`` — daily returns Series,
-        ``"execution"`` — the execution timing used (as ``run_manifest.json``);
-        ``"run"`` — ``{"kind": "backtest" | "research"}`` (as ``run_manifest.json``).
+        ``"engine"``; ``"book"`` — the :class:`~quantbox.engine.TradedBook`
+        (returns, value, turnover, trades, native); ``"native"`` — the engine's
+        own object (a ``vbt.Portfolio`` on vectorbt), also under its pre-seam
+        key (``"vbt_portfolio"`` on vectorbt, ``"rsims_results"`` on rsims);
+        ``"metrics"`` — dict of performance metrics; ``"returns"`` — per-bar
+        returns; ``"execution"`` — the execution timing used (as
+        ``run_manifest.json``); ``"run"`` — ``{"kind": "backtest" | "research"}``.
     """
+    params = dict(engine_params or {})
+    if use_numba is not None:
+        params["use_numba"] = use_numba
     return _backtest(
         prices,
         weights,
         timing=helper_execution(lag_bars, allow_same_bar, same_bar_reason),
+        engine=engine,
         fees=fees,
         fixed_fees=fixed_fees,
         slippage=slippage,
         rebalancing_freq=rebalancing_freq,
         threshold=threshold,
-        use_numba=use_numba,
+        engine_params=params,
         trading_days=trading_days,
     )

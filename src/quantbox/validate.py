@@ -251,7 +251,7 @@ def _check_backtest_execution(plugins: dict[str, Any]) -> list[ValidationFinding
         resolve_allow_shorts(params.get("venue"), params.get("risk"))
         venue = params.get("venue") if isinstance(params.get("venue"), dict) else {}
         resolve_financing(venue.get("financing"))
-        resolve_leverage(venue.get("leverage"), str(params.get("engine", "vectorbt")))
+        resolve_leverage(venue.get("leverage"), params.get("engine"))  # None: the default engine
     except ValueError as exc:
         findings.append(ValidationFinding("error", str(exc)))
     return findings

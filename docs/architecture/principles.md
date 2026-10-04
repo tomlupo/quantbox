@@ -18,7 +18,7 @@ By the strict IoC sense (the runtime calls *your* code at L4/L5), it is a framew
 
 | Capability | The wheel | QuantBox's role |
 |---|---|---|
-| Backtest engine | vectorbt | adapter in core (`adapters.vectorbt`, `quantbox.bt`) |
+| Backtest engine | vectorbt, rsims | the engine seam (`quantbox.engine`, [ADR-0008](../adr/0008-engine-seam.md)): one adapter per engine, the native object reachable; vectorbt re-exported at L0 (`adapters.vectorbt`, `quantbox.bt`) |
 | Portfolio optimization | riskfolio, PyPortfolioOpt, skfolio | adapter in core when ≥2 consumers need it |
 | ML training | scikit-learn, lightgbm | import directly in plugin; adapter in core when ≥2 plugins need it |
 | Experiment tracking / model registry | MLflow | import directly in quantbox-lab; no core adapter until ≥2 repos need same bridge |
