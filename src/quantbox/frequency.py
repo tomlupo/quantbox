@@ -8,14 +8,15 @@ via `pandas-market-calendars`.
 Used internally by `backtest.pipeline.v1` and `trade.full_pipeline.v1` (both via
 `resolve_pipeline_frequency`) to:
   - derive default `trading_days` from `frequency.bars_per_year()` (backtest)
-  - inject `_pipeline_annualize` into each strategy's params so strategies don't
-    need their own (potentially drifting) defaults — identically in backtest and
-    paper/live (TOM-1338)
+  - build the StrategyContext (`quantbox.strategy_runner.build_strategy_context`)
+    whose `bars_per_year` every strategy reads, so strategies don't need their own
+    (potentially drifting) defaults — identically in backtest and paper/live
+    (TOM-1338, TOM-1448)
 
 Strategies that need annualization should declare `annualize: float | None = None`
-and consume it via `params.get("_pipeline_annualize", 252.0)` as a fallback —
-explicit per-strategy values still win, and a drift warning fires in the pipeline
-when they disagree with the derived value.
+and resolve it with `quantbox.strategy_runner.resolve_annualize(self.annualize,
+params, context, owner=...)` — explicit per-strategy values still win, and a drift
+warning fires when they disagree with the derived value.
 
 Example
 -------
@@ -149,10 +150,10 @@ class Frequency:
 def resolve_pipeline_frequency(params: dict[str, Any], prices_params: dict[str, Any]) -> Frequency:
     """Resolve a pipeline run's `Frequency` from its params — the ONE resolver.
 
-    Both ``backtest.pipeline.v1`` and ``trade.full_pipeline.v1`` call this, and
-    inject its ``bars_per_year()`` into every strategy's params as
-    ``_pipeline_annualize``, so a strategy is annualised identically in its
-    backtest and in paper/live (TOM-1338).
+    Both ``backtest.pipeline.v1`` and ``trade.full_pipeline.v1`` call this (via
+    ``quantbox.strategy_runner.build_strategy_context``), and hand its
+    ``bars_per_year()`` to every strategy in the StrategyContext, so a strategy
+    is annualised identically in its backtest and in paper/live (TOM-1338, TOM-1448).
 
     Accepts (in priority order):
       1. ``params['frequency']`` — full spec, str or dict

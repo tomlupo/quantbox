@@ -32,8 +32,7 @@ from typing import Any
 import pandas as pd
 
 from quantbox.execution import ExecutionTiming, helper_execution, run_record
-
-from .metrics import (
+from quantbox.metrics import (
     compute_backtest_metrics,
     compute_cvar,
     compute_drawdown_series,
@@ -42,6 +41,7 @@ from .metrics import (
     compute_rolling_sharpe,
     compute_var,
 )
+
 from .optimizer import optimize
 from .rsims_engine import positions_from_no_trade_buffer
 

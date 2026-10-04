@@ -11,7 +11,6 @@ can invoke via ``pipeline.run()``.
 from __future__ import annotations
 
 import contextlib
-import importlib
 import logging
 from collections import defaultdict, deque
 from collections.abc import Callable
@@ -34,7 +33,6 @@ from quantbox.contracts import (
     RunResult,
     StrategyPlugin,
 )
-from quantbox.frequency import resolve_pipeline_frequency
 from quantbox.portfolio_value import (
     BASIS_MARK,
     DEFAULT_RECONCILIATION_TOLERANCE,
@@ -45,6 +43,7 @@ from quantbox.portfolio_value import (
 )
 from quantbox.reconciliation.ledger import EXEC_STATUS_TO_LEDGER, NON_TERMINAL_RESULT_STATUSES
 from quantbox.reconciliation.working_orders import DEFAULT_MAX_AGE_DAYS
+from quantbox.strategy_runner import build_strategy_context, run_strategies
 
 logger = logging.getLogger(__name__)
 
@@ -98,18 +97,6 @@ def _safe_float(v: Any) -> float | None:
         return float(v)
     except (TypeError, ValueError):
         return None
-
-
-def _with_injected_annualize(strat_params: dict[str, Any], injected: float | None) -> dict[str, Any]:
-    """A COPY of a strategy's params carrying `_pipeline_annualize`.
-
-    An explicit value already in the strategy's params wins, as it does in the
-    backtest pipeline. The config dict itself is never mutated.
-    """
-    out = dict(strat_params or {})
-    if injected is not None and "_pipeline_annualize" not in out:
-        out["_pipeline_annualize"] = injected
-    return out
 
 
 class ReconEnforcementError(RuntimeError):
@@ -778,23 +765,12 @@ class TradingPipeline:
         market_data = self._build_market_data(market_data_dict, universe)
 
         # --- Stage 2: Strategy Execution ---
-        # Hand strategies the SAME `_pipeline_annualize` the backtest pipeline
-        # does (one resolver, `resolve_pipeline_frequency`). Without it every
-        # strategy that reads the key fell back to 252 in paper/live while its
-        # backtest used 365 on a 24/7 book — a sqrt(365/252) ~= 1.20x vol-sizing
-        # gap between the two (TOM-1338).
-        injected_annualize = resolve_pipeline_frequency(params, prices_params).bars_per_year()
-        if strategies:
-            strategy_results = self._run_strategy_plugins(
-                strategies,
-                strategies_cfg,
-                market_data,
-                injected_annualize=injected_annualize,
-            )
-        else:
-            strategy_results = self._run_strategies(
-                market_data, strategies_cfg, params, injected_annualize=injected_annualize
-            )
+        # The ONE strategy runner, shared with the backtest pipeline: the same
+        # StrategyContext (bars_per_year, as-of, calendar, frequency) reaches the
+        # strategy here as in its backtest, so vol sizing cannot differ by
+        # sqrt(365/252) between them (TOM-1338, TOM-1448).
+        context = build_strategy_context(mode, asof, params, prices_params)
+        strategy_results = run_strategies(market_data, strategies_cfg, context, plugins=strategies)
 
         # Save per-strategy weights
         strat_weights_records: list[dict[str, Any]] = []
@@ -1370,80 +1346,6 @@ class TradingPipeline:
     # ==================================================================
     # Stage 2: Strategy execution
     # ==================================================================
-    def _run_strategies(
-        self,
-        market_data: dict[str, Any],
-        strategies_cfg: list[dict[str, Any]],
-        pipeline_params: dict[str, Any],
-        injected_annualize: float | None = None,
-    ) -> dict[str, dict[str, Any]]:
-        """Import and run each strategy, collecting results."""
-        results: dict[str, dict[str, Any]] = {}
-
-        for strat_cfg in strategies_cfg:
-            name = strat_cfg["name"]
-            weight = float(strat_cfg.get("weight", 1.0))
-            strat_params = _with_injected_annualize(strat_cfg.get("params", {}), injected_annualize)
-
-            try:
-                module = importlib.import_module(f"quantbox.plugins.strategies.{name}")
-            except ImportError:
-                logger.error("Could not import strategy '%s'", name)
-                raise
-
-            result = module.run(data=market_data, params=strat_params)
-
-            # Normalize multi-level weight columns
-            weights_df = result.get("weights", pd.DataFrame())
-            if isinstance(weights_df, pd.DataFrame) and weights_df.columns.nlevels > 1:
-                if weights_df.droplevel("ticker", axis=1).columns.unique().shape[0] > 1:
-                    logger.warning(
-                        "Strategy %s has multiple weights columns: %s",
-                        name,
-                        weights_df.droplevel("ticker", axis=1).columns.unique().tolist(),
-                    )
-                weights_df = weights_df.T.groupby("ticker").sum().T
-                result["weights"] = weights_df
-
-            results[name] = {"result": result, "weight": weight}
-            logger.info("Strategy '%s' completed (weight=%.2f)", name, weight)
-
-        return results
-
-    def _run_strategy_plugins(
-        self,
-        strategy_plugins: list[StrategyPlugin],
-        strategies_cfg: list[dict[str, Any]],
-        market_data: dict[str, Any],
-        injected_annualize: float | None = None,
-    ) -> dict[str, dict[str, Any]]:
-        """Run injected StrategyPlugin instances, collecting results."""
-        results: dict[str, dict[str, Any]] = {}
-
-        for i, strat in enumerate(strategy_plugins):
-            strat_cfg = strategies_cfg[i] if i < len(strategies_cfg) else {}
-            weight = float(strat_cfg.get("weight", 1.0))
-            strat_params = _with_injected_annualize(strat_cfg.get("params", {}), injected_annualize)
-
-            result = strat.run(data=market_data, params=strat_params)
-
-            # Normalize multi-level weight columns (same as _run_strategies)
-            weights_df = result.get("weights", pd.DataFrame())
-            if isinstance(weights_df, pd.DataFrame) and weights_df.columns.nlevels > 1:
-                if weights_df.droplevel("ticker", axis=1).columns.unique().shape[0] > 1:
-                    logger.warning(
-                        "Strategy %s has multiple weights columns: %s",
-                        strat.meta.name,
-                        weights_df.droplevel("ticker", axis=1).columns.unique().tolist(),
-                    )
-                weights_df = weights_df.T.groupby("ticker").sum().T
-                result["weights"] = weights_df
-
-            results[strat.meta.name] = {"result": result, "weight": weight}
-            logger.info("Strategy plugin '%s' completed (weight=%.2f)", strat.meta.name, weight)
-
-        return results
-
     # ==================================================================
     # Stage 3: Strategy aggregation
     # ==================================================================

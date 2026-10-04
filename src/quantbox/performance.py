@@ -50,7 +50,7 @@ import logging
 
 import pandas as pd
 
-from quantbox.plugins.backtesting.metrics import compute_backtest_metrics
+from quantbox.metrics import compute_backtest_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -265,7 +265,7 @@ def compute_performance(
     itd = compute_period_return(returns, equity, flows_df, None)
     periods["ITD"] = itd
 
-    # Risk metrics from quantbox-core
+    # Risk metrics from the one metrics module (quantbox.metrics)
     risk_metrics = {}
     if len(returns) >= 2:
         metrics = compute_backtest_metrics(returns, trading_days=trading_days)

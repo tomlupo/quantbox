@@ -67,7 +67,7 @@ class VectorbtAdapter(EngineAdapter):
         params: Mapping[str, Any] | None = None,
         trading_days: int = 365,
     ) -> TradedBook:
-        from quantbox.plugins.backtesting.metrics import compute_backtest_metrics
+        from quantbox.metrics import compute_backtest_metrics
         from quantbox.plugins.backtesting.vectorbt_engine import run as run_vectorbt
 
         params = self.check_params(params)

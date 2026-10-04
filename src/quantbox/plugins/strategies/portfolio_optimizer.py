@@ -8,7 +8,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from quantbox.contracts import PluginMeta
+from quantbox.contracts import PluginMeta, StrategyContext
+from quantbox.strategy_runner import resolve_annualize
 
 try:
     from scipy.optimize import minimize as scipy_minimize
@@ -190,7 +191,7 @@ class PortfolioOptimizerStrategy:
     method: str = "max_sharpe"
     lookback: int = 252
     risk_free_rate: float = 0.02
-    trading_days: int | None = None  # None = pipeline-injected via _pipeline_annualize; falls back to 252
+    trading_days: int | None = None  # None = the run's StrategyContext.bars_per_year; 252 without one
     min_weight: float = 0.0
     max_weight: float = 1.0
     rolling: bool = False
@@ -201,6 +202,7 @@ class PortfolioOptimizerStrategy:
         self,
         data: dict[str, pd.DataFrame],
         params: dict[str, Any] | None = None,
+        context: StrategyContext | None = None,
     ) -> dict[str, Any]:
         """Compute portfolio weights using the configured optimization method."""
         if params:
@@ -211,12 +213,12 @@ class PortfolioOptimizerStrategy:
         if self.method not in _METHODS:
             raise ValueError(f"Unknown method '{self.method}'. Choose from: {_METHODS}")
 
-        # Resolve trading_days: explicit (self/params) wins, else pipeline-injected, else 252.
-        pipeline_annualize = (params or {}).get("_pipeline_annualize")
-        if self.trading_days is None:
-            effective_td = int(round(pipeline_annualize)) if pipeline_annualize is not None else 252
-        else:
-            effective_td = int(self.trading_days)
+        # Annualisation: the strategy's explicit field wins, else the run's StrategyContext (TOM-1448).
+        effective_td = int(
+            round(
+                resolve_annualize(self.trading_days, params, context, owner="PortfolioOptimizerStrategy.trading_days")
+            )
+        )
 
         prices: pd.DataFrame = data["prices"]
 

@@ -90,7 +90,7 @@ class RsimsAdapter(EngineAdapter):
     ) -> TradedBook:
         """rsims trades every bar it is handed (``orders`` masks cells); ``rebalancing_freq`` and
         ``threshold`` are vectorbt's schedule and are not read. It charges ``costs.fees`` only."""
-        from quantbox.plugins.backtesting.metrics import compute_backtest_metrics
+        from quantbox.metrics import compute_backtest_metrics
 
         params = self.check_params(params)
         slices = list(_slices(weights))
@@ -131,7 +131,7 @@ class RsimsAdapter(EngineAdapter):
 
     def stats(self, book: TradedBook, names: Sequence[str], *, trading_days: int = 365) -> dict[tuple, dict[str, Any]]:
         """The sweep's metric names, from ``compute_backtest_metrics`` on each slice's returns."""
-        from quantbox.plugins.backtesting.metrics import compute_backtest_metrics
+        from quantbox.metrics import compute_backtest_metrics
 
         returns = book.returns
         per_slice = (

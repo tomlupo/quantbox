@@ -25,6 +25,8 @@ from typing import Any, ClassVar
 
 import pandas as pd
 
+from quantbox.metrics import turnover_series
+
 
 @dataclass(frozen=True)
 class Costs:
@@ -90,8 +92,7 @@ def weight_turnover(weights: pd.DataFrame | dict[str, pd.DataFrame]) -> pd.Serie
     frames = weights.values() if isinstance(weights, dict) else [weights]
     total: pd.Series | None = None
     for w in frames:
-        w = w.select_dtypes(include="number").fillna(0.0)
-        t = w.diff().fillna(w).abs().sum(axis=1)
+        t = turnover_series(w.select_dtypes(include="number").fillna(0.0), from_flat=True)
         total = t if total is None else total.add(t, fill_value=0.0)
     return total if total is not None else pd.Series(dtype=float)
 
