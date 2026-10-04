@@ -143,16 +143,22 @@ calendar is read from the prices themselves (or from one series of them).
   a wider panel — writes its period's weights AFTER the decision bar; the
   engine seam drops that row and the previous period's weights are held
   until the next decision, silently (the lab's TSMOM re-run: 71 of 409
-  executed decisions). The rule is about where weights are STAMPED, not when
-  they change: a decision is STALE when the strategy writes a row whose
-  weights differ (by more than 1e-12 in any instrument) from the ones the
-  decision traded, on a NON-execution bar strictly between the decision bar
-  and the next execution bar — weights no decision ever sees. It is read on
-  the strategy's own rows, before the engine seam drops the ones that are not
-  bars. It needs no notion of a period, so it holds for any schedule (a
-  period-end offset, an `int`, explicit dates, rsims deciding on every
-  execution bar), and it reads only the gap after each decision bar, so a
-  book that moves inside the period (a daily vol scaler on a month-end
+  executed decisions). The rule is about where weights are STAMPED, and it is
+  deliberately the narrowest one that catches that bug. A decision is STALE
+  when, strictly between the decision bar and the next execution bar, the
+  strategy writes a STEP on a non-execution bar — weights that differ (by
+  more than 1e-12 in any instrument) from the ones the decision traded and
+  then stay unchanged up to that next execution bar, i.e. the strategy
+  forward-fills its own stamp — AND the next decision comes after that
+  execution bar, so the step is held for a period rather than traded at once
+  (on an `int` 1 schedule or rsims, the next bar's decision trades it: never
+  stale) — or the price/weight intersection (below) dropped price bars from
+  that gap, so the shrunk calendar's "next execution bar" is a later stamp,
+  not the next bar. It is read on the strategy's own rows, before the engine seam drops
+  the ones that are not bars. It needs no notion of a period, so it holds for
+  any schedule (a period-end offset, an `int`, explicit dates, rsims), and it
+  reads only the gap after each decision bar, so a book that moves on
+  execution bars inside the period (a weekday vol scaler on a month-end
   signal) does not mask it. Executed decisions only: one past the last bar
   never trades. `data_validation.json` `weight_age` (minor 1): executed
   decisions, the stale count, the first five stale decision bars and the
@@ -160,9 +166,20 @@ calendar is read from the prices themselves (or from one series of them).
   execution to the next decision's execution (max, total); metrics
   `decision_stale_weights`, `decision_stale_weights_held_bars_max` (0 when
   none is stale); a loud `TIMING:` warning. Recorded, never refused —
-  TOM-1430 gates. Replaces the round-1 rule (weights unchanged since the
-  period start AND changed later in it), which review found blind on a `BME`
-  schedule and under any in-period move, and false on `int` / `2W` schedules.
+  TOM-1430 gates on it, so a false alarm costs more than a miss.
+  History: round 1 asked when the weights CHANGED (unchanged since the period
+  start AND changed later in it) — blind on a `BME` schedule and under any
+  in-period move, false on `int` / `2W` schedules; round 2 flagged ANY changed
+  non-execution row — 104 of 104 weekly decisions on a constant book times a
+  7-day vol scaler, and on a daily signal over a crypto+equity panel.
+  **Known false negative:** a stamped step with daily variation on top over
+  the non-execution bars (a calendar month-end signal times a vol scaler that
+  also moves on weekends) reads as drift and is NOT counted — weights that
+  keep moving over a weekend cannot be told apart from a legitimate daily
+  signal without knowing the strategy, and a noisy gate is worse than one
+  honest blind spot. The reverse edge: a single non-execution bar in the gap
+  (a mid-week holiday) is trivially "unchanged to the next bar", so a daily
+  signal that moves on it counts when the schedule holds it for a period.
   **Known limit:** on intraday bars the rule compares timestamps exactly, but
   the calendar periods that pick decision bars are day-normalised; a stamp
   later on the decision bar's own day is not after it. Daily bars only, for
@@ -170,13 +187,17 @@ calendar is read from the prices themselves (or from one series of them).
 - **Index alignment.** The engine runs on the bars where prices AND a strategy
   weight row exist (the intersection is unchanged here — a separate card). A
   strategy that writes rows only on its stamp dates shrinks the whole panel
-  to them, and its weekend stamps vanish with no decision to miss them.
-  `data_validation.json` `index_alignment` (minor 3): price bars, weight rows,
-  bars used, price bars dropped before the strategy's first row (warm-up, not
-  warned), any OTHER dropped price bar and weight row on a date with no price
-  bar (counts and the first five dates); metrics `index_price_bars_dropped`,
-  `index_weight_rows_dropped`; a loud `INDEX:` warning when either is
-  non-zero.
+  to them. `data_validation.json` `index_alignment` (minor 3): price bars,
+  weight rows, bars used, price bars dropped before the strategy's first row
+  (warm-up, not warned), any OTHER dropped price bar (count, first five
+  dates), weight rows on dates with no price bar, and of those the ones whose
+  weights differ from the last kept row (count, first five dates); metrics
+  `index_price_bars_dropped`, `index_weight_rows_dropped`,
+  `index_weight_rows_dropped_changed`; a loud `INDEX:` warning for dropped
+  price bars and, separately, for CHANGED dropped weight rows. A dropped row
+  that repeats the last kept row is counted but not warned: it loses nothing
+  (every 7-day-panel strategy has them), while a changed one is weights that
+  are never traded.
 - **Recorded.** `rebalance_schedule.parquet` has one row per executed decision:
   `decision_date`, `execution_date`, `deferred_instruments` (`;`-joined).
   `traded_weights.parquet` is now the book HELD after each bar's orders: the

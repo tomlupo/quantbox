@@ -63,36 +63,52 @@ def _percentile(values: np.ndarray, q: float) -> float:
     return float(np.percentile(values, q)) if len(values) else 0.0
 
 
+def _count_between(stamps: pd.DatetimeIndex, lo: pd.Timestamp, hi: pd.Timestamp) -> int:
+    """Stamps strictly inside (lo, hi)."""
+    return int(stamps.searchsorted(hi, side="left") - stamps.searchsorted(lo, side="right"))
+
+
 def _decision_weight_age(
     weight_rows: pd.DataFrame,
     columns: pd.Index,
     index: pd.Index,
     exec_idx: pd.Index,
+    decisions: pd.Index,
     dec_dates: pd.Index,
     exe_rows: np.ndarray,
+    price_index: pd.Index | None = None,
 ) -> dict[str, Any]:
-    """Decisions that MISSED weights the strategy stamped off the execution calendar (``weight_age``).
+    """Decisions that MISSED a weight step the strategy stamped off the execution calendar (``weight_age``).
 
     The rule is about where weights are STAMPED. A decision bar ``d`` trades
-    the strategy's row on (or forward-filled onto) ``d``. When the strategy
-    writes a CHANGED row on a non-execution bar strictly between ``d`` and the
-    next execution bar — a calendar month-end that falls on a weekend, from a
-    wider panel — no decision ever sees that row: the engine seam drops it, and
-    the book decided on ``d`` is held until the next decision executes. That
-    decision is STALE. Schedule-agnostic (any ``rebalancing_freq``, rsims),
-    and blind to how often the book moves inside a period: only the gap after
-    each decision bar is read. Executed decisions only.
+    the strategy's row on (or forward-filled onto) ``d``. A decision is STALE
+    when, strictly between ``d`` and the next execution bar, the strategy
+    writes a STEP on a non-execution bar — weights that differ from the ones
+    ``d`` traded and then stay unchanged up to that next execution bar (the
+    strategy forward-fills its own stamp: a calendar month-end that falls on a
+    weekend, from a wider panel) — AND the next decision comes after that
+    execution bar, so the missed step is not simply traded there (it always is
+    on a daily schedule or rsims) — or the price/weight intersection dropped
+    price bars from that gap (*price_index*), so the "next execution bar" is
+    a later stamp, not the next bar. Schedule-agnostic. Executed decisions
+    only.
 
-    *weight_rows* is the strategy's book on its OWN rows (forward-filled on
-    them); "changed" = differs from the row the decision traded by more than
-    1e-12 in any instrument. ``held_bars`` of a stale decision = bars from its
-    execution to the next decision's execution (the span the missed weights
-    were not held). Recorded, never refused (TOM-1430 gates).
+    Narrow on purpose (review round 2): weights that keep moving over the
+    non-execution bars (a 7-day vol scaler, a daily signal on a crypto+equity
+    panel) are daily variation, not a mis-stamp, and are never counted — which
+    also hides a stamped step with daily drift on top (ADR-0007 1c, known
+    false negative). *weight_rows* is the strategy's book on its OWN rows
+    (forward-filled on them); equal = within 1e-12 in every instrument.
+    ``held_bars`` of a stale decision = bars from its execution to the next
+    decision's execution. Recorded, never refused (TOM-1430 gates).
     """
     raw = weight_rows.reindex(columns=columns).sort_index().ffill()
     stamps = pd.DatetimeIndex(raw.index)
-    vals = raw.to_numpy(dtype=float)
+    vals = np.nan_to_num(raw.to_numpy(dtype=float), nan=0.0)
     exec_dt = pd.DatetimeIndex(exec_idx)
+    all_dec = pd.DatetimeIndex(decisions)
+    bars = pd.DatetimeIndex(index)
+    prices = bars if price_index is None else pd.DatetimeIndex(price_index)
     dec = pd.DatetimeIndex(dec_dates)
     stale_rows: list[int] = []
     missed: list[str] = []
@@ -100,22 +116,30 @@ def _decision_weight_age(
         nxt = exec_dt.searchsorted(d, side="right")
         if nxt >= len(exec_dt):
             continue
+        nxt_bar = exec_dt[nxt]
+        later = all_dec.searchsorted(d, side="right")
+        shrunk = _count_between(prices, d, nxt_bar) > _count_between(bars, d, nxt_bar)
+        if later < len(all_dec) and all_dec[later] <= nxt_bar and not shrunk:
+            continue  # the next decision trades whatever was stamped in the gap
         lo = stamps.searchsorted(d, side="right")
-        hi = stamps.searchsorted(exec_dt[nxt], side="left")
+        hi = stamps.searchsorted(nxt_bar, side="left")
         if hi <= lo:
             continue
         traded = vals[lo - 1] if lo > 0 else np.zeros(vals.shape[1])
         window = vals[lo:hi]
-        diff = np.abs(np.nan_to_num(window, nan=0.0) - np.nan_to_num(traded, nan=0.0)) > 1e-12
-        hit = np.flatnonzero(diff.any(axis=1))
-        if len(hit):
-            stale_rows.append(k)
-            missed.append(pd.Timestamp(stamps[lo + hit[0]]).isoformat())
+        moved = np.flatnonzero((np.abs(window - traded) > 1e-12).any(axis=1))
+        if not len(moved):
+            continue
+        step = window[moved[0]]
+        if (np.abs(window[moved[0] :] - step) > 1e-12).any():
+            continue  # keeps moving up to the next execution bar: daily variation, not a stamped step
+        stale_rows.append(k)
+        missed.append(pd.Timestamp(stamps[lo + moved[0]]).isoformat())
     ends = np.append(np.asarray(exe_rows, dtype=int)[1:], len(index))
     held = np.asarray([ends[k] - exe_rows[k] for k in stale_rows], dtype=int)
     return {
-        "rule": "stale when the strategy stamps changed weights on a non-execution bar strictly between the "
-        "decision bar and the next execution bar",
+        "rule": "stale when the strategy stamps a weight step on a non-execution bar between the decision bar and "
+        "the next execution bar, holds it unchanged to that bar, and the next decision comes later",
         "decisions": int(len(dec)),
         "stale_decisions": len(stale_rows),
         "first_stale": [pd.Timestamp(dec[k]).isoformat() for k in stale_rows[:5]],
@@ -201,6 +225,7 @@ def schedule_book(
     engine: str,
     leverage: str,
     weight_rows: pd.DataFrame | None = None,
+    price_index: pd.Index | None = None,
 ) -> ScheduledBook:
     """Decided weights -> the traded book on *cal*'s bars (see the module docstring).
 
@@ -209,6 +234,9 @@ def schedule_book(
     is reachable only under the same-bar override the resolver granted.
     *weight_rows* is the strategy's book on ITS OWN rows (weekend rows of a
     wider panel included), for the decision weight age; default *decided*.
+    *price_index* is the price panel's index BEFORE the price/weight
+    intersection, so the weight age can tell a real calendar gap from one the
+    intersection made; default *cal*'s bars.
     """
     if leverage not in LEVERAGE_MODES:
         raise ValueError(f"venue.leverage must be one of {list(LEVERAGE_MODES)}, got {leverage!r}")
@@ -276,7 +304,9 @@ def schedule_book(
     ages = dec_age[dec_inside]
     stale = (dec_age > 0) & dec_inside
 
-    weight_age = _decision_weight_age(raw_decided, columns, index, exec_idx, dec_dates, exe_rows)
+    weight_age = _decision_weight_age(
+        raw_decided, columns, index, exec_idx, decisions, dec_dates, exe_rows, price_index
+    )
 
     schedule = pd.DataFrame(
         {

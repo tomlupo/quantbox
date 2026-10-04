@@ -105,8 +105,8 @@
     },
     "index_alignment": {
       "type": "object",
-      "description": "Minor 3 (ADR-0007 1c): what the price/weight index intersection dropped. warmup_* = price bars before the strategy's first row (not warned); price_bars_dropped = any other price bar with no weight row; weight_rows_dropped = weight rows on dates with no price bar. Both warned loudly.",
-      "required": ["price_bars", "weight_rows", "bars_used", "warmup_price_bars_dropped", "price_bars_dropped", "first_price_bars_dropped", "weight_rows_dropped", "first_weight_rows_dropped"],
+      "description": "Minor 3 (ADR-0007 1c): what the price/weight index intersection dropped. warmup_* = price bars before the strategy's first row (not warned); price_bars_dropped = any other price bar with no weight row; weight_rows_dropped = weight rows on dates with no price bar, of which weight_rows_dropped_changed differ from the last kept row (weights never traded). Dropped price bars and changed dropped rows are warned; a forward-filled repeat is not.",
+      "required": ["price_bars", "weight_rows", "bars_used", "warmup_price_bars_dropped", "price_bars_dropped", "first_price_bars_dropped", "weight_rows_dropped", "weight_rows_dropped_changed", "first_weight_rows_dropped_changed"],
       "properties": {
         "price_bars": {"type": "integer", "minimum": 0},
         "weight_rows": {"type": "integer", "minimum": 0},
@@ -115,7 +115,8 @@
         "price_bars_dropped": {"type": "integer", "minimum": 0},
         "first_price_bars_dropped": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
         "weight_rows_dropped": {"type": "integer", "minimum": 0},
-        "first_weight_rows_dropped": {"type": "array", "items": {"type": "string"}, "maxItems": 5}
+        "weight_rows_dropped_changed": {"type": "integer", "minimum": 0},
+        "first_weight_rows_dropped_changed": {"type": "array", "items": {"type": "string"}, "maxItems": 5}
       }
     },
     "leverage": {

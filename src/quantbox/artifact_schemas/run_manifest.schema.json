@@ -195,7 +195,8 @@
             "bars_used": {"type": "integer", "minimum": 0},
             "warmup_price_bars_dropped": {"type": "integer", "minimum": 0},
             "price_bars_dropped": {"type": "integer", "minimum": 0},
-            "weight_rows_dropped": {"type": "integer", "minimum": 0}
+            "weight_rows_dropped": {"type": "integer", "minimum": 0},
+            "weight_rows_dropped_changed": {"type": "integer", "minimum": 0}
           }
         },
         "leverage": {

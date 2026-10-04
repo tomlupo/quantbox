@@ -50,6 +50,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from quantbox.contracts import (
@@ -1419,6 +1420,7 @@ class BacktestPipeline:
             engine=engine,
             leverage=leverage,
             weight_rows=weights[common_cols],
+            price_index=prices_wide.index,
         )
         bt_prices, bt_weights, orders = cal.prices, book.weights, book.orders
 
@@ -1441,6 +1443,7 @@ class BacktestPipeline:
             "decision_stale_weights_held_bars_max": float(book.report["weight_age"]["stale_held_bars_max"]),
             "index_price_bars_dropped": float(alignment["price_bars_dropped"]),
             "index_weight_rows_dropped": float(alignment["weight_rows_dropped"]),
+            "index_weight_rows_dropped_changed": float(alignment["weight_rows_dropped_changed"]),
             "leverage_rebalances_above_net_1": float(lev["rebalances_above_net_1"]),
             "leverage_scaled_rebalances": float(lev["scaled_rebalances"]),
             "leverage_scale_mean": lev["scale_mean"],
@@ -1504,17 +1507,27 @@ class BacktestPipeline:
         """What the price/weight index INTERSECTION drops (``data_validation.json`` ``index_alignment``).
 
         The backtest runs on the bars where both prices and a strategy weight
-        row exist. Price bars before the strategy's first row are its warm-up
-        (counted, not warned); any OTHER dropped price bar — a strategy that
-        writes rows only on its stamp dates shrinks the whole panel to them —
-        and any weight row on a date with no price bar is warned loudly. The
-        intersection itself is unchanged (a separate card).
+        row exist (unchanged here — a separate card). Price bars before the
+        strategy's first row are its warm-up (counted, not warned); any OTHER
+        dropped price bar — a strategy that writes rows only on its stamp dates
+        shrinks the whole panel to them — is warned. Weight rows on dates with
+        no price bar (the weekend rows of a 7-day panel) are counted, and warned
+        only when one CHANGES the weights vs the last kept row: a forward-filled
+        repeat loses nothing, a changed row is weights that are never traded.
         """
         first_row = weights.index.min() if len(weights.index) else None
         dropped_prices = price_index.difference(common_idx)
         warmup = dropped_prices[dropped_prices < first_row] if first_row is not None else dropped_prices[:0]
         shrink = dropped_prices.difference(warmup)
         dropped_rows = weights.index.difference(common_idx)
+        changed_rows = dropped_rows[:0]
+        if len(dropped_rows):
+            vals = weights.sort_index().ffill().fillna(0.0)
+            kept = vals.loc[common_idx].to_numpy(dtype=float)
+            pos = common_idx.searchsorted(dropped_rows, side="left") - 1
+            prev = np.where(pos[:, None] >= 0, kept[np.maximum(pos, 0)], 0.0) if len(kept) else 0.0
+            diff = np.abs(vals.loc[dropped_rows].to_numpy(dtype=float) - prev) > 1e-12
+            changed_rows = dropped_rows[diff.any(axis=1)]
         record = {
             "price_bars": int(len(price_index)),
             "weight_rows": int(len(weights.index)),
@@ -1523,19 +1536,28 @@ class BacktestPipeline:
             "price_bars_dropped": int(len(shrink)),
             "first_price_bars_dropped": [pd.Timestamp(t).isoformat() for t in shrink[:5]],
             "weight_rows_dropped": int(len(dropped_rows)),
-            "first_weight_rows_dropped": [pd.Timestamp(t).isoformat() for t in dropped_rows[:5]],
+            "weight_rows_dropped_changed": int(len(changed_rows)),
+            "first_weight_rows_dropped_changed": [pd.Timestamp(t).isoformat() for t in changed_rows[:5]],
         }
-        if len(shrink) or len(dropped_rows):
+        if len(shrink):
             logger.warning(
-                "INDEX: %sthe backtest runs on the %d bar(s) where prices AND a strategy weight row exist — "
-                "%d price bar(s) after the strategy's first row were DROPPED (first %s) and %d weight row(s) on "
-                "dates with no price bar were DROPPED (first %s). Write a weight row on every price bar.",
+                "INDEX: %sthe backtest runs only on the %d bar(s) that carry a strategy weight row: %d price bar(s) "
+                "after the strategy's first row have none and were DROPPED (first %s). Write a weight row on every "
+                "price bar.",
                 where,
                 len(common_idx),
                 len(shrink),
                 record["first_price_bars_dropped"],
+            )
+        if len(changed_rows):
+            logger.warning(
+                "INDEX: %s%d weight row(s) on dates with no price bar CHANGE the weights and are never traded "
+                "(first %s); %d such row(s) in all, the rest repeat the previous bar's weights. Stamp weights on "
+                "price bars.",
+                where,
+                len(changed_rows),
+                record["first_weight_rows_dropped_changed"],
                 len(dropped_rows),
-                record["first_weight_rows_dropped"],
             )
         return record
 
@@ -1560,7 +1582,13 @@ class BacktestPipeline:
             "weight_age": {k: v for k, v in validation["weight_age"].items() if k != "rule"},
             "index_alignment": {
                 k: validation["index_alignment"][k]
-                for k in ("bars_used", "warmup_price_bars_dropped", "price_bars_dropped", "weight_rows_dropped")
+                for k in (
+                    "bars_used",
+                    "warmup_price_bars_dropped",
+                    "price_bars_dropped",
+                    "weight_rows_dropped",
+                    "weight_rows_dropped_changed",
+                )
             },
             "leverage": validation["leverage"],
         }

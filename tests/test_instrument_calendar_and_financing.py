@@ -435,6 +435,18 @@ def _masked() -> pd.DataFrame:  # the calendar-ME signal times a weekday vol sca
     return _calendar_me().mul(scale, axis=0)
 
 
+def _scaler_7day() -> pd.Series:
+    return pd.Series(np.random.default_rng(2).uniform(0.8, 1.2, len(_FULL)), index=_FULL)
+
+
+def _stamp_plus_drift() -> pd.DataFrame:  # the calendar-ME signal times a 7-DAY scaler: a step with drift on top
+    return _calendar_me().mul(_scaler_7day(), axis=0)
+
+
+def _constant_x_scaler() -> pd.DataFrame:  # no stamping at all: 50/50 times a 7-day vol scaler
+    return pd.DataFrame({"A": 0.5, "B": 0.5}, index=_FULL).mul(_scaler_7day(), axis=0)
+
+
 def _sparse_union() -> pd.DataFrame:
     return _signal(pd.date_range(_IDX[0], _IDX[-1], freq="ME")).reindex(
         _IDX.union(pd.date_range(_IDX[0], _IDX[-1], freq="ME"))
@@ -448,7 +460,14 @@ def _sparse_union() -> pd.DataFrame:
         pytest.param(_calendar_me, "BME", 7, id="lab-shape-BME"),  # was 0: the BME period ended before Sunday
         pytest.param(_masked, "ME", 7, id="masked-by-a-daily-scaler"),  # was 0: any in-period move blinded it
         pytest.param(_sparse_union, "ME", 7, id="sparse-stamps"),
-        pytest.param(_calendar_me, 1, 7, id="lab-shape-every-bar"),
+        pytest.param(_calendar_me, 1, 0, id="lab-shape-int-1"),  # was 7: the next bar's decision trades the step
+        pytest.param(_calendar_me, None, 0, id="lab-shape-rsims"),  # was 7
+        pytest.param(_constant_x_scaler, "ME", 0, id="scaler-ME"),  # was 10: daily variation, not a stamp
+        pytest.param(_constant_x_scaler, "W-FRI", 0, id="scaler-W-FRI"),  # was 104 of 104
+        pytest.param(_constant_x_scaler, 1, 0, id="scaler-int-1"),  # was 104
+        pytest.param(_constant_x_scaler, None, 0, id="scaler-rsims"),  # was 104
+        # KNOWN FALSE NEGATIVE (ADR-0007 1c): a stamped step with daily drift on top reads as drift
+        pytest.param(_stamp_plus_drift, "ME", 0, id="step-plus-drift-missed"),
         pytest.param(_business_me, 5, 0, id="correct-int-5"),  # was 21: false alarm
         pytest.param(_business_me, "2W-FRI", 0, id="correct-2W-FRI"),  # was 17
         pytest.param(_business_me, 21, 0, id="correct-int-21"),  # was 2
@@ -456,8 +475,9 @@ def _sparse_union() -> pd.DataFrame:
     ],
 )
 def test_weight_age_counts_missed_stamps_on_any_schedule(weights, freq, stale):
-    """A decision is stale when the strategy stamps CHANGED weights on a non-execution bar between it and
-    the next execution bar — whatever the schedule, however often the book moves inside the period."""
+    """A decision is stale when the strategy stamps a weight STEP on a non-execution bar between it and the
+    next execution bar, holds it to that bar, and the next decision comes later — whatever the schedule,
+    however the book moves inside the period; weights that keep moving over the gap are not a stamp."""
     prices = pd.DataFrame({"A": 100.0, "B": 100.0}, index=_IDX)
     w = weights()
     cal = instrument_calendar(prices)
@@ -467,11 +487,33 @@ def test_weight_age_counts_missed_stamps_on_any_schedule(weights, freq, stale):
         execution_bars(cal, "majority"),
         freq,
         1,
-        engine="vectorbt",
+        engine="vectorbt" if freq is not None else "rsims",
         leverage="normalize",
         weight_rows=w,
     )
     assert book.report["weight_age"]["stale_decisions"] == stale
+
+
+@pytest.mark.parametrize("freq", ["W-FRI", "ME", 1])
+def test_a_daily_signal_on_a_crypto_and_equity_panel_is_not_stale(freq):
+    """Prices on a 7-day index, the equity's calendar executes: a daily signal moves on every weekend row.
+    Daily variation the schedule cannot trade, not a mis-stamp (round 2 flagged 104 of 104 on W-FRI)."""
+    prices = pd.DataFrame({"A": 100.0, "BTC": 100.0}, index=_FULL)
+    prices.loc[_FULL.weekday >= 5, "A"] = np.nan
+    cal = instrument_calendar(prices)
+    signal = pd.DataFrame({"A": np.random.default_rng(3).uniform(0, 1, len(_FULL))}, index=_FULL)
+    signal["BTC"] = 1 - signal["A"]
+    book = schedule_book(
+        signal,
+        cal,
+        execution_bars(cal, "A", prices["A"]),
+        freq,
+        1,
+        engine="vectorbt",
+        leverage="normalize",
+        weight_rows=signal,
+    )
+    assert book.report["weight_age"]["stale_decisions"] == 0
 
 
 def test_a_decision_past_the_last_bar_is_not_counted():
@@ -508,12 +550,41 @@ def test_a_strategy_with_rows_only_on_its_stamps_shrinks_the_panel_and_says_so(t
         result, store = _run(tmp_path, prices, weights, rebalancing_freq="ME")
     al = _validation(store)["index_alignment"]
     assert al["bars_used"] == 3 and al["weight_rows_dropped"] == 1
-    assert al["first_weight_rows_dropped"] == ["2024-03-31T00:00:00"]
+    assert al["weight_rows_dropped_changed"] == 1
+    assert al["first_weight_rows_dropped_changed"] == ["2024-03-31T00:00:00"]
+    # the shrunk calendar's next bar after 29 Feb is 30 Apr, a later stamp: the gap is the intersection's, and
+    # March's Sunday stamp is still a missed step
+    age = _validation(store)["weight_age"]
+    assert age["stale_decisions"] == 1 and age["first_missed_stamps"] == ["2024-03-31T00:00:00"]
     assert al["warmup_price_bars_dropped"] == 22  # January before the first stamp
     assert al["price_bars_dropped"] == len(prices) - 22 - 3
     assert result.metrics["index_price_bars_dropped"] == float(al["price_bars_dropped"])
     assert "INDEX:" in caplog.text
     assert validate_data_validation(_validation(store)) == []
+
+
+@pytest.mark.parametrize(
+    ("march_stamp", "changed"),
+    [("2024-03-29", 0), ("2024-03-31", 1)],
+    ids=["stamped-on-a-bar", "stamped-on-a-sunday"],
+)
+def test_forward_filled_weekend_rows_are_counted_but_warned_only_when_they_change(
+    tmp_path, caplog, march_stamp, changed
+):
+    """A 7-day weight panel on weekday prices: weekend rows that repeat Friday's weights lose nothing —
+    counted, not warned (round 2: every 7-day strategy was told to write a row on every price bar). A
+    weekend row that CHANGES the weights is never traded: warned, by date."""
+    prices = _month_end_panel()
+    full = pd.date_range("2024-01-01", "2024-04-30", freq="D")
+    stamps = pd.DatetimeIndex(["2024-01-01", "2024-01-31", "2024-02-29", march_stamp, "2024-04-30"])
+    sparse = pd.DataFrame({"A": [0.5, 1.0, 0.0, 1.0, 0.0], "B": [0.5, 0.0, 1.0, 0.0, 1.0]}, index=stamps)
+    with caplog.at_level(logging.WARNING):
+        _, store = _run(tmp_path, prices, sparse.reindex(full).ffill(), rebalancing_freq="ME")
+    al = _validation(store)["index_alignment"]
+    assert al["weight_rows_dropped"] == len(full) - len(prices) and al["price_bars_dropped"] == 0
+    assert al["weight_rows_dropped_changed"] == changed
+    assert ("INDEX:" in caplog.text) is bool(changed)
+    assert "every price bar" not in caplog.text
 
 
 def test_a_strategy_with_a_row_on_every_bar_drops_nothing(tmp_path, caplog):
