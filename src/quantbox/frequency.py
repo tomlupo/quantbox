@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import pandas_market_calendars as mcal
 
@@ -218,6 +219,43 @@ def parse_rebalance_offset(spec: str | pd.DateOffset) -> pd.DateOffset:
         )
 
     return pd.tseries.frequencies.to_offset(spec)
+
+
+def rebalancing_dates(dates: pd.Index, rebalancing_freq: Any) -> pd.DatetimeIndex:
+    """The BARS a rebalancing schedule trades on — every date is a member of *dates*.
+
+    ``None`` → buy-and-hold (the first bar); ``int`` n → every n-th bar; ``str``
+    / ``pd.DateOffset`` → calendar dates from :func:`parse_rebalance_offset`;
+    ``list`` → explicit dates. A calendar or explicit date that is not a bar
+    (a weekend month-end, a holiday ``BMS``) is snapped FORWARD to the first bar
+    on or after it — the first moment an order could trade — and dates past the
+    last bar are dropped. Until TOM-1429 such a date was simply missing from the
+    engine's mask, so that period was never rebalanced (``"1W"`` = Sundays never
+    traded on weekday data at all). Engine-free, so every engine reads the same
+    schedule.
+    """
+    dates = pd.DatetimeIndex(dates)
+    if rebalancing_freq is None:
+        return pd.DatetimeIndex(dates[:1])
+    if isinstance(rebalancing_freq, bool):
+        raise ValueError("rebalancing_freq: a bool is not a schedule")
+    if isinstance(rebalancing_freq, int):
+        return dates[::rebalancing_freq]
+    if isinstance(rebalancing_freq, (str, pd.DateOffset)):
+        offset = parse_rebalance_offset(rebalancing_freq)
+        wanted = pd.date_range(start=dates[0], end=dates[-1], freq=offset) if len(dates) else pd.DatetimeIndex([])
+    elif isinstance(rebalancing_freq, (list, tuple, pd.Index)):
+        wanted = pd.DatetimeIndex(rebalancing_freq)
+    else:
+        raise ValueError(
+            f"rebalancing_dates: unsupported rebalancing_freq type "
+            f"{type(rebalancing_freq).__name__!r}; expected int|str|list|DateOffset|None"
+        )
+    if dates.tz is not None and wanted.tz is None:
+        wanted = wanted.tz_localize(dates.tz)
+    pos = dates.searchsorted(wanted, side="left")
+    pos = np.unique(pos[pos < len(dates)])
+    return dates[pos]
 
 
 def _parse_bar_size(s: str | pd.Timedelta) -> pd.Timedelta:

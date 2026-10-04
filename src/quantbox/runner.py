@@ -796,7 +796,8 @@ def run_from_config(
     # the manifest must never have to infer either (quantbox.execution).
     # ``overlays`` is the chain the pipeline APPLIED (name, version, params, in order),
     # reported by the pipeline itself — the traded_weights file is its output.
-    for block in ("execution", "venue", "overlays"):
+    # ``data_validation`` is the instrument-calendar summary; the full report is data_validation.json.
+    for block in ("execution", "venue", "overlays", "data_validation"):
         if block in notes:
             manifest[block] = notes[block]
     if "execution" in manifest:

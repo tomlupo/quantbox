@@ -91,7 +91,7 @@ def test_explain_agrees_with_the_run_manifest_inline_paths(tmp_path, engine):
     assert planned["funding"]["modelled"] is (engine == "rsims")
     assert planned["funding"]["sha256"]
     assert planned["execution"]["lag_bars"] == 1
-    assert planned["venue"] == {"declared": True, "allow_shorts": False, "max_leverage": 1.5}
+    assert planned["venue"] == {"declared": True, "allow_shorts": False, "max_leverage": 1.5, "financing": None}
     assert planned["n_trials"] == 5
     assert Path(recorded["artifacts"]["returns"]).resolve().parent.parent == Path(planned["artifacts_root"])
 

@@ -44,6 +44,7 @@ from __future__ import annotations
 import logging
 import os
 import warnings
+from collections.abc import Sequence
 
 import numpy as np
 import pandas as pd
@@ -69,7 +70,7 @@ except ModuleNotFoundError as exc:  # vectorbt + numba ship in the [vectorbt] ex
         raise
     raise MissingExtraError("vectorbt", "the vectorbt backtest engine", exc.name) from exc
 
-from quantbox.frequency import parse_rebalance_offset  # noqa: E402
+from quantbox.frequency import rebalancing_dates  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -129,26 +130,44 @@ def get_rebalancing_dates(
     Returns
     -------
     pd.DatetimeIndex
+        Bars of *dates* only: a calendar date that is not a bar is snapped
+        forward to the next bar (:func:`quantbox.frequency.rebalancing_dates`).
     """
-    dates = pd.DatetimeIndex(dates)
+    return rebalancing_dates(dates, rebalancing_freq)
 
-    if rebalancing_freq is None:
-        return pd.DatetimeIndex([dates[0]])
 
-    if isinstance(rebalancing_freq, int):
-        return dates[::rebalancing_freq]
+def _per_column(value: float, weights_df: pd.DataFrame, fee_free: Sequence[str]) -> np.ndarray:
+    """A cost as the engine's array: a scalar, or (rows x cols) with 0 on the *fee_free* tickers."""
+    if not fee_free:
+        return np.asarray(value)
+    free = weights_df.columns.get_level_values(-1).isin(list(fee_free))
+    row = np.where(free, 0.0, float(value))
+    return np.ascontiguousarray(np.broadcast_to(row, weights_df.shape), dtype=np.float64)
 
-    if isinstance(rebalancing_freq, (str, pd.DateOffset)):
-        offset = parse_rebalance_offset(rebalancing_freq)
-        return pd.date_range(start=dates[0], end=dates[-1], freq=offset)
 
-    if isinstance(rebalancing_freq, list):
-        return pd.DatetimeIndex(rebalancing_freq)
+def rebalance_fill_gaps(pf: vbt.Portfolio, target_weights: pd.DataFrame, rebalance_bars: pd.Index) -> pd.DataFrame:
+    """How far the book the engine HELD after each rebalance is from the target it was given.
 
-    raise ValueError(
-        f"get_rebalancing_dates: unsupported rebalancing_freq type "
-        f"{type(rebalancing_freq).__name__!r}; expected int|str|list|DateOffset|None"
-    )
+    Returns one row per rebalance bar: ``gap`` = sum over assets of
+    |held weight - target weight| at the close of the bar (held = asset value /
+    portfolio value, after the bar's orders), and ``turnover`` = sum of
+    |target - held weight one bar earlier|. With no costs and enough cash the
+    gap is 0; a cash-constrained engine shows it as the buys it cut. Single
+    group (one strategy) only.
+    """
+    held = pf.asset_value(group_by=False)
+    value = pf.value()
+    if isinstance(value, pd.DataFrame):
+        if value.shape[1] != 1:
+            raise ValueError("rebalance_fill_gaps: one strategy group only")
+        value = value.iloc[:, 0]
+    held_w = held.div(value, axis=0)
+    held_w.columns = held_w.columns.get_level_values(-1)
+    target = target_weights.reindex(index=held_w.index, columns=held_w.columns).ffill().fillna(0.0)
+    bars = held_w.index.intersection(pd.Index(rebalance_bars))
+    gap = (held_w.loc[bars] - target.loc[bars]).abs().sum(axis=1)
+    turnover = (target - held_w.shift(1).fillna(0.0)).abs().sum(axis=1).loc[bars]
+    return pd.DataFrame({"gap": gap, "turnover": turnover})
 
 
 def validate_prices(prices: pd.DataFrame, weights: pd.DataFrame) -> bool:
@@ -203,6 +222,7 @@ def run(
     use_order_func: bool | None = None,
     use_numba: bool = True,
     create_strategy_label: bool = True,
+    fee_free: Sequence[str] = (),
 ) -> vbt.Portfolio:
     """Run a vectorbt backtest.
 
@@ -229,6 +249,9 @@ def run(
         Enable Numba JIT compilation (default True).
     create_strategy_label : bool
         Add a ``strategy`` level to column MultiIndex.
+    fee_free : sequence of str
+        Tickers traded without fees, fixed fees or slippage — the synthetic
+        cash legs of ``venue.financing`` (:mod:`quantbox.financing`).
 
     Returns
     -------
@@ -385,9 +408,9 @@ def run(
     # ------------------------------------------------------------------
     size_type_arr = np.asarray(SizeType.TargetPercent)
     direction_arr = np.asarray(Direction.Both)
-    fees_arr = np.asarray(fees)
-    fixed_fees_arr = np.asarray(fixed_fees)
-    slippage_arr = np.asarray(slippage)
+    fees_arr = _per_column(fees, weights_df, fee_free)
+    fixed_fees_arr = _per_column(fixed_fees, weights_df, fee_free)
+    slippage_arr = _per_column(slippage, weights_df, fee_free)
 
     # ------------------------------------------------------------------
     # Run simulation

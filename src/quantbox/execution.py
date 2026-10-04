@@ -32,6 +32,8 @@ Venue constraints live here too, because they answer the same question
     venue:
       allow_shorts: false   # negative TARGET weights are clipped to 0 before
                             # any risk transform; longs are NOT re-levered.
+      financing: {...}      # what borrowed / idle cash costs (quantbox.financing,
+                            # docs/adr/0007); resolved by resolve_financing.
 """
 
 from __future__ import annotations
@@ -43,6 +45,8 @@ from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
+
+from quantbox.financing import FINANCING_SCHEMA
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +103,7 @@ VENUE_SCHEMA: dict[str, Any] = {
                 "shorts are present either way. Must not contradict an explicit `risk.allow_short`."
             ),
         },
+        "financing": FINANCING_SCHEMA,
     },
 }
 
@@ -358,9 +363,9 @@ def resolve_allow_shorts(venue_cfg: Any, risk_cfg: Mapping[str, Any] | None) -> 
         return legacy, False
     if not isinstance(venue_cfg, Mapping):
         raise ValueError(f"venue must be a mapping like {{allow_shorts: false}}, got {venue_cfg!r}")
-    unknown = sorted(set(venue_cfg) - {"allow_shorts"})
+    unknown = sorted(set(venue_cfg) - {"allow_shorts", "financing"})
     if unknown:
-        raise ValueError(f"venue: unknown key(s) {unknown}; the only key is 'allow_shorts'")
+        raise ValueError(f"venue: unknown key(s) {unknown}; the keys are 'allow_shorts' and 'financing'")
     if "allow_shorts" not in venue_cfg:
         raise ValueError("venue: 'allow_shorts' is required when a venue block is declared")
     allow = venue_cfg["allow_shorts"]

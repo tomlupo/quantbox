@@ -78,7 +78,15 @@ from quantbox.execution import (
     timing_record,
     warn_on_shorts,
 )
-from quantbox.frequency import Frequency, resolve_pipeline_frequency
+from quantbox.financing import (
+    CASH_LEGS,
+    Financing,
+    add_cash_legs,
+    check_unfinanced_net_exposure,
+    resolve_financing,
+)
+from quantbox.frequency import Frequency, rebalancing_dates, resolve_pipeline_frequency
+from quantbox.instrument_calendar import DATA_VALIDATION_SCHEMA, apply_instrument_calendar, calendar_summary
 from quantbox.overlays import OverlayLink, apply_overlays
 from quantbox.plugins.datasources._utils import interval_step, normalize_data_frequency
 
@@ -381,6 +389,7 @@ class BacktestPipeline:
             raise MissingExtraError(engine, f"the {engine} backtest engine", engine)
         timing = resolve_execution(params.get("execution"))
         allow_shorts, venue_declared = resolve_allow_shorts(params.get("venue"), params.get("risk"))
+        financing = resolve_financing((params.get("venue") or {}).get("financing"))
         load_params = dict(params.get("prices", {"lookback_days": 365}))
         freq = self._resolve_frequency(params, load_params)
         bars_per_year = freq.bars_per_year()
@@ -412,7 +421,10 @@ class BacktestPipeline:
                 "declared": venue_declared,
                 "allow_shorts": allow_shorts,
                 "max_leverage": _max_leverage(risk_cfg),
+                # What borrowed / idle cash costs (docs/adr/0007); null = not declared.
+                "financing": financing.record() if financing is not None else None,
             },
+            "financing": financing,
             # rsims charges the funding series it is handed; vectorbt charges none, and
             # the variants flow runs vectorbt only (refused above for any other engine).
             "charges_funding": engine == "rsims" and not variants,
@@ -644,12 +656,12 @@ class BacktestPipeline:
         target_stats = exposure_metrics(weights_history, "target")
         weights_history = self._apply_venue_and_risk(weights_history, risk_cfg, allow_shorts, venue_declared)
 
-        # --- Stage 5: Execution lag, then run backtest engine ---
-        bt_prices, bt_weights = self._align_for_engine(
-            prices_wide, weights_history, lag_bars, engine=engine, same_bar=same_bar
-        )
+        # --- Stage 5: Execution lag + instrument calendar, financing legs, then the engine ---
+        book = self._engine_book(prices_wide, weights_history, plan, rebalancing_freq, where="")
+        bt_prices, bt_weights = book["prices"], book["weights"]
         common_cols = [c for c in weights_history.columns if c in prices_wide.columns]
         a_traded = store.put_parquet("traded_weights", bt_weights.rename_axis("date").reset_index())
+        a_validation = store.put_json("data_validation", book["data_validation"])
 
         logger.info(
             "Backtest window: %d dates x %d assets, engine=%s",
@@ -658,29 +670,31 @@ class BacktestPipeline:
             engine,
         )
 
+        eng_prices, eng_weights = book["engine_prices"], book["engine_weights"]
         funding_modelled = False
         if engine == "vectorbt":
             result_data = self._run_vectorbt(
-                bt_prices,
-                bt_weights,
+                eng_prices,
+                eng_weights,
                 fees=fees,
                 fixed_fees=fixed_fees,
                 slippage=slippage_val,
-                rebalancing_freq=lag_buy_and_hold(bt_prices.index, rebalancing_freq, lag_bars),
+                rebalancing_freq=book["schedule"],
                 threshold=threshold,
                 trading_days=trading_days,
             )
         elif engine == "rsims":
             funding_wide = market_data.get("funding_rates", pd.DataFrame())
             if funding_wide.empty:
-                bt_funding = pd.DataFrame(0.0, index=bt_prices.index, columns=bt_prices.columns)
+                bt_funding = pd.DataFrame(0.0, index=eng_prices.index, columns=eng_prices.columns)
             else:
-                bt_funding = funding_wide.reindex(index=bt_prices.index, columns=bt_prices.columns).fillna(0.0)
+                # The financing cash legs are not in the funding file: they get 0 here.
+                bt_funding = funding_wide.reindex(index=eng_prices.index, columns=eng_prices.columns).fillna(0.0)
                 funding_modelled = True
 
             result_data = self._run_rsims(
-                bt_prices,
-                bt_weights,
+                eng_prices,
+                eng_weights,
                 bt_funding,
                 fees=fees,
                 trade_buffer=costs["trade_buffer"],
@@ -698,6 +712,7 @@ class BacktestPipeline:
         metrics = {
             **result_data["metrics"],
             **self._book_metrics(target_stats, bt_weights, lag_bars, allow_shorts, venue_declared, "single run"),
+            **book["metrics"],
         }
         portfolio_daily = result_data["portfolio_daily"]
 
@@ -804,6 +819,7 @@ class BacktestPipeline:
                 "portfolio_daily": a_port,
                 "returns": a_returns,
                 "metrics": a_metrics,
+                "data_validation": a_validation,
                 **overlay_artifacts,
             },
             metrics={
@@ -818,6 +834,8 @@ class BacktestPipeline:
                 "execution": plan["execution"],
                 "venue": plan["venue"],
                 "funding": {"modelled": funding_modelled},
+                "financing": book["financing"],
+                "data_validation": self._validation_note(book["data_validation"]),
                 "overlays": overlays_applied,
                 "risk_findings": risk_findings,
             },
@@ -1033,21 +1051,21 @@ class BacktestPipeline:
             v_target_stats = exposure_metrics(wh, "target")
             wh = self._apply_venue_and_risk(wh, v_risk_cfg, v_allow_shorts, venue_declared)
 
-            # Stage 5: execution lag + align, then engine
+            # Stage 5: execution lag + instrument calendar, financing legs, then engine
             try:
-                bt_p, bt_w = self._align_for_engine(
-                    prices_wide, wh, lag_bars, engine=engine, same_bar=plan["timing"].same_bar
-                )
+                book = self._engine_book(prices_wide, wh, plan, v_freq, where=f"Variant {vname!r}: ")
             except ValueError as exc:
-                raise ValueError(f"Variant {vname!r}: {exc}") from exc
+                msg = str(exc)
+                raise ValueError(msg if msg.startswith("Variant") else f"Variant {vname!r}: {msg}") from exc
+            bt_p, bt_w = book["prices"], book["weights"]
 
             res = self._run_vectorbt(  # plan() refused any other engine for a variants run
-                bt_p,
-                bt_w,
+                book["engine_prices"],
+                book["engine_weights"],
                 fees=v_fees,
                 fixed_fees=v_fixed,
                 slippage=v_slip,
-                rebalancing_freq=lag_buy_and_hold(bt_p.index, v_freq, lag_bars),
+                rebalancing_freq=book["schedule"],
                 threshold=v_thresh,
                 trading_days=trading_days,
             )
@@ -1065,7 +1083,10 @@ class BacktestPipeline:
                     **self._book_metrics(
                         v_target_stats, bt_w, lag_bars, v_allow_shorts, venue_declared, f"variant {vname!r}"
                     ),
+                    **book["metrics"],
                 },
+                "data_validation": book["data_validation"],
+                "financing": book["financing"],
                 "portfolio_daily": res["portfolio_daily"],
                 "vbt_portfolio": res.get("vbt_portfolio"),
                 # TRADED weights (post venue/risk/lag) — what the engine filled.
@@ -1104,6 +1125,12 @@ class BacktestPipeline:
         a_port = store.put_parquet("portfolio_daily", primary["portfolio_daily"].reset_index())
         a_metrics = store.put_json("metrics", primary["metrics"])
         a_traded = store.put_parquet("traded_weights", primary["weights_history"].rename_axis("date").reset_index())
+        # The primary variant's calendar report; every variant's totals beside it (their targets differ).
+        validation = {
+            **primary["data_validation"],
+            "variants": {n: calendar_summary(r["data_validation"]["calendar"]) for n, r in variant_results.items()},
+        }
+        a_validation = store.put_json("data_validation", validation)
 
         # Per-variant metrics table
         metric_rows = []
@@ -1229,6 +1256,7 @@ class BacktestPipeline:
                 "traded_weights": a_traded,
                 "variant_metrics": a_var_metrics,
                 "variant_returns": a_var_returns,
+                "data_validation": a_validation,
             },
             metrics=flat_metrics,
             notes={
@@ -1238,6 +1266,8 @@ class BacktestPipeline:
                 # The run's files are the PRIMARY (first) variant's book; plan() records its cap.
                 "venue": plan["venue"],
                 "funding": {"modelled": False},  # variants run vectorbt only, which charges no funding
+                "financing": primary["financing"],
+                "data_validation": self._validation_note(validation),
                 "variants": list(variant_results.keys()),
                 "overlays": overlays_applied,
                 "risk_findings": risk_findings,
@@ -1321,20 +1351,40 @@ class BacktestPipeline:
         engine: str | None = "vectorbt",
         same_bar: SameBarOverride | None = None,
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """Align prices/weights for the engine and apply the execution lag.
+        """:meth:`_align_with_calendar` without the calendar report."""
+        prices, weights, _ = BacktestPipeline._align_with_calendar(
+            prices_wide, weights, lag_bars, engine=engine, same_bar=same_bar
+        )
+        return prices, weights
+
+    @staticmethod
+    def _align_with_calendar(
+        prices_wide: pd.DataFrame,
+        weights: pd.DataFrame,
+        lag_bars: int,
+        *,
+        engine: str | None = "vectorbt",
+        same_bar: SameBarOverride | None = None,
+    ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+        """Align prices/weights for the engine, apply the execution lag, then each instrument's calendar.
 
         This is the ONLY place decided weights become traded weights, shared by
         the single-run and variants flows and therefore by every engine branch
         (vectorbt from_orders, vectorbt order-func/threshold, rsims): all three
         are same-bar primitives that fill row ``t`` at ``close[t]``.
 
-        The lag is applied BEFORE the missing-price mask, so a lagged weight can
-        never land on a bar where the asset has no price.
+        The lag is applied BEFORE the calendar, so a lagged weight can never
+        land on a bar outside the asset's life window. The calendar
+        (:func:`quantbox.instrument_calendar.apply_instrument_calendar`) keeps
+        the target across a holiday inside the window (the price is
+        forward-filled, the bar counted) and forces it to 0 outside the window
+        (before listing, after delisting), counting any target it overrides.
 
         Last, the NaN policy the chosen ``engine`` already applies to mid-series
         NaN weight cells is materialised (:func:`materialise_nan_policy`), so
-        the frame returned here is at once what the engine receives, what is
-        saved as ``traded_weights`` and what the ``traded_*`` metrics measure.
+        the frame returned here is at once what the engine receives (before the
+        financing legs), what is saved as ``traded_weights`` and what the
+        ``traded_*`` metrics measure.
         """
         common_idx = prices_wide.index.intersection(weights.index)
         common_cols = [c for c in weights.columns if c in prices_wide.columns]
@@ -1343,27 +1393,74 @@ class BacktestPipeline:
 
         bt_prices = prices_wide.loc[common_idx, common_cols]
         bt_weights = apply_execution_lag(weights.loc[common_idx, common_cols], lag_bars, same_bar=same_bar)
+        aligned = apply_instrument_calendar(bt_prices, bt_weights)
+        return aligned.prices, materialise_nan_policy(aligned.weights, engine), aligned.report
 
-        # Drop columns with < 50% non-null prices first so a newly-listed coin
-        # doesn't truncate the entire simulation window to its listing date.
-        min_obs = max(30, int(len(bt_prices) * 0.5))
-        sufficient_cols = bt_prices.columns[bt_prices.notna().sum() >= min_obs].tolist()
-        dropped = [c for c in bt_prices.columns if c not in sufficient_cols]
-        if dropped:
-            logger.info("Dropped %d short-history columns: %s", len(dropped), dropped)
-        bt_prices = bt_prices[sufficient_cols]
-        bt_weights = bt_weights[sufficient_cols]
+    def _engine_book(
+        self,
+        prices_wide: pd.DataFrame,
+        weights: pd.DataFrame,
+        plan: dict[str, Any],
+        rebalancing_freq: Any,
+        *,
+        where: str,
+    ) -> dict[str, Any]:
+        """Decided weights -> the book the engine trades, for every engine the same way.
 
-        # Where a coin has no price yet (not yet listed), force weight to 0 so
-        # the backtest doesn't try to hold it, then forward-fill prices for
-        # simulation continuity.  This allows a broad dynamic pool where
-        # individual coins enter the universe at different dates without
-        # truncating the entire simulation window to the latest listing date.
-        # Any row that is ALL NaN (before any coin was available) is still dropped.
-        all_nan_rows = bt_prices.isna().all(axis=1)
-        bt_weights = bt_weights.where(bt_prices.notna(), 0.0)
-        bt_prices = bt_prices.ffill().bfill()
-        return bt_prices.loc[~all_nan_rows], materialise_nan_policy(bt_weights.loc[~all_nan_rows], engine)
+        Lag + instrument calendar (:meth:`_align_with_calendar`), the rebalance
+        schedule as BARS (:func:`quantbox.frequency.rebalancing_dates`), then
+        financing: with ``venue.financing`` the LEND/BORROW cash legs are
+        appended (:func:`quantbox.financing.add_cash_legs`); without it, a
+        vectorbt book that needs net exposure above 1 on a rebalance bar is
+        refused (:func:`quantbox.financing.check_unfinanced_net_exposure`) —
+        that engine cannot borrow and would cut buys silently. ``prices`` /
+        ``weights`` are the REAL book (saved as ``traded_weights``);
+        ``engine_prices`` / ``engine_weights`` carry the cash legs.
+        """
+        engine, timing = plan["engine"], plan["timing"]
+        financing: Financing | None = plan.get("financing")
+        bt_prices, bt_weights, calendar = self._align_with_calendar(
+            prices_wide, weights, timing.lag_bars, engine=engine, same_bar=timing.same_bar
+        )
+        if engine == "rsims":
+            schedule = bt_prices.index  # rsims trades toward its target on every bar
+        else:
+            schedule = rebalancing_dates(
+                bt_prices.index, lag_buy_and_hold(bt_prices.index, rebalancing_freq, timing.lag_bars)
+            )
+        metrics: dict[str, float] = {"calendar_ffilled_bars": float(calendar["totals"]["ffilled_bars"])}
+        metrics["calendar_targeted_outside_window_bars"] = float(calendar["totals"]["targeted_outside_window_bars"])
+        if financing is None:
+            if engine == "vectorbt":
+                check_unfinanced_net_exposure(bt_weights, schedule, where=where)
+            eng_prices, eng_weights, fin_record = bt_prices, bt_weights, {"modelled": False}
+        else:
+            eng_prices, eng_weights, fin_record = add_cash_legs(bt_prices, bt_weights, financing, prices_wide)
+            fin_record = {"modelled": True, **fin_record}
+            metrics.update(
+                financing_mean_cash_weight=fin_record["mean_cash_weight"],
+                financing_min_cash_weight=fin_record["min_cash_weight"],
+                financing_borrow_bar_share=fin_record["borrow_bar_share"],
+            )
+        return {
+            "prices": bt_prices,
+            "weights": bt_weights,
+            "engine_prices": eng_prices,
+            "engine_weights": eng_weights,
+            "schedule": schedule,
+            "financing": fin_record,
+            "metrics": metrics,
+            "data_validation": {"schema": DATA_VALIDATION_SCHEMA, "calendar": calendar},
+        }
+
+    @staticmethod
+    def _validation_note(validation: dict[str, Any]) -> dict[str, Any]:
+        """``RunResult.notes['data_validation']`` / run@1 ``data_validation``: the file and its totals."""
+        return {
+            "schema": validation["schema"],
+            "file": "data_validation.json",
+            "calendar": calendar_summary(validation["calendar"]),
+        }
 
     @staticmethod
     def _book_metrics(
@@ -1438,6 +1535,7 @@ class BacktestPipeline:
         trading_days: int,
     ) -> dict[str, Any]:
         from quantbox.plugins.backtesting import compute_backtest_metrics
+        from quantbox.plugins.backtesting.vectorbt_engine import rebalance_fill_gaps
         from quantbox.plugins.backtesting.vectorbt_engine import run as run_vectorbt
 
         pf = run_vectorbt(
@@ -1448,9 +1546,27 @@ class BacktestPipeline:
             fees=fees,
             fixed_fees=fixed_fees,
             slippage=slippage,
+            fee_free=[c for c in CASH_LEGS if c in weights.columns],
         )
 
         metrics = compute_backtest_metrics(pf, trading_days=trading_days)
+        if threshold is None:
+            # Measured, not assumed: did the engine hold the book it was handed after each rebalance?
+            # A threshold run skips rebalances by design, so its gaps say nothing about fills.
+            gaps = rebalance_fill_gaps(pf, weights, rebalancing_dates(prices.index, rebalancing_freq))
+            allowed = 1e-6 + 2.0 * (fees + slippage) * gaps["turnover"] + (1e-3 if fixed_fees else 0.0)
+            under = gaps["gap"] > allowed
+            metrics["engine_underfilled_rebalances"] = float(under.sum())
+            metrics["engine_max_fill_gap"] = float(gaps["gap"].max()) if len(gaps) else 0.0
+            if under.any():
+                logger.warning(
+                    "ENGINE: on %d of %d rebalance bar(s) the vectorbt book held is NOT the target "
+                    "(max sum|held - target| %.4f on %s) — buys were cut for lack of cash",
+                    int(under.sum()),
+                    len(gaps),
+                    gaps["gap"].max(),
+                    gaps["gap"].idxmax(),
+                )
         returns = pf.returns()
 
         # Build portfolio_daily DataFrame
@@ -1498,6 +1614,7 @@ class BacktestPipeline:
             commission_pct=fees,
             capitalise_profits=capitalise_profits,
             equity_basis=equity_basis,
+            fee_free=[c for c in CASH_LEGS if c in weights.columns],
         )
 
         # Build equity curve (same as quantlab validation script)

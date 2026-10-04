@@ -3,7 +3,7 @@
   "$id": "quantbox/run@1",
   "title": "quantbox run manifest (run@1)",
   "description": "The machine-readable record of one run: <run_dir>/run_manifest.json, also what `quantbox run --json` prints. VERSIONING: `schema` names the MAJOR version and readers check it. Adding a field is a MINOR change: it keeps `quantbox/run@1`, bumps `x-schema-minor` here and is safe for every run@1 reader (unknown keys are allowed). Renaming a field, removing one, or changing what one MEANS is a MAJOR change: it ships as `quantbox/run@2`. Paths under `files` are relative to the run directory.",
-  "x-schema-minor": 2,
+  "x-schema-minor": 3,
   "type": "object",
   "required": [
     "schema",
@@ -101,7 +101,49 @@
       "properties": {
         "declared": {"type": "boolean"},
         "allow_shorts": {"type": "boolean"},
-        "max_leverage": {"type": "number", "description": "The gross cap applied to the traded book (the default when the config sets none)."}
+        "max_leverage": {"type": "number", "description": "The gross cap applied to the traded book (the default when the config sets none)."},
+        "financing": {
+          "description": "What borrowed and idle cash cost (minor 3, ADR-0007): venue.financing as resolved; null when the config declares none. Absent from manifests written before minor 3.",
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "required": ["rate", "borrow_spread_bps", "lend_spread_bps"],
+              "properties": {
+                "rate": {
+                  "type": "object",
+                  "description": "{ticker}: a cash total-return index in the prices, its bar return is the rate; {annual}: a constant annual rate.",
+                  "properties": {"ticker": {"type": "string"}, "annual": {"type": "number"}}
+                },
+                "borrow_spread_bps": {"type": "number", "minimum": 0},
+                "lend_spread_bps": {"type": "number", "minimum": 0},
+                "day_count": {"type": "string"}
+              }
+            }
+          ]
+        }
+      }
+    },
+    "data_validation": {
+      "type": "object",
+      "required": ["schema", "file", "calendar"],
+      "description": "Data-validation summary (minor 3, ADR-0007). The full report, per instrument, is the run's data_validation.json (quantbox/data-validation@1). Absent from manifests written before minor 3.",
+      "properties": {
+        "schema": {"const": "quantbox/data-validation@1"},
+        "file": {"type": "string"},
+        "calendar": {
+          "type": "object",
+          "required": ["n_bars", "n_instruments", "ffilled_bars", "targeted_outside_window_bars"],
+          "properties": {
+            "n_bars": {"type": "integer", "minimum": 0},
+            "n_instruments": {"type": "integer", "minimum": 0},
+            "rows_without_any_price": {"type": "integer", "minimum": 0},
+            "ffilled_bars": {"type": "integer", "minimum": 0, "description": "Bars inside an instrument's life window with no price: forward-filled, target weight kept."},
+            "targeted_outside_window_bars": {"type": "integer", "minimum": 0, "description": "Instrument-bars where the traded book targeted a non-zero weight outside the instrument's life window (before its first or after its last price): forced to 0."},
+            "instruments_targeted_outside_window": {"type": "array", "items": {"type": "string"}},
+            "instruments_without_prices": {"type": "array", "items": {"type": "string"}}
+          }
+        }
       }
     },
     "overlays": {

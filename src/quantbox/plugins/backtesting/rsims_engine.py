@@ -19,6 +19,7 @@ Features
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 
 import numpy as np
 import pandas as pd
@@ -94,6 +95,7 @@ def fixed_commission_backtest_with_funding(
     equity_basis: str = "rsims",
     maintenance_buffer: float = 0.0,
     max_gross_leverage: float | None = None,
+    fee_free: Sequence[str] = (),
 ) -> pd.DataFrame:
     """Daily fixed-commission backtest with funding rates and margin.
 
@@ -125,6 +127,9 @@ def fixed_commission_backtest_with_funding(
         Require equity >= (1 + buffer) * maintenance_margin.
     max_gross_leverage : float | None
         Cap gross exposure / equity.
+    fee_free : sequence of str
+        Tickers traded without commission — the synthetic cash legs of
+        ``venue.financing`` (:mod:`quantbox.financing`).
 
     Returns
     -------
@@ -162,6 +167,8 @@ def fixed_commission_backtest_with_funding(
     tickers = prices.columns.tolist()
     dates = prices.index
     num_assets = len(tickers)
+    # Per-asset commission: the financing cash legs trade free.
+    commission_pct = np.where(np.isin(tickers, list(fee_free)), 0.0, float(commission_pct))
 
     current_positions = np.zeros(num_assets)
     previous_prices = np.full(num_assets, np.nan)
