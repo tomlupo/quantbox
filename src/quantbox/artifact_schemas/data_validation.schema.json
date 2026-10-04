@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "quantbox/data-validation@1",
   "title": "quantbox data validation (data-validation@1)",
-  "description": "<run_dir>/data_validation.json, written by backtest.pipeline.v1 (ADR-0007): what each missing price meant, the execution calendar, decision vs execution timing, input staleness and leverage. The stable shape the data-validation step (TOM-1430) reads. VERSIONING as run@1: adding a field is MINOR (x-schema-minor), renaming, removing or changing a meaning is MAJOR (data-validation@2).",
-  "x-schema-minor": 0,
+  "description": "<run_dir>/data_validation.json, written by backtest.pipeline.v1 (ADR-0007): what each missing price meant, the execution calendar, decision vs execution timing, input staleness, decision weight age, index alignment and leverage. Minors: 1 adds weight_age; 2 makes leverage.max_net_exposure_unscaled, scaled_after_deferral and buys_zeroed_dates (always written since minor 0) required; 3 adds index_alignment. The stable shape the data-validation step (TOM-1430) reads. VERSIONING as run@1: adding a field is MINOR (x-schema-minor), renaming, removing or changing a meaning is MAJOR (data-validation@2).",
+  "x-schema-minor": 3,
   "type": "object",
   "required": ["schema", "calendar", "execution_calendar", "timing", "staleness", "leverage"],
   "properties": {
@@ -89,9 +89,39 @@
         "p95_bars": {"type": "number", "minimum": 0}
       }
     },
+    "weight_age": {
+      "type": "object",
+      "description": "Minor 1 (ADR-0007 1c): on a CALENDAR schedule (one period-end offset), executed decisions that MISSED a weight step the strategy stamped on a non-execution bar after the decision bar, in the decision's own calendar period, and held unchanged to the next execution bar. measured=false (with reason, no counts) on an int / explicit-date schedule, rsims or buy-and-hold: there is no period. stale_held_bars_*: bars from a stale decision's execution to the next decision's execution. Recorded, never refused.",
+      "required": ["rule", "measured", "decisions"],
+      "properties": {
+        "rule": {"type": "string"},
+        "measured": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "decisions": {"type": "integer", "minimum": 0, "description": "Executed decisions."},
+        "stale_decisions": {"type": "integer", "minimum": 0},
+        "first_stale": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
+        "first_missed_stamps": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
+        "stale_held_bars_max": {"type": "integer", "minimum": 0},
+        "stale_held_bars_total": {"type": "integer", "minimum": 0}
+      }
+    },
+    "index_alignment": {
+      "type": "object",
+      "description": "Minor 3 (ADR-0007 1c): what the price/weight index intersection dropped. warmup_* = price bars before the strategy's first row (not warned); price_bars_dropped = any other price bar with no weight row; weight_rows_dropped = weight rows on dates with no price bar (data only: a step stamped there is weight_age's to judge). Only dropped price bars are warned.",
+      "required": ["price_bars", "weight_rows", "bars_used", "warmup_price_bars_dropped", "price_bars_dropped", "first_price_bars_dropped", "weight_rows_dropped"],
+      "properties": {
+        "price_bars": {"type": "integer", "minimum": 0},
+        "weight_rows": {"type": "integer", "minimum": 0},
+        "bars_used": {"type": "integer", "minimum": 0},
+        "warmup_price_bars_dropped": {"type": "integer", "minimum": 0},
+        "price_bars_dropped": {"type": "integer", "minimum": 0},
+        "first_price_bars_dropped": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
+        "weight_rows_dropped": {"type": "integer", "minimum": 0}
+      }
+    },
     "leverage": {
       "type": "object",
-      "required": ["mode", "rebalances", "rebalances_above_net_1", "max_net_exposure_decided", "max_net_exposure_held", "scaled_rebalances", "buys_zeroed_rebalances", "scale_mean", "scale_min", "scale_max"],
+      "required": ["mode", "rebalances", "rebalances_above_net_1", "max_net_exposure_decided", "max_net_exposure_unscaled", "max_net_exposure_held", "scaled_rebalances", "scaled_after_deferral", "buys_zeroed_rebalances", "buys_zeroed_dates", "scale_mean", "scale_min", "scale_max"],
       "properties": {
         "mode": {"enum": ["normalize", "borrow"]},
         "rebalances": {"type": "integer", "minimum": 0},

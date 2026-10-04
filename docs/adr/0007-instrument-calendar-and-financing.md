@@ -136,6 +136,77 @@ calendar is read from the prices themselves (or from one series of them).
   signal saw. `data_validation.json` `staleness`: decisions on stale inputs,
   max and p95 age; per instrument `stale_decisions`, `max_staleness_bars`.
   Recorded, never blocking; TOM-1430 gates on it.
+- **Decision weight age.** Price staleness says nothing about the WEIGHTS a
+  decision trades: the strategy's newest row on or before the decision bar,
+  forward-filled onto it. A strategy that stamps its weights on calendar
+  period-ends taken from a wider panel — a month-end that falls on a weekend
+  — writes that period's weights AFTER its decision bar; the engine seam
+  drops the row and the previous period's weights are held until the next
+  decision, silently (the lab's TSMOM re-run: 71 of 409 executed decisions).
+  The guard is deliberately the narrowest one that catches that bug class.
+  - **Measured: calendar schedules only** — a single period-end offset with
+    n = 1 (`ME`, `BME`, `QE`, `YE`, `W-FRI`, ...; a business offset's period
+    is its calendar one, so a Sunday 31 March is in March). A decision is
+    STALE when the strategy writes a STEP on a non-execution bar after the
+    decision bar and before the next execution bar — weights that differ (by
+    more than 1e-12 in any instrument) from the ones the decision traded and
+    stay unchanged up to that next execution bar, i.e. the strategy
+    forward-fills its own stamp — AND the step's calendar period gets no
+    decision after it, so that period's weights are never traded. Normally
+    the step's period is the decision's own; it is a later, EMPTY one when
+    the price/weight intersection (below) left that period without a bar. A
+    step that opens the NEXT period (a Sunday weekly signal after a Friday
+    month-end decision) is traded by that period's decision and never
+    counted. Read on the strategy's own rows, before the engine seam drops
+    the ones that are not bars; executed decisions only.
+  - **Not measured: any other schedule** — an `int`, `nW`, explicit dates,
+    rsims (it decides on every execution bar), buy-and-hold. With no period
+    there is no saying whose step a weekend row is; the guard does not guess.
+    `weight_age` says `measured: false` with the `reason` and carries no
+    counts, and no `decision_stale_weights*` metric is written — never a 0
+    that reads as clean.
+  - **Blind spot 1, step plus drift:** a stamped step with daily variation on
+    top over the non-execution bars (a month-end signal times a vol scaler
+    that also moves on weekends) reads as drift and is not counted. Weights
+    that keep moving over a weekend cannot be told from a legitimate daily
+    signal without knowing the strategy, and a noisy gate is worse than one
+    honest blind spot.
+  - **Blind spot 2, non-calendar schedules** (above): the bug can occur
+    there, and nothing measures it.
+  - **Counted though arguably fresh:** a weekly signal stamped ON a Sunday
+    period-end (Sunday 30 April) is in the period and never traded, so it
+    counts, even though the decision traded weights from inside the period
+    (5 days old), not the previous period's. Telling the two apart needs the
+    age of the traded weights, and that read is what an in-period move (a
+    weekday vol scaler) masks.
+  - **Known limit:** on intraday bars the rule compares timestamps exactly,
+    but the calendar periods that pick decision bars are day-normalised; a
+    stamp later on the decision bar's own day is not after it. Daily bars
+    only, for now.
+
+  `data_validation.json` `weight_age` (minor 1): `measured` (with `reason`
+  when false), executed decisions, and when measured the stale count, the
+  first five stale decision bars and the stamps each missed, and
+  `stale_held_bars_*` — bars from a stale decision's execution to the next
+  decision's execution (max, total); metrics `decision_stale_weights`,
+  `decision_stale_weights_held_bars_max` (only when measured); a loud
+  `TIMING:` warning. Recorded, never refused — TOM-1430 gates on it, so a
+  false alarm costs more than a miss. History: round 1 asked when the weights
+  CHANGED — blind on `BME` and under any in-period move, false on `int` /
+  `2W`; round 2 flagged any changed non-execution row — 104 of 104 weekly
+  decisions on a constant book times a 7-day vol scaler; round 3 counted the
+  next period's step — a Sunday weekly signal under `ME`, 10 of 23.
+- **Index alignment.** The engine runs on the bars where prices AND a strategy
+  weight row exist (the intersection is unchanged here — a separate card). A
+  strategy that writes rows only on its stamp dates shrinks the whole panel
+  to them. `data_validation.json` `index_alignment` (minor 3): price bars,
+  weight rows, bars used, price bars dropped before the strategy's first row
+  (warm-up, not warned), any OTHER dropped price bar (count, first five
+  dates) and weight rows on dates with no price bar (count only); metrics
+  `index_price_bars_dropped`, `index_weight_rows_dropped`. Only dropped price
+  bars raise the loud `INDEX:` warning. Dropped weight rows are data: every
+  7-day-panel strategy has them, and a step stamped there that the schedule
+  misses is the weight age's to report (`TIMING:`), not this check's.
 - **Recorded.** `rebalance_schedule.parquet` has one row per executed decision:
   `decision_date`, `execution_date`, `deferred_instruments` (`;`-joined).
   `traded_weights.parquet` is now the book HELD after each bar's orders: the
@@ -148,13 +219,17 @@ calendar is read from the prices themselves (or from one series of them).
 `data_validation.json` (`quantbox/data-validation@1`, schema
 `artifact_schemas/data_validation.schema.json`): `calendar` (policy, totals,
 per-instrument rows), `execution_calendar` (calendar, execution bars against
-total bars, non-execution bars per year), `timing`, `staleness`, `leverage`.
+total bars, non-execution bars per year), `timing`, `staleness`, `weight_age`
+(minor 1), `index_alignment` (minor 3), `leverage` (its `max_net_exposure_unscaled`,
+`scaled_after_deferral` and `buys_zeroed_dates`, written since minor 0, are required
+from minor 2).
 TOM-1430 adds its own sections beside them. run@1 minor 3 adds
 `execution.calendar`, `venue.leverage` and `data_validation: {schema, file,
 calendar, execution_calendar, timing, staleness, leverage}` (summaries) to the
 manifest; explain@1 records `execution.calendar` and `venue.leverage` before
-any data is loaded. `metrics.json` carries `calendar_*`, `execution_calendar_*`,
-`decision_*` and `leverage_*` counters.
+any data is loaded; run@1 minor 4 adds the `weight_age` and `index_alignment`
+summaries. `metrics.json` carries `calendar_*`, `execution_calendar_*`,
+`decision_*`, `index_*` and `leverage_*` counters.
 
 ### 2. `venue.financing`: rf + spread, through synthetic cash legs
 
@@ -239,8 +314,13 @@ so it can hold the book.
 too, on the bars the engine traded (it skips the others by design). On each
 rebalance bar they compare the book the engine HELD against `traded_weights`,
 on the cells that were ordered. The tolerance is 1e-6 plus twice the cost times
-turnover. Any underfill is logged as a warning. It is the backstop: with
-leverage applied to the held book it should stay 0.
+turnover. Any underfill is logged as a warning. It is the backstop. Leverage
+applied to the held book removes the deferral case by construction, but the
+held book is a TARGET path: under `normalize` with no financing legs, a
+deferred position that DRIFTS above its old target can still leave too little
+cash for a funding buy (review round 3: 5 of 250 bars, max gap 0.15%, at 1%
+daily vol with 13 deferrals). Small, and loud when it happens — not
+guaranteed 0.
 
 ### 4. The rebalance schedule is bars
 
@@ -278,13 +358,19 @@ round 1 carries the `BREAKING CHANGE:` footer.
     | variant | IS 1991-02..2009-12 | full 1991-02..2025-01 |
     |---|---|---|
     | `leverage: borrow` | 1.045 | 0.751 |
-    | `leverage: normalize` (38 of 409 decisions scaled, mean 0.82) | 1.047 | 0.755 |
+    | `leverage: normalize` (52 held-book rebalances scaled, 10 with buys zeroed; mean 0.82) | 1.006 | 0.722 |
     | constant scale (borrow / mean gross 12.54, at rf) | 1.044 | 0.746 |
 
     Reference (DEFR, lagged): 1.075 IS. Round 1 (which filled at the stale
     price) gave 1.087; this round — 520 orders deferred to a printed bar,
     decisions and lag on the execution calendar — gives 1.045. Not attributed
-    further: the pieces were not run separately.
+    further: the pieces were not run separately. `normalize` read 1.047 /
+    0.755 until review round 2: deferral had silently lifted its held net
+    above 1. These runs predate the decision weight age (above), which found
+    the lab strategy trading the previous month's weights on 71 of its 409
+    executed decisions (410 decided; the last falls past the data and never
+    executes); the numbers are the strategy's as written, not a corrected
+    replication.
 - `traded_weights.parquet` is the held book; `traded_*` metrics (turnover,
   flat-bar share) measure it.
 - Declaring `financing` or `leverage` requires a `venue` block, and `venue`

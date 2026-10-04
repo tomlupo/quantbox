@@ -3,7 +3,7 @@
   "$id": "quantbox/run@1",
   "title": "quantbox run manifest (run@1)",
   "description": "The machine-readable record of one run: <run_dir>/run_manifest.json, also what `quantbox run --json` prints. VERSIONING: `schema` names the MAJOR version and readers check it. Adding a field is a MINOR change: it keeps `quantbox/run@1`, bumps `x-schema-minor` here and is safe for every run@1 reader (unknown keys are allowed). Renaming a field, removing one, or changing what one MEANS is a MAJOR change: it ships as `quantbox/run@2`. Paths under `files` are relative to the run directory.",
-  "x-schema-minor": 3,
+  "x-schema-minor": 4,
   "type": "object",
   "required": [
     "schema",
@@ -176,6 +176,30 @@
             "p95_bars": {"type": "number", "minimum": 0}
           }
         },
+        "weight_age": {
+          "type": "object",
+          "description": "Calendar schedules: executed decisions that missed a weight step stamped late in their own period; measured=false otherwise (minor 4, ADR-0007 1c; data_validation.json weight_age).",
+          "properties": {
+            "measured": {"type": "boolean"},
+            "reason": {"type": "string"},
+            "decisions": {"type": "integer", "minimum": 0},
+            "stale_decisions": {"type": "integer", "minimum": 0},
+            "first_stale": {"type": "array", "items": {"type": "string"}},
+            "first_missed_stamps": {"type": "array", "items": {"type": "string"}},
+            "stale_held_bars_max": {"type": "integer", "minimum": 0},
+            "stale_held_bars_total": {"type": "integer", "minimum": 0}
+          }
+        },
+        "index_alignment": {
+          "type": "object",
+          "description": "What the price/weight index intersection dropped (minor 4; data_validation.json index_alignment).",
+          "properties": {
+            "bars_used": {"type": "integer", "minimum": 0},
+            "warmup_price_bars_dropped": {"type": "integer", "minimum": 0},
+            "price_bars_dropped": {"type": "integer", "minimum": 0},
+            "weight_rows_dropped": {"type": "integer", "minimum": 0}
+          }
+        },
         "leverage": {
           "type": "object",
           "required": ["mode", "scaled_rebalances"],
@@ -184,11 +208,11 @@
             "rebalances": {"type": "integer", "minimum": 0},
             "rebalances_above_net_1": {"type": "integer", "minimum": 0},
             "max_net_exposure_decided": {"type": "number"},
-        "max_net_exposure_unscaled": {"type": "number", "description": "The largest net exposure a rebalance would have HELD (ordered cells at target, deferred cells at their previous weight) before venue.leverage."},
-        "max_net_exposure_held": {"type": "number", "description": "The largest net exposure held after venue.leverage."},
-        "scaled_after_deferral": {"type": "integer", "minimum": 0, "description": "Scaled rebalances on which a deferred cell kept its weight."},
-        "buys_zeroed_rebalances": {"type": "integer", "minimum": 0, "description": "Rebalances where the deferred cells alone held net exposure at or above 1, so every ordered buy was set to 0."},
-        "buys_zeroed_dates": {"type": "array", "items": {"type": "string"}},
+            "max_net_exposure_unscaled": {"type": "number", "description": "The largest net exposure a rebalance would have HELD (ordered cells at target, deferred cells at their previous weight) before venue.leverage."},
+            "max_net_exposure_held": {"type": "number", "description": "The largest net exposure held after venue.leverage."},
+            "scaled_after_deferral": {"type": "integer", "minimum": 0, "description": "Scaled rebalances on which a deferred cell kept its weight."},
+            "buys_zeroed_rebalances": {"type": "integer", "minimum": 0, "description": "Rebalances where the deferred cells alone held net exposure at or above 1, so every ordered buy was set to 0."},
+            "buys_zeroed_dates": {"type": "array", "items": {"type": "string"}},
             "scaled_rebalances": {"type": "integer", "minimum": 0},
             "scale_mean": {"type": "number"},
             "scale_min": {"type": "number"},

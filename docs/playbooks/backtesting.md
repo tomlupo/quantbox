@@ -261,8 +261,14 @@ Everything is counted in `data_validation.json` (`quantbox/data-validation@1`, s
 targets outside the window, stale decisions; `legacy_coverage_drop` = columns the old
 50%-coverage rule would have dropped), `execution_calendar` (execution vs total bars,
 non-execution bars per year), `timing`, `staleness` (age of the inputs at each decision:
-count, max, p95 — visible, not blocking), `leverage`. Summaries go to `run_manifest.json`
-`data_validation` and `metrics.json`.
+count, max, p95 — visible, not blocking), `weight_age` (on a calendar schedule — one period-end
+offset such as `ME`, `BME`, `QE`, `W-FRI` — the decisions that MISSED their period's weights
+because the strategy stamped them on a non-execution bar after the decision bar: stamp
+weights on the decision bars, the EXECUTION calendar, never on calendar period-ends from a
+wider panel; a `TIMING:` warning names them. Any other schedule reports `measured: false`
+— the check does not cover it), `index_alignment` (what the price/weight index intersection
+dropped; an `INDEX:` warning names price bars with no weight row), `leverage`. Summaries go to
+`run_manifest.json` `data_validation` and `metrics.json`.
 
 Every vectorbt run records `engine_underfilled_rebalances` and `engine_max_fill_gap` (a
 `threshold` run on the bars it traded). They compare the book the engine held after each
