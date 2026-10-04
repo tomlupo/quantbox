@@ -1,11 +1,11 @@
 ---
 adr: 0007
-title: Per-instrument calendar at the engine seam, and venue.financing for borrowed and idle cash
+title: Instrument and execution calendars, decision vs execution timing, venue.leverage and venue.financing
 status: proposed
 date: 2026-10-04
 ---
 
-# ADR-0007: Per-instrument calendar at the engine seam, and `venue.financing` for borrowed and idle cash
+# ADR-0007: Instrument and execution calendars, decision vs execution timing, `venue.leverage` and `venue.financing`
 
 ## Context
 
@@ -31,18 +31,32 @@ A third, latent: `get_rebalancing_dates` built calendar dates with
 date that is not a bar (a holiday `BMS`, a weekend month-end, every `W-SUN` on
 weekday data) silently skipped that period's rebalance.
 
-Tom approved the design on 2026-10-04 (Telegram, msg 12553).
+Tom approved the design on 2026-10-04 (Telegram, msg 12553). Review round 1
+(NO-SHIP at 9137ccf) found a fourth defect in the first fix, and Tom added three
+decisions to the same change:
+
+4. **Keeping the target on a bar the instrument did not print FILLED it at the
+   stale price.** Decided at the 29 Dec close, lagged to 1 January (A not
+   priced, B priced), the order filled at the forward-filled 29 Dec close and
+   booked A's 2 January move — same-bar look-ahead for every multi-calendar
+   book (478 TSMOM instrument-months rebalanced on such bars).
+5. Instead of refusing an unfinanced levered vectorbt book: **`venue.leverage:
+   normalize | borrow`** (Tom, msg 12557/12558).
+6. **An explicit EXECUTION calendar** beside the per-instrument ones (msg 12564).
+7. **Decision date and execution date kept apart** (msg 12566).
 
 ## Decision
 
 ### 1. A per-instrument life window, applied once at the engine seam
 
-`quantbox.instrument_calendar.apply_instrument_calendar` gives each instrument
-a life window, from its first valid price to its last:
+`quantbox.instrument_calendar.instrument_calendar` gives each instrument a life
+window, from its first valid price to its last:
 
-- **inside** the window a missing bar is forward-filled explicitly, the target
-  weight is KEPT, and the bar is counted (`ffilled_bars`);
-- **outside** it (before listing, after delisting) the weight is forced to 0;
+- **inside** the window a missing bar is forward-filled explicitly — to MARK
+  the position, never to fill an order — and counted (`ffilled_bars`). The
+  position is held across it. An order for the instrument on such a bar is
+  DEFERRED to the instrument's own next printed bar (section 1c);
+- **outside** it (before listing, after delisting) the target is forced to 0;
   prices are filled only to mark a flat book, never into a tradable position.
   A non-zero target there is counted per instrument
   (`targeted_outside_window_bars`, `max_abs_weight_outside_window`) and logged
@@ -50,21 +64,95 @@ a life window, from its first valid price to its last:
 
 Rows where nothing prints and columns that never print are dropped and counted.
 The 50%-coverage column drop is deleted: a short history is traded inside its
-window.
+window. The columns the old rule (`< max(30, 50% of bars)` priced bars) WOULD
+have dropped are counted in `calendar.legacy_coverage_drop`, so a result that
+changed because of it says so.
 
-It runs in `BacktestPipeline._align_with_calendar`, after the execution lag
-and before the engine branch. Both engines (vectorbt `from_orders`, vectorbt
-order-func, rsims) and both flows (single run, variants) receive the same book.
-It is not in a data plugin, because strategies must keep seeing the OBSERVED
-prices: the TSMOM plugin's stale-price filter and volatility estimate read the
-gaps. "Data layer" here means the data the ENGINE reads.
+**A trailing feed gap looks like a delisting.** The window ends at the last
+print, so a feed that stops early is indistinguishable from a delisting: the
+position is closed at the last printed price (the delisting return is assumed
+0, a mild optimistic bias, unchanged from before). The per-instrument
+`last_valid` in `data_validation.json` is where to look.
 
-**Recorded.** Every backtest run writes `data_validation.json`
-(`quantbox/data-validation@1`). It has one section per check: today
-`calendar`, with a policy, totals and per-instrument rows. TOM-1430 adds its
-own sections beside it. run@1 minor 3 adds `data_validation: {schema, file,
-calendar: <totals>}` to the manifest. `metrics.json` carries
-`calendar_ffilled_bars` and `calendar_targeted_outside_window_bars`.
+It runs once, in `BacktestPipeline._engine_book`, before the engine branch.
+Both engines (vectorbt `from_orders`, vectorbt order-func, rsims) and both
+flows (single run, variants) receive the same book. It is not in a data
+plugin, because strategies must keep seeing the OBSERVED prices: the TSMOM
+plugin's stale-price filter and volatility estimate read the gaps. "Data layer"
+here means the data the ENGINE reads.
+
+### 1b. The execution calendar
+
+```yaml
+execution:
+  lag_bars: 1
+  calendar: majority   # majority (default) | union | intersection | <ticker>
+```
+
+| value | a bar is an execution bar when |
+|---|---|
+| `majority` | at least 50% of the instruments inside their life window print on it |
+| `union` | any instrument prints on it |
+| `intersection` | every instrument inside its life window prints on it |
+| `<ticker>` | that series prints on it (a reference index as the exchange calendar; it must be in the loaded prices, it need not carry a weight) |
+
+PnL is still marked on every bar of the union index. Only DECISIONS and ORDERS
+wait for execution bars. It is an `execution` key because it is timing: when a
+decision can be taken and filled. No exchange-calendar dependency: the
+calendar is read from the prices themselves (or from one series of them).
+
+### 1c. decision vs execution timing
+
+- **Decision bar.** The rebalance schedule (`rebalancing_freq`) picks decision
+  bars ON THE EXECUTION CALENDAR (`quantbox.frequency.rebalancing_dates` over
+  the execution bars). A period-END offset (`ME`, `BME`, `QE`, `YE`, `W-FRI`,
+  `1W`) snaps BACKWARD to the last execution bar of the period — "monthly" is
+  the last execution bar of the month, never a raw holiday row and never the
+  first bar of the next month. Any other offset (`MS`, `BMS`, `D`) and an
+  explicit date snap FORWARD. An integer `n` is every n-th execution bar;
+  `None` (buy-and-hold) the first one. rsims decides on every execution bar.
+  The weight decided on bar `d` is the strategy's row `d`, computed from data
+  stamped on or before `d`.
+- **Execution bar** = the decision bar plus `lag_bars` bars OF THE EXECUTION
+  CALENDAR, not raw index rows. A lag of 1 raw row on a union index used to land
+  on a holiday row and fill at stale prices.
+- **Per instrument**, the execution bar is where the order is placed for every
+  instrument that prints on it. One that is inside its window but did not print
+  keeps its previous weight, and its order is DEFERRED to its own next printed
+  bar (an execution bar or not). A later decision reaching the instrument first
+  supersedes the deferred one. Counted per instrument (`deferred_trades`) and
+  per rebalance (`deferred_instruments` in the schedule). The engines honour
+  this through a per-cell order mask. rsims leaves the position as it is.
+  vectorbt runs its flexible (order-function) path whenever the mask is given:
+  an untouched cell sorts as a zero-value order (so sells still go before
+  buys), and the financing legs are sized to the residual of what is ACTUALLY
+  held after the bar's orders — a deferred position has drifted from its old
+  target, and sizing the legs off the target starved the buys (118 underfilled
+  TSMOM rebalances before this). The same path had valued the book at
+  positions + FREE cash, which misstates every weight of a book with shorts;
+  it now uses cash (this also corrects `threshold` runs that hold shorts).
+- **Input staleness at decision.** For each instrument on each decision bar,
+  the bars since its last real print — the age of the forward-filled input the
+  signal saw. `data_validation.json` `staleness`: decisions on stale inputs,
+  max and p95 age; per instrument `stale_decisions`, `max_staleness_bars`.
+  Recorded, never blocking; TOM-1430 gates on it.
+- **Recorded.** `rebalance_schedule.parquet` has one row per executed decision:
+  `decision_date`, `execution_date`, `deferred_instruments` (`;`-joined).
+  `traded_weights.parquet` is now the book HELD after each bar's orders (before,
+  it was the lagged decided weights, which between rebalances the vectorbt
+  engine never held).
+
+**Recorded** (all of section 1). Every backtest run writes
+`data_validation.json` (`quantbox/data-validation@1`, schema
+`artifact_schemas/data_validation.schema.json`): `calendar` (policy, totals,
+per-instrument rows), `execution_calendar` (calendar, execution bars against
+total bars, non-execution bars per year), `timing`, `staleness`, `leverage`.
+TOM-1430 adds its own sections beside them. run@1 minor 3 adds
+`execution.calendar`, `venue.leverage` and `data_validation: {schema, file,
+calendar, execution_calendar, timing, staleness, leverage}` (summaries) to the
+manifest; explain@1 records `execution.calendar` and `venue.leverage` before
+any data is loaded. `metrics.json` carries `calendar_*`, `execution_calendar_*`,
+`decision_*` and `leverage_*` counters.
 
 ### 2. `venue.financing`: rf + spread, through synthetic cash legs
 
@@ -102,69 +190,105 @@ financing (mean, min and max cash weight, borrow-bar share) goes in
 `venue.financing` in run@1 and explain@1 (`null` when undeclared).
 
 A ticker rate must have printed on or before the first backtest bar. An unknown
-rate is refused, never assumed to be 0.
+rate is refused, never assumed to be 0. A ticker that stops printing before the
+backtest ends reads as rate 0 after its last price; those bars are counted
+(`rate_stale_bars_at_end`) and warned about.
 
-### 3. No `financing` block: a book that needs borrowing is REFUSED on vectorbt
+### 3. `venue.leverage`: what a decision with net exposure above 1 becomes
 
-Without `venue.financing`, a vectorbt run is refused before the engine runs
-when the traded book's net exposure is above 1 (+1e-6) on any rebalance bar.
-The error names the block and the count. `rate: 0.0` restores "borrowing is
-free, idle cash earns nothing".
+```yaml
+venue:
+  allow_shorts: true
+  leverage: normalize   # normalize | borrow; default normalize on vectorbt, borrow on rsims
+```
 
-We chose refusal over keeping the old behaviour with a warning and a counter,
-for three reasons:
+- **`normalize`** (the vectorbt default): on every decision whose net exposure
+  is above 1 (+1e-6), the whole basket is scaled proportionally to net 1. The
+  count of scaled rebalances and the mean, min and max scale are recorded
+  (`data_validation.json` `leverage`, the manifest, `leverage_*` metrics) and
+  warned about.
+- **`borrow`**: the decision is held as decided, financed by `venue.financing`
+  (section 2). Without a financing block the rate is ASSUMED to be 0:
+  `venue.financing` in run@1 / explain@1 is then `{rate: {annual: 0.0}, ...,
+  assumed: true}`, and a run whose book does go above net 1 warns loudly.
+  `risk.max_leverage` (a gross cap) still applies before.
 
-- A cut book is not the book the strategy designed. The run would publish
-  numbers for some other strategy, which is exactly what ADR-0005 refused for
-  same-bar fills. A warning above a result enforces nothing.
-- Rejecting at `validate` time is impossible: net exposure is a property of the
-  strategy's output, not of the config. The refusal fires after the strategies
-  and before the engine, which is the earliest point the fact exists.
-- The fix is one line, and the error message spells it out.
+Round 1 refused an unfinanced levered vectorbt book instead. The reviewer
+counted about 84 levered vectorbt configs in quantbox-lab that would start
+failing; Tom chose the two explicit modes (msg 12557). `normalize` is the
+vectorbt default because vectorbt cannot borrow (it would cut the last buys
+silently); `borrow` is the rsims default because rsims is a margin (notional)
+simulator with no cash floor — that is what it has always done, so the 26 lab
+rsims configs keep their leverage behaviour. With `borrow` and no block, rsims gets no cash
+legs (an assumed rate of 0 is its own behaviour); vectorbt gets zero-rate legs,
+so it can hold the book.
 
-rsims is not refused. It is a margin (notional) simulator with no cash floor,
-so it cuts nothing. Its idle cash earns nothing and its borrowing is free unless
-`financing` says otherwise. With `financing`, rsims receives the same legs.
-
-**Measured, not assumed.** Every vectorbt run without a threshold now records
+**Measured, not assumed.** Every vectorbt run without a threshold records
 `engine_underfilled_rebalances` and `engine_max_fill_gap`. On each rebalance
-bar these compare the book the engine HELD against the target it was handed.
-The tolerance is 1e-6 plus twice the cost times turnover. Any underfill is
-logged as a warning.
+bar they compare the book the engine HELD against the target, on the cells that
+were ordered. The tolerance is 1e-6 plus twice the cost times turnover. Any
+underfill is logged as a warning. A deferral can briefly push a normalized book
+above net 1 (the deferred instrument still holds its old weight); this counter
+is where that shows.
 
 ### 4. The rebalance schedule is bars
 
-`quantbox.frequency.rebalancing_dates` is engine-free. A calendar or explicit
-date that is not a bar snaps FORWARD to the first bar on or after it, which is
-the first moment an order could trade. `vectorbt_engine.get_rebalancing_dates`
-delegates to it.
+`quantbox.frequency.rebalancing_dates` is engine-free and returns members of
+the bars it is given — in the pipeline, the execution bars (section 1c). A
+calendar date that is not one snaps backward (period-end offsets) or forward
+(everything else). `vectorbt_engine.get_rebalancing_dates` delegates to it.
 
 ## Consequences
 
+`feat!`: configs that ran before change their numbers. The commit that lands
+round 1 carries the `BREAKING CHANGE:` footer.
+
 - **Numbers change.**
-  - Books with holiday rebalance bars now hold their targets.
-  - Short-history instruments are no longer dropped.
-  - Weekly and month-end schedules on data without those dates now rebalance.
+  - Holiday bars hold their weight; an order on a bar the instrument did not
+    print waits for its next print.
+  - Decisions sit on the execution calendar and execute `lag_bars` execution
+    bars later. A schedule now names the DECISION bar: `rebalancing_freq: 5`
+    decides on bars 0, 5, 10 and trades on 1, 6, 11 (before: traded on 0, 5,
+    10 on the previous bar's decision); `BMS` decides on the first bar of the
+    month and trades on the second. A config that meant "decide at month-end,
+    trade on the first day" says `ME`. The canonical `momentum` golden moved
+    from -13.9% to +9.9% total return for this phase shift alone (checked: the
+    old phase as an explicit decision list reproduces -0.138805 exactly).
+  - Net exposure above 1 is scaled to 1 on vectorbt unless `venue.leverage:
+    borrow`.
+  - Short-history instruments are no longer dropped (counted:
+    `legacy_coverage_drop`).
+  - Period-end schedules on data without those dates decide on the last bar of
+    the period; start schedules snap to the next bar.
   - Financed books earn rf on idle cash.
-  - The TSMOM line with `financing: {rate: "LT12TRUU Index"}`: IS (1991-02..2009-12)
-    Sharpe in excess of LT12TRUU is 1.087, against the reference's lagged
-    1.075 and 0.899 as run on v0.9.0. On total returns it is 1.314, because
-    idle cash now earns rf.
-- **A levered vectorbt config without `venue.financing` now fails loudly.** The
-  TSMOM line's `tsmom` arm is one: net exposure is above 1 on 39 of 409
-  rebalances.
-- Declaring `financing` requires a `venue` block, and `venue` requires
-  `allow_shorts`, as before.
-- `risk.max_leverage` still caps GROSS exposure before the lag. It does not
-  cap net, and the legs do not count towards it.
+  - The TSMOM line (quantbox-lab `replication-tsmom-mop2012`, decisions `ME`,
+    financing LT12TRUU at spread 0; monthly Sharpe, excess of LT12TRUU):
+
+    | variant | IS 1991-02..2009-12 | full 1991-02..2025-01 |
+    |---|---|---|
+    | `leverage: borrow` | 1.045 | 0.751 |
+    | `leverage: normalize` (38 of 409 decisions scaled, mean 0.82) | 1.047 | 0.755 |
+    | constant scale (borrow / mean gross 12.54, at rf) | 1.044 | 0.746 |
+
+    Reference (DEFR, lagged): 1.075 IS. Round 1 (which filled at the stale
+    price) gave 1.087; this round — 520 orders deferred to a printed bar,
+    decisions and lag on the execution calendar — gives 1.045. Not attributed
+    further: the pieces were not run separately.
+- `traded_weights.parquet` is the held book; `traded_*` metrics (turnover,
+  flat-bar share) measure it.
+- Declaring `financing` or `leverage` requires a `venue` block, and `venue`
+  requires `allow_shorts`, as before.
+- `risk.max_leverage` still caps GROSS exposure before scheduling. It does not
+  cap net, and the cash legs do not count towards it.
 - Two cases still cut by fees alone. A book at net exactly 1 with fees, or one
   with financing whose fees exceed its cash, loses the fee amount from its last
   buy. That is pre-existing fee drag, not leverage. The fill-gap tolerance
   allows for it.
+- `quantbox sweep` refuses `execution.calendar`: the sweep engine trades the
+  bars it is given.
 - The L1 helpers `backtest()` / `optimize()` call the vectorbt primitive
-  directly and get neither the calendar nor financing. vectorbt's own
-  `validate_prices` + ffill already keeps holiday targets there, but they still
-  cut net > 1 silently. That is a follow-up.
+  directly and get neither the calendars nor `venue.leverage`/financing; they
+  still cut net > 1 silently. A follow-up card, not this change.
 
 ## Alternatives considered
 
@@ -177,6 +301,12 @@ delegates to it.
 - **One signed cash leg.** Rejected. The asymmetric spread would depend on the
   leg's sign, which only the engine knows between rebalances. Two legs, each
   with a fixed sign, make it exact without engine state.
-- **Keep today's behaviour plus a warning and a counter when unfinanced.**
-  Rejected for the reasons in section 3. The counter exists anyway, as a
-  measurement on every vectorbt run.
+- **Refuse an unfinanced levered vectorbt book** (round 1). Replaced by
+  `venue.leverage` (section 3): a refusal broke ~84 lab configs that only need
+  a declared choice.
+- **Fill at the forward-filled price on a bar the instrument did not print**
+  (round 1). Rejected by review: same-bar look-ahead.
+- **An exchange-calendar library** (`exchange_calendars`,
+  `pandas_market_calendars` sessions) for the execution calendar. Rejected: no
+  new dependency, and the data's own prints are the calendar the backtest can
+  actually trade; `<ticker>` covers "this index IS the exchange calendar".
