@@ -3,7 +3,7 @@
   "$id": "quantbox/run@1",
   "title": "quantbox run manifest (run@1)",
   "description": "The machine-readable record of one run: <run_dir>/run_manifest.json, also what `quantbox run --json` prints. VERSIONING: `schema` names the MAJOR version and readers check it. Adding a field is a MINOR change: it keeps `quantbox/run@1`, bumps `x-schema-minor` here and is safe for every run@1 reader (unknown keys are allowed). Renaming a field, removing one, or changing what one MEANS is a MAJOR change: it ships as `quantbox/run@2`. Paths under `files` are relative to the run directory.",
-  "x-schema-minor": 3,
+  "x-schema-minor": 4,
   "type": "object",
   "required": [
     "schema",
@@ -176,6 +176,19 @@
             "p95_bars": {"type": "number", "minimum": 0}
           }
         },
+        "weight_age": {
+          "type": "object",
+          "description": "Age of the strategy weights each decision traded (minor 4, ADR-0007 1c; data_validation.json weight_age): stale when they predate the decision's rebalance period and the strategy changes them later in it. Totals; first_stale lists up to 5 decision bars.",
+          "properties": {
+            "decisions": {"type": "integer", "minimum": 0},
+            "decisions_with_weights": {"type": "integer", "minimum": 0},
+            "stale_decisions": {"type": "integer", "minimum": 0},
+            "max_bars": {"type": "integer", "minimum": 0},
+            "p95_bars": {"type": "number", "minimum": 0},
+            "max_periods": {"type": "integer", "minimum": 0},
+            "first_stale": {"type": "array", "items": {"type": "string"}}
+          }
+        },
         "leverage": {
           "type": "object",
           "required": ["mode", "scaled_rebalances"],
@@ -184,11 +197,11 @@
             "rebalances": {"type": "integer", "minimum": 0},
             "rebalances_above_net_1": {"type": "integer", "minimum": 0},
             "max_net_exposure_decided": {"type": "number"},
-        "max_net_exposure_unscaled": {"type": "number", "description": "The largest net exposure a rebalance would have HELD (ordered cells at target, deferred cells at their previous weight) before venue.leverage."},
-        "max_net_exposure_held": {"type": "number", "description": "The largest net exposure held after venue.leverage."},
-        "scaled_after_deferral": {"type": "integer", "minimum": 0, "description": "Scaled rebalances on which a deferred cell kept its weight."},
-        "buys_zeroed_rebalances": {"type": "integer", "minimum": 0, "description": "Rebalances where the deferred cells alone held net exposure at or above 1, so every ordered buy was set to 0."},
-        "buys_zeroed_dates": {"type": "array", "items": {"type": "string"}},
+            "max_net_exposure_unscaled": {"type": "number", "description": "The largest net exposure a rebalance would have HELD (ordered cells at target, deferred cells at their previous weight) before venue.leverage."},
+            "max_net_exposure_held": {"type": "number", "description": "The largest net exposure held after venue.leverage."},
+            "scaled_after_deferral": {"type": "integer", "minimum": 0, "description": "Scaled rebalances on which a deferred cell kept its weight."},
+            "buys_zeroed_rebalances": {"type": "integer", "minimum": 0, "description": "Rebalances where the deferred cells alone held net exposure at or above 1, so every ordered buy was set to 0."},
+            "buys_zeroed_dates": {"type": "array", "items": {"type": "string"}},
             "scaled_rebalances": {"type": "integer", "minimum": 0},
             "scale_mean": {"type": "number"},
             "scale_min": {"type": "number"},

@@ -371,6 +371,98 @@ def _returns(store: FileArtifactStore) -> pd.Series:
     return frame.set_index(frame.columns[0])["returns"]
 
 
+def _month_end_panel() -> pd.DataFrame:
+    idx = pd.bdate_range("2024-01-01", "2024-04-30")  # 31 Mar 2024 is a Sunday; 29 Mar the last bar of March
+    return pd.DataFrame({"A": 100.0, "B": 100.0}, index=idx)
+
+
+def test_a_weight_row_stamped_after_the_decision_bar_is_a_stale_decision(tmp_path, caplog):
+    """The strategy stamps its weights on CALENDAR month-ends. March's lands on Sunday 31 Mar, after the
+    decision bar (Friday 29 Mar): that decision trades February's weights. Counted and warned, not refused."""
+    prices = _month_end_panel()
+    stamps = pd.DatetimeIndex(["2024-01-31", "2024-02-29", "2024-03-31", "2024-04-30"])
+    sparse = pd.DataFrame({"A": [1.0, 0.0, 1.0, 0.0], "B": [0.0, 1.0, 0.0, 1.0]}, index=stamps)
+    weights = sparse.reindex(prices.index.union(stamps))  # NaN ("said nothing") off the stamps
+    with caplog.at_level(logging.WARNING):
+        result, store = _run(tmp_path, prices, weights, rebalancing_freq="ME")
+    age = _validation(store)["weight_age"]
+    assert age["decisions"] == 4 and age["decisions_with_weights"] == 4, age
+    assert age["stale_decisions"] == 1
+    assert age["first_stale"] == ["2024-03-29T00:00:00"]
+    assert age["max_periods"] == 1 and age["max_bars"] == 21  # 29 Feb -> 29 Mar
+    assert result.metrics["decision_stale_weights"] == 1.0
+    assert "STALE strategy weight row" in caplog.text and "2024-03-29" in caplog.text
+    assert validate_data_validation(_validation(store)) == []
+
+
+def test_a_strategy_that_forward_fills_its_own_month_end_weights_is_caught_too(tmp_path, caplog):
+    """The lab's shape: the strategy writes a row on EVERY bar of its own (weekend-including) panel,
+    forward-filling the calendar month-end weights. 29 Mar's row repeats February's; March's appear on
+    Sunday 31 Mar. Row existence says nothing — the CHANGE after the decision bar is what counts."""
+    prices = _month_end_panel()
+    full = pd.date_range("2024-01-31", "2024-04-30", freq="D")  # weekend rows from other tickers
+    stamps = pd.DatetimeIndex(["2024-01-31", "2024-02-29", "2024-03-31", "2024-04-30"])
+    sparse = pd.DataFrame({"A": [1.0, 0.0, 1.0, 0.0], "B": [0.0, 1.0, 0.0, 1.0]}, index=stamps)
+    weights = sparse.reindex(full).ffill()
+    with caplog.at_level(logging.WARNING):
+        result, store = _run(tmp_path, prices, weights, rebalancing_freq="ME")
+    age = _validation(store)["weight_age"]
+    assert age["stale_decisions"] == 1 and age["first_stale"] == ["2024-03-29T00:00:00"]
+    assert "STALE strategy weight row" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "weights",
+    [
+        pytest.param(lambda idx: pd.DataFrame({"A": 0.5, "B": 0.5}, index=idx), id="constant-every-bar"),
+        pytest.param(
+            lambda idx: pd.DataFrame(
+                {"A": np.linspace(0.1, 0.9, len(idx)), "B": np.linspace(0.9, 0.1, len(idx))}, index=idx
+            ),
+            id="new-weights-every-bar",
+        ),
+    ],
+)
+def test_weights_on_every_bar_are_never_stale(tmp_path, caplog, weights):
+    prices = _month_end_panel()
+    with caplog.at_level(logging.WARNING):
+        result, store = _run(tmp_path, prices, weights(prices.index), rebalancing_freq="ME")
+    age = _validation(store)["weight_age"]
+    assert age["decisions"] == 4 and age["stale_decisions"] == 0
+    assert result.metrics["decision_stale_weights"] == 0.0
+    assert "STALE strategy weight row" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("freq", "every"),
+    [
+        # a period-end offset: the period is the calendar week ending Saturday
+        ("W-SAT", 1),
+        # no calendar period: the span between decisions; weights change one bar after every OTHER decision
+        (5, 2),
+    ],
+)
+def test_weight_age_follows_any_schedule(freq, every):
+    """The strategy changes its weights the day AFTER a decision bar: that decision traded the weights of a
+    period before, and the new ones are late. Every such decision counts, on any schedule."""
+    prices = _month_end_panel()
+    decisions = rebalancing_dates(prices.index, freq)
+    late = pd.DatetimeIndex([d + pd.Timedelta(days=1) for d in decisions[::every]])
+    full = pd.date_range(prices.index[0], late[-1], freq="D")
+    alt = pd.DataFrame({"A": [float(i % 2) for i in range(len(late))]}, index=late)
+    alt["B"] = 1.0 - alt["A"]
+    weights = alt.reindex(full).ffill().fillna(0.0)
+    cal = instrument_calendar(prices)
+    bars = execution_bars(cal, "majority")
+    book = schedule_book(
+        weights.reindex(prices.index), cal, bars, freq, 1, engine="vectorbt", leverage="normalize", weight_rows=weights
+    )
+    age = book.report["weight_age"]
+    # every decision with a late change after it, bar the first (it has no earlier weights to trade)
+    assert age["stale_decisions"] == len(late) - 1 > 6
+    assert age["max_periods"] == every
+
+
 @pytest.mark.parametrize(
     ("w_a", "borrow_bps", "lend_bps"),
     [(1.5, 100.0, 0.0), (0.4, 0.0, 50.0)],

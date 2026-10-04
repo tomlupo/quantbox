@@ -136,6 +136,26 @@ calendar is read from the prices themselves (or from one series of them).
   signal saw. `data_validation.json` `staleness`: decisions on stale inputs,
   max and p95 age; per instrument `stale_decisions`, `max_staleness_bars`.
   Recorded, never blocking; TOM-1430 gates on it.
+- **Decision weight age.** Price staleness says nothing about the WEIGHTS a
+  decision trades: the strategy's newest row on or before the decision bar,
+  forward-filled onto it. A strategy that stamps its weights on dates that are
+  not decision bars — calendar month-ends that fall on a weekend, taken from a
+  wider panel — has its period's weights land AFTER the decision bar, which
+  then trades the previous period's, silently (the lab's TSMOM re-run: 71 of
+  409 rebalances). The rule, on the strategy's own rows (before the engine
+  seam drops rows that are not bars), by when the weights last CHANGED — a
+  strategy that forward-fills its own output repeats old values, so "a row
+  exists" proves nothing: a decision is STALE when the weights it trades last
+  changed before the start of its rebalance period AND the strategy changes
+  them later in that period. The period is the calendar period of a
+  period-end offset (`ME`, `W-FRI`, ...) that ends on or after the decision
+  bar; for any other schedule (an `int`, explicit dates, rsims deciding on
+  every execution bar) the span between the previous and the next decision.
+  A book held constant, or written fresh on every bar, is never stale.
+  `data_validation.json` `weight_age`: stale count, the first five stale
+  decision bars, the age of the traded weights in bars and in periods (max,
+  p95); metrics `decision_stale_weights`, `decision_max_weight_age_bars`; a
+  loud `TIMING:` warning. Recorded, never refused — TOM-1430 gates.
 - **Recorded.** `rebalance_schedule.parquet` has one row per executed decision:
   `decision_date`, `execution_date`, `deferred_instruments` (`;`-joined).
   `traded_weights.parquet` is now the book HELD after each bar's orders: the
@@ -148,7 +168,8 @@ calendar is read from the prices themselves (or from one series of them).
 `data_validation.json` (`quantbox/data-validation@1`, schema
 `artifact_schemas/data_validation.schema.json`): `calendar` (policy, totals,
 per-instrument rows), `execution_calendar` (calendar, execution bars against
-total bars, non-execution bars per year), `timing`, `staleness`, `leverage`.
+total bars, non-execution bars per year), `timing`, `staleness`, `weight_age`
+(minor 1), `leverage`.
 TOM-1430 adds its own sections beside them. run@1 minor 3 adds
 `execution.calendar`, `venue.leverage` and `data_validation: {schema, file,
 calendar, execution_calendar, timing, staleness, leverage}` (summaries) to the
@@ -239,8 +260,13 @@ so it can hold the book.
 too, on the bars the engine traded (it skips the others by design). On each
 rebalance bar they compare the book the engine HELD against `traded_weights`,
 on the cells that were ordered. The tolerance is 1e-6 plus twice the cost times
-turnover. Any underfill is logged as a warning. It is the backstop: with
-leverage applied to the held book it should stay 0.
+turnover. Any underfill is logged as a warning. It is the backstop. Leverage
+applied to the held book removes the deferral case by construction, but the
+held book is a TARGET path: under `normalize` with no financing legs, a
+deferred position that DRIFTS above its old target can still leave too little
+cash for a funding buy (review round 3: 5 of 250 bars, max gap 0.15%, at 1%
+daily vol with 13 deferrals). Small, and loud when it happens — not
+guaranteed 0.
 
 ### 4. The rebalance schedule is bars
 
@@ -278,13 +304,18 @@ round 1 carries the `BREAKING CHANGE:` footer.
     | variant | IS 1991-02..2009-12 | full 1991-02..2025-01 |
     |---|---|---|
     | `leverage: borrow` | 1.045 | 0.751 |
-    | `leverage: normalize` (38 of 409 decisions scaled, mean 0.82) | 1.047 | 0.755 |
+    | `leverage: normalize` (52 held-book rebalances scaled, 10 with buys zeroed; mean 0.82) | 1.006 | 0.722 |
     | constant scale (borrow / mean gross 12.54, at rf) | 1.044 | 0.746 |
 
     Reference (DEFR, lagged): 1.075 IS. Round 1 (which filled at the stale
     price) gave 1.087; this round — 520 orders deferred to a printed bar,
     decisions and lag on the execution calendar — gives 1.045. Not attributed
-    further: the pieces were not run separately.
+    further: the pieces were not run separately. `normalize` read 1.047 /
+    0.755 until review round 2: deferral had silently lifted its held net
+    above 1. These runs predate the decision weight age (above), which found
+    the lab strategy trading the previous month's weights on 71 of 409
+    rebalances; the numbers are the strategy's as written, not a corrected
+    replication.
 - `traded_weights.parquet` is the held book; `traded_*` metrics (turnover,
   flat-bar share) measure it.
 - Declaring `financing` or `leverage` requires a `venue` block, and `venue`

@@ -1147,6 +1147,7 @@ class BacktestPipeline:
                 n: {
                     "timing": r["data_validation"]["timing"],
                     "staleness": r["data_validation"]["staleness"],
+                    "weight_age": r["data_validation"]["weight_age"],
                     "leverage": r["data_validation"]["leverage"],
                 }
                 for n, r in variant_results.items()
@@ -1415,6 +1416,7 @@ class BacktestPipeline:
             timing.lag_bars,
             engine=engine,
             leverage=leverage,
+            weight_rows=weights[common_cols],
         )
         bt_prices, bt_weights, orders = cal.prices, book.weights, book.orders
 
@@ -1433,6 +1435,8 @@ class BacktestPipeline:
             "execution_calendar_bar_share": exec_report["execution_bars"] / max(exec_report["total_bars"], 1),
             "decision_stale_inputs": float(book.report["staleness"]["stale_decisions"]),
             "decision_max_staleness_bars": float(book.report["staleness"]["max_bars"]),
+            "decision_stale_weights": float(book.report["weight_age"]["stale_decisions"]),
+            "decision_max_weight_age_bars": float(book.report["weight_age"]["max_bars"]),
             "leverage_rebalances_above_net_1": float(lev["rebalances_above_net_1"]),
             "leverage_scaled_rebalances": float(lev["scaled_rebalances"]),
             "leverage_scale_mean": lev["scale_mean"],
@@ -1483,6 +1487,7 @@ class BacktestPipeline:
                 "execution_calendar": exec_report,
                 "timing": timing_report,
                 "staleness": book.report["staleness"],
+                "weight_age": book.report["weight_age"],
                 "leverage": lev,
             },
         }
@@ -1505,6 +1510,7 @@ class BacktestPipeline:
                 "targeted_outside_window_bars": timing["targeted_outside_window_bars"],
             },
             "staleness": validation["staleness"],
+            "weight_age": {k: v for k, v in validation["weight_age"].items() if k != "rule"},
             "leverage": validation["leverage"],
         }
 

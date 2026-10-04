@@ -63,6 +63,83 @@ def _percentile(values: np.ndarray, q: float) -> float:
     return float(np.percentile(values, q)) if len(values) else 0.0
 
 
+def _decision_weight_age(
+    decided: pd.DataFrame, columns: pd.Index, index: pd.Index, decisions: pd.Index, rebalancing_freq: Any, engine: str
+) -> dict[str, Any]:
+    """Age of the strategy weights each decision trades (``data_validation.json`` ``weight_age``).
+
+    The weights a decision bar ``d`` trades are the strategy's newest row on or
+    before ``d``, forward-filled onto it (by the strategy or by the engine
+    seam). They are measured by when they last CHANGED, on the strategy's own
+    rows — a strategy that forward-fills its own output repeats old values, so
+    "a row exists" says nothing. A decision is STALE when the weights it trades
+    last changed before the start of its rebalance period AND the strategy
+    changes them later in the same period: that period's weights were stamped
+    after its decision bar (a calendar month-end that falls on a weekend, say),
+    and the previous period's were traded. A strategy that holds its weights
+    constant, or writes fresh ones on every bar, is never stale.
+
+    The period: for a single period-end offset (``ME``, ``W-FRI``, ...) the
+    calendar period that ends on or after ``d``; otherwise (``int`` / explicit
+    dates / rsims, which decides on every execution bar) the span between the
+    previous and the next decision. Age, of the stale decisions: bars of
+    *index* in ``(change, d]`` and periods = decisions in ``(change, d]``.
+    Recorded, never refused (TOM-1430 gates).
+    """
+    from quantbox.frequency import _period_end, parse_rebalance_offset
+
+    dec = pd.DatetimeIndex(decisions)
+    raw = decided.reindex(columns=columns).sort_index().ffill()
+    valid = raw.notna().any(axis=1).to_numpy()
+    vals = raw.fillna(0.0).to_numpy(dtype=float)
+    moved = np.zeros(len(raw), dtype=bool)
+    if len(raw):
+        moved[0] = valid[0]
+        moved[1:] = valid[1:] & ((np.abs(np.diff(vals, axis=0)) > 1e-12).any(axis=1) | ~valid[:-1])
+    changes = pd.DatetimeIndex(raw.index[moved])
+
+    n = len(dec)
+    prev = np.concatenate([[pd.Timestamp.min.value], dec.asi8[:-1]]) if n else np.zeros(0, dtype=np.int64)
+    nxt = np.concatenate([dec.asi8[1:], [pd.Timestamp.max.value]]) if n else np.zeros(0, dtype=np.int64)
+    start, end, end_inclusive = prev, nxt, False
+    offset = None
+    if engine != "rsims" and isinstance(rebalancing_freq, (str, pd.DateOffset)):
+        offset = parse_rebalance_offset(rebalancing_freq)
+    if offset is not None and _period_end(offset) and getattr(offset, "n", 1) == 1 and n:
+        naive = dec.tz_localize(None) if dec.tz is not None else dec
+        ends = pd.DatetimeIndex([offset.rollforward(d.normalize()) for d in naive])
+        starts = ends - offset
+        if dec.tz is not None:
+            ends, starts = ends.tz_localize(dec.tz), starts.tz_localize(dec.tz)
+        start, end, end_inclusive = starts.asi8, (ends + pd.Timedelta(days=1)).asi8 - 1, True
+
+    ch = changes.asi8
+    pos = np.searchsorted(ch, dec.asi8, side="right") - 1
+    has = pos >= 0
+    last = np.where(has, ch[np.clip(pos, 0, None)] if len(ch) else 0, 0)
+    old = has & (last <= start)
+    later = np.searchsorted(ch, end, side="right" if end_inclusive else "left") - np.searchsorted(
+        ch, dec.asi8, side="right"
+    )
+    stale = old & (later > 0)
+
+    s_dec = dec[stale]
+    s_last = pd.DatetimeIndex(last[stale]).tz_localize(dec.tz) if dec.tz is not None else pd.DatetimeIndex(last[stale])
+    bars = index.searchsorted(s_dec, side="right") - index.searchsorted(s_last, side="right")
+    periods = dec.searchsorted(s_dec, side="right") - dec.searchsorted(s_last, side="right")
+    return {
+        "rule": "stale when the traded weights last changed before the start of the decision's rebalance period "
+        "and the strategy changes them later in that period",
+        "decisions": int(n),
+        "decisions_with_weights": int(has.sum()),
+        "stale_decisions": int(stale.sum()),
+        "max_bars": int(bars.max()) if len(bars) else 0,
+        "p95_bars": _percentile(np.asarray(bars, dtype=float), 95),
+        "max_periods": int(periods.max()) if len(periods) else 0,
+        "first_stale": [pd.Timestamp(d).isoformat() for d in s_dec[:5]],
+    }
+
+
 def _apply_leverage(
     target_cells: np.ndarray, orders: np.ndarray, leverage: str, decided_net: np.ndarray, index: pd.Index
 ) -> dict[str, Any]:
@@ -138,16 +215,20 @@ def schedule_book(
     *,
     engine: str,
     leverage: str,
+    weight_rows: pd.DataFrame | None = None,
 ) -> ScheduledBook:
     """Decided weights -> the traded book on *cal*'s bars (see the module docstring).
 
     *decided* is the strategy's book after overlays and risk transforms, NOT
     lagged; it is reindexed to *cal*'s bars and instruments. ``lag_bars`` 0
     is reachable only under the same-bar override the resolver granted.
+    *weight_rows* is the strategy's book on ITS OWN rows (weekend rows of a
+    wider panel included), for the decision weight age; default *decided*.
     """
     if leverage not in LEVERAGE_MODES:
         raise ValueError(f"venue.leverage must be one of {list(LEVERAGE_MODES)}, got {leverage!r}")
     index, columns = cal.observed.index, cal.observed.columns
+    raw_decided = decided if weight_rows is None else weight_rows  # the strategy's own rows
     decided = materialise_nan_policy(decided.reindex(index=index, columns=columns), engine)
     observed = cal.observed.to_numpy()
     inside = cal.inside.to_numpy()
@@ -210,6 +291,8 @@ def schedule_book(
     ages = dec_age[dec_inside]
     stale = (dec_age > 0) & dec_inside
 
+    weight_age = _decision_weight_age(raw_decided, columns, index, decisions, rebalancing_freq, engine)
+
     schedule = pd.DataFrame(
         {
             "decision_date": pd.DatetimeIndex(dec_dates),
@@ -248,9 +331,22 @@ def schedule_book(
             "max_bars": int(ages.max()) if len(ages) else 0,
             "p95_bars": _percentile(ages, 95),
         },
+        "weight_age": weight_age,
         "leverage": leverage_report,
         "instruments": per_instrument,
     }
+    if weight_age["stale_decisions"]:
+        logger.warning(
+            "TIMING: %d of %d decision(s) traded a STALE strategy weight row — the weights on the decision bar "
+            "date from before its rebalance period and the strategy changed them only AFTER the decision bar "
+            "(max %d bar(s), %d period(s) old): the previous period's weights were traded. Stamp weights on "
+            "the decision bars (the execution calendar). First: %s",
+            weight_age["stale_decisions"],
+            weight_age["decisions"],
+            weight_age["max_bars"],
+            weight_age["max_periods"],
+            weight_age["first_stale"],
+        )
     if n_out:
         logger.warning(
             "CALENDAR: the strategy targeted %d instrument-rebalance(s) OUTSIDE the instrument's life window "
