@@ -462,6 +462,11 @@ def sweep(
             "quantbox sweep does not take execution.same_bar: a grid of same-bar numbers is the "
             "multiple-testing search the override must never feed (docs/adr/0006). Sweep next-bar."
         )
+    if isinstance(cfg.get("execution"), dict) and "calendar" in cfg["execution"]:
+        raise ValueError(
+            "quantbox sweep does not take execution.calendar: the sweep engine trades the bars it is given; "
+            "the execution calendar is a `quantbox run` (backtest pipeline) setting (docs/adr/0007)."
+        )
     sweep_lag_bars = resolve_lag_bars(cfg["execution"]) if "execution" in cfg else None
 
     config_dir = config_path.parent

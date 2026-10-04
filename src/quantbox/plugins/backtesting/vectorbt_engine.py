@@ -60,7 +60,7 @@ try:
         get_elem_nb,
         order_nb,
         order_nothing_nb,
-        sort_call_seq_nb,
+        sort_call_seq_out_nb,
     )
 except ModuleNotFoundError as exc:  # vectorbt + numba ship in the [vectorbt] extra
     # Only the extra's OWN packages being absent means "install the extra"; a
@@ -145,15 +145,20 @@ def _per_column(value: float, weights_df: pd.DataFrame, fee_free: Sequence[str])
     return np.ascontiguousarray(np.broadcast_to(row, weights_df.shape), dtype=np.float64)
 
 
-def rebalance_fill_gaps(pf: vbt.Portfolio, target_weights: pd.DataFrame, rebalance_bars: pd.Index) -> pd.DataFrame:
+def rebalance_fill_gaps(
+    pf: vbt.Portfolio,
+    target_weights: pd.DataFrame,
+    rebalance_bars: pd.Index,
+    orders: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     """How far the book the engine HELD after each rebalance is from the target it was given.
 
     Returns one row per rebalance bar: ``gap`` = sum over assets of
     |held weight - target weight| at the close of the bar (held = asset value /
     portfolio value, after the bar's orders), and ``turnover`` = sum of
     |target - held weight one bar earlier|. With no costs and enough cash the
-    gap is 0; a cash-constrained engine shows it as the buys it cut. Single
-    group (one strategy) only.
+    gap is 0; a cash-constrained engine shows it as the buys it cut. With
+    *orders*, only the ordered cells count. Single group (one strategy) only.
     """
     held = pf.asset_value(group_by=False)
     value = pf.value()
@@ -165,8 +170,13 @@ def rebalance_fill_gaps(pf: vbt.Portfolio, target_weights: pd.DataFrame, rebalan
     held_w.columns = held_w.columns.get_level_values(-1)
     target = target_weights.reindex(index=held_w.index, columns=held_w.columns).ffill().fillna(0.0)
     bars = held_w.index.intersection(pd.Index(rebalance_bars))
-    gap = (held_w.loc[bars] - target.loc[bars]).abs().sum(axis=1)
-    turnover = (target - held_w.shift(1).fillna(0.0)).abs().sum(axis=1).loc[bars]
+    gap_cells = (held_w - target).abs()
+    move_cells = (target - held_w.shift(1).fillna(0.0)).abs()
+    if orders is not None:  # only the cells that were ordered: an untouched cell drifts by design
+        ordered = orders.reindex(index=held_w.index, columns=held_w.columns, fill_value=False).astype(bool)
+        gap_cells, move_cells = gap_cells.where(ordered, 0.0), move_cells.where(ordered, 0.0)
+    gap = gap_cells.loc[bars].sum(axis=1)
+    turnover = move_cells.loc[bars].sum(axis=1)
     return pd.DataFrame({"gap": gap, "turnover": turnover})
 
 
@@ -223,6 +233,8 @@ def run(
     use_numba: bool = True,
     create_strategy_label: bool = True,
     fee_free: Sequence[str] = (),
+    orders: pd.DataFrame | None = None,
+    residual_legs: Sequence[str] = (),
 ) -> vbt.Portfolio:
     """Run a vectorbt backtest.
 
@@ -252,6 +264,18 @@ def run(
     fee_free : sequence of str
         Tickers traded without fees, fixed fees or slippage — the synthetic
         cash legs of ``venue.financing`` (:mod:`quantbox.financing`).
+    orders : DataFrame of bool | None
+        Per-cell order mask on the weights' index and tickers (single
+        strategy): an order is placed only where it is True, so an instrument
+        can be left untouched on a bar the rest of the book trades (it did not
+        print — :mod:`quantbox.execution_schedule`). The rebalance bars are
+        then the rows with any order, and *rebalancing_freq* is ignored. It
+        runs the flexible (order-function) path, with *threshold* 0 when None.
+    residual_legs : (lend, borrow) tickers | ()
+        The financing cash legs (:mod:`quantbox.financing`). On a bar they are
+        ordered, they are sized to the residual ``1 - sum`` of the weights
+        actually held after the bar's orders (an untouched, drifted cell at its
+        current weight), split by sign — so the engine never runs out of cash.
 
     Returns
     -------
@@ -282,16 +306,33 @@ def run(
     def pre_group_func_nb(c):
         return ()
 
-    def pre_segment_func_nb(c, size, size_type, direction, threshold):
+    def pre_segment_func_nb(c, size, size_type, direction, threshold, no_order, lend_col, borrow_col):
         position_values = np.empty(c.group_len, dtype=np.float64)
         for k, col in enumerate(range(c.from_col, c.to_col)):
             c.last_val_price[col] = get_col_elem_nb(c, col, c.close)
             position_values[k] = c.last_val_price[col] * c.last_position[col]
 
-        total_value = np.sum(position_values) + c.last_free_cash[c.group]
+        # Portfolio value is positions + CASH. Free cash is cash net of short collateral: using it
+        # (as this did until TOM-1429) misstates every weight of a book that holds shorts.
+        total_value = np.sum(position_values) + c.last_cash[c.group]
         position_weights = position_values / total_value
 
-        target_weights = size[c.i, c.from_col : c.to_col]
+        # A cell with no order (the `orders` mask) targets its CURRENT weight: its order value is 0,
+        # so the call sequence still sorts sells before buys, and order_func_nb places nothing.
+        target_weights = np.empty(c.group_len, dtype=np.float64)
+        for k in range(c.group_len):
+            t = size[c.i, c.from_col + k]
+            target_weights[k] = position_weights[k] if (no_order[c.i, c.from_col + k] or np.isnan(t)) else t
+        # The financing legs take the RESIDUAL of what is actually held after this bar's orders,
+        # untouched (drifted) cells included, so the book sums to exactly 1 and no buy is cut.
+        if lend_col >= 0 and not no_order[c.i, lend_col]:
+            residual = 1.0
+            for k in range(c.group_len):
+                col = c.from_col + k
+                if col != lend_col and col != borrow_col:
+                    residual -= target_weights[k]
+            target_weights[lend_col - c.from_col] = max(residual, 0.0)
+            target_weights[borrow_col - c.from_col] = min(residual, 0.0)
         deviation = np.abs(position_weights - target_weights)
 
         rebalancing_flag = False
@@ -302,12 +343,18 @@ def run(
 
         if rebalancing_flag:
             order_value_out = np.empty(c.group_len, dtype=np.float64)
-            sort_call_seq_nb(c, size, size_type=size_type, direction=direction, order_value_out=order_value_out)
+            for k in range(c.group_len):
+                c.call_seq_now[k] = k
+            sort_call_seq_out_nb(
+                c, target_weights, size_type, direction, order_value_out, c.call_seq_now, ctx_select=False
+            )
             return (target_weights,)
         return (None,)
 
-    def order_func_nb(c, weights_arr, size_type, direction, fees_arr, fixed_fees_arr, slippage_arr):
+    def order_func_nb(c, weights_arr, size_type, direction, fees_arr, fixed_fees_arr, slippage_arr, no_order):
         if weights_arr is None:
+            return order_nothing_nb()
+        if no_order[c.i, c.col]:  # a cell with no order (the `orders` mask)
             return order_nothing_nb()
         col_i = c.call_seq_now[c.call_idx]
         return order_nb(
@@ -327,6 +374,11 @@ def run(
     # ------------------------------------------------------------------
     # Decide order-func path
     # ------------------------------------------------------------------
+    if orders is not None:
+        # A per-cell mask needs the flexible path: an untouched cell must still sort as "no order".
+        use_order_func = True
+        if threshold is None:
+            threshold = 0.0
     if threshold is not None:
         if use_order_func is False:
             warnings.warn("use_order_func is False but threshold is set — overriding to True.", stacklevel=2)
@@ -395,9 +447,15 @@ def run(
     weights_df.index = pd.to_datetime(weights_df.index)
 
     # ------------------------------------------------------------------
-    # Rebalancing dates
+    # Rebalancing dates (and the per-cell order mask)
     # ------------------------------------------------------------------
-    rebalancing_dates = get_rebalancing_dates(index, rebalancing_freq)
+    no_order = np.zeros(weights_df.shape, dtype=np.bool_)
+    if orders is not None:
+        mask = orders.reindex(index=index, columns=weights_df.columns.get_level_values(-1), fill_value=False)
+        no_order = ~mask.to_numpy(dtype=bool)
+        rebalancing_dates = index[mask.to_numpy(dtype=bool).any(axis=1)]
+    else:
+        rebalancing_dates = get_rebalancing_dates(index, rebalancing_freq)
 
     # Prices with same column structure as weights
     _prices = prices[weights_df.columns.get_level_values(-1)]
@@ -417,7 +475,10 @@ def run(
     # ------------------------------------------------------------------
     if use_order_func:
         rebalancing_mask = index.isin(rebalancing_dates)
-        size_np = weights_df.values
+        size_np = weights_df.to_numpy(dtype=np.float64, copy=True)
+        tickers = list(weights_df.columns.get_level_values(-1))
+        legs = [tickers.index(t) if t in tickers else -1 for t in residual_legs] if len(residual_legs) == 2 else []
+        lend_col, borrow_col = (legs[0], legs[1]) if legs and min(legs) >= 0 else (-1, -1)
         threshold = float(threshold)
 
         pf = vbt.Portfolio.from_order_func(
@@ -428,11 +489,12 @@ def run(
             fees_arr,
             fixed_fees_arr,
             slippage_arr,
+            no_order,
             pre_sim_func_nb=pre_sim_func_nb_jit,
             pre_sim_args=(rebalancing_mask,),
             pre_group_func_nb=pre_group_func_nb_jit,
             pre_segment_func_nb=pre_segment_func_nb_jit,
-            pre_segment_args=(size_np, size_type_arr, direction_arr, threshold),
+            pre_segment_args=(size_np, size_type_arr, direction_arr, threshold, no_order, lend_col, borrow_col),
             post_order_func_nb=post_order_func_nb_jit,
             group_by=group_by,
             cash_sharing=True,

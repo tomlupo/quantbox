@@ -84,6 +84,7 @@
         "fill": {"type": "string"},
         "same_bar": {"type": "boolean"},
         "same_bar_reason": {"type": "string", "minLength": 1, "description": "Why the config granted the same-bar override (execution.same_bar.reason, ADR-0006). Present exactly when the run was same-bar under the override (minor 2)."},
+        "calendar": {"type": "string", "minLength": 1, "description": "The execution calendar the backtest pipeline scheduled decisions on and counted lag_bars in: majority | union | intersection | a ticker (minor 3, ADR-0007). Absent from other writers and from manifests written before minor 3."},
         "description": {"type": "string"}
       }
     },
@@ -102,6 +103,7 @@
         "declared": {"type": "boolean"},
         "allow_shorts": {"type": "boolean"},
         "max_leverage": {"type": "number", "description": "The gross cap applied to the traded book (the default when the config sets none)."},
+        "leverage": {"enum": ["normalize", "borrow"], "description": "venue.leverage as resolved (minor 3, ADR-0007): normalize scales a decision with net exposure above 1 to net 1; borrow holds it, financed by venue.financing."},
         "financing": {
           "description": "What borrowed and idle cash cost (minor 3, ADR-0007): venue.financing as resolved; null when the config declares none. Absent from manifests written before minor 3.",
           "oneOf": [
@@ -117,7 +119,8 @@
                 },
                 "borrow_spread_bps": {"type": "number", "minimum": 0},
                 "lend_spread_bps": {"type": "number", "minimum": 0},
-                "day_count": {"type": "string"}
+                "day_count": {"type": "string"},
+                "assumed": {"const": true, "description": "No venue.financing block was declared and venue.leverage is borrow: borrowing ran at an ASSUMED rate of 0."}
               }
             }
           ]
@@ -133,15 +136,58 @@
         "file": {"type": "string"},
         "calendar": {
           "type": "object",
-          "required": ["n_bars", "n_instruments", "ffilled_bars", "targeted_outside_window_bars"],
+          "required": ["n_bars", "n_instruments", "ffilled_bars"],
           "properties": {
             "n_bars": {"type": "integer", "minimum": 0},
             "n_instruments": {"type": "integer", "minimum": 0},
             "rows_without_any_price": {"type": "integer", "minimum": 0},
-            "ffilled_bars": {"type": "integer", "minimum": 0, "description": "Bars inside an instrument's life window with no price: forward-filled, target weight kept."},
-            "targeted_outside_window_bars": {"type": "integer", "minimum": 0, "description": "Instrument-bars where the traded book targeted a non-zero weight outside the instrument's life window (before its first or after its last price): forced to 0."},
-            "instruments_targeted_outside_window": {"type": "array", "items": {"type": "string"}},
-            "instruments_without_prices": {"type": "array", "items": {"type": "string"}}
+            "ffilled_bars": {"type": "integer", "minimum": 0, "description": "Bars inside an instrument's life window with no price: forward-filled to mark the position; no order fills there."},
+            "instruments_without_prices": {"type": "array", "items": {"type": "string"}},
+            "legacy_coverage_drop": {"type": "integer", "minimum": 0, "description": "Columns the pre-ADR-0007 rule (fewer than max(30, 50% of bars) prices) would have dropped; now traded inside their window."}
+          }
+        },
+        "execution_calendar": {
+          "type": "object",
+          "required": ["calendar", "execution_bars", "total_bars"],
+          "properties": {
+            "calendar": {"type": "string"},
+            "execution_bars": {"type": "integer", "minimum": 0},
+            "total_bars": {"type": "integer", "minimum": 0}
+          }
+        },
+        "timing": {
+          "type": "object",
+          "description": "Decision vs execution: decisions on the execution calendar, executed lag_bars execution bars later; deferred_trades = orders moved to the instrument's next printed bar.",
+          "properties": {
+            "lag_counted_in": {"type": "string"},
+            "decisions": {"type": "integer", "minimum": 0},
+            "executed_decisions": {"type": "integer", "minimum": 0},
+            "deferred_trades": {"type": "integer", "minimum": 0},
+            "targeted_outside_window_bars": {"type": "integer", "minimum": 0}
+          }
+        },
+        "staleness": {
+          "type": "object",
+          "description": "Bars since each instrument's last real print, on each decision bar inside its window.",
+          "properties": {
+            "instrument_decisions": {"type": "integer", "minimum": 0},
+            "stale_decisions": {"type": "integer", "minimum": 0},
+            "max_bars": {"type": "integer", "minimum": 0},
+            "p95_bars": {"type": "number", "minimum": 0}
+          }
+        },
+        "leverage": {
+          "type": "object",
+          "required": ["mode", "scaled_rebalances"],
+          "properties": {
+            "mode": {"enum": ["normalize", "borrow"]},
+            "rebalances": {"type": "integer", "minimum": 0},
+            "rebalances_above_net_1": {"type": "integer", "minimum": 0},
+            "max_net_exposure_decided": {"type": "number"},
+            "scaled_rebalances": {"type": "integer", "minimum": 0},
+            "scale_mean": {"type": "number"},
+            "scale_min": {"type": "number"},
+            "scale_max": {"type": "number"}
           }
         }
       }

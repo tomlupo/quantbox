@@ -96,6 +96,7 @@ def fixed_commission_backtest_with_funding(
     maintenance_buffer: float = 0.0,
     max_gross_leverage: float | None = None,
     fee_free: Sequence[str] = (),
+    orders: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Daily fixed-commission backtest with funding rates and margin.
 
@@ -130,6 +131,11 @@ def fixed_commission_backtest_with_funding(
     fee_free : sequence of str
         Tickers traded without commission — the synthetic cash legs of
         ``venue.financing`` (:mod:`quantbox.financing`).
+    orders : DataFrame of bool | None
+        Per-cell order mask (same index and tickers as *prices*): where it is
+        False the position is left as it is — no trade on a bar the instrument
+        did not print, or off the execution calendar
+        (:mod:`quantbox.execution_schedule`). None trades every cell, every bar.
 
     Returns
     -------
@@ -169,6 +175,11 @@ def fixed_commission_backtest_with_funding(
     num_assets = len(tickers)
     # Per-asset commission: the financing cash legs trade free.
     commission_pct = np.where(np.isin(tickers, list(fee_free)), 0.0, float(commission_pct))
+    order_mask = (
+        np.ones(prices.shape, dtype=bool)
+        if orders is None
+        else orders.reindex(index=dates, columns=tickers, fill_value=False).to_numpy(dtype=bool)
+    )
 
     current_positions = np.zeros(num_assets)
     previous_prices = np.full(num_assets, np.nan)
@@ -244,6 +255,7 @@ def fixed_commission_backtest_with_funding(
         target_positions = positions_from_no_trade_buffer(
             current_positions, current_prices, current_target_weights, cap_equity, trade_buffer
         )
+        target_positions = np.where(order_mask[i], target_positions, current_positions)
 
         # --- Leverage cap ---
         target_position_value = target_positions * current_prices

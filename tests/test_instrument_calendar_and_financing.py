@@ -1,14 +1,16 @@
-"""Per-instrument calendar, financing of cash, and the rebalance schedule as bars (TOM-1429, ADR-0007).
+"""Instrument and execution calendars, decision vs execution timing, leverage and financing (TOM-1429, ADR-0007).
 
-Two defects, both found by replicating Moskowitz-Ooi-Pedersen TSMOM against an
-independent reference (quantbox-lab ``replication-tsmom-mop2012``,
-``results/engine-parity``):
+Found by replicating Moskowitz-Ooi-Pedersen TSMOM against an independent
+reference (quantbox-lab ``replication-tsmom-mop2012``, ``results/engine-parity``):
 
 1. A missing price ZEROED the traded weight. On a holiday rebalance bar (1
    January, where other instruments print) that meant flat for the whole
    holding period: 478 of 5920 instrument-months, -0.10 Sharpe.
 2. vectorbt cannot take cash below zero, so a book whose net exposure is above
    1 had its last buys cut silently: 58 of 409 rebalances, -0.03 Sharpe.
+3. (review round 1) Keeping the target on a bar the instrument did not print
+   FILLED it at the stale forward-filled close: decided at the 29 Dec close,
+   filled at that same close on 1 January, it booked the 2 January move.
 
 Every test drives the real pipeline (or the real engine) on a toy whose answer
 is known in closed form.
@@ -24,20 +26,24 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from quantbox.execution_schedule import schedule_book
 from quantbox.financing import BORROW, LEND, resolve_financing
 from quantbox.frequency import rebalancing_dates
-from quantbox.instrument_calendar import apply_instrument_calendar
+from quantbox.instrument_calendar import execution_bars, instrument_calendar, validate_data_validation
 from quantbox.plugins.pipeline.backtest_pipeline import BacktestPipeline
 from quantbox.store import FileArtifactStore
 
 
 class _Fixed:
-    """Strategy stub: the same decided weight every bar, per ticker."""
+    """Strategy stub: a decided-weights frame, or the same weight every bar per ticker."""
 
     meta = type("M", (), {"name": "strategy.fixed.v1"})()
 
-    def __init__(self, weights: dict[str, float], index: pd.Index):
-        self.frame = pd.DataFrame({k: float(v) for k, v in weights.items()}, index=index)
+    def __init__(self, weights: dict[str, float] | pd.DataFrame, index: pd.Index):
+        if isinstance(weights, pd.DataFrame):
+            self.frame = weights
+        else:
+            self.frame = pd.DataFrame({k: float(v) for k, v in weights.items()}, index=index)
 
     def run(self, data: Any, params: Any = None) -> dict[str, Any]:
         return {"weights": self.frame}
@@ -54,7 +60,7 @@ class _Data:
         return {"prices": self.prices}
 
 
-def _run(tmp_path, prices: pd.DataFrame, weights: dict[str, float], **params: Any):
+def _run(tmp_path, prices: pd.DataFrame, weights: dict[str, float] | pd.DataFrame, **params: Any):
     store = FileArtifactStore(str(tmp_path), "run")
     full = {"fees": 0.0, "strategies": [{"name": "strategy.fixed.v1", "weight": 1.0}], **params}
     result = BacktestPipeline().run(
@@ -74,6 +80,27 @@ def _validation(store: FileArtifactStore) -> dict[str, Any]:
     return json.loads((store.root / "data_validation.json").read_text())
 
 
+def _schedule(store: FileArtifactStore) -> pd.DataFrame:
+    return store.read_parquet("rebalance_schedule")
+
+
+def _book(prices: pd.DataFrame, weights: pd.DataFrame, *, freq: Any = 1, lag: int = 1, calendar: str = "majority"):
+    cal = instrument_calendar(prices)
+    bars = execution_bars(cal, calendar, prices[calendar] if calendar in prices.columns else None)
+    return cal, schedule_book(weights, cal, bars, freq, lag, engine="vectorbt", leverage="normalize")
+
+
+def _step(index: pd.Index, ticker_weights: dict[str, float], from_date: str, columns: list[str]) -> pd.DataFrame:
+    """Flat until *from_date* (the DECISION bar), then *ticker_weights* from it onward."""
+    w = pd.DataFrame(0.0, index=index, columns=columns)
+    for k, v in ticker_weights.items():
+        w.loc[w.index >= pd.Timestamp(from_date), k] = v
+    return w
+
+
+ENGINES = ["vectorbt", "rsims"]
+
+
 # ----------------------------------------------------------------------
 # (a) The per-instrument calendar
 # ----------------------------------------------------------------------
@@ -88,8 +115,8 @@ def _holiday_panel() -> pd.DataFrame:
     return pd.DataFrame({"A": a, "B": 50.0}, index=idx)
 
 
-def test_a_holiday_on_the_rebalance_bar_keeps_the_target_for_the_whole_holding_period(tmp_path):
-    """BMS rebalance on 1 January, a holiday for A only. The January target (0.5 A) must be HELD
+def test_a_holiday_on_the_rebalance_bar_keeps_the_position_for_the_whole_holding_period(tmp_path):
+    """BMS rebalance on 1 January, a holiday for A only. The position (0.5 A) must be HELD
     across the +10% move. Before TOM-1429 the missing price zeroed it: flat all January, 0% return."""
     prices = _holiday_panel()
     result, store = _run(tmp_path, prices, {"A": 0.5, "B": 0.0}, rebalancing_freq="BMS")
@@ -109,6 +136,37 @@ def test_a_holiday_on_the_rebalance_bar_keeps_the_target_for_the_whole_holding_p
     assert result.notes["data_validation"]["file"] == "data_validation.json"
 
 
+def _blocker_panel() -> pd.DataFrame:
+    """The review's exact shape: A is not priced on 1 January (B is), A is +10% on 2 January."""
+    idx = pd.bdate_range("2023-12-01", "2024-01-31")
+    a = pd.Series(100.0, index=idx)
+    a[a.index >= "2024-01-02"] = 110.0
+    a[pd.Timestamp("2024-01-01")] = np.nan
+    return pd.DataFrame({"A": a, "B": 50.0}, index=idx)
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_an_order_never_fills_at_a_price_the_instrument_did_not_print(tmp_path, engine):
+    """BLOCKER (review round 1). Decided at the 29 Dec close, lagged to 1 January — a bar A did not
+    print. Filling there would use the 29 Dec close and book the 2 January +10%. The order waits for
+    A's next printed bar (2 January, at 110): the run books 0, and the deferral is counted."""
+    prices = _blocker_panel()
+    decided = _step(prices.index, {"A": 1.0}, "2023-12-29", ["A", "B"])
+    result, store = _run(tmp_path, prices, decided, rebalancing_freq=1, engine=engine)
+
+    assert result.metrics["total_return"] == pytest.approx(0.0, abs=1e-12)
+    traded = store.read_parquet("traded_weights").set_index("date")
+    assert traded.loc[pd.Timestamp("2024-01-01"), "A"] == 0.0  # the previous weight is carried
+    assert traded.loc[pd.Timestamp("2024-01-02"), "A"] == 1.0
+    report = _validation(store)
+    assert report["calendar"]["instruments"]["A"]["deferred_trades"] == 1
+    assert report["calendar"]["instruments"]["B"]["deferred_trades"] == 0
+    assert result.metrics["calendar_deferred_trades"] == 1.0
+    sched = _schedule(store).set_index("execution_date")
+    assert sched.loc[pd.Timestamp("2024-01-01"), "deferred_instruments"] == "A"
+    assert sched.loc[pd.Timestamp("2024-01-01"), "decision_date"] == pd.Timestamp("2023-12-29")
+
+
 def test_an_instrument_listed_mid_sample_is_flat_before_listing_and_the_override_is_counted(tmp_path, caplog):
     """`B` lists on 15 January. The strategy targets it from the start: those bars are outside B's
     life window, so the weight is 0 there — no back-filled tradable position — and every one of
@@ -118,14 +176,14 @@ def test_an_instrument_listed_mid_sample_is_flat_before_listing_and_the_override
     b = pd.Series(np.linspace(20.0, 30.0, len(idx)), index=idx).where(idx >= listing)
     prices = pd.DataFrame({"A": 100.0, "B": b}, index=idx)
 
-    with caplog.at_level(logging.WARNING, logger="quantbox.instrument_calendar"):
+    with caplog.at_level(logging.WARNING):
         result, store = _run(tmp_path, prices, {"A": 0.0, "B": 0.5}, rebalancing_freq=1)
 
     traded = store.read_parquet("traded_weights").set_index("date")
     assert (traded.loc[traded.index < listing, "B"] == 0.0).all()
     assert (traded.loc[traded.index >= listing, "B"] == 0.5).all()
 
-    # Lag 1: row 0 has no decision behind it; rows 1..(listing-1) carried a 0.5 target outside the window.
+    # Lag 1: bar 0 executes nothing; bars 1..(listing-1) execute a 0.5 target outside the window.
     expected = int((idx < listing).sum()) - 1
     b_report = _validation(store)["calendar"]["instruments"]["B"]
     assert b_report["targeted_outside_window_bars"] == expected
@@ -143,25 +201,158 @@ def test_a_delisted_instrument_goes_flat_after_its_last_price():
     idx = pd.bdate_range("2024-01-01", periods=10)
     prices = pd.DataFrame({"A": [1.0, 2, 3, 4, 5, np.nan, np.nan, np.nan, np.nan, np.nan], "B": 1.0}, index=idx)
     weights = pd.DataFrame({"A": 0.7, "B": 0.0}, index=idx)
-    out = apply_instrument_calendar(prices, weights)
-    assert (out.weights["A"].iloc[:5] == 0.7).all() and (out.weights["A"].iloc[5:] == 0.0).all()
-    assert out.report["instruments"]["A"]["targeted_outside_window_bars"] == 5
-    assert out.report["instruments"]["A"]["ffilled_bars"] == 0
-    assert not out.prices.isna().any().any()
+    cal, book = _book(prices, weights)
+    assert (book.weights["A"].iloc[1:5] == 0.7).all() and (book.weights["A"].iloc[5:] == 0.0).all()
+    assert book.report["instruments"]["A"]["targeted_outside_window_bars"] == 5
+    assert cal.report["instruments"]["A"]["ffilled_bars"] == 0
+    assert not cal.prices.isna().any().any()
 
 
-def test_a_short_history_column_is_kept_not_dropped():
-    """The 50%-coverage drop is gone: a coin with 20% history is traded inside its window."""
+def test_a_short_history_column_is_kept_and_the_old_drop_is_counted():
+    """The 50%-coverage drop is gone: a coin with 20% history is traded inside its window, and the
+    column the old rule would have dropped is COUNTED, so the result change is visible."""
     idx = pd.bdate_range("2024-01-01", periods=50)
     prices = pd.DataFrame({"A": 1.0, "NEW": pd.Series(2.0, index=idx).where(idx >= idx[40])}, index=idx)
     weights = pd.DataFrame({"A": 0.5, "NEW": 0.5}, index=idx)
-    out = apply_instrument_calendar(prices, weights)
-    assert list(out.weights.columns) == ["A", "NEW"]
-    assert (out.weights["NEW"].iloc[40:] == 0.5).all()
+    cal, book = _book(prices, weights)
+    assert list(book.weights.columns) == ["A", "NEW"]
+    assert (book.weights["NEW"].iloc[40:] == 0.5).all()
+    assert cal.report["legacy_coverage_drop"]["count"] == 1
+    assert cal.report["legacy_coverage_drop"]["columns"] == ["NEW"]
 
 
 # ----------------------------------------------------------------------
-# (b) Financing: rate + spread, and the refusal without it
+# The execution calendar
+# ----------------------------------------------------------------------
+
+
+H = pd.Timestamp("2024-01-10")  # the holiday row
+
+
+def _three_panel(*, closed: tuple[str, ...]) -> pd.DataFrame:
+    """A, B, C on business days of January 2024; the instruments in *closed* do not print on H.
+    Every instrument is +10% on the bar after H, flat otherwise."""
+    idx = pd.bdate_range("2024-01-01", "2024-01-31")
+    after = idx > H
+    prices = pd.DataFrame({k: np.where(after, 110.0, 100.0) for k in ("A", "B", "C")}, index=idx)
+    for k in closed:
+        prices.loc[H, k] = np.nan
+    return prices
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_a_holiday_most_instruments_skip_is_not_an_execution_bar(tmp_path, engine):
+    """Only C prints on H: under the default `majority` calendar H is not an execution bar. A decision
+    taken the bar before H (C: 0 -> 1) executes one EXECUTION bar later — the bar after H, at 110 —
+    not on the raw H row, where C printed 100 and the run would book the +10%."""
+    prices = _three_panel(closed=("A", "B"))
+    decided = _step(prices.index, {"C": 1.0}, "2024-01-09", ["A", "B", "C"])
+    result, store = _run(tmp_path, prices, decided, rebalancing_freq=1, engine=engine)
+
+    assert result.metrics["total_return"] == pytest.approx(0.0, abs=1e-12)
+    sched = _schedule(store).set_index("decision_date")
+    assert sched.loc[pd.Timestamp("2024-01-09"), "execution_date"] == pd.Timestamp("2024-01-11")
+    assert H not in set(sched.index) and H not in set(sched["execution_date"])
+    ex = _validation(store)["execution_calendar"]
+    assert ex["calendar"] == "majority"
+    assert ex["total_bars"] - ex["execution_bars"] == 1
+    assert ex["non_execution_bars_by_year"] == {"2024": 1}
+    assert result.notes["execution"]["calendar"] == "majority"
+    assert result.notes["data_validation"]["execution_calendar"]["execution_bars"] == ex["execution_bars"]
+
+
+def test_a_lag_counts_execution_bars_not_raw_rows(tmp_path):
+    """lag_bars 2 from the bar two before H: raw rows land on H (a holiday row); execution bars land on
+    the bar after H."""
+    prices = _three_panel(closed=("A", "B"))
+    decided = _step(prices.index, {"C": 1.0}, "2024-01-08", ["A", "B", "C"])
+    result, store = _run(tmp_path, prices, decided, rebalancing_freq=1, execution={"lag_bars": 2})
+    assert result.metrics["total_return"] == pytest.approx(0.0, abs=1e-12)
+    sched = _schedule(store).set_index("decision_date")
+    assert sched.loc[pd.Timestamp("2024-01-08"), "execution_date"] == pd.Timestamp("2024-01-11")
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_a_single_instrument_holiday_on_a_majority_bar_defers_only_that_instrument(tmp_path, engine):
+    """A is closed on H; B and C print, so H IS an execution bar. The decision before H (A and B to 0.3)
+    executes on H for B, and is deferred for A alone to its next print (the bar after H, at 110): the run
+    books B's +10% on 0.3 and nothing on A."""
+    prices = _three_panel(closed=("A",))
+    decided = _step(prices.index, {"A": 0.3, "B": 0.3}, "2024-01-09", ["A", "B", "C"])
+    result, store = _run(tmp_path, prices, decided, rebalancing_freq=1, engine=engine)
+
+    assert result.metrics["total_return"] == pytest.approx(0.3 * 0.10, rel=1e-9)
+    sched = _schedule(store).set_index("execution_date")
+    assert sched.loc[H, "deferred_instruments"] == "A"
+    inst = _validation(store)["calendar"]["instruments"]
+    assert (inst["A"]["deferred_trades"], inst["B"]["deferred_trades"], inst["C"]["deferred_trades"]) == (1, 0, 0)
+
+
+def test_a_ticker_execution_calendar_follows_that_series(tmp_path):
+    """`execution.calendar: REF` — a reference series in the prices that carries no weight. REF is
+    closed on H while A and B print: H is not an execution bar, and the decision before it executes
+    on the bar after H. Under the default `majority` the same decision fills on H (A printed 100)."""
+    prices = _three_panel(closed=())
+    prices = prices.rename(columns={"C": "REF"})
+    prices.loc[H, "REF"] = np.nan
+    decided = _step(prices.index, {"A": 1.0}, "2024-01-09", ["A", "B"])
+
+    result, store = _run(tmp_path, prices, decided, rebalancing_freq=1, execution={"calendar": "REF"})
+    assert result.metrics["total_return"] == pytest.approx(0.0, abs=1e-12)
+    ex = _validation(store)["execution_calendar"]
+    assert ex["calendar"] == "REF" and ex["total_bars"] - ex["execution_bars"] == 1
+
+    majority, _ = _run(tmp_path / "m", prices, decided, rebalancing_freq=1)
+    assert majority.metrics["total_return"] == pytest.approx(0.10, rel=1e-9)
+
+
+def test_an_unknown_execution_calendar_ticker_is_refused(tmp_path):
+    prices = _three_panel(closed=())
+    with pytest.raises(ValueError, match="not a ticker in the loaded prices"):
+        _run(tmp_path, prices, {"A": 1.0}, execution={"calendar": "NOPE"})
+
+
+def test_a_month_ending_on_a_holiday_decides_on_the_last_execution_bar(tmp_path):
+    """31 January 2024 (a Wednesday): only C prints, so it is not an execution bar. Monthly (`ME`)
+    decides on 30 January — the last execution bar of the month — and executes on 1 February; it never
+    decides on the raw 31 January row, nor snaps into February."""
+    idx = pd.bdate_range("2024-01-01", "2024-02-29")
+    prices = pd.DataFrame({k: 100.0 for k in ("A", "B", "C")}, index=idx)
+    prices.loc[pd.Timestamp("2024-01-31"), ["A", "B"]] = np.nan
+    result, store = _run(tmp_path, prices, {"A": 0.5, "B": 0.5, "C": 0.0}, rebalancing_freq="ME")
+    sched = _schedule(store)
+    jan = sched[sched["decision_date"].dt.month == 1].iloc[0]
+    assert jan["decision_date"] == pd.Timestamp("2024-01-30")
+    assert jan["execution_date"] == pd.Timestamp("2024-02-01")
+
+
+def test_period_end_offsets_snap_back_to_the_last_bar_of_the_period():
+    bars = pd.bdate_range("2023-12-01", "2024-03-29").drop(pd.Timestamp("2024-01-31"))
+    me = rebalancing_dates(bars, "ME")
+    assert list(me) == list(pd.to_datetime(["2023-12-29", "2024-01-30", "2024-02-29", "2024-03-29"]))
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_input_staleness_at_each_decision_is_counted(tmp_path, engine):
+    """A does not print for three bars from H while B and C do (each is an execution bar). Deciding
+    every bar, A's input is 1, 2 and 3 bars old on those decisions: counted, not blocking."""
+    idx = pd.bdate_range("2024-01-01", "2024-01-31")
+    prices = pd.DataFrame({k: 100.0 for k in ("A", "B", "C")}, index=idx)
+    stale_rows = idx[(idx >= H)][:3]
+    prices.loc[stale_rows, "A"] = np.nan
+    result, store = _run(tmp_path, prices, {"A": 0.3, "B": 0.3, "C": 0.3}, rebalancing_freq=1, engine=engine)
+
+    st = _validation(store)["staleness"]
+    assert st["stale_decisions"] == 3 and st["max_bars"] == 3
+    assert st["instrument_decisions"] == 3 * len(idx)
+    a = _validation(store)["calendar"]["instruments"]["A"]
+    assert a["stale_decisions"] == 3 and a["max_staleness_bars"] == 3
+    assert result.metrics["decision_stale_inputs"] == 3.0
+    assert result.notes["data_validation"]["staleness"]["max_bars"] == 3
+
+
+# ----------------------------------------------------------------------
+# (b) Leverage and financing
 # ----------------------------------------------------------------------
 
 
@@ -175,6 +366,11 @@ def _levered_panel() -> pd.DataFrame:
     return pd.DataFrame({"A": a, "CASH": 100.0 * np.cumprod(1 + cash_r)}, index=idx)
 
 
+def _returns(store: FileArtifactStore) -> pd.Series:
+    frame = store.read_parquet("returns")
+    return frame.set_index(frame.columns[0])["returns"]
+
+
 @pytest.mark.parametrize(
     ("w_a", "borrow_bps", "lend_bps"),
     [(1.5, 100.0, 0.0), (0.4, 0.0, 50.0)],
@@ -186,6 +382,7 @@ def test_financing_holds_the_full_book_and_charges_rate_plus_spread(tmp_path, w_
     prices = _levered_panel()
     venue = {
         "allow_shorts": False,
+        "leverage": "borrow",
         "financing": {"rate": "CASH", "borrow_spread_bps": borrow_bps, "lend_spread_bps": lend_bps},
     }
     result, store = _run(tmp_path, prices, {"A": w_a, "CASH": 0.0}, rebalancing_freq=1, venue=venue)
@@ -196,8 +393,9 @@ def test_financing_holds_the_full_book_and_charges_rate_plus_spread(tmp_path, w_
     assert result.metrics["engine_underfilled_rebalances"] == 0.0
     assert result.notes["financing"]["modelled"] is True
     assert result.notes["venue"]["financing"]["rate"] == {"ticker": "CASH"}
+    assert result.notes["venue"]["leverage"] == "borrow"
 
-    returns = store.read_parquet("returns").set_index(store.read_parquet("returns").columns[0])["returns"]
+    returns = _returns(store)
     r_a = prices["A"].pct_change()
     r_cash = prices["CASH"].pct_change()
     dt = 1.0 / 365.0
@@ -208,27 +406,107 @@ def test_financing_holds_the_full_book_and_charges_rate_plus_spread(tmp_path, w_
     np.testing.assert_allclose(returns.iloc[2:].to_numpy(), expected.iloc[2:].to_numpy(), rtol=1e-9, atol=1e-12)
 
 
-def test_without_financing_a_vectorbt_book_above_net_one_is_refused_not_cut(tmp_path):
+def test_normalize_is_the_default_and_scales_a_levered_decision_to_net_one(tmp_path, caplog):
+    """No venue.leverage on vectorbt = normalize: a 1.5 book is scaled by exactly 2/3 on every
+    rebalance, each one counted, and the held book is A at 1.0 — its return is A's, no cut buys."""
     prices = _levered_panel()
-    with pytest.raises(ValueError, match=r"venue\.financing") as exc:
-        _run(tmp_path, prices, {"A": 1.5, "CASH": 0.0}, rebalancing_freq=1, venue={"allow_shorts": False})
-    assert "net exposure above 1" in str(exc.value)
+    with caplog.at_level(logging.WARNING):
+        result, store = _run(tmp_path, prices, {"A": 1.5, "CASH": 0.0}, rebalancing_freq=1)
+
+    traded = store.read_parquet("traded_weights").set_index("date")
+    np.testing.assert_allclose(traded["A"].iloc[1:].to_numpy(), 1.0, rtol=1e-12)
+    n_rebalances = len(prices) - 1  # the last decision has no execution bar
+    lev = _validation(store)["leverage"]
+    assert lev["mode"] == "normalize"
+    assert lev["scaled_rebalances"] == n_rebalances == lev["rebalances"]
+    assert lev["scale_mean"] == pytest.approx(2 / 3) and lev["scale_min"] == pytest.approx(2 / 3)
+    assert lev["max_net_exposure_decided"] == pytest.approx(1.5)
+    assert result.metrics["leverage_scaled_rebalances"] == float(n_rebalances)
+    assert result.notes["venue"]["leverage"] == "normalize" and result.notes["venue"]["financing"] is None
+    assert "SCALED to net 1" in caplog.text
+    assert result.metrics["engine_underfilled_rebalances"] == 0.0
+    returns = _returns(store)
+    r_a = prices["A"].pct_change()
+    np.testing.assert_allclose(returns.iloc[2:].to_numpy(), r_a.iloc[2:].to_numpy(), rtol=1e-9, atol=1e-12)
+
+
+def test_borrow_without_financing_runs_at_an_assumed_zero_rate_and_says_so(tmp_path, caplog):
+    prices = _levered_panel()
+    with caplog.at_level(logging.WARNING):
+        result, store = _run(
+            tmp_path,
+            prices,
+            {"A": 1.5, "CASH": 0.0},
+            rebalancing_freq=1,
+            venue={"allow_shorts": False, "leverage": "borrow"},
+        )
+    traded = store.read_parquet("traded_weights").set_index("date")
+    assert (traded["A"].iloc[1:] == 1.5).all()
+    assert result.metrics["engine_underfilled_rebalances"] == 0.0
+    fin = result.notes["venue"]["financing"]
+    assert fin["assumed"] is True and fin["rate"] == {"annual": 0.0}
+    assert result.notes["financing"]["modelled"] is True
+    assert "ASSUMED FREE" in caplog.text
+    returns = _returns(store)
+    r_a = prices["A"].pct_change()
+    np.testing.assert_allclose(returns.iloc[2:].to_numpy(), 1.5 * r_a.iloc[2:].to_numpy(), rtol=1e-9, atol=1e-12)
+
+
+@pytest.mark.parametrize("leverage", ["borrow", "normalize"])
+def test_a_deferred_drifted_position_never_starves_the_cash_legs(tmp_path, leverage):
+    """A is closed on a third of the bars while B moves: its deferred position DRIFTS away from its
+    old target. The cash legs take the residual of what is really held, so no buy is ever cut."""
+    idx = pd.date_range("2024-01-01", periods=120, freq="D")
+    rng = np.random.default_rng(11)
+    prices = pd.DataFrame(
+        {k: 100.0 * np.cumprod(1 + rng.normal(0.0, 0.03, len(idx))) for k in ("A", "B", "C")}, index=idx
+    )
+    prices.loc[prices.index[1::3], "A"] = np.nan
+    decided = pd.DataFrame({"A": np.where(np.arange(len(idx)) % 2, 1.2, -0.8), "B": 0.6, "C": -0.3}, index=idx)
+    venue = {"allow_shorts": True, "leverage": leverage, "financing": {"rate": 0.02}}
+    result, store = _run(tmp_path, prices, decided, rebalancing_freq=1, venue=venue)
+    assert result.metrics["calendar_deferred_trades"] > 10
+    assert result.metrics["engine_underfilled_rebalances"] == 0.0
+    assert result.metrics["engine_max_fill_gap"] < 1e-9
 
 
 def test_without_financing_an_unlevered_vectorbt_book_runs_and_is_filled(tmp_path):
-    result, _ = _run(tmp_path, _levered_panel(), {"A": 1.0, "CASH": 0.0}, rebalancing_freq=1)
+    result, store = _run(tmp_path, _levered_panel(), {"A": 1.0, "CASH": 0.0}, rebalancing_freq=1)
     assert result.metrics["engine_underfilled_rebalances"] == 0.0
+    assert _validation(store)["leverage"]["scaled_rebalances"] == 0
 
 
-def test_without_financing_rsims_is_not_refused_it_has_no_cash_floor(tmp_path):
+def test_rsims_borrows_by_default_it_has_no_cash_floor(tmp_path):
     result, store = _run(tmp_path, _levered_panel(), {"A": 1.5, "CASH": 0.0}, engine="rsims")
     traded = store.read_parquet("traded_weights").set_index("date")
     assert (traded["A"].iloc[1:] == 1.5).all()
-    assert result.notes["financing"] == {"modelled": False}
+    assert result.notes["venue"]["leverage"] == "borrow"
+    assert result.notes["venue"]["financing"]["assumed"] is True
+    assert result.notes["financing"]["modelled"] is False  # a margin simulator needs no cash legs
+
+
+def test_the_cash_legs_trade_without_fees(tmp_path):
+    """fees 1%: buying 0.4 A costs 0.4%. If the 0.6 LEND leg paid fees too, the run would lose 1%."""
+    idx = pd.date_range("2024-01-01", periods=10, freq="D")
+    prices = pd.DataFrame({"A": 100.0, "B": 100.0}, index=idx)
+    venue = {"allow_shorts": False, "financing": {"rate": 0.0}}
+    result, _ = _run(tmp_path, prices, {"A": 0.4, "B": 0.0}, rebalancing_freq=1, fees=0.01, venue=venue)
+    assert result.metrics["total_return"] == pytest.approx(-0.004, abs=2e-4)
+
+
+def test_a_rate_ticker_that_stops_printing_early_is_counted(tmp_path, caplog):
+    prices = _levered_panel()
+    prices.loc[prices.index > prices.index[50], "CASH"] = np.nan
+    venue = {"allow_shorts": False, "financing": {"rate": "CASH"}}
+    with caplog.at_level(logging.WARNING):
+        result, _ = _run(tmp_path, prices, {"A": 0.5, "CASH": 0.0}, rebalancing_freq=1, venue=venue)
+    assert result.notes["financing"]["rate_stale_bars_at_end"] == 9
+    assert result.metrics["financing_rate_stale_bars_at_end"] == 9.0
+    assert "stops printing" in caplog.text
 
 
 def test_the_fill_gap_measurement_sees_a_cut_book():
-    """The counter the financing test reads as 0 must be able to fail: hand vectorbt a 1.5x book
+    """The counter the financing tests read as 0 must be able to fail: hand vectorbt a 1.5x book
     with no cash legs and it cuts the buy."""
     from quantbox.plugins.backtesting.vectorbt_engine import rebalance_fill_gaps
     from quantbox.plugins.backtesting.vectorbt_engine import run as run_vectorbt
@@ -256,9 +534,13 @@ def test_a_malformed_financing_block_is_refused(block, message):
         resolve_financing(block)
 
 
-def test_plan_refuses_a_malformed_financing_block_before_any_data():
+def test_plan_refuses_a_malformed_financing_or_leverage_before_any_data():
     with pytest.raises(ValueError, match="'rate' is required"):
         BacktestPipeline().plan({"venue": {"allow_shorts": True, "financing": {"lend_spread_bps": 5}}})
+    with pytest.raises(ValueError, match="venue.leverage must be one of"):
+        BacktestPipeline().plan({"venue": {"allow_shorts": True, "leverage": "yes"}})
+    with pytest.raises(ValueError, match="execution.calendar must be"):
+        BacktestPipeline().plan({"execution": {"calendar": 3}})
 
 
 def test_a_rate_ticker_that_starts_after_the_backtest_is_refused(tmp_path):
@@ -270,17 +552,26 @@ def test_a_rate_ticker_that_starts_after_the_backtest_is_refused(tmp_path):
 
 
 # ----------------------------------------------------------------------
-# The schedule is bars
+# The schedule is bars; data_validation.json has a schema
 # ----------------------------------------------------------------------
 
 
-def test_a_calendar_rebalance_date_that_is_not_a_bar_snaps_forward_to_the_next_bar():
+def test_a_calendar_rebalance_date_that_is_not_a_bar_snaps_to_a_bar():
     bars = pd.bdate_range("2023-12-01", "2024-03-29").drop(pd.Timestamp("2024-01-01"))  # no 1 January row
     bms = rebalancing_dates(bars, "BMS")
     # 1 January is the BMS date and not a bar: January's rebalance is the first bar after it.
     assert list(bms) == list(pd.to_datetime(["2023-12-01", "2024-01-02", "2024-02-01", "2024-03-01"]))
-    # W-SUN on weekday data: every Sunday becomes the Monday after (it used to be no rebalance at all).
+    # W-SUN on weekday data is a period END: every week decides on its last bar, the Friday
+    # (it used to be no rebalance at all).
     weekdays = pd.bdate_range("2024-01-02", "2024-03-29")
     weekly = rebalancing_dates(weekdays, "1W")
-    assert len(weekly) == 12 and all(d.dayofweek == 0 for d in weekly)
+    assert len(weekly) == 13 and all(d.dayofweek == 4 for d in weekly)
     assert weekly.isin(weekdays).all()
+
+
+def test_data_validation_json_matches_its_schema(tmp_path):
+    _, store = _run(tmp_path, _blocker_panel(), {"A": 0.5, "B": 0.0}, rebalancing_freq="BMS")
+    report = _validation(store)
+    assert validate_data_validation(report) == []
+    broken = {k: v for k, v in report.items() if k != "staleness"}
+    assert validate_data_validation(broken)  # the schema can fail

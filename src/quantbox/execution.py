@@ -46,7 +46,8 @@ from typing import Any
 
 import pandas as pd
 
-from quantbox.financing import FINANCING_SCHEMA
+from quantbox.financing import FINANCING_SCHEMA, LEVERAGE_SCHEMA
+from quantbox.instrument_calendar import DEFAULT_EXECUTION_CALENDAR, EXECUTION_CALENDARS, resolve_execution_calendar
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,16 @@ EXECUTION_SCHEMA: dict[str, Any] = {
                 "is classified run.kind: research, not a backtest."
             ),
         },
+        "calendar": {
+            "type": "string",
+            "default": DEFAULT_EXECUTION_CALENDAR,
+            "description": (
+                f"The EXECUTION calendar (docs/adr/0007): one of {list(EXECUTION_CALENDARS)} or a ticker in the "
+                "loaded prices. A bar is an execution bar when at least half (majority) / any (union) / every "
+                "(intersection) instrument inside its life window prints on it, or when the ticker prints. "
+                "Rebalance decisions are scheduled on it and lag_bars counts its bars; PnL is marked on every bar."
+            ),
+        },
     },
 }
 
@@ -104,6 +115,7 @@ VENUE_SCHEMA: dict[str, Any] = {
             ),
         },
         "financing": FINANCING_SCHEMA,
+        "leverage": LEVERAGE_SCHEMA,
     },
 }
 
@@ -129,6 +141,8 @@ class ExecutionTiming:
 
     lag_bars: int
     same_bar: SameBarOverride | None = None
+    #: ``execution.calendar`` (docs/adr/0007); only the backtest pipeline schedules on it.
+    calendar: str = DEFAULT_EXECUTION_CALENDAR
 
 
 def resolve_execution(execution_cfg: Any) -> ExecutionTiming:
@@ -143,9 +157,9 @@ def resolve_execution(execution_cfg: Any) -> ExecutionTiming:
         return ExecutionTiming(DEFAULT_LAG_BARS)
     if not isinstance(execution_cfg, Mapping):
         raise ValueError(f"execution must be a mapping like {{lag_bars: 1}}, got {execution_cfg!r}")
-    unknown = sorted(set(execution_cfg) - {"lag_bars", "same_bar"})
+    unknown = sorted(set(execution_cfg) - {"lag_bars", "same_bar", "calendar"})
     if unknown:
-        raise ValueError(f"execution: unknown key(s) {unknown}; the keys are 'lag_bars' and 'same_bar'")
+        raise ValueError(f"execution: unknown key(s) {unknown}; the keys are 'lag_bars', 'same_bar' and 'calendar'")
     lag = execution_cfg.get("lag_bars", DEFAULT_LAG_BARS)
     same_bar = _resolve_same_bar(execution_cfg.get("same_bar"))
     _check_lag(lag, same_bar)
@@ -154,7 +168,7 @@ def resolve_execution(execution_cfg: Any) -> ExecutionTiming:
             f"execution.same_bar is valid only with lag_bars 0, got lag_bars={lag!r}: the override "
             "would classify a next-bar run as research. Delete the same_bar block."
         )
-    return ExecutionTiming(int(lag), same_bar)
+    return ExecutionTiming(int(lag), same_bar, resolve_execution_calendar(execution_cfg.get("calendar")))
 
 
 def resolve_lag_bars(execution_cfg: Any) -> int:
@@ -363,9 +377,9 @@ def resolve_allow_shorts(venue_cfg: Any, risk_cfg: Mapping[str, Any] | None) -> 
         return legacy, False
     if not isinstance(venue_cfg, Mapping):
         raise ValueError(f"venue must be a mapping like {{allow_shorts: false}}, got {venue_cfg!r}")
-    unknown = sorted(set(venue_cfg) - {"allow_shorts", "financing"})
+    unknown = sorted(set(venue_cfg) - {"allow_shorts", "financing", "leverage"})
     if unknown:
-        raise ValueError(f"venue: unknown key(s) {unknown}; the keys are 'allow_shorts' and 'financing'")
+        raise ValueError(f"venue: unknown key(s) {unknown}; the keys are 'allow_shorts', 'financing' and 'leverage'")
     if "allow_shorts" not in venue_cfg:
         raise ValueError("venue: 'allow_shorts' is required when a venue block is declared")
     allow = venue_cfg["allow_shorts"]

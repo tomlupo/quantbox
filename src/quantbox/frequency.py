@@ -221,18 +221,34 @@ def parse_rebalance_offset(spec: str | pd.DateOffset) -> pd.DateOffset:
     return pd.tseries.frequencies.to_offset(spec)
 
 
+def _period_end(offset: pd.DateOffset) -> bool:
+    """True for an offset that marks the END of a period (``ME``, ``BME``, ``QE``, ``YE``, ``W-FRI``, ``1W``)."""
+    if isinstance(offset, pd.offsets.Week):
+        return offset.weekday is not None
+    return type(offset).__name__.endswith("End")
+
+
 def rebalancing_dates(dates: pd.Index, rebalancing_freq: Any) -> pd.DatetimeIndex:
-    """The BARS a rebalancing schedule trades on — every date is a member of *dates*.
+    """The DECISION bars of a rebalancing schedule — every date is a member of *dates*.
+
+    *dates* are the bars a decision can be taken on: the backtest pipeline
+    passes its EXECUTION calendar (:func:`quantbox.instrument_calendar.execution_bars`),
+    so a raw holiday row is never a decision bar.
 
     ``None`` → buy-and-hold (the first bar); ``int`` n → every n-th bar; ``str``
     / ``pd.DateOffset`` → calendar dates from :func:`parse_rebalance_offset`;
-    ``list`` → explicit dates. A calendar or explicit date that is not a bar
-    (a weekend month-end, a holiday ``BMS``) is snapped FORWARD to the first bar
-    on or after it — the first moment an order could trade — and dates past the
-    last bar are dropped. Until TOM-1429 such a date was simply missing from the
-    engine's mask, so that period was never rebalanced (``"1W"`` = Sundays never
-    traded on weekday data at all). Engine-free, so every engine reads the same
-    schedule.
+    ``list`` → explicit dates. A calendar date that is not a bar is snapped:
+
+    - a period-END offset (``ME``, ``BME``, ``QE``, ``YE``, ``W-FRI``, ``1W``)
+      BACKWARD, to the last bar of that period — "monthly" is the last bar of
+      the month, never the first of the next one; a period with no bar has no
+      decision;
+    - every other offset and an explicit date FORWARD, to the first bar on or
+      after it; dates past the last bar are dropped.
+
+    Until TOM-1429 such a date was simply missing from the engine's mask, so
+    that period was never rebalanced (``"1W"`` = Sundays never traded on
+    weekday data at all). Engine-free, so every engine reads the same schedule.
     """
     dates = pd.DatetimeIndex(dates)
     if rebalancing_freq is None:
@@ -241,9 +257,15 @@ def rebalancing_dates(dates: pd.Index, rebalancing_freq: Any) -> pd.DatetimeInde
         raise ValueError("rebalancing_freq: a bool is not a schedule")
     if isinstance(rebalancing_freq, int):
         return dates[::rebalancing_freq]
+    backward = False
     if isinstance(rebalancing_freq, (str, pd.DateOffset)):
         offset = parse_rebalance_offset(rebalancing_freq)
-        wanted = pd.date_range(start=dates[0], end=dates[-1], freq=offset) if len(dates) else pd.DatetimeIndex([])
+        backward = _period_end(offset)
+        if not len(dates):
+            return dates
+        # a period-end offset also covers the period the last bar falls in (its end may be a holiday)
+        end = dates[-1] + offset if backward else dates[-1]
+        wanted = pd.date_range(start=dates[0], end=end, freq=offset)
     elif isinstance(rebalancing_freq, (list, tuple, pd.Index)):
         wanted = pd.DatetimeIndex(rebalancing_freq)
     else:
@@ -253,6 +275,12 @@ def rebalancing_dates(dates: pd.Index, rebalancing_freq: Any) -> pd.DatetimeInde
         )
     if dates.tz is not None and wanted.tz is None:
         wanted = wanted.tz_localize(dates.tz)
+    if backward:
+        pos = dates.searchsorted(wanted, side="right") - 1
+        # the bar must lie inside the period that ends at `wanted` (after the previous period end)
+        previous = np.concatenate([[-1], dates.searchsorted(wanted[:-1], side="right") - 1])
+        keep = (pos >= 0) & (pos > previous)
+        return dates[np.unique(pos[keep])]
     pos = dates.searchsorted(wanted, side="left")
     pos = np.unique(pos[pos < len(dates)])
     return dates[pos]

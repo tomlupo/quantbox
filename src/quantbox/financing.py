@@ -31,10 +31,12 @@ residual by sign makes the asymmetric spread exact: a leg's sign never changes.
 Both legs trade without fees or slippage. The rate and spreads accrue ACT/365
 on the calendar time between bars; a ticker rate is its own bar return.
 
-Without a ``financing`` block, a vectorbt run whose traded book needs net
-exposure above 1 on a rebalance bar is REFUSED before the engine runs
-(:func:`check_unfinanced_net_exposure`), not cut silently. rsims is a margin
-(notional) simulator with no cash floor, so it has nothing to cut; its idle
+Whether a book may hold net exposure above 1 at all is ``venue.leverage``
+(:mod:`quantbox.execution_schedule`): ``normalize`` (the vectorbt default)
+scales such a decision to net 1; ``borrow`` holds it, financed by this block —
+or, without one, at an ASSUMED rate of 0 (:data:`ASSUMED_FREE`), recorded as
+``assumed: true`` in the manifest and warned about. rsims is a margin
+(notional) simulator with no cash floor, so its default is ``borrow``: its idle
 cash earns nothing and its borrowing is free unless ``financing`` says otherwise.
 """
 
@@ -57,6 +59,18 @@ CASH_LEGS = (LEND, BORROW)
 
 #: Net exposure above 1 by more than this needs borrowing (float noise below it does not).
 NET_EXPOSURE_TOLERANCE = 1e-6
+
+#: ``venue.leverage`` values; the default depends on the engine (:func:`resolve_leverage`).
+LEVERAGE_MODES = ("normalize", "borrow")
+LEVERAGE_SCHEMA: dict[str, Any] = {
+    "enum": list(LEVERAGE_MODES),
+    "description": (
+        "What a decision with net exposure above 1 becomes (docs/adr/0007). normalize: the whole basket is "
+        "scaled proportionally to net 1 on that rebalance (counted). borrow: held as decided; the excess is "
+        "borrowed at venue.financing, or at an ASSUMED rate of 0 without that block (recorded and warned). "
+        "Default: normalize on vectorbt (it cannot borrow), borrow on rsims (a margin simulator)."
+    ),
+}
 
 FINANCING_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -86,7 +100,7 @@ FINANCING_SCHEMA: dict[str, Any] = {
     },
     "description": (
         "What the venue charges for cash (docs/adr/0007): borrowed cash pays rate + borrow_spread, idle cash "
-        "earns rate - lend_spread. Without it a vectorbt run whose book needs net exposure above 1 is refused."
+        "earns rate - lend_spread. Without it, venue.leverage: borrow assumes a rate of 0 and records that."
     ),
 }
 
@@ -108,18 +122,36 @@ class Financing:
     rate_annual: float | None
     borrow_spread_bps: float = 0.0
     lend_spread_bps: float = 0.0
+    #: True when no block was declared and ``venue.leverage: borrow`` runs at an assumed rate of 0.
+    assumed: bool = False
 
     def record(self) -> dict[str, Any]:
         """The block written to ``venue.financing`` in run@1 and explain@1."""
         rate: dict[str, Any] = {"ticker": self.rate_ticker} if self.rate_ticker is not None else {}
         if self.rate_annual is not None:
             rate["annual"] = self.rate_annual
-        return {
+        record = {
             "rate": rate,
             "borrow_spread_bps": self.borrow_spread_bps,
             "lend_spread_bps": self.lend_spread_bps,
             "day_count": "ACT/365",
         }
+        if self.assumed:
+            record["assumed"] = True
+        return record
+
+
+#: ``venue.leverage: borrow`` without a ``venue.financing`` block: free borrowing, idle cash earns nothing.
+ASSUMED_FREE = Financing(rate_ticker=None, rate_annual=0.0, assumed=True)
+
+
+def resolve_leverage(value: Any, engine: str) -> str:
+    """``venue.leverage`` -> ``normalize`` | ``borrow``; absent: normalize on vectorbt, borrow on rsims."""
+    if value is None:
+        return "borrow" if engine == "rsims" else "normalize"
+    if value not in LEVERAGE_MODES:
+        raise ValueError(f"venue.leverage must be one of {list(LEVERAGE_MODES)}, got {value!r}")
+    return str(value)
 
 
 def resolve_financing(block: Any) -> Financing | None:
@@ -166,7 +198,9 @@ def rate_per_bar(index: pd.Index, financing: Financing, prices: pd.DataFrame | N
     A ticker rate is the bar-on-bar return of that column of *prices* (the
     loaded panel, forward-filled across its holidays). It must have printed by
     the first bar of *index*: before its first price the rate is unknown, and
-    an unknown rate is refused, never assumed to be 0.
+    an unknown rate is refused, never assumed to be 0. Bars after its LAST
+    price are counted (:func:`rate_stale_bars`): the forward-filled level makes
+    the rate 0 there.
     """
     if financing.rate_annual is not None:
         return financing.rate_annual * _year_fractions(index)
@@ -185,6 +219,14 @@ def rate_per_bar(index: pd.Index, financing: Financing, prices: pd.DataFrame | N
         )
     level = raw.ffill().reindex(raw.index.union(index)).ffill().reindex(index)
     return level.pct_change(fill_method=None).fillna(0.0)
+
+
+def rate_stale_bars(index: pd.Index, financing: Financing, prices: pd.DataFrame | None = None) -> int:
+    """Bars of *index* after a ticker rate's last price, where it reads as 0; 0 for a constant rate."""
+    if financing.rate_ticker is None or prices is None or financing.rate_ticker not in prices.columns:
+        return 0
+    last = prices[financing.rate_ticker].last_valid_index()
+    return int((pd.DatetimeIndex(index) > last).sum()) if last is not None else len(index)
 
 
 def add_cash_legs(
@@ -218,8 +260,17 @@ def add_cash_legs(
     out_weights[LEND] = cash.clip(lower=0.0)
     out_weights[BORROW] = cash.clip(upper=0.0)
 
+    stale = rate_stale_bars(prices.index, financing, rate_source)
+    if stale:
+        logger.warning(
+            "FINANCING: rate ticker %r stops printing %d bar(s) before the backtest ends; the rate is 0 there "
+            "(counted as rate_stale_bars_at_end)",
+            financing.rate_ticker,
+            stale,
+        )
     record = {
         **financing.record(),
+        "rate_stale_bars_at_end": stale,
         "mean_cash_weight": float(cash.mean()) if len(cash) else 0.0,
         "min_cash_weight": float(cash.min()) if len(cash) else 0.0,
         "max_cash_weight": float(cash.max()) if len(cash) else 0.0,
@@ -227,26 +278,3 @@ def add_cash_legs(
         "rate_annualised_mean": float(rate.sum() / years.sum()) if years.sum() > 0 else 0.0,
     }
     return out_prices, out_weights, record
-
-
-def check_unfinanced_net_exposure(weights: pd.DataFrame, rebalance_bars: pd.Index, *, where: str = "") -> None:
-    """Refuse a cash-constrained (vectorbt) run without ``venue.financing`` whose book needs borrowing.
-
-    The engine cannot take cash below zero: on a rebalance bar where the traded
-    book's net exposure is above 1, the last buys in its call sequence (shorts'
-    buy-backs included) would be cut silently, and the result would be some
-    other book's. Checked on the bars the engine actually trades.
-    """
-    rows = weights.index.intersection(pd.Index(rebalance_bars))
-    if not len(rows):
-        return
-    net = weights.loc[rows].fillna(0.0).sum(axis=1)
-    over = net[net > 1.0 + NET_EXPOSURE_TOLERANCE]
-    if over.empty:
-        return
-    raise ValueError(
-        f"{where}the traded book needs net exposure above 1 on {len(over)} of {len(rows)} rebalance bar(s) "
-        f"(max {over.max():.4f} on {over.idxmax()}), and the vectorbt engine cannot borrow: it would cut the "
-        f"last buys silently. Declare what borrowing costs — {FINANCING_HINT} (rate: 0.0 = free) — or cap "
-        "the book (risk.max_leverage does not cap NET exposure). docs/adr/0007-instrument-calendar-and-financing.md"
-    )

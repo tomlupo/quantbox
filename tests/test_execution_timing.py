@@ -33,6 +33,7 @@ from quantbox.analysis.parameter_grid import sweep
 from quantbox.execution import (
     apply_execution_lag,
     exposure_metrics,
+    materialise_nan_policy,
     resolve_allow_shorts,
     resolve_lag_bars,
     resolve_sweep_lag_bars,
@@ -170,12 +171,14 @@ def test_the_sweep_path_refuses_same_bar():
 
 
 def test_a_lagged_weight_never_lands_on_a_bar_without_a_price():
-    """The lag is applied BEFORE the missing-price mask: a position decided on the
+    """The lag is applied BEFORE the life window: a position decided on the
     last priced bar of a delisted asset must not be carried onto unpriced bars."""
     prices = _prices()
     prices.iloc[35:, 0] = np.nan  # `A` stops trading after bar 34
     weights = _weights_decided_on(0)
-    _, traded = BacktestPipeline._align_for_engine(prices, weights, 1)
+    pipeline = BacktestPipeline()
+    book = pipeline._engine_book(prices, weights, pipeline.plan({"engine": "vectorbt"}), 1, where="")
+    traded = book["weights"]
     assert traded["A"].iloc[34] == 1.0
     assert (traded["A"].iloc[35:] == 0.0).all()
 
@@ -275,6 +278,14 @@ def test_validate_config_reports_execution_and_venue_problems():
     assert [f.level for f in check({"execution": {"lag_bars": 0}})] == ["error"]
     assert [f.level for f in check({"execution": {"lag_bars": -1}})] == ["error"]
     assert [f.level for f in check({"venue": {"allow_short": False}})] == ["error"]
+    # TOM-1429: venue.leverage, venue.financing and execution.calendar are checked by their resolvers.
+    assert check({"venue": {"allow_shorts": True, "leverage": "borrow", "financing": {"rate": 0.02}}}) == []
+    assert check({"execution": {"calendar": "union"}}) == []
+    assert [f.level for f in check({"venue": {"allow_shorts": True, "leverage": "lots"}})] == ["error"]
+    assert [f.level for f in check({"venue": {"allow_shorts": True, "financing": {"rate": 0.02, "spread": 5}}})] == [
+        "error"
+    ]
+    assert [f.level for f in check({"execution": {"calendar": ""}})] == ["error"]
 
 
 def test_shift_signal_is_a_deprecated_alias_of_lag_bars():
@@ -316,6 +327,7 @@ def test_default_run_records_and_states_its_timing(tmp_path, caplog):
         "fill": "close",
         "same_bar": False,
         "description": result.notes["execution"]["description"],
+        "calendar": "majority",
     }
     assert "next-bar (lag_bars=1)" in result.notes["execution"]["description"]
     assert "**Execution timing:** next-bar (lag_bars=1)" in (store.root / "summary.md").read_text()
@@ -357,7 +369,13 @@ plugins:
     manifest = json.loads((tmp_path / "artifacts" / result.run_id / "run_manifest.json").read_text())
     assert manifest["execution"]["lag_bars"] == 1
     assert manifest["execution"]["same_bar"] is False
-    assert manifest["venue"] == {"declared": True, "allow_shorts": False, "max_leverage": 99.0, "financing": None}
+    assert manifest["venue"] == {
+        "declared": True,
+        "allow_shorts": False,
+        "max_leverage": 99.0,
+        "leverage": "normalize",
+        "financing": None,
+    }
     assert manifest["metrics"]["execution_lag_bars"] == 1.0
 
 
@@ -409,7 +427,13 @@ def test_shorts_traded_without_a_venue_block_warn_and_are_measured(tmp_path, cap
     assert "no `venue:` block is declared" in caplog.text
     assert result.metrics["traded_short_gross_share"] == pytest.approx(1.0)
     assert result.metrics["traded_mean_net_exposure"] < 0
-    assert result.notes["venue"] == {"declared": False, "allow_shorts": True, "max_leverage": 99.0, "financing": None}
+    assert result.notes["venue"] == {
+        "declared": False,
+        "allow_shorts": True,
+        "max_leverage": 99.0,
+        "leverage": "normalize",
+        "financing": None,
+    }
 
 
 def test_declared_short_venue_is_quiet(tmp_path, caplog):
@@ -483,11 +507,11 @@ def test_live_trading_path_never_touches_the_backtest_execution_lag(module):
         for a in n.names
     }
     assert len(imported) > 3, "AST walk saw no imports — the control is blind"
-    assert not {m for m in imported if m.endswith("execution") or "backtest_pipeline" in m}
+    assert not {m for m in imported if m.endswith("execution") or "backtest_pipeline" in m or "execution_schedule" in m}
     names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | {
         n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)
     }
-    assert not names & {"apply_execution_lag", "resolve_lag_bars", "lag_bars", "_align_for_engine"}
+    assert not names & {"apply_execution_lag", "resolve_lag_bars", "lag_bars", "_engine_book", "schedule_book"}
 
 
 # ----------------------------------------------------------------------
@@ -551,8 +575,8 @@ def test_materialising_the_nan_policy_does_not_change_vectorbt_numbers():
     w = _weights_decided_on(0)
     w.iloc[15:21] = np.nan
     prices = _prices()
-    raw_prices, raw = BacktestPipeline._align_for_engine(prices, w, 1, engine=None)
-    _, materialised = BacktestPipeline._align_for_engine(prices, w, 1, engine="vectorbt")
+    raw_prices, raw = prices, apply_execution_lag(w, 1)
+    materialised = materialise_nan_policy(raw, "vectorbt")
     assert raw.isna().any().any() and not materialised.isna().any().any()
     a = run_vectorbt(raw_prices, raw, fees=0.001).value()
     b = run_vectorbt(raw_prices, materialised, fees=0.001).value()

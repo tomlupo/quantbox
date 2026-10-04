@@ -1,4 +1,4 @@
-"""Per-instrument trading calendar — what a missing price MEANS to a backtest (TOM-1429).
+"""Per-instrument and execution calendars — what a missing price MEANS to a backtest (TOM-1429).
 
 A wide prices panel mixes instruments with different calendars: a holiday in
 one market is a bar in another (1 January prints for some indices and not for
@@ -9,24 +9,33 @@ them:
 - **inside the instrument's life window** (its first valid price through its
   last valid price) it is a bar the instrument did not print — a holiday, a
   gap. The position EXISTS across it. The price is forward-filled explicitly,
-  the target weight is kept, and the bar is counted (``ffilled_bars``).
+  to MARK the position and never to fill an order, and the bar is counted
+  (``ffilled_bars``). An order for the instrument waits for its next printed
+  bar (:mod:`quantbox.execution_schedule`, ``deferred_trades``): filling at
+  the stale close would let a decision taken at the 29 Dec close fill at that
+  same close on 1 January and book the 2 January move (same-bar look-ahead,
+  docs/adr/0005).
 - **outside the life window** (before listing, after delisting) the
-  instrument cannot be held. The weight is forced to 0, and prices are filled
-  only so the engine has a number to mark a flat book at — never a tradable
-  position. A weight the strategy targeted there is counted and logged
-  (``targeted_outside_window_bars``), never dropped without a record.
+  instrument cannot be held. Its target is forced to 0, and prices are filled
+  only so the engine has a number to mark a flat book at. A weight the
+  strategy targeted there is counted and logged, never dropped without a
+  record. A trailing feed gap cannot be told from a delisting: both end the
+  window at the last print.
+
+On top of the per-instrument calendars sits ONE **execution calendar**
+(``execution.calendar``, :func:`execution_bars`): the bars a decision can be
+taken and an order placed on. Rebalance decisions are scheduled on it and the
+execution lag counts its bars (docs/adr/0007).
 
 Until v0.9.0 the pipeline zeroed the weight on EVERY missing price
 (``weights.where(prices.notna(), 0)``), so a target set on a holiday rebalance
-bar was flat for the whole holding period (478 of 5920 instrument-months in the
-TSMOM replication, -0.10 Sharpe), and it silently dropped instruments with
-under 50% price coverage. :func:`apply_instrument_calendar` replaces both.
+bar was flat for the whole holding period, and it silently dropped instruments
+with under 50% price coverage (now counted, ``legacy_coverage_drop``).
 
-It is engine-agnostic: :class:`~quantbox.plugins.pipeline.backtest_pipeline.BacktestPipeline`
-calls it once, after the execution lag and before the engine branch, so every
-engine receives the same book. The report it returns is the ``calendar``
-section of ``data_validation.json`` (:data:`DATA_VALIDATION_SCHEMA`), the shape
-the data-validation step (TOM-1430) consumes.
+Engine-agnostic: the backtest pipeline calls it once, before the engine
+branch. The report is the ``calendar`` section of ``data_validation.json``
+(:data:`DATA_VALIDATION_SCHEMA`), the shape the data-validation step (TOM-1430)
+consumes.
 """
 
 from __future__ import annotations
@@ -39,21 +48,38 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-#: ``data_validation.json`` — one section per check; this module owns ``calendar``.
+#: ``data_validation.json`` (``artifact_schemas/data_validation.schema.json``).
 DATA_VALIDATION_SCHEMA = "quantbox/data-validation@1"
+
+#: The rule the pipeline applied until TOM-1429: drop a column with fewer priced bars
+#: than max(30, 50% of the bars). Now only COUNTED, so the result change is visible.
+LEGACY_MIN_OBS_FLOOR = 30
+LEGACY_MIN_OBS_SHARE = 0.5
+
+#: ``execution.calendar`` values other than a ticker.
+EXECUTION_CALENDARS = ("majority", "union", "intersection")
+DEFAULT_EXECUTION_CALENDAR = "majority"
 
 
 @dataclass(frozen=True)
-class CalendarAlignment:
-    """The engine-ready book: prices without NaN, weights zero outside each life window."""
+class InstrumentCalendar:
+    """A prices panel resolved against each instrument's calendar.
+
+    ``prices`` has no NaN (forward-filled inside each window, filled outside it
+    for marking only); ``observed`` is True where the instrument really printed
+    and ``inside`` where the bar lies in its life window — all three on the same
+    index (bars where nothing printed are dropped) and columns (instruments that
+    never print are dropped).
+    """
 
     prices: pd.DataFrame
-    weights: pd.DataFrame
+    observed: pd.DataFrame
+    inside: pd.DataFrame
     report: dict[str, Any]
 
 
-def _stamp(ts: Any) -> str | None:
-    return None if ts is None or pd.isna(ts) else pd.Timestamp(ts).isoformat()
+def _stamp(ts: Any) -> str:
+    return pd.Timestamp(ts).isoformat()
 
 
 def life_windows(prices: pd.DataFrame) -> pd.DataFrame:
@@ -62,98 +88,126 @@ def life_windows(prices: pd.DataFrame) -> pd.DataFrame:
     return observed.cummax() & observed.iloc[::-1].cummax().iloc[::-1]
 
 
-def apply_instrument_calendar(prices: pd.DataFrame, weights: pd.DataFrame) -> CalendarAlignment:
-    """Apply each instrument's life window to an aligned ``prices`` / ``weights`` pair.
-
-    *weights* are the TRADED weights (already lagged) on the same index and
-    columns as *prices*. Returns the prices and weights the engine receives, and
-    the calendar report. Rows where no instrument has a price are dropped (there
-    is nothing to mark), and so are columns that never print — both counted. A
-    NaN weight inside a window is left NaN: the engine's own NaN policy
-    (:func:`quantbox.execution.materialise_nan_policy`) resolves it afterwards.
-    """
-    if not prices.index.equals(weights.index) or list(prices.columns) != list(weights.columns):
-        raise ValueError("apply_instrument_calendar: prices and weights must share index and columns")
-
-    observed = prices.notna()
-    targeted = weights.notna() & weights.ne(0.0)
-
-    never_priced = [c for c in prices.columns if not observed[c].any()]
-    never_priced_targeted = {str(c): int(targeted[c].sum()) for c in never_priced}
+def instrument_calendar(prices: pd.DataFrame) -> InstrumentCalendar:
+    """Resolve *prices* against each instrument's life window; the report counts every fill and drop."""
+    observed_all = prices.notna()
+    min_obs = max(LEGACY_MIN_OBS_FLOOR, int(len(prices) * LEGACY_MIN_OBS_SHARE))
+    legacy_dropped = sorted(str(c) for c in prices.columns if int(observed_all[c].sum()) < min_obs)
+    never_priced = [c for c in prices.columns if not observed_all[c].any()]
     keep_cols = [c for c in prices.columns if c not in never_priced]
+    rows = observed_all[keep_cols].any(axis=1) if keep_cols else pd.Series(False, index=prices.index)
 
-    empty_rows = ~observed[keep_cols].any(axis=1) if keep_cols else pd.Series(True, index=prices.index)
-    rows = ~empty_rows
-    # Windows and overridden targets on the FULL index, so a target on a dropped empty row
-    # outside the window (a single-asset book after delisting) is still counted.
-    inside_full = life_windows(prices[keep_cols])
-    outside_targeted = targeted[keep_cols] & ~inside_full
     px = prices.loc[rows, keep_cols]
-    w = weights.loc[rows, keep_cols]
-    obs = observed.loc[rows, keep_cols]
-    inside = inside_full.loc[rows]
-    ffilled = inside & ~obs
-
-    out_weights = w.where(inside, 0.0)
-    # ffill: holidays inside the window, and the last price after delisting (weight 0 there).
-    # bfill reaches only bars BEFORE listing, where the weight is 0: a mark, never a position.
+    observed = observed_all.loc[rows, keep_cols]
+    inside = life_windows(px)
+    ffilled = inside & ~observed
+    # ffill: holidays inside the window, the last price after delisting (target 0 there).
+    # bfill reaches only bars BEFORE listing, where the target is 0: a mark, never a position.
     out_prices = px.ffill().bfill()
 
     instruments: dict[str, dict[str, Any]] = {}
     for c in keep_cols:
-        col_obs = obs[c]
-        n_out = int(outside_targeted[c].sum())
+        col = observed[c]
         instruments[str(c)] = {
-            "first_valid": _stamp(col_obs.idxmax()) if col_obs.any() else None,
-            "last_valid": _stamp(col_obs[::-1].idxmax()) if col_obs.any() else None,
+            "first_valid": _stamp(col.idxmax()),
+            "last_valid": _stamp(col[::-1].idxmax()),
             "window_bars": int(inside[c].sum()),
-            "observed_bars": int(col_obs.sum()),
+            "observed_bars": int(col.sum()),
             "ffilled_bars": int(ffilled[c].sum()),
-            "targeted_outside_window_bars": n_out,
-            "max_abs_weight_outside_window": float(weights[c].where(outside_targeted[c]).abs().max()) if n_out else 0.0,
         }
-    for c, n in never_priced_targeted.items():
-        instruments[c] = {
+    for c in never_priced:
+        instruments[str(c)] = {
             "first_valid": None,
             "last_valid": None,
             "window_bars": 0,
             "observed_bars": 0,
             "ffilled_bars": 0,
-            "targeted_outside_window_bars": n,
-            "max_abs_weight_outside_window": float(weights[c].where(targeted[c]).abs().max()) if n else 0.0,
         }
-
-    targeted_outside = sorted(k for k, v in instruments.items() if v["targeted_outside_window_bars"])
     report = {
         "policy": {
-            "inside_window": "ffill price, keep target weight",
-            "outside_window": "weight forced to 0; price filled for marking only",
+            "inside_window": "price forward-filled to mark; an order waits for the instrument's next printed bar",
+            "outside_window": "target forced to 0; price filled for marking only",
         },
         "n_bars": int(rows.sum()),
         "n_instruments": len(instruments),
-        "rows_without_any_price": int(empty_rows.sum()),
+        "rows_without_any_price": int((~rows).sum()),
         "totals": {
-            "ffilled_bars": int(sum(v["ffilled_bars"] for v in instruments.values())),
-            "targeted_outside_window_bars": int(sum(v["targeted_outside_window_bars"] for v in instruments.values())),
-            "instruments_targeted_outside_window": targeted_outside,
+            "ffilled_bars": int(ffilled.to_numpy().sum()),
             "instruments_without_prices": sorted(str(c) for c in never_priced),
+        },
+        # Columns the pre-TOM-1429 rule would have DROPPED (now traded inside their window): counted only.
+        "legacy_coverage_drop": {
+            "rule": f"fewer than max({LEGACY_MIN_OBS_FLOOR}, {LEGACY_MIN_OBS_SHARE:.0%} of {len(prices)} bars) "
+            f"= {min_obs} priced bars",
+            "count": len(legacy_dropped),
+            "columns": legacy_dropped,
         },
         "instruments": instruments,
     }
-    n_out = report["totals"]["targeted_outside_window_bars"]
-    if n_out:
+    if legacy_dropped:
         logger.warning(
-            "CALENDAR: the strategy targeted %d instrument-bar(s) OUTSIDE the instrument's life window "
-            "(before its first or after its last price) — forced to 0, counted in data_validation.json: %s",
-            n_out,
-            targeted_outside or report["totals"]["instruments_without_prices"],
+            "CALENDAR: %d column(s) would have been DROPPED before TOM-1429 (under %d priced bars) and are now "
+            "traded inside their life window — results differ from earlier releases: %s",
+            len(legacy_dropped),
+            min_obs,
+            legacy_dropped,
         )
     logger.info(
         "Calendar: %d holiday/gap bar(s) forward-filled inside life windows across %d instrument(s)",
         report["totals"]["ffilled_bars"],
         len(instruments),
     )
-    return CalendarAlignment(prices=out_prices, weights=out_weights, report=report)
+    return InstrumentCalendar(prices=out_prices, observed=observed, inside=inside, report=report)
+
+
+def resolve_execution_calendar(value: Any) -> str:
+    """``execution.calendar`` -> ``majority`` (default) | ``union`` | ``intersection`` | a ticker."""
+    if value is None:
+        return DEFAULT_EXECUTION_CALENDAR
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            f"execution.calendar must be one of {list(EXECUTION_CALENDARS)} or a ticker in the prices, got {value!r}"
+        )
+    return value
+
+
+def execution_bars(cal: InstrumentCalendar, calendar: str, reference: pd.Series | None = None) -> pd.Series:
+    """Boolean Series over ``cal``'s bars: True where a decision is taken and an order may be placed.
+
+    ``majority``: at least half of the instruments inside their life window
+    print; ``union``: any of them prints; ``intersection``: every one inside
+    its window prints; a ticker: that series (*reference*, its column of the
+    LOADED prices, which need not carry a weight) prints. PnL is still marked
+    on every bar; only decisions and orders wait for these.
+    """
+    printed = (cal.observed & cal.inside).sum(axis=1)
+    alive = cal.inside.sum(axis=1)
+    if calendar == "majority":
+        bars = (printed > 0) & (2 * printed >= alive)
+    elif calendar == "union":
+        bars = printed > 0
+    elif calendar == "intersection":
+        bars = (alive > 0) & (printed == alive)
+    else:
+        if reference is None:
+            raise ValueError(
+                f"execution.calendar: {calendar!r} is not one of {list(EXECUTION_CALENDARS)} and not a ticker in "
+                "the loaded prices — add the reference series to the universe (it need not carry a weight)"
+            )
+        bars = reference.reindex(cal.observed.index).notna()
+    return bars.astype(bool)
+
+
+def execution_calendar_report(bars: pd.Series, calendar: str) -> dict[str, Any]:
+    """The ``execution_calendar`` section of ``data_validation.json``."""
+    years = pd.DatetimeIndex(bars.index).year
+    by_year = (~bars).groupby(years).sum()
+    return {
+        "calendar": calendar,
+        "execution_bars": int(bars.sum()),
+        "total_bars": int(len(bars)),
+        "non_execution_bars_by_year": {str(y): int(n) for y, n in by_year.items()},
+    }
 
 
 def calendar_summary(report: dict[str, Any]) -> dict[str, Any]:
@@ -162,5 +216,21 @@ def calendar_summary(report: dict[str, Any]) -> dict[str, Any]:
         "n_bars": report["n_bars"],
         "n_instruments": report["n_instruments"],
         "rows_without_any_price": report["rows_without_any_price"],
+        "legacy_coverage_drop": report["legacy_coverage_drop"]["count"],
         **report["totals"],
     }
+
+
+def validate_data_validation(doc: dict[str, Any]) -> list[str]:
+    """Every way *doc* fails ``quantbox/data-validation@1``, as messages; ``[]`` means it validates."""
+    import json
+    from importlib.resources import files
+
+    import jsonschema
+
+    path = files("quantbox").joinpath("artifact_schemas").joinpath("data_validation.schema.json")
+    validator = jsonschema.Draft202012Validator(json.loads(path.read_text(encoding="utf-8")))
+    return [
+        f"{'/'.join(str(p) for p in err.absolute_path) or '<root>'}: {err.message}"
+        for err in validator.iter_errors(doc)
+    ]
