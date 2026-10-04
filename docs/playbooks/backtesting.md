@@ -165,9 +165,10 @@ branch, the vectorbt order-func (`threshold`) branch, rsims and the variants
 flow alike. `quantbox sweep` (`analysis.parameter_grid`) uses the same setting,
 and so do the Python helpers `backtest()` and `optimize()`
 (`quantbox.plugins.backtesting`): keyword `lag_bars=`, same default, same
-same-bar warning, and the result carries the same `execution` record. Before
-TOM-1337 those two helpers traded same-bar; pass `lag_bars=0` to reproduce one
-of their old numbers.
+refusal of `0`, and the result carries the same `execution` record. The L1
+signal helpers `quantbox.bt.run` and
+`quantbox.adapters.vectorbt.from_signals_with_costs` lag their signals the
+same way (`lag_bars=`, default 1, `0` refused).
 
 ```yaml
 plugins:
@@ -175,17 +176,18 @@ plugins:
     name: backtest.pipeline.v1
     params:
       execution:
-        lag_bars: 1          # int >= 0, default 1
+        lag_bars: 1          # int >= 1, default 1
       venue:
         allow_shorts: false  # bool, no default — absent means "not declared"
 ```
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `execution.lag_bars` | int ≥ 0 | `1` | Weights decided with data through bar `t` fill at the **close of bar `t + lag_bars`**. `0` = same-bar: the signal is filled at the very close it was computed from, which no order could have achieved. Allowed only when written explicitly; the run then logs an `EXECUTION TIMING … SAME-BAR` warning, `quantbox validate` reports a warning, and the manifest records `same_bar: true`. |
+| `execution.lag_bars` | int ≥ 1 | `1` | Weights decided with data through bar `t` fill at the **close of bar `t + lag_bars`**. `0` (same-bar — the signal filled at the very close it was computed from, which no order could have achieved) is **refused** by every entry point and is an error in `quantbox validate` ([ADR-0005](../adr/0005-next-bar-is-mandatory.md)), unless `execution.same_bar` grants it (below). |
+| `execution.same_bar` | `{allow: true, reason: str}` | — | The explicit same-bar override ([ADR-0006](../adr/0006-same-bar-explicit-override.md)): valid only next to `lag_bars: 0`, `reason` non-empty. The run is then **research, not a backtest** — see [Same-bar research runs](#same-bar-research-runs-the-explicit-override). |
 | `venue.allow_shorts` | bool | — | `false`: negative **target** weights are clipped to `0` *before* tranching and the leverage cap. **The long side is not re-normalised** — the book carries less gross; it is never re-levered to refill it. `true`: shorts pass through. Must not contradict an explicit `risk.allow_short` (the run refuses). |
 
-Unknown keys, non-integers, booleans and negative lags are **refused**
+Unknown keys, non-integers, booleans, `0` (without the override) and negative lags are **refused**
 (`ConfigValidationError` from the runner, `ValueError` from the pipeline, before
 any data is loaded) — a typo never falls back to a default. `execution` and
 `venue` are run-level: a variant that tries to override either is refused.
@@ -194,14 +196,51 @@ any data is loaded) — a typo never falls back to a default. `execution` and
 wants given data through `t`; internal lags inside a *signal* or an *estimator*
 (e.g. `weights.shift(1) * returns` to estimate realised vol causally) are fine
 and unaffected. A strategy that already shifts the weights it returns would be
-lagged twice — remove that shift rather than setting `lag_bars: 0`.
+lagged twice — remove that shift; `lag_bars: 0` is not a way out (and the
+same-bar override is not one either: it is for data, not for strategies).
 
 **Where it is recorded.** `run_manifest.json` carries
-`execution: {lag_bars, fill: "close", same_bar, description}` and
-`venue: {declared, allow_shorts, max_leverage}`; `metrics.json` carries `execution_lag_bars`;
+`execution: {lag_bars, fill: "close", same_bar, description}` (`same_bar` is
+`true`, with `same_bar_reason`, only under the override), `run: {kind}`
+(`backtest` or `research`) and `venue: {declared, allow_shorts, max_leverage}`; `metrics.json` carries `execution_lag_bars`;
 `summary.md` has an **Execution timing** line, the HTML report states it in the
 masthead and the reproducibility appendix, and the CLI prints `EXECUTION: …`
 under `METRICS:`. Sweep grids carry a `lag_bars` column.
+
+#### Same-bar research runs: the explicit override
+
+Next-bar is the rule (Tom, 2026-10-02: "always lag +1, never the same bar").
+Same-bar is **an explicit allowance against best practice**, for data where it
+is closer to reality than next-bar. Example: monthly-only data, where the
+month-end close is the only price and the next month-end is further from any
+real fill than the same one. It is asked for in the config, with a reason:
+
+```yaml
+execution:
+  lag_bars: 0
+  same_bar: {allow: true, reason: "monthly-only data: the month-end close is the only price"}
+```
+
+In Python: `backtest(prices, weights, lag_bars=0, allow_same_bar=True,
+same_bar_reason="...")`, and the same keywords on `optimize()`.
+
+What the run then is ([ADR-0006](../adr/0006-same-bar-explicit-override.md)):
+**RESEARCH, not a backtest.** In Tom's words, *"to bardziej nie backtest, tylko
+ogólny research"*.
+
+- `run_manifest.json`: `execution.same_bar: true`, `execution.same_bar_reason`,
+  `run: {kind: research}`; `config explain` plans the same. A `backtest()` /
+  `optimize()` result carries `run: {kind: research}` too.
+- `finding_report.json`: no hero card reports `backtest_sharpe`, cards are
+  toned bad, the chart title says RESEARCH, and a failed "Execution timing"
+  audit axis carries the reason.
+- `quantbox gates … --returns <run_dir>/returns.parquet`: the verdict carries
+  `run_kind: research` and the reason (a RESEARCH line in text mode).
+- `run.strict` / `promotion` mode refuse it. `quantbox sweep` refuses the
+  `same_bar` block, and `bt.run` / `from_signals_with_costs` refuse `0`.
+
+Refused: `lag_bars: 0` alone, `allow: false`, an empty or missing `reason`,
+and an override next to `lag_bars >= 1`.
 
 **NaN weight rows — one saved book per engine, and the engines disagree.** A
 NaN weight cell mid-series means "the strategy said nothing for this bar". The
@@ -229,16 +268,20 @@ reach the `DatasetManifest`, so the venue has to be declared in the config.
 > **MIGRATION — default changed from same-bar to next-bar.** Until this
 > release `quantbox run -c` handed strategy weights to the engine unshifted,
 > while `quantbox sweep` shifted them by one bar. **Every historical backtest
-> number produced by `quantbox run -c` was same-bar.** To reproduce an old
-> number, set `execution.lag_bars: 0`. What that reproduces, precisely: the
-> **historical metric keys** (`total_return`, `cagr`, `sharpe`, … — the 12 keys
-> `metrics.json` carried before) and the returns / equity series, pinned by the
-> frozen goldens in `cookbook/canonical/expected_same_bar/`. It does **not** make
-> the run directory byte-identical to an old one: `metrics.json` gains the
-> `execution_lag_bars` / `traded_*` / `target_*` keys, a `traded_weights`
-> artifact appears, and the report is built from the traded weights. `sweep`'s
+> number produced by `quantbox run -c` was same-bar.** v0.8.0 still let
+> `execution.lag_bars: 0` reproduce such a number, with a warning; since
+> [ADR-0005](../adr/0005-next-bar-is-mandatory.md) `0` is refused everywhere
+> and an old same-bar number is reproduced only by pinning a quantbox release
+> older than that — and is then a record of a look-ahead, not a result. The
+> same-bar override ([ADR-0006](../adr/0006-same-bar-explicit-override.md)) is
+> not a way to reproduce them either: it is for data where same-bar is closer
+> to reality, and its runs are labelled research. `sweep`'s
 > `shift_signal` (Python kwarg and `backtest.shift_signal` in sweep YAML) still
 > works as a deprecated alias of `execution.lag_bars`; sweep numbers are unchanged.
+> The L1 signal helpers `quantbox.bt.run` and
+> `adapters.vectorbt.from_signals_with_costs` were same-bar too, with no lag
+> setting at all; since ADR-0005 they fill next-bar, so **the same inputs return
+> different numbers** — one bar later, which is the correct number.
 >
 > **Do not quote an old-vs-new delta as "the size of the look-ahead".** The lag
 > sets the first `lag_bars` rows flat, and with an integer `rebalancing_freq`

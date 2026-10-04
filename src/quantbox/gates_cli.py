@@ -14,6 +14,12 @@ are date-indexed — the first column is the date — and are inner-joined on it
 date order; a numeric first column is refused rather than paired by row position.
 A single-series file that carries a date first column is read in date order too.
 A date that appears twice in any input file is refused (exit 2), never joined.
+
+A returns file that sits in a run directory whose ``run_manifest.json`` says
+``run.kind: research`` (same-bar under the explicit override, docs/adr/0006) is
+marked: ``run_kind: "research"`` and ``research_note`` in ``--json``, and a
+RESEARCH line under the verdict. The gate maths is unchanged; what the series
+is not — a backtest — is said where the verdict is read.
 """
 
 from __future__ import annotations
@@ -164,15 +170,40 @@ def _joined(returns: str, column: str | None, baseline: str, baseline_column: st
     return joined
 
 
-def _emit(gate: str, as_json: bool, compute: Callable[[], dict]) -> None:
+def _research_notes(*paths: str | None) -> list[str]:
+    """The research note of every input that is a research run's returns file (docs/adr/0006)."""
+    from quantbox.run_manifest import research_note
+
+    notes = []
+    for path in paths:
+        if not path:
+            continue
+        manifest_path = Path(path).resolve().parent / "run_manifest.json"
+        if not manifest_path.is_file():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise _input_error(f"{manifest_path}: unreadable run manifest beside {path} ({exc})") from exc
+        note = research_note(manifest) if isinstance(manifest, dict) else None
+        if note:
+            notes.append(f"{path}: {note}")
+    return notes
+
+
+def _emit(gate: str, as_json: bool, compute: Callable[[], dict], *inputs: str | None) -> None:
     from quantbox.analysis.gates import GateInputError
 
     try:
+        notes = _research_notes(*inputs)
         out = compute()
     except GateInputError as exc:
         _fail(gate, as_json, str(exc))
     except Exception as exc:  # noqa: BLE001 — exit 1 MEANS "ran and failed"; a crash is "could not compute"
         _fail(gate, as_json, f"{type(exc).__name__}: {exc}")
+    if notes:
+        out["run_kind"] = "research"
+        out["research_note"] = " | ".join(notes)
     if as_json:
         typer.echo(json.dumps(out, indent=2, default=_jsonable))
     else:
@@ -180,6 +211,8 @@ def _emit(gate: str, as_json: bool, compute: Callable[[], dict]) -> None:
         value = out[key]["value"] if isinstance(out[key], dict) else out[key]
         verdict = "PASS" if out["gate_pass"] else "FAIL"
         typer.echo(f"{gate}: {verdict} ({key}={value:.6g}, {bar}={out[bar]})")
+        for note in notes:
+            typer.echo(f"  {note}")
     raise typer.Exit(0 if out["gate_pass"] else 1)
 
 
@@ -251,7 +284,7 @@ def dsr(
             raise _input_error(f"--periods must be positive, got {periods}")
         return dsr_gate(sr=sharpe / math.sqrt(periods), T=n_obs, skew=skew, kurtosis=kurtosis, **kw)
 
-    _emit("dsr", as_json, compute)
+    _emit("dsr", as_json, compute, returns)
 
 
 @gates_app.command("nw")
@@ -280,7 +313,7 @@ def nw(
             allow_nonfinite_drop=allow_nonfinite_drop,
         )
 
-    _emit("nw", as_json, compute)
+    _emit("nw", as_json, compute, returns)
 
 
 @gates_app.command("factor")
@@ -359,7 +392,7 @@ def factor(
             out["rf"] = rf_column
         return out
 
-    _emit("factor", as_json, compute)
+    _emit("factor", as_json, compute, returns)
 
 
 @gates_app.command("bootstrap")
@@ -401,7 +434,7 @@ def bootstrap(
         out["first_date"], out["last_date"] = j.index[0], j.index[-1]
         return out
 
-    _emit("bootstrap", as_json, compute)
+    _emit("bootstrap", as_json, compute, returns, baseline)
 
 
 @gates_app.command("episode")
@@ -440,4 +473,4 @@ def episode(
                 ep[f"{key}_date"] = j.index[ep[key]]
         return out
 
-    _emit("episode", as_json, compute)
+    _emit("episode", as_json, compute, returns, baseline)

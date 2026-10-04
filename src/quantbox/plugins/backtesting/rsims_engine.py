@@ -102,7 +102,9 @@ def fixed_commission_backtest_with_funding(
     prices : pd.DataFrame
         Trade prices (index=dates, columns=tickers).
     target_weights : pd.DataFrame
-        Desired portfolio weights (same shape as *prices*).
+        Desired portfolio weights (same shape as *prices*), ALREADY lagged:
+        row ``t`` fills at ``close[t]`` (``apply_execution_lag``;
+        docs/adr/0005-next-bar-is-mandatory.md).
     funding_rates : pd.DataFrame
         Per-period funding rates (same shape as *prices*).
     trade_buffer : float

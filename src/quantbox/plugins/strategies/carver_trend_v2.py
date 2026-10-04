@@ -33,7 +33,7 @@ canonical source it reproduces:
 
 The output contract matches v1 (a ``weights`` time-series DataFrame plus
 ``simple_weights`` / ``forecasts`` / diagnostics) so it plugs into the same
-``run_vectorbt`` backtest path.
+vectorbt backtest path.
 """
 
 from __future__ import annotations

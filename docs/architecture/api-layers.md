@@ -8,7 +8,7 @@ QuantBox exposes every capability at multiple layers so users (humans, scripts, 
 
 | Layer | API shape | When to use | Example |
 |---|---|---|---|
-| **L0** Re-exports | `from quantbox.adapters.vectorbt import vbt` | Quick experiment, throwaway script. Pure pass-through to the underlying lib. | `vbt.Portfolio.from_signals(prices, signals)` |
+| **L0** Re-exports | `from quantbox.adapters.vectorbt import vbt` | Quick experiment, throwaway script. Pure pass-through to the underlying lib — it fills the bar it is handed, so lag the signal yourself ([ADR-0005](../adr/0005-next-bar-is-mandatory.md)). | `vbt.Portfolio.from_signals(prices, (signals > 0).shift(1, fill_value=False))` |
 | **L1** Convenience helpers | `quantbox.bt.run(...)` (the only L1 namespace today) | Common idiom — one function call. No plugin/config layer. | `qbt.run(prices, signals, fees=0.001)` |
 | **L2** Composable units (not built) | — | Building a notebook, composing two ideas, no run_id ceremony. Until it exists, use L3. | — |
 | **L3** Plugin instances | Instantiate `Strategy()`, `DataPlugin()`, call directly | You want validation and contracts but not the YAML/runner. | `MyStrat().run(data, params)` |
@@ -67,6 +67,9 @@ Users:
 ```python
 from quantbox.adapters.vectorbt import vbt
 
+# vbt fills the bar it is handed: a signal computed through close t must reach
+# it on bar t+1 (next-bar is mandatory, ADR-0005). quantbox cannot police raw vbt.
+entries, exits = entries.shift(1, fill_value=False), exits.shift(1, fill_value=False)
 pf = vbt.Portfolio.from_signals(prices, entries, exits)
 ```
 
@@ -78,25 +81,9 @@ If a user has to write `import vectorbt as vbt` to bypass quantbox, the adapter 
 
 The rule: one function call covers the most common idiom for that capability. No plugin, no config, no manifest.
 
-```python
-# bt.py
-import pandas as pd
-from .adapters.vectorbt import vbt
-
-
-def run(
-    prices: pd.DataFrame, signals: pd.DataFrame, *, fees: float = 0.001, slippage: float = 0.0005, freq: str = "1D"
-) -> "Result":
-    pf = vbt.Portfolio.from_signals(
-        close=prices,
-        entries=signals > 0,
-        exits=signals <= 0,
-        fees=fees,
-        slippage=slippage,
-        freq=freq,
-    )
-    return Result(portfolio=pf, metrics=pf.stats())
-```
+`quantbox.bt.run` (`src/quantbox/bt.py`) delegates to
+`adapters.vectorbt.from_signals_with_costs`: next-bar always, `lag_bars=0`
+raises ([ADR-0005](../adr/0005-next-bar-is-mandatory.md)).
 
 Users:
 

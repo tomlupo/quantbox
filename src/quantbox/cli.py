@@ -457,6 +457,11 @@ def sweep(
     # defaulted. Absent block -> None -> run_grid resolves the default / alias.
     from .execution import resolve_lag_bars
 
+    if isinstance(cfg.get("execution"), dict) and "same_bar" in cfg["execution"]:
+        raise ValueError(
+            "quantbox sweep does not take execution.same_bar: a grid of same-bar numbers is the "
+            "multiple-testing search the override must never feed (docs/adr/0006). Sweep next-bar."
+        )
     sweep_lag_bars = resolve_lag_bars(cfg["execution"]) if "execution" in cfg else None
 
     config_dir = config_path.parent

@@ -21,7 +21,7 @@ from typing import Any
 
 import pandas as pd
 
-from quantbox.execution import execution_record, resolve_lag_bars, warn_if_same_bar
+from quantbox.execution import helper_execution, run_record, timing_record
 
 
 def _backtest_lazy():
@@ -46,6 +46,8 @@ def optimize(
     train_size: int = 252,
     test_size: int = 63,
     lag_bars: int | None = None,
+    allow_same_bar: bool = False,
+    same_bar_reason: str | None = None,
 ) -> dict[str, Any]:
     """Optimize strategy parameters via grid search or walk-forward.
 
@@ -60,10 +62,13 @@ def optimize(
             Forwarded to ``backtest()``.
         train_size: Training window in rows (walk-forward only).
         test_size: Test window in rows (walk-forward only).
-        lag_bars: Execution lag, as in ``backtest()``: default 1 (next-bar),
-            ``0`` = same-bar (warned once per call). Applied inside each
+        lag_bars: Execution lag, as in ``backtest()``: default and minimum 1
+            (next-bar); ``0`` raises. Applied inside each
             window, so a walk-forward test window starts flat for
             ``lag_bars`` bars.
+        allow_same_bar, same_bar_reason: The explicit same-bar override, as in
+            ``backtest()`` (docs/adr/0006): only with ``lag_bars=0`` and a
+            non-empty reason; the result is then RESEARCH, not a backtest.
 
     Returns:
         ``{"best_params", "best_metric", "all_results", "execution"}`` for grid
@@ -71,10 +76,9 @@ def optimize(
         "oos_results", "execution"}`` for walk-forward. ``"execution"`` is the
         timing used (as ``run_manifest.json``).
     """
-    lag = resolve_lag_bars(None if lag_bars is None else {"lag_bars": lag_bars})
-    warn_if_same_bar(lag, where="optimize()")
+    timing = helper_execution(lag_bars, allow_same_bar, same_bar_reason)
     bt_kwargs = dict(
-        lag_bars=lag,
+        timing=timing,
         fees=fees,
         fixed_fees=fixed_fees,
         slippage=slippage,
@@ -88,7 +92,8 @@ def optimize(
         result = _walk_forward(prices, weights_fn, param_grid, metric, bt_kwargs, train_size, test_size)
     else:
         result = _grid_search(prices, weights_fn, param_grid, metric, bt_kwargs)
-    return {**result, "execution": execution_record(lag)}
+    execution = timing_record(timing)
+    return {**result, "execution": execution, "run": run_record(execution)}
 
 
 def _grid_search(
