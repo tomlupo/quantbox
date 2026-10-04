@@ -75,6 +75,104 @@ from quantbox.frequency import rebalancing_dates  # noqa: E402
 logger = logging.getLogger(__name__)
 
 
+# ----------------------------------------------------------------------
+# Order-function callbacks. Module level so numba compiles them, and the
+# vectorbt simulator specialised on them, ONCE per process: a closure
+# re-jitted on every run() call recompiled both on every backtest.
+# ----------------------------------------------------------------------
+
+
+def _pre_sim_func_nb(c, rebalancing_mask):
+    c.segment_mask[:, :] = False
+    c.segment_mask[rebalancing_mask, :] = True
+    return ()
+
+
+def _pre_group_func_nb(c):
+    return ()
+
+
+def _pre_segment_func_nb(c, size, size_type, direction, threshold, no_order, lend_col, borrow_col):
+    position_values = np.empty(c.group_len, dtype=np.float64)
+    for k, col in enumerate(range(c.from_col, c.to_col)):
+        c.last_val_price[col] = get_col_elem_nb(c, col, c.close)
+        position_values[k] = c.last_val_price[col] * c.last_position[col]
+
+    # Portfolio value is positions + CASH. Free cash is cash net of short collateral: using it
+    # (as this did until TOM-1429) misstates every weight of a book that holds shorts.
+    total_value = np.sum(position_values) + c.last_cash[c.group]
+    position_weights = position_values / total_value
+
+    # A cell with no order (the `orders` mask) targets its CURRENT weight: its order value is 0,
+    # so the call sequence still sorts sells before buys, and order_func_nb places nothing.
+    target_weights = np.empty(c.group_len, dtype=np.float64)
+    for k in range(c.group_len):
+        t = size[c.i, c.from_col + k]
+        target_weights[k] = position_weights[k] if (no_order[c.i, c.from_col + k] or np.isnan(t)) else t
+    # The financing legs take the RESIDUAL of what is actually held after this bar's orders,
+    # untouched (drifted) cells included, so the book sums to exactly 1 and no buy is cut.
+    if lend_col >= 0 and not no_order[c.i, lend_col]:
+        residual = 1.0
+        for k in range(c.group_len):
+            col = c.from_col + k
+            if col != lend_col and col != borrow_col:
+                residual -= target_weights[k]
+        target_weights[lend_col - c.from_col] = max(residual, 0.0)
+        target_weights[borrow_col - c.from_col] = min(residual, 0.0)
+    deviation = np.abs(position_weights - target_weights)
+
+    rebalancing_flag = False
+    for dev in deviation:
+        if dev > threshold:
+            rebalancing_flag = True
+            break
+
+    if rebalancing_flag:
+        order_value_out = np.empty(c.group_len, dtype=np.float64)
+        for k in range(c.group_len):
+            c.call_seq_now[k] = k
+        sort_call_seq_out_nb(c, target_weights, size_type, direction, order_value_out, c.call_seq_now, ctx_select=False)
+        return (target_weights,)
+    return (None,)
+
+
+def _order_func_nb(c, weights_arr, size_type, direction, fees_arr, fixed_fees_arr, slippage_arr, no_order):
+    if weights_arr is None:
+        return order_nothing_nb()
+    if no_order[c.i, c.col]:  # a cell with no order (the `orders` mask)
+        return order_nothing_nb()
+    col_i = c.call_seq_now[c.call_idx]
+    return order_nb(
+        size=weights_arr[col_i],
+        price=get_elem_nb(c, c.close),
+        size_type=np.int64(get_elem_nb(c, size_type)),
+        direction=np.int64(get_elem_nb(c, direction)),
+        fees=np.float64(get_elem_nb(c, fees_arr)),
+        fixed_fees=np.float64(get_elem_nb(c, fixed_fees_arr)),
+        slippage=np.float64(get_elem_nb(c, slippage_arr)),
+        log=True,
+    )
+
+
+def _post_order_func_nb(c, weights_arr):
+    return None
+
+
+_CALLBACK_NAMES = ("pre_sim", "pre_group", "pre_segment", "order", "post_order")
+_PY_CALLBACKS = (_pre_sim_func_nb, _pre_group_func_nb, _pre_segment_func_nb, _order_func_nb, _post_order_func_nb)
+_JIT_CALLBACKS: tuple | None = None
+
+
+def _callbacks(use_numba: bool) -> tuple:
+    """The five callbacks, jitted once per process when *use_numba*."""
+    global _JIT_CALLBACKS
+    if not use_numba:
+        return _PY_CALLBACKS
+    if _JIT_CALLBACKS is None:
+        _JIT_CALLBACKS = tuple(njit(f) for f in _PY_CALLBACKS)
+    return _JIT_CALLBACKS
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -296,82 +394,6 @@ def run(
         raise ValueError("All tickers in weights must be present in prices")
 
     # ------------------------------------------------------------------
-    # Numba callback functions (defined here so njit is applied once)
-    # ------------------------------------------------------------------
-    def pre_sim_func_nb(c, rebalancing_mask):
-        c.segment_mask[:, :] = False
-        c.segment_mask[rebalancing_mask, :] = True
-        return ()
-
-    def pre_group_func_nb(c):
-        return ()
-
-    def pre_segment_func_nb(c, size, size_type, direction, threshold, no_order, lend_col, borrow_col):
-        position_values = np.empty(c.group_len, dtype=np.float64)
-        for k, col in enumerate(range(c.from_col, c.to_col)):
-            c.last_val_price[col] = get_col_elem_nb(c, col, c.close)
-            position_values[k] = c.last_val_price[col] * c.last_position[col]
-
-        # Portfolio value is positions + CASH. Free cash is cash net of short collateral: using it
-        # (as this did until TOM-1429) misstates every weight of a book that holds shorts.
-        total_value = np.sum(position_values) + c.last_cash[c.group]
-        position_weights = position_values / total_value
-
-        # A cell with no order (the `orders` mask) targets its CURRENT weight: its order value is 0,
-        # so the call sequence still sorts sells before buys, and order_func_nb places nothing.
-        target_weights = np.empty(c.group_len, dtype=np.float64)
-        for k in range(c.group_len):
-            t = size[c.i, c.from_col + k]
-            target_weights[k] = position_weights[k] if (no_order[c.i, c.from_col + k] or np.isnan(t)) else t
-        # The financing legs take the RESIDUAL of what is actually held after this bar's orders,
-        # untouched (drifted) cells included, so the book sums to exactly 1 and no buy is cut.
-        if lend_col >= 0 and not no_order[c.i, lend_col]:
-            residual = 1.0
-            for k in range(c.group_len):
-                col = c.from_col + k
-                if col != lend_col and col != borrow_col:
-                    residual -= target_weights[k]
-            target_weights[lend_col - c.from_col] = max(residual, 0.0)
-            target_weights[borrow_col - c.from_col] = min(residual, 0.0)
-        deviation = np.abs(position_weights - target_weights)
-
-        rebalancing_flag = False
-        for dev in deviation:
-            if dev > threshold:
-                rebalancing_flag = True
-                break
-
-        if rebalancing_flag:
-            order_value_out = np.empty(c.group_len, dtype=np.float64)
-            for k in range(c.group_len):
-                c.call_seq_now[k] = k
-            sort_call_seq_out_nb(
-                c, target_weights, size_type, direction, order_value_out, c.call_seq_now, ctx_select=False
-            )
-            return (target_weights,)
-        return (None,)
-
-    def order_func_nb(c, weights_arr, size_type, direction, fees_arr, fixed_fees_arr, slippage_arr, no_order):
-        if weights_arr is None:
-            return order_nothing_nb()
-        if no_order[c.i, c.col]:  # a cell with no order (the `orders` mask)
-            return order_nothing_nb()
-        col_i = c.call_seq_now[c.call_idx]
-        return order_nb(
-            size=weights_arr[col_i],
-            price=get_elem_nb(c, c.close),
-            size_type=np.int64(get_elem_nb(c, size_type)),
-            direction=np.int64(get_elem_nb(c, direction)),
-            fees=np.float64(get_elem_nb(c, fees_arr)),
-            fixed_fees=np.float64(get_elem_nb(c, fixed_fees_arr)),
-            slippage=np.float64(get_elem_nb(c, slippage_arr)),
-            log=True,
-        )
-
-    def post_order_func_nb(c, weights_arr):
-        return None
-
-    # ------------------------------------------------------------------
     # Decide order-func path
     # ------------------------------------------------------------------
     if orders is not None:
@@ -392,20 +414,14 @@ def run(
     # ------------------------------------------------------------------
     # Numba JIT
     # ------------------------------------------------------------------
-    if use_numba:
-        os.environ["NUMBA_DISABLE_JIT"] = "0"
-        pre_sim_func_nb_jit = njit(pre_sim_func_nb)
-        pre_group_func_nb_jit = njit(pre_group_func_nb)
-        pre_segment_func_nb_jit = njit(pre_segment_func_nb)
-        order_func_nb_jit = njit(order_func_nb)
-        post_order_func_nb_jit = njit(post_order_func_nb)
-    else:
-        os.environ["NUMBA_DISABLE_JIT"] = "1"
-        pre_sim_func_nb_jit = pre_sim_func_nb
-        pre_group_func_nb_jit = pre_group_func_nb
-        pre_segment_func_nb_jit = pre_segment_func_nb
-        order_func_nb_jit = order_func_nb
-        post_order_func_nb_jit = post_order_func_nb
+    os.environ["NUMBA_DISABLE_JIT"] = "0" if use_numba else "1"
+    (
+        pre_sim_func_nb_jit,
+        pre_group_func_nb_jit,
+        pre_segment_func_nb_jit,
+        order_func_nb_jit,
+        post_order_func_nb_jit,
+    ) = _callbacks(use_numba)
 
     # ------------------------------------------------------------------
     # Prepare weights DataFrame & group_by
