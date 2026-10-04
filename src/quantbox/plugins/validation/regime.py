@@ -13,16 +13,7 @@ import numpy as np
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
-
-
-def _annualized_sharpe(returns: np.ndarray, trading_days: int) -> float:
-    """Compute annualized Sharpe ratio from an array of returns."""
-    if len(returns) < 2:
-        return 0.0
-    std = float(np.std(returns, ddof=1))
-    if std == 0:
-        return 0.0
-    return float(np.mean(returns) / std * np.sqrt(trading_days))
+from quantbox.metrics import sharpe_ratio
 
 
 @dataclass
@@ -101,7 +92,7 @@ class RegimeValidation:
             if len(regime_rets) == 0:
                 continue
 
-            sharpe = _annualized_sharpe(regime_rets, trading_days)
+            sharpe = sharpe_ratio(regime_rets, trading_days)
             total_ret = float(np.sum(regime_rets))
             pct_time = len(regime_rets) / total_days
 

@@ -65,6 +65,8 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
+from quantbox.metrics import compute_rolling_sharpe, turnover_series
+
 BuilderFn = Callable[..., dict | None]
 Section = Literal["framework", "diagnostics", "comparison", "appendix"]
 
@@ -223,7 +225,7 @@ def _build_rolling_metrics_chart(_payload: dict | None, *, returns: pd.Series, *
             r.index = pd.DatetimeIndex(r.index)
     annualise = np.sqrt(365.0)
     win = max(63, len(r) // 8)
-    rs = (r.rolling(win).mean() / r.rolling(win).std()) * annualise
+    rs = compute_rolling_sharpe(r, win, 365.0)
     rv = r.rolling(win).std() * annualise
     rs = rs.dropna()
     rv = rv.dropna()
@@ -278,7 +280,7 @@ def _build_turnover_timeline_chart(_payload: dict | None, *, weights_history: pd
         with contextlib.suppress(Exception):
             wh.index = pd.DatetimeIndex(wh.index)
     # Sum of |Δweight| per day
-    turnover = wh.diff().abs().sum(axis=1).dropna()
+    turnover = turnover_series(wh)
     if turnover.empty or turnover.sum() == 0:
         return None
     cumulative = turnover.cumsum()

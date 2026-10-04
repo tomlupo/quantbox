@@ -13,16 +13,7 @@ import numpy as np
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
-
-
-def _annualized_sharpe(returns: np.ndarray, trading_days: int) -> float:
-    """Compute annualized Sharpe ratio from an array of returns."""
-    if len(returns) < 2:
-        return 0.0
-    std = float(np.std(returns, ddof=1))
-    if std == 0:
-        return 0.0
-    return float(np.mean(returns) / std * np.sqrt(trading_days))
+from quantbox.metrics import sharpe_ratio
 
 
 @dataclass
@@ -75,8 +66,8 @@ class WalkForwardValidation:
             is_portion = fold[:split_idx]
             oos_portion = fold[split_idx:]
 
-            is_sharpes.append(_annualized_sharpe(is_portion, trading_days))
-            oos_sharpes.append(_annualized_sharpe(oos_portion, trading_days))
+            is_sharpes.append(sharpe_ratio(is_portion, trading_days))
+            oos_sharpes.append(sharpe_ratio(oos_portion, trading_days))
 
         is_mean = float(np.mean(is_sharpes))
         oos_mean = float(np.mean(oos_sharpes))

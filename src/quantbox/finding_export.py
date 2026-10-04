@@ -36,6 +36,7 @@ from typing import Any
 
 import pandas as pd
 
+from .metrics import compute_drawdown_series
 from .parquet_io import read_parquet
 from .run_history import run_started_at
 from .run_manifest import SCHEMA_ID as RUN_SCHEMA_ID
@@ -197,7 +198,7 @@ def _series_block(arms: list[Arm]) -> dict[str, Any]:
         equity = (1 + r.fillna(0)).cumprod().where(live)
         # drawdown is given explicitly: the renderer cannot derive one from an
         # equity that ever touches zero (a liquidated book)
-        drawdown = (equity / equity.cummax() - 1).where(live)
+        drawdown = compute_drawdown_series(equity).where(live)
         lines.append(
             {
                 "name": arm.name,

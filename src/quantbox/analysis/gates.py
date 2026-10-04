@@ -39,6 +39,8 @@ from collections.abc import Sequence
 
 import numpy as np
 
+from ..metrics import compute_drawdown_series, sharpe_ratio
+from ..metrics import max_drawdown as _metrics_max_drawdown
 from .dsr import DEGENERATE_RTOL, deflated_sharpe_ratio
 from .hac import factor_regression, newey_west_tstat
 
@@ -158,7 +160,7 @@ def dsr_gate_from_returns(
     if std <= DEGENERATE_RTOL * float(np.mean(np.abs(r))):
         raise GateInputError("zero-variance returns — the series is constant to floating-point noise")
     out = dsr_gate(
-        sr=float(r.mean()) / std,
+        sr=sharpe_ratio(r, 1),
         T=T,
         skew=float(stats.skew(r)),
         kurtosis=float(stats.kurtosis(r, fisher=False)),
@@ -311,8 +313,7 @@ def max_drawdown(returns: np.ndarray) -> float:
 
     The starting equity (1.0) counts as a peak, so a loss on the first row is a drawdown.
     """
-    eq = np.concatenate([[1.0], np.cumprod(1.0 + returns)])
-    return float(np.max(1.0 - eq / np.maximum.accumulate(eq)))
+    return -_metrics_max_drawdown(returns, start_is_peak=True)
 
 
 def _metric(r: np.ndarray, metric: str) -> float:
@@ -327,7 +328,7 @@ def _metric(r: np.ndarray, metric: str) -> float:
     # of rounding noise, which would otherwise be a Sharpe of ~1e15 — a sure PASS.
     if std <= DEGENERATE_RTOL * float(np.mean(np.abs(r))):
         return float("nan")
-    return float(r.mean()) / std
+    return sharpe_ratio(r, 1)
 
 
 def _leg_value(cand: np.ndarray, base: np.ndarray | None, metric: str, compare: str) -> float:
@@ -495,12 +496,11 @@ def largest_drawdown_episode(returns) -> dict | None:
     """
     r = np.asarray(returns, dtype=float).ravel()
     eq = np.concatenate([[1.0], np.cumprod(1.0 + r)])
-    peak = np.maximum.accumulate(eq)
-    dd = 1.0 - eq / peak
+    dd = -compute_drawdown_series(eq)  # positive depth
     trough_e = int(np.argmax(dd))
     if dd[trough_e] <= 0:
         return None
-    level = peak[trough_e]
+    level = float(np.max(eq[: trough_e + 1]))  # the peak the trough is measured from
     peak_e = int(np.flatnonzero(eq[: trough_e + 1] >= level)[-1])
     after = np.flatnonzero(eq[trough_e + 1 :] >= level)
     recovered = bool(after.size)

@@ -10,6 +10,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from quantbox.metrics import compute_drawdown_series, compute_rolling_sharpe
+
 _TEMPLATE_PATH = Path(__file__).parent / "templates" / "research_report.html"
 
 
@@ -110,7 +112,6 @@ def _build_portfolio_chart_manual(
     bt_prices: pd.DataFrame,
 ) -> dict:
     """Fallback portfolio chart — 4-subplot manual figure."""
-    import numpy as np
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -122,7 +123,7 @@ def _build_portfolio_chart_manual(
     )
     pv = pd.Series(portfolio_daily[pv_col].values, index=pv_idx)
     pv = pv * (100.0 / pv.iloc[0])
-    drawdown = (pv - pv.cummax()) / pv.cummax() * 100
+    drawdown = compute_drawdown_series(pv) * 100
 
     ret = returns.copy()
     if not isinstance(ret.index, pd.DatetimeIndex):
@@ -133,8 +134,7 @@ def _build_portfolio_chart_manual(
     else:
         bars_per_day = 1
     roll_window = max(10, min(30 * bars_per_day, len(ret) // 4))
-    annualise = np.sqrt(365 * bars_per_day)
-    roll_sharpe = ret.rolling(roll_window).mean() / ret.rolling(roll_window).std() * annualise
+    roll_sharpe = compute_rolling_sharpe(ret, roll_window, 365 * bars_per_day)
 
     btc_col = next((c for c in bt_prices.columns if c in ("BTC", "BTCUSDT")), None)
     btc_norm = None
