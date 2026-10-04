@@ -11,6 +11,8 @@
   "profit_factor": 1.1006861282070246,
   "var_95": -0.01798332046000908,
   "cvar_95": -0.026928427693993704,
+  "engine_underfilled_rebalances": 0.0,
+  "engine_max_fill_gap": 2.220446049250313e-16,
   "execution_lag_bars": 1.0,
   "traded_mean_gross_exposure": 0.22123015873015872,
   "traded_mean_net_exposure": 0.22123015873015872,
@@ -18,5 +20,17 @@
   "traded_mean_turnover": 0.07341269841269842,
   "traded_flat_bar_share": 0.5476190476190477,
   "target_short_gross_share": 0.0,
-  "target_mean_net_exposure": 0.22123015873015872
+  "target_mean_net_exposure": 0.22123015873015872,
+  "calendar_ffilled_bars": 0.0,
+  "calendar_targeted_outside_window_bars": 0.0,
+  "calendar_deferred_trades": 0.0,
+  "calendar_legacy_coverage_drop": 0.0,
+  "execution_calendar_bars": 252.0,
+  "execution_calendar_bar_share": 1.0,
+  "decision_stale_inputs": 0.0,
+  "decision_max_staleness_bars": 0.0,
+  "leverage_rebalances_above_net_1": 0.0,
+  "leverage_scaled_rebalances": 0.0,
+  "leverage_scale_mean": 1.0,
+  "leverage_scale_min": 1.0
 }

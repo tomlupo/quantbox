@@ -240,7 +240,8 @@ def test_the_summary_records_n_trials_and_links_every_manifest(tmp_path):
 
 def test_n_trials_defaults_to_the_number_of_arms(tmp_path):
     _write_base(tmp_path)
-    arms_path = _write_arms(tmp_path, {"grid": {"plugins.strategies.0.params.frac": [0.5, 1.0, 1.5]}})
+    # frac above 1 is a levered book the base (vectorbt, no venue.financing) refuses (ADR-0007).
+    arms_path = _write_arms(tmp_path, {"grid": {"plugins.strategies.0.params.frac": [0.25, 0.5, 1.0]}})
     summary = run_arms(load_arms(arms_path), max_workers=1)
     assert summary["n_trials"] == 3
     assert {_manifest(Path(summary["path"]), a)["n_trials"] for a in summary["arms"]} == {3}

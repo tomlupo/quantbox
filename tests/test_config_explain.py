@@ -91,7 +91,18 @@ def test_explain_agrees_with_the_run_manifest_inline_paths(tmp_path, engine):
     assert planned["funding"]["modelled"] is (engine == "rsims")
     assert planned["funding"]["sha256"]
     assert planned["execution"]["lag_bars"] == 1
-    assert planned["venue"] == {"declared": True, "allow_shorts": False, "max_leverage": 1.5}
+    if engine == "vectorbt":  # cannot borrow: a levered decision is scaled to net 1 (docs/adr/0007)
+        assert planned["venue"] == {
+            "declared": True,
+            "allow_shorts": False,
+            "max_leverage": 1.5,
+            "leverage": "normalize",
+            "financing": None,
+        }
+    else:  # a margin simulator borrows, and with no financing block the rate is an assumed 0
+        assert planned["venue"]["leverage"] == "borrow"
+        assert planned["venue"]["financing"]["assumed"] is True
+        assert planned["venue"]["financing"]["rate"] == {"annual": 0.0}
     assert planned["n_trials"] == 5
     assert Path(recorded["artifacts"]["returns"]).resolve().parent.parent == Path(planned["artifacts_root"])
 

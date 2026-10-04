@@ -142,13 +142,16 @@ Reading a dataset without it raises an ImportError naming both.
 |---|---|---|
 | `engine` | `vectorbt` | `"vectorbt"` or `"rsims"` |
 | `fees` | `0.001` | Trading fee per side (0.001 = 10 bps) |
-| `rebalancing_freq` | `1` | Rebalance every N days, or `"1W"`, `"1M"` |
+| `rebalancing_freq` | `1` | The DECISION schedule on the execution calendar: every N execution bars, or `"1W"`, `"ME"`, `"BMS"`; period-end offsets decide on the period's last execution bar, others on the next one; the trade follows `lag_bars` execution bars later ([ADR-0007](../adr/0007-instrument-calendar-and-financing.md)) |
 | `threshold` | (none) | Drift threshold for rebalancing-bands mode |
 | `trading_days` | `365` | Days per year for annualization |
 | `universe.top_n` | — | Universe size (top N by volume/mcap) |
 | `prices.lookback_days` | — | Price history window |
 | `execution.lag_bars` | `1` | Bars between deciding a weight and filling it — see [Execution timing and venue constraints](#execution-timing-and-venue-constraints) |
 | `venue.allow_shorts` | (unset) | Whether the venue can hold shorts — same section |
+| `venue.financing` | (unset) | What borrowed / idle cash costs — [Missing prices and financing](#missing-prices-and-financing) |
+| `venue.leverage` | `normalize` (vectorbt) / `borrow` (rsims) | Net exposure above 1: scaled to 1, or borrowed — [Missing prices and financing](#missing-prices-and-financing) |
+| `execution.calendar` | `majority` | The execution calendar: `majority` \| `union` \| `intersection` \| a ticker — [Missing prices and financing](#missing-prices-and-financing) |
 | `risk.max_leverage` | `99` | Gross cap per bar; only ever scales DOWN (both engines) |
 | `risk.allow_short` | `false` | Legacy short switch (both engines); prefer `venue.allow_shorts` |
 | `risk.tranches` | `1` | Rolling-mean tranching of target weights (both engines) |
@@ -159,7 +162,7 @@ Both engines are **same-bar primitives**: the weight row they are handed for bar
 `t` is filled at `close[t]`. Strategies decide `weights[t]` with data through
 `close[t]`, so the pipeline — not the strategy, not the engine — owns the delay
 between deciding and filling. It is applied in exactly one place
-(`BacktestPipeline._align_for_engine`, after aggregation, venue clipping and
+(`BacktestPipeline._engine_book`, after aggregation, venue clipping and
 risk transforms, before the engine), so it holds for the vectorbt `from_orders`
 branch, the vectorbt order-func (`threshold`) branch, rsims and the variants
 flow alike. `quantbox sweep` (`analysis.parameter_grid`) uses the same setting,
@@ -202,10 +205,68 @@ same-bar override is not one either: it is for data, not for strategies).
 **Where it is recorded.** `run_manifest.json` carries
 `execution: {lag_bars, fill: "close", same_bar, description}` (`same_bar` is
 `true`, with `same_bar_reason`, only under the override), `run: {kind}`
-(`backtest` or `research`) and `venue: {declared, allow_shorts, max_leverage}`; `metrics.json` carries `execution_lag_bars`;
+(`backtest` or `research`) and `venue: {declared, allow_shorts, max_leverage, leverage, financing}`; `metrics.json` carries `execution_lag_bars`;
 `summary.md` has an **Execution timing** line, the HTML report states it in the
 masthead and the reproducibility appendix, and the CLI prints `EXECUTION: …`
 under `METRICS:`. Sweep grids carry a `lag_bars` column.
+
+#### Missing prices and financing
+
+[ADR-0007](../adr/0007-instrument-calendar-and-financing.md) (TOM-1429). Each instrument gets a
+**life window**, from its first valid price to its last:
+
+- **Inside** the window, a bar with no price (a holiday, a gap) is forward-filled to MARK the
+  position, which is held. No order fills at a price the instrument did not print: an order
+  falling on such a bar is **deferred** to the instrument's own next printed bar, and counted.
+- **Outside** it (before listing, after delisting), the target is forced to 0, and that
+  override is counted and logged. A feed that stops early looks exactly like a delisting.
+
+On top sits ONE **execution calendar**, the bars decisions are taken and orders placed on:
+
+```yaml
+      execution:
+        lag_bars: 1
+        calendar: majority   # majority (default) | union | intersection | "<ticker in the prices>"
+```
+
+`majority`: half of the live instruments print; `union`: any; `intersection`: all; a ticker:
+that series prints. **Decision vs execution:** `rebalancing_freq` picks DECISION bars on that
+calendar (`"ME"` = the last execution bar of the month), and the trade happens `lag_bars`
+**execution** bars later. `rebalance_schedule.parquet` records `decision_date`,
+`execution_date` and `deferred_instruments` for every rebalance. Before ADR-0007 the schedule
+named the TRADE bar: a config that meant "decide at month-end, trade on the 1st" with `BMS`
+now says `ME`.
+
+```yaml
+      venue:
+        allow_shorts: true
+        leverage: borrow           # normalize (vectorbt default) | borrow (rsims default)
+        financing:
+          rate: "LT12TRUU Index"   # ticker in the prices (cash TR index) | annual number (0.0 = free)
+          borrow_spread_bps: 0     # borrowed cash: rate + spread
+          lend_spread_bps: 0       # idle cash:     rate - spread
+```
+
+`leverage: normalize` keeps the book HELD after each bar's orders at net 1 or below: when
+it would go above (a decision above 1, or a deferred instrument still holding its weight),
+the cells ordered on that bar are scaled down, or their buys set to 0 when the deferred
+cells alone fill it (counted, warned).
+`leverage: borrow` holds it; with `financing` the residual `1 - sum(w)` is held as two
+synthetic cash legs (idle cash earns `rate - lend_spread`, borrowed cash pays `rate +
+borrow_spread`, both trade without fees). `borrow` without `financing` runs at an ASSUMED rate
+of 0, recorded as `venue.financing.assumed: true` and warned about.
+
+Everything is counted in `data_validation.json` (`quantbox/data-validation@1`, schema in
+`artifact_schemas/`): `calendar` (per instrument: forward-filled bars, deferred trades,
+targets outside the window, stale decisions; `legacy_coverage_drop` = columns the old
+50%-coverage rule would have dropped), `execution_calendar` (execution vs total bars,
+non-execution bars per year), `timing`, `staleness` (age of the inputs at each decision:
+count, max, p95 — visible, not blocking), `leverage`. Summaries go to `run_manifest.json`
+`data_validation` and `metrics.json`.
+
+Every vectorbt run records `engine_underfilled_rebalances` and `engine_max_fill_gap` (a
+`threshold` run on the bars it traded). They compare the book the engine held after each
+rebalance with `traded_weights`.
 
 #### Same-bar research runs: the explicit override
 

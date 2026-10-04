@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "quantbox/data-validation@1",
+  "title": "quantbox data validation (data-validation@1)",
+  "description": "<run_dir>/data_validation.json, written by backtest.pipeline.v1 (ADR-0007): what each missing price meant, the execution calendar, decision vs execution timing, input staleness and leverage. The stable shape the data-validation step (TOM-1430) reads. VERSIONING as run@1: adding a field is MINOR (x-schema-minor), renaming, removing or changing a meaning is MAJOR (data-validation@2).",
+  "x-schema-minor": 0,
+  "type": "object",
+  "required": ["schema", "calendar", "execution_calendar", "timing", "staleness", "leverage"],
+  "properties": {
+    "schema": {"const": "quantbox/data-validation@1"},
+    "calendar": {
+      "type": "object",
+      "required": ["policy", "n_bars", "n_instruments", "rows_without_any_price", "totals", "legacy_coverage_drop", "instruments"],
+      "properties": {
+        "policy": {"type": "object"},
+        "n_bars": {"type": "integer", "minimum": 0},
+        "n_instruments": {"type": "integer", "minimum": 0},
+        "rows_without_any_price": {"type": "integer", "minimum": 0},
+        "totals": {
+          "type": "object",
+          "required": ["ffilled_bars", "instruments_without_prices"],
+          "properties": {
+            "ffilled_bars": {"type": "integer", "minimum": 0},
+            "instruments_without_prices": {"type": "array", "items": {"type": "string"}}
+          }
+        },
+        "legacy_coverage_drop": {
+          "type": "object",
+          "required": ["rule", "count", "columns"],
+          "properties": {
+            "rule": {"type": "string"},
+            "count": {"type": "integer", "minimum": 0},
+            "columns": {"type": "array", "items": {"type": "string"}}
+          }
+        },
+        "instruments": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["first_valid", "last_valid", "window_bars", "observed_bars", "ffilled_bars"],
+            "properties": {
+              "first_valid": {"type": ["string", "null"]},
+              "last_valid": {"type": ["string", "null"]},
+              "window_bars": {"type": "integer", "minimum": 0},
+              "observed_bars": {"type": "integer", "minimum": 0},
+              "ffilled_bars": {"type": "integer", "minimum": 0},
+              "deferred_trades": {"type": "integer", "minimum": 0},
+              "targeted_outside_window_bars": {"type": "integer", "minimum": 0},
+              "max_abs_weight_outside_window": {"type": "number", "minimum": 0},
+              "stale_decisions": {"type": "integer", "minimum": 0},
+              "max_staleness_bars": {"type": "integer", "minimum": 0}
+            }
+          }
+        }
+      }
+    },
+    "execution_calendar": {
+      "type": "object",
+      "required": ["calendar", "execution_bars", "total_bars", "non_execution_bars_by_year"],
+      "properties": {
+        "calendar": {"type": "string", "minLength": 1},
+        "execution_bars": {"type": "integer", "minimum": 0},
+        "total_bars": {"type": "integer", "minimum": 0},
+        "non_execution_bars_by_year": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}
+      }
+    },
+    "timing": {
+      "type": "object",
+      "required": ["lag_bars", "lag_counted_in", "decisions", "executed_decisions", "decisions_past_last_bar", "deferred_trades", "targeted_outside_window_bars"],
+      "properties": {
+        "decision_calendar": {"const": "execution"},
+        "lag_bars": {"type": "integer", "minimum": 0},
+        "lag_counted_in": {"const": "execution-calendar bars"},
+        "decisions": {"type": "integer", "minimum": 0},
+        "executed_decisions": {"type": "integer", "minimum": 0},
+        "decisions_past_last_bar": {"type": "integer", "minimum": 0},
+        "deferred_trades": {"type": "integer", "minimum": 0},
+        "targeted_outside_window_bars": {"type": "integer", "minimum": 0},
+        "instruments_targeted_outside_window": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "staleness": {
+      "type": "object",
+      "required": ["instrument_decisions", "stale_decisions", "max_bars", "p95_bars"],
+      "properties": {
+        "instrument_decisions": {"type": "integer", "minimum": 0},
+        "stale_decisions": {"type": "integer", "minimum": 0},
+        "max_bars": {"type": "integer", "minimum": 0},
+        "p95_bars": {"type": "number", "minimum": 0}
+      }
+    },
+    "leverage": {
+      "type": "object",
+      "required": ["mode", "rebalances", "rebalances_above_net_1", "max_net_exposure_decided", "max_net_exposure_held", "scaled_rebalances", "buys_zeroed_rebalances", "scale_mean", "scale_min", "scale_max"],
+      "properties": {
+        "mode": {"enum": ["normalize", "borrow"]},
+        "rebalances": {"type": "integer", "minimum": 0},
+        "rebalances_above_net_1": {"type": "integer", "minimum": 0},
+        "max_net_exposure_decided": {"type": "number"},
+        "max_net_exposure_unscaled": {"type": "number", "description": "The largest net exposure a rebalance would have HELD (ordered cells at target, deferred cells at their previous weight) before venue.leverage."},
+        "max_net_exposure_held": {"type": "number", "description": "The largest net exposure held after venue.leverage."},
+        "scaled_after_deferral": {"type": "integer", "minimum": 0, "description": "Scaled rebalances on which a deferred cell kept its weight."},
+        "buys_zeroed_rebalances": {"type": "integer", "minimum": 0, "description": "Rebalances where the deferred cells alone held net exposure at or above 1, so every ordered buy was set to 0."},
+        "buys_zeroed_dates": {"type": "array", "items": {"type": "string"}},
+        "scaled_rebalances": {"type": "integer", "minimum": 0},
+        "scale_mean": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+        "scale_min": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+        "scale_max": {"type": "number", "exclusiveMinimum": 0, "maximum": 1}
+      }
+    },
+    "variants": {
+      "type": "object",
+      "description": "Variants flow only: each variant's timing, staleness and leverage (their targets differ); the top level is the primary variant's.",
+      "additionalProperties": {"type": "object", "required": ["timing", "staleness", "leverage"]}
+    }
+  }
+}
