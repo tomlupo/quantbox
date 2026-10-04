@@ -124,7 +124,7 @@ def compute_backtest_metrics(
         return {}
 
     cum = (1 + returns).cumprod()
-    total_ret = cum.iloc[-1] / cum.iloc[0] - 1
+    total_ret = cum.iloc[-1] - 1  # every return compounds, the first included (TOM-262)
 
     n_days = (returns.index[-1] - returns.index[0]).days or 1
     years = n_days / 365.25

@@ -116,8 +116,19 @@ def test_drawdown_series_on_ndarray_paths():
     assert dd.tolist() == [[0.0, 0.0, -0.5, 0.0], [0.0, -0.5, -0.75, 0.0]]
 
 
+def test_total_return_compounds_every_return_the_first_included():
+    """TOM-262: ``cum[-1] / cum[0] - 1`` dropped the first bar (an entry fee, a first day's loss)."""
+    r = pd.Series([0.10, 0.10, -0.50], index=pd.date_range("2024-01-01", periods=3, freq="D"))
+    m = metrics.compute_backtest_metrics(r)
+    assert m["total_return"] == pytest.approx(1.1 * 1.1 * 0.5 - 1, abs=1e-15)
+
+
 def test_compute_performance_still_works_for_quantbox_live(returns):
-    """quantbox-live's scripts/compute_performance.py imports this name; numbers pinned pre-TOM-1448."""
+    """quantbox-live's scripts/compute_performance.py imports this name; numbers pinned pre-TOM-1448.
+
+    calmar moved -0.8428 -> -0.8368 with TOM-262: total_return (and so cagr) dropped the first
+    return of the series. Every other number is unchanged.
+    """
     from quantbox.performance import compute_performance
 
     idx = returns.index
@@ -130,7 +141,7 @@ def test_compute_performance_still_works_for_quantbox_live(returns):
         "max_drawdown": -0.4635,
         "max_drawdown_duration_days": 397,
         "annual_volatility": 0.2884,
-        "calmar": -0.8428,
+        "calmar": -0.8368,
         "win_rate": 0.4687,
         "profit_factor": 0.803,
         "var_95": -0.024824,

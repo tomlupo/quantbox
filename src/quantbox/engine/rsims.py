@@ -107,13 +107,13 @@ class RsimsAdapter(EngineAdapter):
         if len(slices) == 1:
             key = slices[0][0]
             value = values[key]
-            returns = value.ffill().pct_change(fill_method=None).dropna()
+            returns = _returns(value, params["initial_cash"])
             returns.name = None
             metrics = compute_backtest_metrics(returns, trading_days=trading_days)
             native: Any = results[key]
         else:
             value = pd.DataFrame(values)
-            returns = value.ffill().pct_change(fill_method=None).iloc[1:]
+            returns = _returns(value, params["initial_cash"])
             metrics = {}
             native = results
         return TradedBook(
@@ -217,6 +217,18 @@ def _equity(results: pd.DataFrame) -> pd.Series:
     value.name = "portfolio_value"
     value.index.name = "date"
     return value
+
+
+def _returns(value: pd.Series | pd.DataFrame, initial_cash: float) -> pd.Series | pd.DataFrame:
+    """A return on EVERY bar of *value*, the first against the starting cash (TOM-262).
+
+    The shape vectorbt's ``pf.returns()`` has. Dropping the first bar lost its
+    return: on a book that trades on its first bar (the sweep), the entry fee.
+    """
+    carried = value.ffill()
+    before = carried.shift(1)
+    before.iloc[0] = initial_cash
+    return carried / before - 1.0
 
 
 def _trades(results: Mapping[Any, pd.DataFrame]) -> pd.DataFrame:
