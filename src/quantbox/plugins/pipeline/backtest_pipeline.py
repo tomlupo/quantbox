@@ -1148,6 +1148,7 @@ class BacktestPipeline:
                     "timing": r["data_validation"]["timing"],
                     "staleness": r["data_validation"]["staleness"],
                     "weight_age": r["data_validation"]["weight_age"],
+                    "index_alignment": r["data_validation"]["index_alignment"],
                     "leverage": r["data_validation"]["leverage"],
                 }
                 for n, r in variant_results.items()
@@ -1402,6 +1403,7 @@ class BacktestPipeline:
         common_cols = [c for c in weights.columns if c in prices_wide.columns]
         if not common_cols:
             raise ValueError("No overlapping tickers between prices and weights")
+        alignment = self._index_alignment(prices_wide.index, weights, common_idx, where)
 
         cal = instrument_calendar(prices_wide.loc[common_idx, common_cols])
         reference = None
@@ -1436,7 +1438,9 @@ class BacktestPipeline:
             "decision_stale_inputs": float(book.report["staleness"]["stale_decisions"]),
             "decision_max_staleness_bars": float(book.report["staleness"]["max_bars"]),
             "decision_stale_weights": float(book.report["weight_age"]["stale_decisions"]),
-            "decision_max_weight_age_bars": float(book.report["weight_age"]["max_bars"]),
+            "decision_stale_weights_held_bars_max": float(book.report["weight_age"]["stale_held_bars_max"]),
+            "index_price_bars_dropped": float(alignment["price_bars_dropped"]),
+            "index_weight_rows_dropped": float(alignment["weight_rows_dropped"]),
             "leverage_rebalances_above_net_1": float(lev["rebalances_above_net_1"]),
             "leverage_scaled_rebalances": float(lev["scaled_rebalances"]),
             "leverage_scale_mean": lev["scale_mean"],
@@ -1488,9 +1492,52 @@ class BacktestPipeline:
                 "timing": timing_report,
                 "staleness": book.report["staleness"],
                 "weight_age": book.report["weight_age"],
+                "index_alignment": alignment,
                 "leverage": lev,
             },
         }
+
+    @staticmethod
+    def _index_alignment(
+        price_index: pd.Index, weights: pd.DataFrame, common_idx: pd.Index, where: str
+    ) -> dict[str, Any]:
+        """What the price/weight index INTERSECTION drops (``data_validation.json`` ``index_alignment``).
+
+        The backtest runs on the bars where both prices and a strategy weight
+        row exist. Price bars before the strategy's first row are its warm-up
+        (counted, not warned); any OTHER dropped price bar — a strategy that
+        writes rows only on its stamp dates shrinks the whole panel to them —
+        and any weight row on a date with no price bar is warned loudly. The
+        intersection itself is unchanged (a separate card).
+        """
+        first_row = weights.index.min() if len(weights.index) else None
+        dropped_prices = price_index.difference(common_idx)
+        warmup = dropped_prices[dropped_prices < first_row] if first_row is not None else dropped_prices[:0]
+        shrink = dropped_prices.difference(warmup)
+        dropped_rows = weights.index.difference(common_idx)
+        record = {
+            "price_bars": int(len(price_index)),
+            "weight_rows": int(len(weights.index)),
+            "bars_used": int(len(common_idx)),
+            "warmup_price_bars_dropped": int(len(warmup)),
+            "price_bars_dropped": int(len(shrink)),
+            "first_price_bars_dropped": [pd.Timestamp(t).isoformat() for t in shrink[:5]],
+            "weight_rows_dropped": int(len(dropped_rows)),
+            "first_weight_rows_dropped": [pd.Timestamp(t).isoformat() for t in dropped_rows[:5]],
+        }
+        if len(shrink) or len(dropped_rows):
+            logger.warning(
+                "INDEX: %sthe backtest runs on the %d bar(s) where prices AND a strategy weight row exist — "
+                "%d price bar(s) after the strategy's first row were DROPPED (first %s) and %d weight row(s) on "
+                "dates with no price bar were DROPPED (first %s). Write a weight row on every price bar.",
+                where,
+                len(common_idx),
+                len(shrink),
+                record["first_price_bars_dropped"],
+                len(dropped_rows),
+                record["first_weight_rows_dropped"],
+            )
+        return record
 
     @staticmethod
     def _validation_note(validation: dict[str, Any]) -> dict[str, Any]:
@@ -1511,6 +1558,10 @@ class BacktestPipeline:
             },
             "staleness": validation["staleness"],
             "weight_age": {k: v for k, v in validation["weight_age"].items() if k != "rule"},
+            "index_alignment": {
+                k: validation["index_alignment"][k]
+                for k in ("bars_used", "warmup_price_bars_dropped", "price_bars_dropped", "weight_rows_dropped")
+            },
             "leverage": validation["leverage"],
         }
 

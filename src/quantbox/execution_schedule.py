@@ -64,79 +64,64 @@ def _percentile(values: np.ndarray, q: float) -> float:
 
 
 def _decision_weight_age(
-    decided: pd.DataFrame, columns: pd.Index, index: pd.Index, decisions: pd.Index, rebalancing_freq: Any, engine: str
+    weight_rows: pd.DataFrame,
+    columns: pd.Index,
+    index: pd.Index,
+    exec_idx: pd.Index,
+    dec_dates: pd.Index,
+    exe_rows: np.ndarray,
 ) -> dict[str, Any]:
-    """Age of the strategy weights each decision trades (``data_validation.json`` ``weight_age``).
+    """Decisions that MISSED weights the strategy stamped off the execution calendar (``weight_age``).
 
-    The weights a decision bar ``d`` trades are the strategy's newest row on or
-    before ``d``, forward-filled onto it (by the strategy or by the engine
-    seam). They are measured by when they last CHANGED, on the strategy's own
-    rows — a strategy that forward-fills its own output repeats old values, so
-    "a row exists" says nothing. A decision is STALE when the weights it trades
-    last changed before the start of its rebalance period AND the strategy
-    changes them later in the same period: that period's weights were stamped
-    after its decision bar (a calendar month-end that falls on a weekend, say),
-    and the previous period's were traded. A strategy that holds its weights
-    constant, or writes fresh ones on every bar, is never stale.
+    The rule is about where weights are STAMPED. A decision bar ``d`` trades
+    the strategy's row on (or forward-filled onto) ``d``. When the strategy
+    writes a CHANGED row on a non-execution bar strictly between ``d`` and the
+    next execution bar — a calendar month-end that falls on a weekend, from a
+    wider panel — no decision ever sees that row: the engine seam drops it, and
+    the book decided on ``d`` is held until the next decision executes. That
+    decision is STALE. Schedule-agnostic (any ``rebalancing_freq``, rsims),
+    and blind to how often the book moves inside a period: only the gap after
+    each decision bar is read. Executed decisions only.
 
-    The period: for a single period-end offset (``ME``, ``W-FRI``, ...) the
-    calendar period that ends on or after ``d``; otherwise (``int`` / explicit
-    dates / rsims, which decides on every execution bar) the span between the
-    previous and the next decision. Age, of the stale decisions: bars of
-    *index* in ``(change, d]`` and periods = decisions in ``(change, d]``.
-    Recorded, never refused (TOM-1430 gates).
+    *weight_rows* is the strategy's book on its OWN rows (forward-filled on
+    them); "changed" = differs from the row the decision traded by more than
+    1e-12 in any instrument. ``held_bars`` of a stale decision = bars from its
+    execution to the next decision's execution (the span the missed weights
+    were not held). Recorded, never refused (TOM-1430 gates).
     """
-    from quantbox.frequency import _period_end, parse_rebalance_offset
-
-    dec = pd.DatetimeIndex(decisions)
-    raw = decided.reindex(columns=columns).sort_index().ffill()
-    valid = raw.notna().any(axis=1).to_numpy()
-    vals = raw.fillna(0.0).to_numpy(dtype=float)
-    moved = np.zeros(len(raw), dtype=bool)
-    if len(raw):
-        moved[0] = valid[0]
-        moved[1:] = valid[1:] & ((np.abs(np.diff(vals, axis=0)) > 1e-12).any(axis=1) | ~valid[:-1])
-    changes = pd.DatetimeIndex(raw.index[moved])
-
-    n = len(dec)
-    prev = np.concatenate([[pd.Timestamp.min.value], dec.asi8[:-1]]) if n else np.zeros(0, dtype=np.int64)
-    nxt = np.concatenate([dec.asi8[1:], [pd.Timestamp.max.value]]) if n else np.zeros(0, dtype=np.int64)
-    start, end, end_inclusive = prev, nxt, False
-    offset = None
-    if engine != "rsims" and isinstance(rebalancing_freq, (str, pd.DateOffset)):
-        offset = parse_rebalance_offset(rebalancing_freq)
-    if offset is not None and _period_end(offset) and getattr(offset, "n", 1) == 1 and n:
-        naive = dec.tz_localize(None) if dec.tz is not None else dec
-        ends = pd.DatetimeIndex([offset.rollforward(d.normalize()) for d in naive])
-        starts = ends - offset
-        if dec.tz is not None:
-            ends, starts = ends.tz_localize(dec.tz), starts.tz_localize(dec.tz)
-        start, end, end_inclusive = starts.asi8, (ends + pd.Timedelta(days=1)).asi8 - 1, True
-
-    ch = changes.asi8
-    pos = np.searchsorted(ch, dec.asi8, side="right") - 1
-    has = pos >= 0
-    last = np.where(has, ch[np.clip(pos, 0, None)] if len(ch) else 0, 0)
-    old = has & (last <= start)
-    later = np.searchsorted(ch, end, side="right" if end_inclusive else "left") - np.searchsorted(
-        ch, dec.asi8, side="right"
-    )
-    stale = old & (later > 0)
-
-    s_dec = dec[stale]
-    s_last = pd.DatetimeIndex(last[stale]).tz_localize(dec.tz) if dec.tz is not None else pd.DatetimeIndex(last[stale])
-    bars = index.searchsorted(s_dec, side="right") - index.searchsorted(s_last, side="right")
-    periods = dec.searchsorted(s_dec, side="right") - dec.searchsorted(s_last, side="right")
+    raw = weight_rows.reindex(columns=columns).sort_index().ffill()
+    stamps = pd.DatetimeIndex(raw.index)
+    vals = raw.to_numpy(dtype=float)
+    exec_dt = pd.DatetimeIndex(exec_idx)
+    dec = pd.DatetimeIndex(dec_dates)
+    stale_rows: list[int] = []
+    missed: list[str] = []
+    for k, d in enumerate(dec):
+        nxt = exec_dt.searchsorted(d, side="right")
+        if nxt >= len(exec_dt):
+            continue
+        lo = stamps.searchsorted(d, side="right")
+        hi = stamps.searchsorted(exec_dt[nxt], side="left")
+        if hi <= lo:
+            continue
+        traded = vals[lo - 1] if lo > 0 else np.zeros(vals.shape[1])
+        window = vals[lo:hi]
+        diff = np.abs(np.nan_to_num(window, nan=0.0) - np.nan_to_num(traded, nan=0.0)) > 1e-12
+        hit = np.flatnonzero(diff.any(axis=1))
+        if len(hit):
+            stale_rows.append(k)
+            missed.append(pd.Timestamp(stamps[lo + hit[0]]).isoformat())
+    ends = np.append(np.asarray(exe_rows, dtype=int)[1:], len(index))
+    held = np.asarray([ends[k] - exe_rows[k] for k in stale_rows], dtype=int)
     return {
-        "rule": "stale when the traded weights last changed before the start of the decision's rebalance period "
-        "and the strategy changes them later in that period",
-        "decisions": int(n),
-        "decisions_with_weights": int(has.sum()),
-        "stale_decisions": int(stale.sum()),
-        "max_bars": int(bars.max()) if len(bars) else 0,
-        "p95_bars": _percentile(np.asarray(bars, dtype=float), 95),
-        "max_periods": int(periods.max()) if len(periods) else 0,
-        "first_stale": [pd.Timestamp(d).isoformat() for d in s_dec[:5]],
+        "rule": "stale when the strategy stamps changed weights on a non-execution bar strictly between the "
+        "decision bar and the next execution bar",
+        "decisions": int(len(dec)),
+        "stale_decisions": len(stale_rows),
+        "first_stale": [pd.Timestamp(dec[k]).isoformat() for k in stale_rows[:5]],
+        "first_missed_stamps": missed[:5],
+        "stale_held_bars_max": int(held.max()) if len(held) else 0,
+        "stale_held_bars_total": int(held.sum()),
     }
 
 
@@ -291,7 +276,7 @@ def schedule_book(
     ages = dec_age[dec_inside]
     stale = (dec_age > 0) & dec_inside
 
-    weight_age = _decision_weight_age(raw_decided, columns, index, decisions, rebalancing_freq, engine)
+    weight_age = _decision_weight_age(raw_decided, columns, index, exec_idx, dec_dates, exe_rows)
 
     schedule = pd.DataFrame(
         {
@@ -337,15 +322,15 @@ def schedule_book(
     }
     if weight_age["stale_decisions"]:
         logger.warning(
-            "TIMING: %d of %d decision(s) traded a STALE strategy weight row — the weights on the decision bar "
-            "date from before its rebalance period and the strategy changed them only AFTER the decision bar "
-            "(max %d bar(s), %d period(s) old): the previous period's weights were traded. Stamp weights on "
-            "the decision bars (the execution calendar). First: %s",
+            "TIMING: %d of %d decision(s) MISSED weights the strategy stamped on a non-execution bar before the "
+            "next execution bar (a weekend calendar month-end, say): the previous weights were held for up to %d "
+            "bar(s) instead. Stamp weights on the decision bars (the execution calendar). Decisions: %s; missed "
+            "stamps: %s",
             weight_age["stale_decisions"],
             weight_age["decisions"],
-            weight_age["max_bars"],
-            weight_age["max_periods"],
+            weight_age["stale_held_bars_max"],
             weight_age["first_stale"],
+            weight_age["first_missed_stamps"],
         )
     if n_out:
         logger.warning(

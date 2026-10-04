@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "quantbox/data-validation@1",
   "title": "quantbox data validation (data-validation@1)",
-  "description": "<run_dir>/data_validation.json, written by backtest.pipeline.v1 (ADR-0007): what each missing price meant, the execution calendar, decision vs execution timing, input staleness, decision weight age and leverage. The stable shape the data-validation step (TOM-1430) reads. VERSIONING as run@1: adding a field is MINOR (x-schema-minor), renaming, removing or changing a meaning is MAJOR (data-validation@2).",
-  "x-schema-minor": 1,
+  "description": "<run_dir>/data_validation.json, written by backtest.pipeline.v1 (ADR-0007): what each missing price meant, the execution calendar, decision vs execution timing, input staleness, decision weight age, index alignment and leverage. Minors: 1 adds weight_age; 2 makes leverage.max_net_exposure_unscaled, scaled_after_deferral and buys_zeroed_dates (always written since minor 0) required; 3 adds index_alignment. The stable shape the data-validation step (TOM-1430) reads. VERSIONING as run@1: adding a field is MINOR (x-schema-minor), renaming, removing or changing a meaning is MAJOR (data-validation@2).",
+  "x-schema-minor": 3,
   "type": "object",
   "required": ["schema", "calendar", "execution_calendar", "timing", "staleness", "leverage"],
   "properties": {
@@ -91,17 +91,31 @@
     },
     "weight_age": {
       "type": "object",
-      "description": "Minor 1 (ADR-0007 1c): the age of the strategy weights each decision traded, by when they last CHANGED on the strategy's own rows. STALE when they last changed before the start of the decision's rebalance period and the strategy changes them later in that period (its weights were stamped after the decision bar): the previous period's weights were traded. max_bars / p95_bars / max_periods describe the stale decisions: bars (change, decision] and decisions in (change, decision]. Recorded, never refused.",
-      "required": ["rule", "decisions", "decisions_with_weights", "stale_decisions", "max_bars", "p95_bars", "max_periods", "first_stale"],
+      "description": "Minor 1 (ADR-0007 1c): executed decisions that MISSED weights the strategy stamped off the execution calendar — a CHANGED row (vs the row the decision traded) on a non-execution bar strictly between the decision bar and the next execution bar, which no decision ever sees. Read on the strategy's own rows. stale_held_bars_*: bars from a stale decision's execution to the next decision's execution. Recorded, never refused.",
+      "required": ["rule", "decisions", "stale_decisions", "first_stale", "first_missed_stamps", "stale_held_bars_max", "stale_held_bars_total"],
       "properties": {
         "rule": {"type": "string"},
-        "decisions": {"type": "integer", "minimum": 0},
-        "decisions_with_weights": {"type": "integer", "minimum": 0},
+        "decisions": {"type": "integer", "minimum": 0, "description": "Executed decisions."},
         "stale_decisions": {"type": "integer", "minimum": 0},
-        "max_bars": {"type": "integer", "minimum": 0},
-        "p95_bars": {"type": "number", "minimum": 0},
-        "max_periods": {"type": "integer", "minimum": 0},
-        "first_stale": {"type": "array", "items": {"type": "string"}, "maxItems": 5}
+        "first_stale": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
+        "first_missed_stamps": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
+        "stale_held_bars_max": {"type": "integer", "minimum": 0},
+        "stale_held_bars_total": {"type": "integer", "minimum": 0}
+      }
+    },
+    "index_alignment": {
+      "type": "object",
+      "description": "Minor 3 (ADR-0007 1c): what the price/weight index intersection dropped. warmup_* = price bars before the strategy's first row (not warned); price_bars_dropped = any other price bar with no weight row; weight_rows_dropped = weight rows on dates with no price bar. Both warned loudly.",
+      "required": ["price_bars", "weight_rows", "bars_used", "warmup_price_bars_dropped", "price_bars_dropped", "first_price_bars_dropped", "weight_rows_dropped", "first_weight_rows_dropped"],
+      "properties": {
+        "price_bars": {"type": "integer", "minimum": 0},
+        "weight_rows": {"type": "integer", "minimum": 0},
+        "bars_used": {"type": "integer", "minimum": 0},
+        "warmup_price_bars_dropped": {"type": "integer", "minimum": 0},
+        "price_bars_dropped": {"type": "integer", "minimum": 0},
+        "first_price_bars_dropped": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
+        "weight_rows_dropped": {"type": "integer", "minimum": 0},
+        "first_weight_rows_dropped": {"type": "array", "items": {"type": "string"}, "maxItems": 5}
       }
     },
     "leverage": {
