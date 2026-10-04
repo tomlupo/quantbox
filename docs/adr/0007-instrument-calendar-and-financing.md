@@ -138,66 +138,75 @@ calendar is read from the prices themselves (or from one series of them).
   Recorded, never blocking; TOM-1430 gates on it.
 - **Decision weight age.** Price staleness says nothing about the WEIGHTS a
   decision trades: the strategy's newest row on or before the decision bar,
-  forward-filled onto it. A strategy that stamps its weights on dates that are
-  not execution bars — calendar month-ends that fall on a weekend, taken from
-  a wider panel — writes its period's weights AFTER the decision bar; the
-  engine seam drops that row and the previous period's weights are held
-  until the next decision, silently (the lab's TSMOM re-run: 71 of 409
-  executed decisions). The rule is about where weights are STAMPED, and it is
-  deliberately the narrowest one that catches that bug. A decision is STALE
-  when, strictly between the decision bar and the next execution bar, the
-  strategy writes a STEP on a non-execution bar — weights that differ (by
-  more than 1e-12 in any instrument) from the ones the decision traded and
-  then stay unchanged up to that next execution bar, i.e. the strategy
-  forward-fills its own stamp — AND the next decision comes after that
-  execution bar, so the step is held for a period rather than traded at once
-  (on an `int` 1 schedule or rsims, the next bar's decision trades it: never
-  stale) — or the price/weight intersection (below) dropped price bars from
-  that gap, so the shrunk calendar's "next execution bar" is a later stamp,
-  not the next bar. It is read on the strategy's own rows, before the engine seam drops
-  the ones that are not bars. It needs no notion of a period, so it holds for
-  any schedule (a period-end offset, an `int`, explicit dates, rsims), and it
-  reads only the gap after each decision bar, so a book that moves on
-  execution bars inside the period (a weekday vol scaler on a month-end
-  signal) does not mask it. Executed decisions only: one past the last bar
-  never trades. `data_validation.json` `weight_age` (minor 1): executed
-  decisions, the stale count, the first five stale decision bars and the
-  stamps each missed, and `stale_held_bars_*` — bars from a stale decision's
-  execution to the next decision's execution (max, total); metrics
-  `decision_stale_weights`, `decision_stale_weights_held_bars_max` (0 when
-  none is stale); a loud `TIMING:` warning. Recorded, never refused —
-  TOM-1430 gates on it, so a false alarm costs more than a miss.
-  History: round 1 asked when the weights CHANGED (unchanged since the period
-  start AND changed later in it) — blind on a `BME` schedule and under any
-  in-period move, false on `int` / `2W` schedules; round 2 flagged ANY changed
-  non-execution row — 104 of 104 weekly decisions on a constant book times a
-  7-day vol scaler, and on a daily signal over a crypto+equity panel.
-  **Known false negative:** a stamped step with daily variation on top over
-  the non-execution bars (a calendar month-end signal times a vol scaler that
-  also moves on weekends) reads as drift and is NOT counted — weights that
-  keep moving over a weekend cannot be told apart from a legitimate daily
-  signal without knowing the strategy, and a noisy gate is worse than one
-  honest blind spot. The reverse edge: a single non-execution bar in the gap
-  (a mid-week holiday) is trivially "unchanged to the next bar", so a daily
-  signal that moves on it counts when the schedule holds it for a period.
-  **Known limit:** on intraday bars the rule compares timestamps exactly, but
-  the calendar periods that pick decision bars are day-normalised; a stamp
-  later on the decision bar's own day is not after it. Daily bars only, for
-  now.
+  forward-filled onto it. A strategy that stamps its weights on calendar
+  period-ends taken from a wider panel — a month-end that falls on a weekend
+  — writes that period's weights AFTER its decision bar; the engine seam
+  drops the row and the previous period's weights are held until the next
+  decision, silently (the lab's TSMOM re-run: 71 of 409 executed decisions).
+  The guard is deliberately the narrowest one that catches that bug class.
+  - **Measured: calendar schedules only** — a single period-end offset with
+    n = 1 (`ME`, `BME`, `QE`, `YE`, `W-FRI`, ...; a business offset's period
+    is its calendar one, so a Sunday 31 March is in March). A decision is
+    STALE when the strategy writes a STEP on a non-execution bar after the
+    decision bar and before the next execution bar — weights that differ (by
+    more than 1e-12 in any instrument) from the ones the decision traded and
+    stay unchanged up to that next execution bar, i.e. the strategy
+    forward-fills its own stamp — AND the step's calendar period gets no
+    decision after it, so that period's weights are never traded. Normally
+    the step's period is the decision's own; it is a later, EMPTY one when
+    the price/weight intersection (below) left that period without a bar. A
+    step that opens the NEXT period (a Sunday weekly signal after a Friday
+    month-end decision) is traded by that period's decision and never
+    counted. Read on the strategy's own rows, before the engine seam drops
+    the ones that are not bars; executed decisions only.
+  - **Not measured: any other schedule** — an `int`, `nW`, explicit dates,
+    rsims (it decides on every execution bar), buy-and-hold. With no period
+    there is no saying whose step a weekend row is; the guard does not guess.
+    `weight_age` says `measured: false` with the `reason` and carries no
+    counts, and no `decision_stale_weights*` metric is written — never a 0
+    that reads as clean.
+  - **Blind spot 1, step plus drift:** a stamped step with daily variation on
+    top over the non-execution bars (a month-end signal times a vol scaler
+    that also moves on weekends) reads as drift and is not counted. Weights
+    that keep moving over a weekend cannot be told from a legitimate daily
+    signal without knowing the strategy, and a noisy gate is worse than one
+    honest blind spot.
+  - **Blind spot 2, non-calendar schedules** (above): the bug can occur
+    there, and nothing measures it.
+  - **Counted though arguably fresh:** a weekly signal stamped ON a Sunday
+    period-end (Sunday 30 April) is in the period and never traded, so it
+    counts, even though the decision traded weights from inside the period
+    (5 days old), not the previous period's. Telling the two apart needs the
+    age of the traded weights, and that read is what an in-period move (a
+    weekday vol scaler) masks.
+  - **Known limit:** on intraday bars the rule compares timestamps exactly,
+    but the calendar periods that pick decision bars are day-normalised; a
+    stamp later on the decision bar's own day is not after it. Daily bars
+    only, for now.
+
+  `data_validation.json` `weight_age` (minor 1): `measured` (with `reason`
+  when false), executed decisions, and when measured the stale count, the
+  first five stale decision bars and the stamps each missed, and
+  `stale_held_bars_*` — bars from a stale decision's execution to the next
+  decision's execution (max, total); metrics `decision_stale_weights`,
+  `decision_stale_weights_held_bars_max` (only when measured); a loud
+  `TIMING:` warning. Recorded, never refused — TOM-1430 gates on it, so a
+  false alarm costs more than a miss. History: round 1 asked when the weights
+  CHANGED — blind on `BME` and under any in-period move, false on `int` /
+  `2W`; round 2 flagged any changed non-execution row — 104 of 104 weekly
+  decisions on a constant book times a 7-day vol scaler; round 3 counted the
+  next period's step — a Sunday weekly signal under `ME`, 10 of 23.
 - **Index alignment.** The engine runs on the bars where prices AND a strategy
   weight row exist (the intersection is unchanged here — a separate card). A
   strategy that writes rows only on its stamp dates shrinks the whole panel
   to them. `data_validation.json` `index_alignment` (minor 3): price bars,
   weight rows, bars used, price bars dropped before the strategy's first row
   (warm-up, not warned), any OTHER dropped price bar (count, first five
-  dates), weight rows on dates with no price bar, and of those the ones whose
-  weights differ from the last kept row (count, first five dates); metrics
-  `index_price_bars_dropped`, `index_weight_rows_dropped`,
-  `index_weight_rows_dropped_changed`; a loud `INDEX:` warning for dropped
-  price bars and, separately, for CHANGED dropped weight rows. A dropped row
-  that repeats the last kept row is counted but not warned: it loses nothing
-  (every 7-day-panel strategy has them), while a changed one is weights that
-  are never traded.
+  dates) and weight rows on dates with no price bar (count only); metrics
+  `index_price_bars_dropped`, `index_weight_rows_dropped`. Only dropped price
+  bars raise the loud `INDEX:` warning. Dropped weight rows are data: every
+  7-day-panel strategy has them, and a step stamped there that the schedule
+  misses is the weight age's to report (`TIMING:`), not this check's.
 - **Recorded.** `rebalance_schedule.parquet` has one row per executed decision:
   `decision_date`, `execution_date`, `deferred_instruments` (`;`-joined).
   `traded_weights.parquet` is now the book HELD after each bar's orders: the

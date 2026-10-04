@@ -91,10 +91,12 @@
     },
     "weight_age": {
       "type": "object",
-      "description": "Minor 1 (ADR-0007 1c): executed decisions that MISSED weights the strategy stamped off the execution calendar — a CHANGED row (vs the row the decision traded) on a non-execution bar strictly between the decision bar and the next execution bar, which no decision ever sees. Read on the strategy's own rows. stale_held_bars_*: bars from a stale decision's execution to the next decision's execution. Recorded, never refused.",
-      "required": ["rule", "decisions", "stale_decisions", "first_stale", "first_missed_stamps", "stale_held_bars_max", "stale_held_bars_total"],
+      "description": "Minor 1 (ADR-0007 1c): on a CALENDAR schedule (one period-end offset), executed decisions that MISSED a weight step the strategy stamped on a non-execution bar after the decision bar, in the decision's own calendar period, and held unchanged to the next execution bar. measured=false (with reason, no counts) on an int / explicit-date schedule, rsims or buy-and-hold: there is no period. stale_held_bars_*: bars from a stale decision's execution to the next decision's execution. Recorded, never refused.",
+      "required": ["rule", "measured", "decisions"],
       "properties": {
         "rule": {"type": "string"},
+        "measured": {"type": "boolean"},
+        "reason": {"type": "string"},
         "decisions": {"type": "integer", "minimum": 0, "description": "Executed decisions."},
         "stale_decisions": {"type": "integer", "minimum": 0},
         "first_stale": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
@@ -105,8 +107,8 @@
     },
     "index_alignment": {
       "type": "object",
-      "description": "Minor 3 (ADR-0007 1c): what the price/weight index intersection dropped. warmup_* = price bars before the strategy's first row (not warned); price_bars_dropped = any other price bar with no weight row; weight_rows_dropped = weight rows on dates with no price bar, of which weight_rows_dropped_changed differ from the last kept row (weights never traded). Dropped price bars and changed dropped rows are warned; a forward-filled repeat is not.",
-      "required": ["price_bars", "weight_rows", "bars_used", "warmup_price_bars_dropped", "price_bars_dropped", "first_price_bars_dropped", "weight_rows_dropped", "weight_rows_dropped_changed", "first_weight_rows_dropped_changed"],
+      "description": "Minor 3 (ADR-0007 1c): what the price/weight index intersection dropped. warmup_* = price bars before the strategy's first row (not warned); price_bars_dropped = any other price bar with no weight row; weight_rows_dropped = weight rows on dates with no price bar (data only: a step stamped there is weight_age's to judge). Only dropped price bars are warned.",
+      "required": ["price_bars", "weight_rows", "bars_used", "warmup_price_bars_dropped", "price_bars_dropped", "first_price_bars_dropped", "weight_rows_dropped"],
       "properties": {
         "price_bars": {"type": "integer", "minimum": 0},
         "weight_rows": {"type": "integer", "minimum": 0},
@@ -114,9 +116,7 @@
         "warmup_price_bars_dropped": {"type": "integer", "minimum": 0},
         "price_bars_dropped": {"type": "integer", "minimum": 0},
         "first_price_bars_dropped": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
-        "weight_rows_dropped": {"type": "integer", "minimum": 0},
-        "weight_rows_dropped_changed": {"type": "integer", "minimum": 0},
-        "first_weight_rows_dropped_changed": {"type": "array", "items": {"type": "string"}, "maxItems": 5}
+        "weight_rows_dropped": {"type": "integer", "minimum": 0}
       }
     },
     "leverage": {

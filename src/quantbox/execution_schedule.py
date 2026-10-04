@@ -43,7 +43,7 @@ import pandas as pd
 
 from quantbox.execution import materialise_nan_policy
 from quantbox.financing import LEVERAGE_MODES, NET_EXPOSURE_TOLERANCE
-from quantbox.frequency import rebalancing_dates
+from quantbox.frequency import _period_end, parse_rebalance_offset, rebalancing_dates
 from quantbox.instrument_calendar import InstrumentCalendar
 
 logger = logging.getLogger(__name__)
@@ -63,9 +63,29 @@ def _percentile(values: np.ndarray, q: float) -> float:
     return float(np.percentile(values, q)) if len(values) else 0.0
 
 
-def _count_between(stamps: pd.DatetimeIndex, lo: pd.Timestamp, hi: pd.Timestamp) -> int:
-    """Stamps strictly inside (lo, hi)."""
-    return int(stamps.searchsorted(hi, side="left") - stamps.searchsorted(lo, side="right"))
+_BUSINESS_TO_CALENDAR = {
+    pd.offsets.BusinessMonthEnd: lambda o: pd.offsets.MonthEnd(),
+    pd.offsets.BQuarterEnd: lambda o: pd.offsets.QuarterEnd(startingMonth=o.startingMonth),
+    pd.offsets.BYearEnd: lambda o: pd.offsets.YearEnd(month=o.month),
+}
+
+
+def _calendar_period(rebalancing_freq: Any, engine: str) -> tuple[pd.DateOffset | None, str]:
+    """The calendar period a schedule rebalances once in, or ``(None, why not)``.
+
+    Only a single period-end offset (``ME``, ``BME``, ``QE``, ``YE``, ``W-SUN``,
+    ...) defines one; a business offset's period is its calendar one (``BME``
+    -> the month), so a Sunday month-end is still in its month.
+    """
+    if engine == "rsims":
+        return None, "rsims decides on every execution bar: no rebalance period"
+    if not isinstance(rebalancing_freq, (str, pd.DateOffset)):
+        return None, f"rebalancing_freq {rebalancing_freq!r} is not a calendar offset: no rebalance period"
+    offset = parse_rebalance_offset(rebalancing_freq)
+    if not _period_end(offset) or offset.n != 1:
+        return None, f"rebalancing_freq {rebalancing_freq!r} is not a single period-end offset: no rebalance period"
+    period = _BUSINESS_TO_CALENDAR.get(type(offset), lambda o: o)(offset)
+    return period, ""
 
 
 def _decision_weight_age(
@@ -76,53 +96,57 @@ def _decision_weight_age(
     decisions: pd.Index,
     dec_dates: pd.Index,
     exe_rows: np.ndarray,
-    price_index: pd.Index | None = None,
+    rebalancing_freq: Any,
+    engine: str,
 ) -> dict[str, Any]:
-    """Decisions that MISSED a weight step the strategy stamped off the execution calendar (``weight_age``).
+    """Decisions that MISSED a weight step the strategy stamped late in their period (``weight_age``).
 
     The rule is about where weights are STAMPED. A decision bar ``d`` trades
-    the strategy's row on (or forward-filled onto) ``d``. A decision is STALE
-    when, strictly between ``d`` and the next execution bar, the strategy
-    writes a STEP on a non-execution bar — weights that differ from the ones
-    ``d`` traded and then stay unchanged up to that next execution bar (the
-    strategy forward-fills its own stamp: a calendar month-end that falls on a
-    weekend, from a wider panel) — AND the next decision comes after that
-    execution bar, so the missed step is not simply traded there (it always is
-    on a daily schedule or rsims) — or the price/weight intersection dropped
-    price bars from that gap (*price_index*), so the "next execution bar" is
-    a later stamp, not the next bar. Schedule-agnostic. Executed decisions
-    only.
+    the strategy's row on (or forward-filled onto) ``d``. On a CALENDAR
+    schedule (one period-end offset), ``d`` is STALE when the strategy writes
+    a STEP on a non-execution bar after ``d`` and before the next execution
+    bar — weights that differ from the ones ``d`` traded and stay unchanged up
+    to that next execution bar (the strategy forward-fills its own stamp: a
+    calendar month-end that falls on a weekend, from a wider panel) — whose
+    calendar period gets NO decision of its own at or after it: the next
+    decision lies in a later period, so that period's weights are never
+    traded. Normally the step's period is ``d``'s own; it is a later, empty
+    one when the price/weight intersection left that period without a bar. A
+    step that opens the NEXT period (a Sunday weekly signal after a Friday
+    month-end) is traded by that period's decision: never counted.
 
-    Narrow on purpose (review round 2): weights that keep moving over the
-    non-execution bars (a 7-day vol scaler, a daily signal on a crypto+equity
-    panel) are daily variation, not a mis-stamp, and are never counted — which
-    also hides a stamped step with daily drift on top (ADR-0007 1c, known
-    false negative). *weight_rows* is the strategy's book on its OWN rows
-    (forward-filled on them); equal = within 1e-12 in every instrument.
+    Not measured (``measured: false`` with the reason, never a 0 that reads
+    as clean): an ``int`` or explicit-date schedule, rsims, buy-and-hold —
+    there is no period to say whose step it is. Narrow on purpose: weights
+    that keep moving over the non-execution bars (a 7-day vol scaler) are
+    daily variation, never counted — which also hides a stamped step with
+    drift on top (ADR-0007 1c). Executed decisions only. *weight_rows* is the
+    strategy's book on its OWN rows; equal = within 1e-12 everywhere.
     ``held_bars`` of a stale decision = bars from its execution to the next
     decision's execution. Recorded, never refused (TOM-1430 gates).
     """
+    dec = pd.DatetimeIndex(dec_dates)
+    rule = (
+        "calendar schedules only: stale when the strategy stamps a weight step on a non-execution bar after the "
+        "decision bar, holds it unchanged to the next execution bar, and the step's calendar period gets no "
+        "decision after it"
+    )
+    period, why = _calendar_period(rebalancing_freq, engine)
+    if period is None:
+        return {"rule": rule, "measured": False, "reason": why, "decisions": int(len(dec))}
     raw = weight_rows.reindex(columns=columns).sort_index().ffill()
     stamps = pd.DatetimeIndex(raw.index)
     vals = np.nan_to_num(raw.to_numpy(dtype=float), nan=0.0)
     exec_dt = pd.DatetimeIndex(exec_idx)
     all_dec = pd.DatetimeIndex(decisions)
-    bars = pd.DatetimeIndex(index)
-    prices = bars if price_index is None else pd.DatetimeIndex(price_index)
-    dec = pd.DatetimeIndex(dec_dates)
     stale_rows: list[int] = []
     missed: list[str] = []
     for k, d in enumerate(dec):
         nxt = exec_dt.searchsorted(d, side="right")
         if nxt >= len(exec_dt):
             continue
-        nxt_bar = exec_dt[nxt]
-        later = all_dec.searchsorted(d, side="right")
-        shrunk = _count_between(prices, d, nxt_bar) > _count_between(bars, d, nxt_bar)
-        if later < len(all_dec) and all_dec[later] <= nxt_bar and not shrunk:
-            continue  # the next decision trades whatever was stamped in the gap
         lo = stamps.searchsorted(d, side="right")
-        hi = stamps.searchsorted(nxt_bar, side="left")
+        hi = stamps.searchsorted(exec_dt[nxt], side="left")
         if hi <= lo:
             continue
         traded = vals[lo - 1] if lo > 0 else np.zeros(vals.shape[1])
@@ -130,16 +154,20 @@ def _decision_weight_age(
         moved = np.flatnonzero((np.abs(window - traded) > 1e-12).any(axis=1))
         if not len(moved):
             continue
-        step = window[moved[0]]
-        if (np.abs(window[moved[0] :] - step) > 1e-12).any():
+        step_at = pd.Timestamp(stamps[lo + moved[0]])
+        later = all_dec.searchsorted(d, side="right")
+        step_period = period.rollforward(step_at.normalize())
+        if later < len(all_dec) and period.rollforward(all_dec[later].normalize()) == step_period:
+            continue  # the step's own period has a decision after it, which trades it
+        if (np.abs(window[moved[0] :] - window[moved[0]]) > 1e-12).any():
             continue  # keeps moving up to the next execution bar: daily variation, not a stamped step
         stale_rows.append(k)
-        missed.append(pd.Timestamp(stamps[lo + moved[0]]).isoformat())
+        missed.append(step_at.isoformat())
     ends = np.append(np.asarray(exe_rows, dtype=int)[1:], len(index))
     held = np.asarray([ends[k] - exe_rows[k] for k in stale_rows], dtype=int)
     return {
-        "rule": "stale when the strategy stamps a weight step on a non-execution bar between the decision bar and "
-        "the next execution bar, holds it unchanged to that bar, and the next decision comes later",
+        "rule": rule,
+        "measured": True,
         "decisions": int(len(dec)),
         "stale_decisions": len(stale_rows),
         "first_stale": [pd.Timestamp(dec[k]).isoformat() for k in stale_rows[:5]],
@@ -225,7 +253,6 @@ def schedule_book(
     engine: str,
     leverage: str,
     weight_rows: pd.DataFrame | None = None,
-    price_index: pd.Index | None = None,
 ) -> ScheduledBook:
     """Decided weights -> the traded book on *cal*'s bars (see the module docstring).
 
@@ -234,9 +261,6 @@ def schedule_book(
     is reachable only under the same-bar override the resolver granted.
     *weight_rows* is the strategy's book on ITS OWN rows (weekend rows of a
     wider panel included), for the decision weight age; default *decided*.
-    *price_index* is the price panel's index BEFORE the price/weight
-    intersection, so the weight age can tell a real calendar gap from one the
-    intersection made; default *cal*'s bars.
     """
     if leverage not in LEVERAGE_MODES:
         raise ValueError(f"venue.leverage must be one of {list(LEVERAGE_MODES)}, got {leverage!r}")
@@ -305,7 +329,7 @@ def schedule_book(
     stale = (dec_age > 0) & dec_inside
 
     weight_age = _decision_weight_age(
-        raw_decided, columns, index, exec_idx, decisions, dec_dates, exe_rows, price_index
+        raw_decided, columns, index, exec_idx, decisions, dec_dates, exe_rows, rebalancing_freq, engine
     )
 
     schedule = pd.DataFrame(
@@ -350,10 +374,10 @@ def schedule_book(
         "leverage": leverage_report,
         "instruments": per_instrument,
     }
-    if weight_age["stale_decisions"]:
+    if weight_age.get("stale_decisions"):
         logger.warning(
-            "TIMING: %d of %d decision(s) MISSED weights the strategy stamped on a non-execution bar before the "
-            "next execution bar (a weekend calendar month-end, say): the previous weights were held for up to %d "
+            "TIMING: %d of %d decision(s) MISSED their period's weights, stamped on a non-execution bar after the "
+            "decision bar (a weekend calendar month-end, say): the previous weights were held for up to %d "
             "bar(s) instead. Stamp weights on the decision bars (the execution calendar). Decisions: %s; missed "
             "stamps: %s",
             weight_age["stale_decisions"],

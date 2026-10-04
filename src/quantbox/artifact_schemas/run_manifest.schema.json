@@ -178,8 +178,10 @@
         },
         "weight_age": {
           "type": "object",
-          "description": "Executed decisions that missed weights the strategy stamped on a non-execution bar before the next execution bar (minor 4, ADR-0007 1c; data_validation.json weight_age).",
+          "description": "Calendar schedules: executed decisions that missed a weight step stamped late in their own period; measured=false otherwise (minor 4, ADR-0007 1c; data_validation.json weight_age).",
           "properties": {
+            "measured": {"type": "boolean"},
+            "reason": {"type": "string"},
             "decisions": {"type": "integer", "minimum": 0},
             "stale_decisions": {"type": "integer", "minimum": 0},
             "first_stale": {"type": "array", "items": {"type": "string"}},
@@ -195,8 +197,7 @@
             "bars_used": {"type": "integer", "minimum": 0},
             "warmup_price_bars_dropped": {"type": "integer", "minimum": 0},
             "price_bars_dropped": {"type": "integer", "minimum": 0},
-            "weight_rows_dropped": {"type": "integer", "minimum": 0},
-            "weight_rows_dropped_changed": {"type": "integer", "minimum": 0}
+            "weight_rows_dropped": {"type": "integer", "minimum": 0}
           }
         },
         "leverage": {
