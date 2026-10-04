@@ -433,6 +433,7 @@ def sweep(
           columns: [vol_target, tranches]
           metrics: [sharpe_ratio, ...]
         backtest:
+          engine: vectorbt   # or rsims — the engine seam (docs/adr/0008)
           fees: 0.005
           rebalancing_freq: 1D
         execution:
@@ -506,15 +507,18 @@ def sweep(
         rebalancing_freq=backtest.get("rebalancing_freq", "1D"),
         lag_bars=sweep_lag_bars,
         shift_signal=backtest.get("shift_signal"),  # deprecated alias of execution.lag_bars
+        engine=backtest.get("engine"),
     )
     # The sweep's own manifest: the timing every row was simulated with, and the
     # honest trial count (one per grid row), so a gate never counts by hand.
+    from .engine.registry import get_engine
     from .execution import execution_record, resolve_sweep_lag_bars
 
     sweep_manifest = {
         "schema": "quantbox/sweep@1",
         "config": str(config_path),
         "strategy": strategy_spec,
+        "engine": get_engine(backtest.get("engine"), require_installed=False).name,
         "execution": execution_record(resolve_sweep_lag_bars(sweep_lag_bars, backtest.get("shift_signal"))),
         "n_trials": len(grid),
         "grid": "grid.parquet",

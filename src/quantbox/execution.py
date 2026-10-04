@@ -250,22 +250,21 @@ def apply_execution_lag(
     same_bar: SameBarOverride | None = None,
     fill_leading: float | None = 0.0,
 ) -> pd.DataFrame:
-    """Shift decided weights forward by ``lag_bars`` rows — THE execution lag.
+    """Shift decided weights forward by ``lag_bars`` rows — the engine seam's lag, for a caller outside it.
 
-    Row ``t`` of the result is what the engine trades at ``close[t]``: the
+    Row ``t`` of the result is what an engine trades at ``close[t]``: the
     weights decided at ``t - lag_bars``. The first ``lag_bars`` rows have no
     decision behind them; they are set to ``fill_leading`` (0.0 = flat, the
     default) or left NaN with ``fill_leading=None``.
 
-    A lag below 1 is refused here too, so a caller that skips
-    :func:`resolve_execution` cannot hand the engine a same-bar book; ``0``
-    passes only with the :class:`SameBarOverride` that resolver granted.
+    A lag below 1 is refused, so a caller that skips :func:`resolve_execution`
+    cannot hand an engine a same-bar book; ``0`` passes only with the
+    :class:`SameBarOverride` that resolver granted. The lag itself is applied by
+    :func:`quantbox.engine.lag_frame` (docs/adr/0008).
     """
-    _check_lag(lag_bars, same_bar)
-    lagged = weights.shift(lag_bars)
-    if fill_leading is not None:
-        lagged.iloc[:lag_bars] = fill_leading
-    return lagged
+    from quantbox.engine._lag import lag_frame
+
+    return lag_frame(weights, lag_bars, same_bar=same_bar, fill_leading=fill_leading)
 
 
 def lag_buy_and_hold(
@@ -273,45 +272,28 @@ def lag_buy_and_hold(
     rebalancing_freq: Any,
     lag_bars: int,
 ) -> Any:
-    """Move a buy-and-hold book's ONE trade to the first bar a decision exists.
+    """A buy-and-hold book's ONE trade on the first bar a decision exists — :func:`quantbox.engine.lag_buy_and_hold`."""
+    from quantbox.engine._lag import lag_buy_and_hold as _lag_buy_and_hold
 
-    ``rebalancing_freq=None`` (buy-and-hold) trades on the engine's first bar
-    only. After :func:`apply_execution_lag` that bar is flat — no decision is
-    behind it yet — so a lagged buy-and-hold would never enter and return 0%.
-    Its one trade belongs at ``index[lag_bars]``, the close the bar-0 decision
-    fills at. Every other schedule is returned unchanged (with an integer or
-    dated schedule the first scheduled bar may be flat, which is the documented
-    "lost first period"). A window no longer than
-    ``lag_bars`` has no fill bar and gets an empty schedule.
-    """
-    if rebalancing_freq is not None:
-        return rebalancing_freq
-    return [index[lag_bars]] if len(index) > lag_bars else []
+    return _lag_buy_and_hold(index, rebalancing_freq, lag_bars)
 
 
 def materialise_nan_policy(weights: pd.DataFrame, engine: str | None) -> pd.DataFrame:
     """Make the NaN policy an engine ALREADY applies explicit in the frame it is handed.
 
-    A NaN weight cell means "the strategy said nothing for this bar". The two
-    engines answer that differently, and did before this module existed:
-
-    - ``vectorbt``: forward-fills (HOLDS the last target), leading NaN -> 0
-      (``vectorbt_engine.run``: ``weights_df.reindex(index).ffill().fillna(0)``).
-    - ``rsims``: NaN -> 0 (goes FLAT) (``rsims_engine``: ``target_weights.fillna(0)``).
-
-    Both operations are idempotent, so handing the engine the materialised frame
-    changes no engine number; it only makes the saved ``traded_weights`` and the
-    ``traded_*`` metrics describe the book that engine actually traded. The
-    disagreement between the engines is a known, pre-existing issue and is NOT
-    resolved here. ``engine=None`` returns the frame untouched.
+    A NaN weight cell means "the strategy said nothing for this bar". Each
+    engine adapter answers that with its own policy
+    (:attr:`quantbox.engine.EngineAdapter.nan_policy`): vectorbt HOLDS the
+    last target (leading NaN -> 0), rsims goes FLAT. Both are idempotent, so
+    handing the engine the materialised frame changes no engine number; it only
+    makes the saved ``traded_weights`` describe the book that engine traded.
+    ``engine=None`` returns the frame untouched.
     """
     if engine is None:
         return weights
-    if engine == "vectorbt":
-        return weights.ffill().fillna(0.0)
-    if engine == "rsims":
-        return weights.fillna(0.0)
-    raise ValueError(f"Unknown engine: {engine!r}. Use 'vectorbt' or 'rsims'.")
+    from quantbox.engine.registry import get_engine
+
+    return get_engine(engine, require_installed=False).materialise_nan(weights)
 
 
 def describe_execution(lag_bars: int, same_bar: SameBarOverride | None = None) -> str:

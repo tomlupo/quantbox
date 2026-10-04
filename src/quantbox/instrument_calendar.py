@@ -11,7 +11,7 @@ them:
   gap. The position EXISTS across it. The price is forward-filled explicitly,
   to MARK the position and never to fill an order, and the bar is counted
   (``ffilled_bars``). An order for the instrument waits for its next printed
-  bar (:mod:`quantbox.execution_schedule`, ``deferred_trades``): filling at
+  bar (:mod:`quantbox.engine.schedule`, ``deferred_trades``): filling at
   the stale close would let a decision taken at the 29 Dec close fill at that
   same close on 1 January and book the 2 January move (same-bar look-ahead,
   docs/adr/0005).

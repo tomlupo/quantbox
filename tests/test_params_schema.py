@@ -80,7 +80,8 @@ _INIT_ONLY_GROUPS = {"data", "broker"}
 _PIPELINE_INJECTED = {"rebalancing": {"mode", "strategy_results"}}
 # Plugins whose module hands ``params`` to a reader elsewhere.
 _READ_ELSEWHERE = {
-    "backtest.pipeline.v1": ("quantbox.frequency",),
+    # The rsims adapter reads its own params (docs/adr/0008).
+    "backtest.pipeline.v1": ("quantbox.frequency", "quantbox.engine.rsims"),
     "trade.full_pipeline.v1": ("quantbox.frequency",),
 }
 

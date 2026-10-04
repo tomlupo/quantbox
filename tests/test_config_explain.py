@@ -259,10 +259,15 @@ def _variant(name: str = "v1", **extra) -> dict:
     return {"name": name, "strategy": strategy, **extra}
 
 
-def test_variants_under_rsims_are_refused_by_explain_and_run(tmp_path):
+def test_variants_under_rsims_run_and_explain_agrees(tmp_path):
+    """Variants ran on vectorbt only until the engine seam (TOM-1447); on rsims they charge funding too."""
     cfg, config_path = _inline_config(tmp_path, "rsims")
     cfg["plugins"]["pipeline"]["params"]["variants"] = [_variant()]
-    _both_refuse(cfg, config_path, "engine='vectorbt' only")
+    planned, recorded = _explain_and_run(cfg, config_path)
+    assert planned["ok"] is True, planned["errors"]
+    assert _shared(planned) == _shared(recorded)
+    assert recorded["engine"]["name"] == "rsims"
+    assert recorded["funding"]["modelled"] is True
 
 
 @pytest.mark.parametrize("where", ["overrides", "variant"])
@@ -336,9 +341,9 @@ def test_plan_records_full_report_off_by_default():
 
 
 def test_a_missing_engine_extra_is_refused_by_explain_and_run(tmp_path, monkeypatch):
-    from quantbox.plugins.pipeline import backtest_pipeline
+    from quantbox.engine.vectorbt import VectorbtAdapter
 
-    monkeypatch.setattr(backtest_pipeline, "_engine_installed", lambda engine: engine != "vectorbt")
+    monkeypatch.setattr(VectorbtAdapter, "installed", classmethod(lambda cls: False))
     cfg, config_path = _inline_config(tmp_path, "vectorbt")
     _both_refuse(cfg, config_path, r"\[vectorbt\] extra")
 

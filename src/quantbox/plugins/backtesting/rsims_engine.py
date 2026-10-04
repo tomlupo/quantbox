@@ -135,7 +135,7 @@ def fixed_commission_backtest_with_funding(
         Per-cell order mask (same index and tickers as *prices*): where it is
         False the position is left as it is — no trade on a bar the instrument
         did not print, or off the execution calendar
-        (:mod:`quantbox.execution_schedule`). None trades every cell, every bar.
+        (:mod:`quantbox.engine.schedule`). None trades every cell, every bar.
 
     Returns
     -------

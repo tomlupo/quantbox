@@ -30,11 +30,13 @@ import pandas as pd
 import pytest
 
 from quantbox.analysis.parameter_grid import sweep
+from quantbox.engine import simulate_book
 from quantbox.execution import (
     apply_execution_lag,
     exposure_metrics,
     materialise_nan_policy,
     resolve_allow_shorts,
+    resolve_execution,
     resolve_lag_bars,
     resolve_sweep_lag_bars,
 )
@@ -176,9 +178,8 @@ def test_a_lagged_weight_never_lands_on_a_bar_without_a_price():
     prices = _prices()
     prices.iloc[35:, 0] = np.nan  # `A` stops trading after bar 34
     weights = _weights_decided_on(0)
-    pipeline = BacktestPipeline()
-    book = pipeline._engine_book(prices, weights, pipeline.plan({"engine": "vectorbt"}), 1, where="")
-    traded = book["weights"]
+    book = simulate_book(prices, weights, engine="vectorbt", timing=resolve_execution(None), leverage="normalize")
+    traded = book.weights
     assert traded["A"].iloc[34] == 1.0
     assert (traded["A"].iloc[35:] == 0.0).all()
 

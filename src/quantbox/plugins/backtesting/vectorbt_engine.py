@@ -366,7 +366,7 @@ def run(
         Per-cell order mask on the weights' index and tickers (single
         strategy): an order is placed only where it is True, so an instrument
         can be left untouched on a bar the rest of the book trades (it did not
-        print — :mod:`quantbox.execution_schedule`). The rebalance bars are
+        print — :mod:`quantbox.engine.schedule`). The rebalance bars are
         then the rows with any order, and *rebalancing_freq* is ignored. It
         runs the flexible (order-function) path, with *threshold* 0 when None.
     residual_legs : (lend, borrow) tickers | ()
