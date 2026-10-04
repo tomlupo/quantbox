@@ -173,6 +173,30 @@ def test_a_ticker_without_prices_is_refused_on_both_engines(engine, leading):
         simulate_weights(prices, weights, engine=engine, timing=resolve_execution(None), leading=leading)
 
 
+@pytest.mark.parametrize("engine", ENGINES)
+@pytest.mark.parametrize("leading", ["flat", "drop"])
+def test_a_weight_on_a_bar_with_no_price_yet_is_refused_on_both_engines(engine, leading):
+    """The class of review round 1 (#235): the column exists, but holds no price yet on a bar
+    the book holds it. rsims traded it flat; the sweep's grid back-filled a FUTURE price into it."""
+    prices = _prices()
+    prices.loc[prices.index[: J + 2], "A"] = float("nan")  # A starts printing after the decision executes
+    weights = _weights_decided_on(J - 2)
+    with pytest.raises(ValueError, match="(?i)no price"):
+        simulate_weights(prices, weights, engine=engine, timing=resolve_execution(None), leading=leading)
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+@pytest.mark.parametrize("leading", ["flat", "drop"])
+def test_a_zero_weight_before_a_ticker_prints_still_runs(engine, leading):
+    """The refusal is about HELD weight: an unlisted ticker carried at 0 is a normal warm-up."""
+    prices = _prices()
+    prices.loc[prices.index[: J - 4], "A"] = float("nan")
+    book = simulate_weights(
+        prices, _weights_decided_on(J - 2), engine=engine, timing=resolve_execution(None), leading=leading
+    )
+    assert book is not None
+
+
 def test_an_unknown_engine_is_refused_everywhere(tmp_path):
     with pytest.raises(ValueError, match="Unknown engine"):
         get_engine("zipline")

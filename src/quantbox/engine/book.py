@@ -120,6 +120,8 @@ def simulate_weights(
             grid = grid.union(w.index)
         schedule = lag_buy_and_hold(pd.to_datetime(grid), rebalancing_freq, timing.lag_bars, timing.same_bar)
         engine_prices = prices
+        for w in weights.values() if isinstance(weights, dict) else [weights]:
+            _refuse_held_without_price(prices.ffill(), adapter.materialise_nan(w))
     elif leading == "drop":
         if isinstance(decided, dict):
             raise ValueError("leading='drop' takes one weights frame (MultiIndex columns for several slices)")
@@ -129,10 +131,10 @@ def simulate_weights(
             return None
         weights = lagged.reindex(common)
         tickers = weights.columns.get_level_values(-1).unique()
-        missing = [t for t in tickers if t not in prices.columns]
-        if missing:  # never manufacture a price column: an engine would trade a flat book on it
-            raise ValueError(f"All tickers in weights must be present in prices (missing {missing})")
-        engine_prices = prices.reindex(common).reindex(columns=tickers).ffill().bfill()
+        # Carried forward from the full history, then cut to the grid: a gap holds the last print.
+        carried = prices.reindex(columns=[t for t in tickers if t in prices.columns]).ffill().reindex(common)
+        _refuse_held_without_price(carried, adapter.materialise_nan(weights))
+        engine_prices = carried.bfill()  # only cells no weight is held on (refused above) take a later print
         schedule = rebalancing_freq
     else:
         raise ValueError(f"leading must be 'flat' or 'drop', got {leading!r}")
@@ -149,6 +151,31 @@ def simulate_weights(
     book.prices = engine_prices
     book.execution = timing_record(timing)
     return book
+
+
+def _refuse_held_without_price(carried: pd.DataFrame, held: pd.DataFrame) -> None:
+    """Refuse a weight HELD on a bar before its ticker's first price (review #235, the class of round 1).
+
+    A weight ticker with no price column at all is refused first. *carried* is
+    the price panel carried forward; *held* is the book as the
+    engine reads it (its NaN policy made explicit). vectorbt refused this
+    case; rsims traded the cell flat, and the sweep's back-fill priced it with
+    a LATER print. A weight of 0 before the first print is a normal warm-up.
+    """
+    tickers = held.columns.get_level_values(-1)
+    missing = [t for t in tickers.unique() if t not in carried.columns]
+    if missing:  # never manufacture a price column: an engine would trade a flat book on it
+        raise ValueError(f"All tickers in weights must be present in prices (missing {missing})")
+    grid = held.index.union(carried.index)
+    p = carried.reindex(index=grid).ffill().reindex(index=held.index, columns=tickers)
+    bad = (held.to_numpy() != 0) & p.isna().to_numpy()
+    if bad.any():
+        rows, cols = bad.nonzero()
+        first = [(str(held.index[r]), held.columns[c]) for r, c in list(zip(rows, cols, strict=True))[:5]]
+        raise ValueError(
+            f"Weight held on {int(bad.sum())} bar(s) with no price yet for its ticker (first {first}): "
+            "a book cannot hold an instrument before it prints. Write 0 there, or start the panel later."
+        )
 
 
 def _lag_on_grid(
