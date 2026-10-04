@@ -17,9 +17,11 @@ engine trades here, the same way for every engine:
    print, it keeps its previous weight and its order is DEFERRED to its own
    next printed bar (``deferred_trades``). A later decision that reaches the
    instrument first supersedes the deferred one.
-4. **Leverage** (``venue.leverage``): ``normalize`` scales a decision whose
-   net exposure is above 1 down to net 1, proportionally; ``borrow`` keeps it
-   and the financing legs (:mod:`quantbox.financing`) carry the borrowing.
+4. **Leverage** (``venue.leverage``), on the HELD book after deferral
+   (:func:`_apply_leverage`): ``normalize`` scales the cells ordered on a bar
+   whose held net exposure would exceed 1 down to net 1, proportionally — a
+   deferred cell keeps its weight; ``borrow`` keeps it and the financing legs
+   (:mod:`quantbox.financing`) carry the borrowing.
 5. **Input staleness**: for each instrument on each decision bar, the bars
    since its last real print — the age of the forward-filled price the signal
    saw. Recorded, never blocking (TOM-1430 gates on it).
@@ -59,6 +61,72 @@ class ScheduledBook:
 
 def _percentile(values: np.ndarray, q: float) -> float:
     return float(np.percentile(values, q)) if len(values) else 0.0
+
+
+def _apply_leverage(
+    target_cells: np.ndarray, orders: np.ndarray, leverage: str, decided_net: np.ndarray, index: pd.Index
+) -> dict[str, Any]:
+    """Apply ``venue.leverage`` to the HELD book, bar by bar, in place on *target_cells*.
+
+    What the engine holds after a bar's orders is the ordered cells at their
+    targets plus every untouched (deferred) cell at its previous weight — not
+    the decided row. ``normalize`` therefore scales only the cells ORDERED on
+    a bar whose held net exposure would exceed 1, until it is 1 (a deferred
+    cell cannot trade); when the deferred cells alone are already at or above
+    1, every buy ordered on that bar is set to 0 (no ordered cell rises above
+    its previous weight; sells and new shorts still go through). ``borrow`` changes nothing
+    and only measures. Both count, on the held book.
+    """
+    tol = NET_EXPOSURE_TOLERANCE
+    n_inst = orders.shape[1]
+    held_prev = np.zeros(n_inst)
+    order_rows = np.flatnonzero(orders.any(axis=1))
+    above = 0
+    after_deferral = 0
+    zeroed: list[int] = []
+    scales: list[float] = []
+    max_unscaled = 0.0
+    max_held = 0.0
+    for r in order_rows:
+        o = orders[r]
+        t = target_cells[r]
+        deferred_net = float(held_prev[~o].sum())
+        ordered_net = float(t[o].sum())
+        net = deferred_net + ordered_net
+        max_unscaled = max(max_unscaled, net)
+        if net > 1.0 + tol:
+            above += 1
+            if leverage == "normalize":
+                if (~o).any():
+                    after_deferral += 1
+                if deferred_net < 1.0 - tol and ordered_net > 0:
+                    scale = (1.0 - deferred_net) / ordered_net
+                    t[o] = t[o] * scale
+                    scales.append(scale)
+                else:
+                    # No room: no ordered cell may RISE above its weight (a buy, a short
+                    # cover included). The held net then cannot exceed the last bar's.
+                    t[o] = np.minimum(t[o], held_prev[o])
+                    zeroed.append(int(r))
+        held_prev[o] = t[o]
+        max_held = max(max_held, float(held_prev.sum()))
+    scaled = len(scales) + len(zeroed) if leverage == "normalize" else 0
+    sc = np.asarray(scales)
+    return {
+        "mode": leverage,
+        "rebalances": int(len(order_rows)),
+        "rebalances_above_net_1": int(above),
+        "max_net_exposure_decided": float(decided_net.max()) if len(decided_net) else 0.0,
+        "max_net_exposure_unscaled": float(max_unscaled),
+        "max_net_exposure_held": float(max_held),
+        "scaled_rebalances": int(scaled),
+        "scaled_after_deferral": int(after_deferral) if leverage == "normalize" else 0,
+        "buys_zeroed_rebalances": len(zeroed),
+        "buys_zeroed_dates": [pd.Timestamp(index[r]).isoformat() for r in zeroed],
+        "scale_mean": float(sc.mean()) if len(sc) else 1.0,
+        "scale_min": float(sc.min()) if len(sc) else 1.0,
+        "scale_max": float(sc.max()) if len(sc) else 1.0,
+    }
 
 
 def schedule_book(
@@ -102,23 +170,7 @@ def schedule_book(
     max_outside = np.where(outside_targeted, np.abs(targets), 0.0).max(axis=0) if len(targets) else np.zeros(n_inst)
     targets = np.where(inside_exe, targets, 0.0)
 
-    # Leverage: normalize scales a decision with net > 1 to net 1, proportionally.
-    net = targets.sum(axis=1) if len(targets) else np.zeros(0)
-    over = net > 1.0 + NET_EXPOSURE_TOLERANCE
-    scales = np.ones(len(net))
-    if leverage == "normalize":
-        scales[over] = 1.0 / net[over]
-        targets = targets * scales[:, None]
-    leverage_report = {
-        "mode": leverage,
-        "rebalances": int(len(net)),
-        "rebalances_above_net_1": int(over.sum()),
-        "max_net_exposure_decided": float(net.max()) if len(net) else 0.0,
-        "scaled_rebalances": int(over.sum()) if leverage == "normalize" else 0,
-        "scale_mean": float(scales[over].mean()) if leverage == "normalize" and over.any() else 1.0,
-        "scale_min": float(scales[over].min()) if leverage == "normalize" and over.any() else 1.0,
-        "scale_max": float(scales[over].max()) if leverage == "normalize" and over.any() else 1.0,
-    }
+    decided_net = targets.sum(axis=1) if len(targets) else np.zeros(0)
 
     # Orders: every instrument on every execution bar, except the unprinted ones, which are deferred.
     target_cells = np.full((n_bars, n_inst), np.nan)
@@ -143,6 +195,7 @@ def schedule_book(
             orders[p, j] = True
             target_cells[p, j] = targets[i, j]  # later deferrals to the same bar overwrite: the newest wins
 
+    leverage_report = _apply_leverage(target_cells, orders, leverage, decided_net, index)
     held = pd.DataFrame(np.where(orders, target_cells, np.nan), index=index, columns=columns).ffill().fillna(0.0)
     orders_df = pd.DataFrame(orders, index=index, columns=columns)
 
@@ -205,16 +258,24 @@ def schedule_book(
             n_out,
             report["timing"]["instruments_targeted_outside_window"],
         )
-    if leverage == "normalize" and over.any():
+    if leverage == "normalize" and leverage_report["scaled_rebalances"]:
         logger.warning(
-            "LEVERAGE: %d of %d rebalance(s) decided net exposure above 1 (max %.4f) and were SCALED to net 1 "
-            "(venue.leverage: normalize, the default; scale mean %.4f, min %.4f). Declare venue.leverage: borrow "
-            "with venue.financing to hold the levered book.",
-            int(over.sum()),
-            len(net),
-            leverage_report["max_net_exposure_decided"],
+            "LEVERAGE: %d of %d rebalance(s) would have HELD net exposure above 1 (max %.4f) and were SCALED to "
+            "net 1 (venue.leverage: normalize, the default; scale mean %.4f, min %.4f; %d after a deferral). "
+            "Declare venue.leverage: borrow with venue.financing to hold the levered book.",
+            leverage_report["scaled_rebalances"],
+            leverage_report["rebalances"],
+            leverage_report["max_net_exposure_unscaled"],
             leverage_report["scale_mean"],
             leverage_report["scale_min"],
+            leverage_report["scaled_after_deferral"],
+        )
+    if leverage_report["buys_zeroed_rebalances"]:
+        logger.warning(
+            "LEVERAGE: on %d rebalance(s) the DEFERRED positions alone held net exposure at or above 1, so every "
+            "buy ordered on that bar was set to 0 (venue.leverage: normalize): %s",
+            leverage_report["buys_zeroed_rebalances"],
+            leverage_report["buys_zeroed_dates"],
         )
     if report["staleness"]["stale_decisions"]:
         logger.info(

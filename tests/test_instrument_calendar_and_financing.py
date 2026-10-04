@@ -452,6 +452,89 @@ def test_borrow_without_financing_runs_at_an_assumed_zero_rate_and_says_so(tmp_p
     np.testing.assert_allclose(returns.iloc[2:].to_numpy(), 1.5 * r_a.iloc[2:].to_numpy(), rtol=1e-9, atol=1e-12)
 
 
+def _rotation(w_b: float) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Review round 2's probe: the book rotates from B to A; the execution bar (4 Jan) is one B does
+    not print, so B's sale is DEFERRED to 5 Jan, the bar A rises 10%."""
+    idx = pd.date_range("2024-01-01", periods=8, freq="D")
+    prices = pd.DataFrame(
+        {
+            "A": [100, 100, 100, 100, 110, 110, 110, 110.0],
+            "B": [100, 100, 100, np.nan, 100, 100, 100, 100.0],
+            "C": [100.0] * 8,
+        },
+        index=idx,
+    )
+    decided = pd.DataFrame(0.0, index=idx, columns=prices.columns)
+    decided.loc[: idx[1], "B"] = w_b
+    decided.loc[idx[2] :, "A"] = 1.0
+    return prices, decided
+
+
+def _total_return(store: FileArtifactStore) -> float:
+    return float((1 + _returns(store)).prod() - 1)
+
+
+@pytest.mark.parametrize(
+    ("w_b", "venue", "a_held", "expected", "counter"),
+    [
+        # B's deferred 0.5 leaves room for 0.5 of A: A's order is scaled by 0.5 -> half of A's 10%.
+        (0.5, None, 0.5, 0.05, "scaled_rebalances"),
+        # B's deferred 1.0 leaves NO room: A's buy is set to 0 — held, recorded and counted, not cut by the engine.
+        (1.0, None, 0.0, 0.0, "buys_zeroed_rebalances"),
+        # borrow holds both (net 2): A's 10% is booked, the held net 2 is counted and warned on.
+        (1.0, {"allow_shorts": False, "leverage": "borrow"}, 1.0, 0.10, "rebalances_above_net_1"),
+    ],
+)
+def test_leverage_applies_to_the_book_held_after_a_deferral(tmp_path, caplog, w_b, venue, a_held, expected, counter):
+    """A deferred cell keeps its weight, so the HELD book — not the decided row — is what venue.leverage
+    must bound. traded_weights is that held book, and the engine holds exactly it."""
+    prices, decided = _rotation(w_b)
+    params: dict[str, Any] = {"rebalancing_freq": 1}
+    if venue is not None:
+        params["venue"] = venue
+    with caplog.at_level(logging.WARNING):
+        result, store = _run(tmp_path, prices, decided, **params)
+    traded = store.read_parquet("traded_weights").set_index("date")
+    jan4 = pd.Timestamp("2024-01-04")
+    assert traded.loc[jan4, "B"] == pytest.approx(w_b)  # deferred: B could not trade
+    assert traded.loc[jan4, "A"] == pytest.approx(a_held)
+    assert result.metrics["engine_underfilled_rebalances"] == 0.0  # the engine held traded_weights
+    assert _total_return(store) == pytest.approx(expected, abs=1e-9)
+    assert _validation(store)["leverage"][counter] == 1
+    if venue is not None:
+        assert _validation(store)["leverage"]["max_net_exposure_held"] == pytest.approx(2.0)
+        assert "ASSUMED FREE" in caplog.text
+
+
+def test_with_no_room_a_short_cover_is_a_buy_and_waits_too():
+    """Deferred B is 1.2 (held over from a 1.2 / -0.2 book); covering the -0.2 short in C would RAISE
+    the held net, so with no room it waits like any buy: the held net never exceeds the last bar's."""
+    idx = pd.date_range("2024-01-01", periods=6, freq="D")
+    prices = pd.DataFrame(
+        {"A": [100.0] * 6, "B": [100, 100, 100, np.nan, 100, 100.0], "C": [100.0] * 6, "D": [100.0] * 6},
+        index=idx,
+    )
+    decided = pd.DataFrame(0.0, index=idx, columns=prices.columns)
+    decided.loc[: idx[1], ["B", "C"]] = [1.0, -0.2]  # net 0.8
+    decided.loc[idx[2] :, "A"] = 0.5  # rotate: sell B (deferred), cover C, buy A
+    cal, book = _book(prices, decided)
+    jan4 = pd.Timestamp("2024-01-04")
+    assert book.weights.loc[jan4, "B"] == pytest.approx(1.0)
+    assert book.weights.loc[jan4, "C"] == pytest.approx(-0.2)  # the cover waits
+    assert book.weights.loc[jan4, "A"] == pytest.approx(0.0)
+    assert (book.weights.sum(axis=1) <= 1.0 + 1e-9).all()
+    assert book.report["leverage"]["buys_zeroed_rebalances"] == 1
+
+
+def test_the_fill_check_runs_on_a_threshold_run_too(tmp_path):
+    """The underfill measurement is the backstop for a book that asks for more cash than it has, so a
+    threshold run measures it as well (on the bars the engine traded)."""
+    prices, decided = _rotation(0.5)
+    result, _ = _run(tmp_path, prices, decided, rebalancing_freq=1, threshold=0.01)
+    assert "engine_underfilled_rebalances" in result.metrics
+    assert result.metrics["engine_underfilled_rebalances"] == 0.0
+
+
 @pytest.mark.parametrize("leverage", ["borrow", "normalize"])
 def test_a_deferred_drifted_position_never_starves_the_cash_legs(tmp_path, leverage):
     """A is closed on a third of the bars while B moves: its deferred position DRIFTS away from its

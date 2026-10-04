@@ -1437,6 +1437,9 @@ class BacktestPipeline:
             "leverage_scaled_rebalances": float(lev["scaled_rebalances"]),
             "leverage_scale_mean": lev["scale_mean"],
             "leverage_scale_min": lev["scale_min"],
+            "leverage_scaled_after_deferral": float(lev["scaled_after_deferral"]),
+            "leverage_buys_zeroed_rebalances": float(lev["buys_zeroed_rebalances"]),
+            "leverage_max_net_exposure_held": lev["max_net_exposure_held"],
         }
         legs = financing is not None and not (financing.assumed and engine == "rsims")
         if not legs:
@@ -1458,12 +1461,12 @@ class BacktestPipeline:
             )
         if financing is not None and financing.assumed and lev["rebalances_above_net_1"]:
             logger.warning(
-                "FINANCING — %s%d rebalance(s) hold net exposure above 1 (max %.4f) under venue.leverage: borrow "
+                "FINANCING — %s%d rebalance(s) HOLD net exposure above 1 (max %.4f) under venue.leverage: borrow "
                 "with NO venue.financing block: borrowing is ASSUMED FREE (rate 0), recorded as "
                 "venue.financing.assumed in the manifest. Declare venue.financing to price it.",
                 where,
                 lev["rebalances_above_net_1"],
-                lev["max_net_exposure_decided"],
+                lev["max_net_exposure_held"],
             )
         return {
             "prices": bt_prices,
@@ -1594,25 +1597,29 @@ class BacktestPipeline:
         )
 
         metrics = compute_backtest_metrics(pf, trading_days=trading_days)
-        if threshold is None:
-            # Measured, not assumed: did the engine hold the book it was handed after each rebalance?
-            # A threshold run skips rebalances by design, so its gaps say nothing about fills.
-            # The cash legs are the engine's residual by construction; the real cells are the check.
-            real_orders = orders.drop(columns=[c for c in CASH_LEGS if c in orders.columns])
-            gaps = rebalance_fill_gaps(pf, weights, prices.index[orders.any(axis=1).to_numpy()], real_orders)
-            allowed = 1e-6 + 2.0 * (fees + slippage) * gaps["turnover"] + (1e-3 if fixed_fees else 0.0)
-            under = gaps["gap"] > allowed
-            metrics["engine_underfilled_rebalances"] = float(under.sum())
-            metrics["engine_max_fill_gap"] = float(gaps["gap"].max()) if len(gaps) else 0.0
-            if under.any():
-                logger.warning(
-                    "ENGINE: on %d of %d rebalance bar(s) the vectorbt book held is NOT the target "
-                    "(max sum|held - target| %.4f on %s) — buys were cut for lack of cash",
-                    int(under.sum()),
-                    len(gaps),
-                    gaps["gap"].max(),
-                    gaps["gap"].idxmax(),
-                )
+        # Measured, not assumed: did the engine hold the book it was handed after each rebalance?
+        # It is the backstop for every way a book can ask for more cash than it has, so it runs on every
+        # run. A threshold run skips rebalances by design: there, only the bars the engine traded count.
+        # The cash legs are the engine's residual by construction; the real cells are the check.
+        real_orders = orders.drop(columns=[c for c in CASH_LEGS if c in orders.columns])
+        bars = prices.index[orders.any(axis=1).to_numpy()]
+        if threshold is not None:
+            traded_rows = sorted(set(pf.orders.values["idx"].tolist()))
+            bars = bars.intersection(prices.index[traded_rows])
+        gaps = rebalance_fill_gaps(pf, weights, bars, real_orders)
+        allowed = 1e-6 + 2.0 * (fees + slippage) * gaps["turnover"] + (1e-3 if fixed_fees else 0.0)
+        under = gaps["gap"] > allowed
+        metrics["engine_underfilled_rebalances"] = float(under.sum())
+        metrics["engine_max_fill_gap"] = float(gaps["gap"].max()) if len(gaps) else 0.0
+        if under.any():
+            logger.warning(
+                "ENGINE: on %d of %d rebalance bar(s) the vectorbt book held is NOT the target "
+                "(max sum|held - target| %.4f on %s) — buys were cut for lack of cash",
+                int(under.sum()),
+                len(gaps),
+                gaps["gap"].max(),
+                gaps["gap"].idxmax(),
+            )
         returns = pf.returns()
 
         # Build portfolio_daily DataFrame

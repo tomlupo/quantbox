@@ -138,9 +138,11 @@ calendar is read from the prices themselves (or from one series of them).
   Recorded, never blocking; TOM-1430 gates on it.
 - **Recorded.** `rebalance_schedule.parquet` has one row per executed decision:
   `decision_date`, `execution_date`, `deferred_instruments` (`;`-joined).
-  `traded_weights.parquet` is now the book HELD after each bar's orders (before,
-  it was the lagged decided weights, which between rebalances the vectorbt
-  engine never held).
+  `traded_weights.parquet` is now the book HELD after each bar's orders: the
+  ordered cells at their targets AFTER `venue.leverage` (section 3), every
+  deferred cell at its previous weight (before, it was the lagged decided
+  weights, which between rebalances the vectorbt engine never held). The
+  engine is checked against it on every run (`engine_underfilled_rebalances`).
 
 **Recorded** (all of section 1). Every backtest run writes
 `data_validation.json` (`quantbox/data-validation@1`, schema
@@ -202,15 +204,24 @@ venue:
   leverage: normalize   # normalize | borrow; default normalize on vectorbt, borrow on rsims
 ```
 
-- **`normalize`** (the vectorbt default): on every decision whose net exposure
-  is above 1 (+1e-6), the whole basket is scaled proportionally to net 1. The
-  count of scaled rebalances and the mean, min and max scale are recorded
-  (`data_validation.json` `leverage`, the manifest, `leverage_*` metrics) and
-  warned about.
+- **`normalize`** (the vectorbt default) bounds the book HELD after each bar's
+  orders, not the decided row: a deferred cell keeps its previous weight, so a
+  rotation out of an instrument that did not print would otherwise ask for net
+  above 1 (review round 2). On every bar whose held net exposure — ordered
+  cells at target plus deferred cells at their weight — is above 1 (+1e-6),
+  the ORDERED cells are scaled proportionally until the held net is 1. When
+  the deferred cells alone are at or above 1, every buy ordered on that bar is
+  set to 0 (`buys_zeroed_rebalances`, with dates, warned). With no deferral
+  this is the decided row scaled to net 1. Recorded in `data_validation.json`
+  `leverage`, the manifest and `leverage_*` metrics, and warned about:
+  `rebalances_above_net_1` (on the held book), `scaled_rebalances`
+  (`scaled_after_deferral` of them on a bar with a deferred cell), the mean,
+  min and max scale, `max_net_exposure_decided` / `_unscaled` / `_held`.
 - **`borrow`**: the decision is held as decided, financed by `venue.financing`
   (section 2). Without a financing block the rate is ASSUMED to be 0:
   `venue.financing` in run@1 / explain@1 is then `{rate: {annual: 0.0}, ...,
-  assumed: true}`, and a run whose book does go above net 1 warns loudly.
+  assumed: true}`, and a run whose HELD book goes above net 1 (a deferral
+  included) warns loudly.
   `risk.max_leverage` (a gross cap) still applies before.
 
 Round 1 refused an unfinanced levered vectorbt book instead. The reviewer
@@ -223,13 +234,13 @@ rsims configs keep their leverage behaviour. With `borrow` and no block, rsims g
 legs (an assumed rate of 0 is its own behaviour); vectorbt gets zero-rate legs,
 so it can hold the book.
 
-**Measured, not assumed.** Every vectorbt run without a threshold records
-`engine_underfilled_rebalances` and `engine_max_fill_gap`. On each rebalance
-bar they compare the book the engine HELD against the target, on the cells that
-were ordered. The tolerance is 1e-6 plus twice the cost times turnover. Any
-underfill is logged as a warning. A deferral can briefly push a normalized book
-above net 1 (the deferred instrument still holds its old weight); this counter
-is where that shows.
+**Measured, not assumed.** Every vectorbt run records
+`engine_underfilled_rebalances` and `engine_max_fill_gap` — a threshold run
+too, on the bars the engine traded (it skips the others by design). On each
+rebalance bar they compare the book the engine HELD against `traded_weights`,
+on the cells that were ordered. The tolerance is 1e-6 plus twice the cost times
+turnover. Any underfill is logged as a warning. It is the backstop: with
+leverage applied to the held book it should stay 0.
 
 ### 4. The rebalance schedule is bars
 

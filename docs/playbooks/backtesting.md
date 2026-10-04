@@ -247,7 +247,10 @@ now says `ME`.
           lend_spread_bps: 0       # idle cash:     rate - spread
 ```
 
-`leverage: normalize` scales a decision with net exposure above 1 to net 1 (counted).
+`leverage: normalize` keeps the book HELD after each bar's orders at net 1 or below: when
+it would go above (a decision above 1, or a deferred instrument still holding its weight),
+the cells ordered on that bar are scaled down, or their buys set to 0 when the deferred
+cells alone fill it (counted, warned).
 `leverage: borrow` holds it; with `financing` the residual `1 - sum(w)` is held as two
 synthetic cash legs (idle cash earns `rate - lend_spread`, borrowed cash pays `rate +
 borrow_spread`, both trade without fees). `borrow` without `financing` runs at an ASSUMED rate
@@ -261,8 +264,9 @@ non-execution bars per year), `timing`, `staleness` (age of the inputs at each d
 count, max, p95 — visible, not blocking), `leverage`. Summaries go to `run_manifest.json`
 `data_validation` and `metrics.json`.
 
-Every vectorbt run (without `threshold`) records `engine_underfilled_rebalances` and
-`engine_max_fill_gap`. They compare the book held after each rebalance with its target.
+Every vectorbt run records `engine_underfilled_rebalances` and `engine_max_fill_gap` (a
+`threshold` run on the bars it traded). They compare the book the engine held after each
+rebalance with `traded_weights`.
 
 #### Same-bar research runs: the explicit override
 
