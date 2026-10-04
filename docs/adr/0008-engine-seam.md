@@ -120,7 +120,8 @@ the builders is a separate, number-moving decision.
 
 ## Notes
 
-- Spec: TOM-1325 (quantbox 1.0), card TOM-1447 (P3a). Parity suite: TOM-262.
+- Spec: TOM-1325 (quantbox 1.0), card TOM-1447 (P3a). Parity suite: TOM-262,
+  `tests/test_engine_parity.py` (its docstring states the common scope and the tolerance).
 - Related: [ADR-0005](0005-next-bar-is-mandatory.md), [ADR-0006](0006-same-bar-explicit-override.md),
   [ADR-0007](0007-instrument-calendar-and-financing.md) (the scheduled book), and
   [ADR-0001](0001-library-not-framework.md) (amended).
