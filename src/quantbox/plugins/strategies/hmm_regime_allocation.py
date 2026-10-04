@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from quantbox.contracts import PluginMeta
+from quantbox.contracts import PluginMeta, StrategyContext
 
 
 @dataclass
@@ -125,7 +125,7 @@ strategy:
         ),
     )
 
-    def run(self, data: dict, params: dict) -> dict:
+    def run(self, data: dict, params: dict, context: StrategyContext | None = None) -> dict:
         """Compute target weights based on HMM regime detection.
 
         Args:

@@ -53,7 +53,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from quantbox.contracts import PluginMeta
+from quantbox.contracts import PluginMeta, StrategyContext
 
 logger = logging.getLogger(__name__)
 
@@ -561,6 +561,7 @@ class CryptoTrendStrategy:
         self,
         data: dict[str, pd.DataFrame],
         params: dict[str, Any] | None = None,
+        context: StrategyContext | None = None,
     ) -> dict[str, Any]:
         """
         Run strategy and return weights.
@@ -933,7 +934,7 @@ class CryptoTrendStrategy:
 # ============================================================================
 
 
-def run(data: dict, params: dict = None) -> dict:
+def run(data: dict, params: dict = None, context: StrategyContext | None = None) -> dict:
     """
     Standard strategy interface - compatible with quantlab.
 
@@ -945,4 +946,4 @@ def run(data: dict, params: dict = None) -> dict:
         dict with 'weights' and 'details'
     """
     strategy = CryptoTrendStrategy()
-    return strategy.run(data, params)
+    return strategy.run(data, params, context=context)

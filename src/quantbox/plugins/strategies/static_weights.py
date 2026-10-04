@@ -12,7 +12,7 @@ from typing import Any
 
 import pandas as pd
 
-from quantbox.contracts import PluginMeta
+from quantbox.contracts import PluginMeta, StrategyContext
 
 
 @dataclass
@@ -41,7 +41,9 @@ class StaticWeightsStrategy:
     def min_lookback_periods(self) -> int:
         return 1
 
-    def run(self, data: dict[str, Any], params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def run(
+        self, data: dict[str, Any], params: dict[str, Any] | None = None, context: StrategyContext | None = None
+    ) -> dict[str, Any]:
         if params:
             for k, v in params.items():
                 if hasattr(self, k):

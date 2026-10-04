@@ -419,7 +419,9 @@ def exposure_metrics(weights: pd.DataFrame, prefix: str) -> dict[str, float]:
     gross = w.abs().sum(axis=1)
     total_gross = float(gross.sum())
     short_gross = float(w.clip(upper=0).abs().sum().sum())
-    turnover = w.diff().fillna(w).abs().sum(axis=1)
+    from quantbox.metrics import turnover_series
+
+    turnover = turnover_series(w, from_flat=True)
     return {
         f"{prefix}_mean_gross_exposure": float(gross.mean()),
         f"{prefix}_mean_net_exposure": float(w.sum(axis=1).mean()),

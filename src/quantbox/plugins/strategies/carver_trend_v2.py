@@ -46,7 +46,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from quantbox.contracts import PluginMeta
+from quantbox.contracts import PluginMeta, StrategyContext
 from quantbox.plugins.strategies.carver_trend import (
     breakout_forecast,
     cap_forecast,
@@ -492,7 +492,12 @@ class CarverTrendV2Strategy:
             data = dict(src)
         return {str(k): int(v) for k, v in data.items()}
 
-    def run(self, data: dict[str, pd.DataFrame], params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def run(
+        self,
+        data: dict[str, pd.DataFrame],
+        params: dict[str, Any] | None = None,
+        context: StrategyContext | None = None,
+    ) -> dict[str, Any]:
         if params:
             for k, v in params.items():
                 if hasattr(self, k):
@@ -635,6 +640,6 @@ class CarverTrendV2Strategy:
         }
 
 
-def run(data: dict, params: dict | None = None) -> dict:
+def run(data: dict, params: dict | None = None, context: StrategyContext | None = None) -> dict:
     """Standard strategy interface."""
-    return CarverTrendV2Strategy().run(data, params)
+    return CarverTrendV2Strategy().run(data, params, context=context)

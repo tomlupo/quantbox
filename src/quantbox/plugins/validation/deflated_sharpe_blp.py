@@ -62,6 +62,7 @@ from scipy.stats import norm
 
 from quantbox.analysis.dsr import DEGENERATE_RTOL, expected_max_sr, sr_estimator_std
 from quantbox.contracts import PluginMeta
+from quantbox.metrics import sharpe_ratio
 
 
 class _UndefinedDSR(ValueError):
@@ -234,8 +235,8 @@ class DeflatedSharpeBLPValidation:
                 {"n_observations": t, "std": std_period, "scale": scale},
             )
 
-        sr_hat_period = float(np.mean(rets) / std_period)
-        observed_sharpe = sr_hat_period * float(np.sqrt(trading_days))
+        sr_hat_period = sharpe_ratio(rets, 1)
+        observed_sharpe = sharpe_ratio(rets, trading_days)
         skew, kurt = _skew_kurtosis(rets)
 
         partial_metrics: dict[str, Any] = {

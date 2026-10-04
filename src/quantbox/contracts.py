@@ -22,7 +22,10 @@ classes with a class-level ``meta = PluginMeta(...)`` attribute.
     run(mode, asof, params, data, store, broker, risk, ...) → RunResult
 
 **StrategyPlugin** — computes target weights:
-    run(data, params) → {"weights": DataFrame, ...}
+    run(data, params, context=None) → {"weights": DataFrame, ...}
+    ``context`` is a :class:`StrategyContext` (bars_per_year, mode, asof,
+    calendar, frequency) handed by the one strategy runner
+    (``quantbox.strategy_runner``), identically in backtest and trading.
 
 **RiskPlugin** — validates targets/orders:
     check_targets(targets, params) → [findings]
@@ -85,6 +88,30 @@ PluginStatus = Literal["research", "locked", "production"]
 State transitions are human-driven via ``/promote-lock`` and ``/promote``. The runtime
 never auto-promotes. See ``docs/architecture/lifecycle.md``.
 """
+
+
+@dataclass(frozen=True)
+class StrategyContext:
+    """What a strategy knows about the run it is in — built once, by the one strategy runner.
+
+    ``quantbox.strategy_runner.build_strategy_context`` derives it from the
+    run's params, so backtest and trading hand the SAME context to the same
+    strategy and config (they differ only in ``mode``). TOM-1448.
+
+    Attributes:
+        bars_per_year: Annualisation factor of the run's bars (365.0 for daily
+            24/7, ~250 for daily NYSE, 8760.0 for hourly 24/7).
+        mode: ``backtest`` | ``paper`` | ``live``.
+        asof: The run's as-of date, as the run was given it.
+        calendar: The trading calendar (``24/7``, ``NYSE``, ...).
+        frequency: The bar size (``1d``, ``4h``, ``1h``, ...).
+    """
+
+    bars_per_year: float
+    mode: str
+    asof: str
+    calendar: str
+    frequency: str
 
 
 @dataclass(frozen=True)
@@ -284,13 +311,20 @@ class StrategyPlugin(Protocol):
 
     Input ``data`` dict contains wide DataFrames: ``prices``, ``volume``,
     ``market_cap``, ``universe``, and optionally ``funding_rates``.
+    ``context`` is the run's :class:`StrategyContext`; a strategy reads its
+    annualisation from ``context.bars_per_year`` (via
+    ``quantbox.strategy_runner.resolve_annualize``), never from its own default.
+    A strategy whose ``run`` takes no ``context`` still runs, but is handed the
+    deprecated ``_pipeline_annualize`` param instead, with a DeprecationWarning.
 
     Returns dict with at minimum ``"weights"`` (DataFrame: date index x symbol columns).
     """
 
     meta: PluginMeta
 
-    def run(self, data: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]: ...
+    def run(
+        self, data: dict[str, Any], params: dict[str, Any], context: StrategyContext | None = None
+    ) -> dict[str, Any]: ...
 
 
 class RebalancingPlugin(Protocol):

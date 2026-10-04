@@ -15,7 +15,7 @@ from typing import Any
 
 import pandas as pd
 
-from quantbox.contracts import PluginMeta
+from quantbox.contracts import PluginMeta, StrategyContext
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,9 @@ class WeightedAverageAggregator:
         },
     )
 
-    def run(self, data: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    def run(
+        self, data: dict[str, Any], params: dict[str, Any], context: StrategyContext | None = None
+    ) -> dict[str, Any]:
         strategy_results: dict[str, dict[str, Any]] = data.get("strategy_results", {})
         weight_overrides = params.get("strategy_weights", {})
 

@@ -12,6 +12,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from quantbox.metrics import compute_drawdown_series
+
 from .models import GBM, BaseModel
 
 
@@ -86,8 +88,7 @@ class SimulationResult:
         return np.sum(((x - m) / s) ** 4) / n - 3 if s > 0 else 0
 
     def _max_drawdowns(self, prices):
-        running_max = np.maximum.accumulate(prices, axis=1)
-        drawdowns = (prices - running_max) / running_max
+        drawdowns = compute_drawdown_series(np.asarray(prices, dtype=float))
         return np.min(drawdowns, axis=1)
 
 

@@ -37,7 +37,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from quantbox.contracts import PluginMeta
+from quantbox.contracts import PluginMeta, StrategyContext
+from quantbox.strategy_runner import resolve_annualize
 
 logger = logging.getLogger(__name__)
 
@@ -345,7 +346,7 @@ class CrossAssetMomentumStrategy:
     # Volatility parameters
     ewma_lambda: float = 0.94
     ewma_min_periods: int = 200
-    annualize: float | None = None  # None = pipeline-injected via _pipeline_annualize; falls back to 252.0
+    annualize: float | None = None  # None = the run's StrategyContext.bars_per_year; 252.0 without one
 
     # Trend filter
     trend_filter_window: int = 100
@@ -392,6 +393,7 @@ class CrossAssetMomentumStrategy:
         self,
         data: dict[str, pd.DataFrame],
         params: dict[str, Any] | None = None,
+        context: StrategyContext | None = None,
     ) -> dict[str, Any]:
         """
         Run XSMOM strategy.
@@ -410,21 +412,10 @@ class CrossAssetMomentumStrategy:
                 if hasattr(self, attr):
                     setattr(self, attr, value)
 
-        # Resolve annualize: explicit (self/params) wins, else pipeline-injected,
-        # else 252.0 (equity default — see issue #20 for the Frequency-driven scheme).
-        pipeline_annualize = (params or {}).get("_pipeline_annualize")
-        if self.annualize is None:
-            effective_annualize = float(pipeline_annualize) if pipeline_annualize is not None else 252.0
-        else:
-            effective_annualize = float(self.annualize)
-            if pipeline_annualize is not None and abs(effective_annualize - pipeline_annualize) > 1:
-                logger.warning(
-                    "CrossAssetMomentumStrategy.annualize=%s overrides pipeline-derived %.1f. "
-                    "If intentional, ignore; otherwise drop the explicit value and let the pipeline "
-                    "derive it from frequency.",
-                    effective_annualize,
-                    pipeline_annualize,
-                )
+        # Annualisation: the strategy's explicit field wins, else the run's StrategyContext (TOM-1448).
+        effective_annualize = resolve_annualize(
+            self.annualize, params, context, owner="CrossAssetMomentumStrategy.annualize"
+        )
 
         prices = data["prices"]
 
@@ -566,7 +557,7 @@ def cross_asset_momentum(
     return strategy.run(data)
 
 
-def run(data: dict, params: dict = None) -> dict:
+def run(data: dict, params: dict = None, context: StrategyContext | None = None) -> dict:
     """Standard strategy interface."""
     strategy = CrossAssetMomentumStrategy()
-    return strategy.run(data, params)
+    return strategy.run(data, params, context=context)

@@ -29,7 +29,7 @@ from typing import Any
 
 import pandas as pd
 
-from quantbox.contracts import PluginMeta
+from quantbox.contracts import PluginMeta, StrategyContext
 from quantbox.features.volatility import compute_rolling_vol
 
 
@@ -100,6 +100,7 @@ class VolTargetingStrategy:
         self,
         data: dict[str, Any],
         params: dict[str, Any] | None = None,
+        context: StrategyContext | None = None,
     ) -> dict[str, Any]:
         """Compute vol-targeting weights.
 
