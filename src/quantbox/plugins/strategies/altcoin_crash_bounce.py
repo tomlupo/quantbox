@@ -24,7 +24,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from quantbox.contracts import PluginMeta
+from quantbox.contracts import PluginMeta, StrategyContext
 
 # Canonical non-tradeable-crypto exclusion list — sourced from quantbox-datasets'
 # catalog/asset_categories.yaml via quantbox.plugins.strategies._universe. The
@@ -287,6 +287,7 @@ class AltcoinCrashBounceStrategy:
         self,
         data: dict[str, pd.DataFrame],
         params: dict[str, Any] | None = None,
+        context: StrategyContext | None = None,
     ) -> dict[str, Any]:
         if params:
             for k, v in params.items():

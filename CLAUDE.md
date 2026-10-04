@@ -62,6 +62,8 @@ For step-by-step modifications, see [`docs/playbooks/`](docs/playbooks/). For hi
 src/quantbox/              ← installable library (uv add quantbox)
   contracts.py             Protocol definitions (start here)
   runner.py                Config → plugin instantiation → pipeline.run()
+  strategy_runner.py       The ONE strategy runner + StrategyContext builder (backtest and trading)
+  metrics.py               The ONE metrics module (Sharpe, IR, drawdowns, turnover, VaR)
   registry.py              Plugin discovery (builtins + entry points)
   cli.py                   CLI entry point (quantbox command)
   store.py                 Artifact storage (Parquet + JSON)
@@ -124,7 +126,7 @@ uv run pytest -q                            # run tests
 | Type | Protocol | Key method |
 |---|---|---|
 | Pipeline | `PipelinePlugin` | `run(mode, asof, params, data, store, broker, risk)` |
-| Strategy | `StrategyPlugin` | `run(data, params)` → dict with `"weights"` (date × symbol) |
+| Strategy | `StrategyPlugin` | `run(data, params, context)` → dict with `"weights"` (date × symbol); `context` is the run's `StrategyContext` (bars_per_year, mode, asof, calendar, frequency) from the one runner `quantbox.strategy_runner` |
 | Data | `DataPlugin` | `load_market_data(universe, asof, params) → Dict[str, DataFrame]` |
 | Broker | `BrokerPlugin` | `execute_rebalancing(weights)`, `describe()` |
 | Rebalancing | `RebalancingPlugin` | `rebalance(targets, positions, params)` |

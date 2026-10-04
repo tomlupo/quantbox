@@ -94,6 +94,7 @@ from quantbox.instrument_calendar import (
 )
 from quantbox.overlays import OverlayLink, apply_overlays
 from quantbox.plugins.datasources._utils import interval_step, normalize_data_frequency
+from quantbox.strategy_runner import build_strategy_context, run_strategies
 
 logger = logging.getLogger(__name__)
 
@@ -515,7 +516,7 @@ class BacktestPipeline:
         # `frequency:` block, or the legacy `prices.frequency` + optional
         # `market_calendar:` shorthand. `bars_per_year` derived there is used
         # as the DEFAULT for both `trading_days` (metrics annualization) and
-        # `_pipeline_annualize` (strategy-level vol annualization), so the
+        # the StrategyContext's bars_per_year (strategy-level vol annualization), so the
         # two cannot silently drift apart. Explicit `trading_days` /
         # strategy `annualize` values still win, with a drift warning.
         # ------------------------------------------------------------------
@@ -609,17 +610,12 @@ class BacktestPipeline:
             )
 
         # --- Stage 2: Strategy Execution ---
+        # The ONE strategy runner, shared with the trading pipeline (TOM-1448):
+        # the strategy reads bars_per_year from the StrategyContext, the same
+        # value `trading_days` defaults to.
         strategies_cfg = params.get("_strategies_cfg", params.get("strategies", []))
-        if strategies:
-            strategy_results = self._run_strategy_plugins(
-                strategies,
-                strategies_cfg,
-                market_data,
-                injected_annualize=bars_per_year,
-            )
-        else:
-            params = {**params, "_pipeline_annualize": bars_per_year}
-            strategy_results = self._run_strategies(market_data, strategies_cfg, params)
+        context = build_strategy_context(mode, asof, params, prices_params)
+        strategy_results = run_strategies(market_data, strategies_cfg, context, plugins=strategies)
 
         # Save per-strategy weights snapshot (last row, same as TradingPipeline)
         strat_weights_records: list[dict[str, Any]] = []
@@ -856,70 +852,6 @@ class BacktestPipeline:
         )
 
     # ==================================================================
-    # Stage 2: Strategy execution (reused from TradingPipeline)
-    # ==================================================================
-    def _run_strategies(
-        self,
-        market_data: dict[str, Any],
-        strategies_cfg: list[dict[str, Any]],
-        pipeline_params: dict[str, Any],
-    ) -> dict[str, dict[str, Any]]:
-        results: dict[str, dict[str, Any]] = {}
-        injected_annualize = pipeline_params.get("_pipeline_annualize")
-        for strat_cfg in strategies_cfg:
-            name = strat_cfg["name"]
-            weight = float(strat_cfg.get("weight", 1.0))
-            strat_params = dict(strat_cfg.get("params", {}))
-            if injected_annualize is not None and "_pipeline_annualize" not in strat_params:
-                strat_params["_pipeline_annualize"] = injected_annualize
-
-            try:
-                module = importlib.import_module(f"quantbox.plugins.strategies.{name}")
-            except ImportError:
-                logger.error("Could not import strategy '%s'", name)
-                raise
-
-            result = module.run(data=market_data, params=strat_params)
-
-            # Normalize multi-level weight columns
-            weights_df = result.get("weights", pd.DataFrame())
-            if isinstance(weights_df, pd.DataFrame) and weights_df.columns.nlevels > 1:
-                weights_df = weights_df.T.groupby("ticker").sum().T
-                result["weights"] = weights_df
-
-            results[name] = {"result": result, "weight": weight}
-            logger.info("Strategy '%s' completed (weight=%.2f)", name, weight)
-
-        return results
-
-    def _run_strategy_plugins(
-        self,
-        strategy_plugins: list[StrategyPlugin],
-        strategies_cfg: list[dict[str, Any]],
-        market_data: dict[str, Any],
-        injected_annualize: float | None = None,
-    ) -> dict[str, dict[str, Any]]:
-        results: dict[str, dict[str, Any]] = {}
-        for i, strat in enumerate(strategy_plugins):
-            strat_cfg = strategies_cfg[i] if i < len(strategies_cfg) else {}
-            weight = float(strat_cfg.get("weight", 1.0))
-            strat_params = dict(strat_cfg.get("params", {}))
-            if injected_annualize is not None and "_pipeline_annualize" not in strat_params:
-                strat_params["_pipeline_annualize"] = injected_annualize
-
-            result = strat.run(data=market_data, params=strat_params)
-
-            weights_df = result.get("weights", pd.DataFrame())
-            if isinstance(weights_df, pd.DataFrame) and weights_df.columns.nlevels > 1:
-                weights_df = weights_df.T.groupby("ticker").sum().T
-                result["weights"] = weights_df
-
-            results[strat.meta.name] = {"result": result, "weight": weight}
-            logger.info("Strategy plugin '%s' completed (weight=%.2f)", strat.meta.name, weight)
-
-        return results
-
-    # ==================================================================
     # Stage 3: Aggregate weights → full time series
     # ==================================================================
     def _aggregate_weights_history(
@@ -1012,12 +944,14 @@ class BacktestPipeline:
 
         Each variant has: name, strategy (registry name), optional strategy.params,
         optional overrides (fees, threshold, rebalancing_freq, risk: {...}).
-        Reuses _run_strategy_plugins, _aggregate_weights_history,
+        Reuses the one strategy runner, _aggregate_weights_history,
         _apply_risk_transforms_ts, and _run_vectorbt for parity with the
         single-variant path.
         """
         prices_wide = market_data["prices"]
         base_risk_cfg = dict(params.get("risk", {}) or {})
+        # Every variant runs in the same run: one StrategyContext for all of them.
+        context = build_strategy_context(mode, asof, params, plan["load_params"])
 
         variant_results: dict[str, dict[str, Any]] = {}
         overlays_applied: list[dict[str, Any]] = []
@@ -1048,12 +982,7 @@ class BacktestPipeline:
             v_strategies_cfg = [{"name": sname, "weight": 1.0, "params": strat_params}]
 
             # Stage 2: strategy
-            s_results = self._run_strategy_plugins(
-                [splugin],
-                v_strategies_cfg,
-                market_data,
-                injected_annualize=bars_per_year,
-            )
+            s_results = run_strategies(market_data, v_strategies_cfg, context, plugins=[splugin])
 
             # Stage 3: aggregate (trivial for single strategy)
             wh = self._aggregate_weights_history(s_results, {"_strategies_cfg": v_strategies_cfg})
@@ -1767,7 +1696,7 @@ class BacktestPipeline:
         """Resolve a `Frequency` from pipeline params.
 
         Delegates to `quantbox.frequency.resolve_pipeline_frequency`, which the
-        trading pipeline calls too, so `_pipeline_annualize` is the same value
+        trading pipeline calls too, so the StrategyContext's bars_per_year is the same value
         in backtest and paper/live (TOM-1338). The resolution order is stated
         there. The derived `bars_per_year` is also the DEFAULT `trading_days`.
         """

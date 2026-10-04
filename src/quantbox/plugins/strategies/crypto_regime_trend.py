@@ -31,7 +31,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from quantbox.contracts import PluginMeta
+from quantbox.contracts import PluginMeta, StrategyContext
 
 from ._universe import select_universe
 from .crypto_trend import (
@@ -425,6 +425,7 @@ class CryptoRegimeTrendStrategy:
         self,
         data: dict[str, pd.DataFrame],
         params: dict[str, Any] | None = None,
+        context: StrategyContext | None = None,
     ) -> dict[str, Any]:
         """
         Run regime trend strategy.
@@ -688,7 +689,7 @@ class CryptoRegimeTrendStrategy:
 # ============================================================================
 
 
-def run(data: dict, params: dict = None) -> dict:
+def run(data: dict, params: dict = None, context: StrategyContext | None = None) -> dict:
     """Standard strategy interface."""
     strategy = CryptoRegimeTrendStrategy()
-    return strategy.run(data, params)
+    return strategy.run(data, params, context=context)
