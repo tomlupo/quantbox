@@ -129,6 +129,9 @@ def simulate_weights(
             return None
         weights = lagged.reindex(common)
         tickers = weights.columns.get_level_values(-1).unique()
+        missing = [t for t in tickers if t not in prices.columns]
+        if missing:  # never manufacture a price column: an engine would trade a flat book on it
+            raise ValueError(f"All tickers in weights must be present in prices (missing {missing})")
         engine_prices = prices.reindex(common).reindex(columns=tickers).ffill().bfill()
         schedule = rebalancing_freq
     else:

@@ -162,6 +162,17 @@ def test_an_adapter_refuses_a_parameter_it_does_not_own():
         backtest(_prices(), _weights_decided_on(J - 2), engine="vectorbt", engine_params={"trade_buffer": 0.1})
 
 
+@pytest.mark.parametrize("engine", ENGINES)
+@pytest.mark.parametrize("leading", ["flat", "drop"])
+def test_a_ticker_without_prices_is_refused_on_both_engines(engine, leading):
+    """Review round 1 (#235): the sweep's grid manufactured an all-NaN price column, and rsims
+    traded a flat book on it instead of refusing."""
+    prices = _prices()[["A"]]
+    weights = pd.DataFrame({"MISSING": 1.0}, index=prices.index)
+    with pytest.raises(ValueError, match="(?i)prices"):
+        simulate_weights(prices, weights, engine=engine, timing=resolve_execution(None), leading=leading)
+
+
 def test_an_unknown_engine_is_refused_everywhere(tmp_path):
     with pytest.raises(ValueError, match="Unknown engine"):
         get_engine("zipline")
