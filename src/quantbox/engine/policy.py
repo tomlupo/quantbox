@@ -101,7 +101,7 @@ FREQUENCY_NAMES: dict[str, Any] = {
     "yearly": "YE",
 }
 
-_COMMON = ("frequency", "calendar")
+_COMMON = ("frequency", "calendar", "min_trade")
 #: The keys each cadence and each trigger takes, on top of the common ones; any other key is refused.
 CADENCE_KEYS: dict[str, tuple[str, ...]] = {"periodic": (), "tranche": ("tranches",)}
 TRIGGER_KEYS: dict[str, tuple[str, ...]] = {"none": (), "band": ("band",), "corridor": ("width", "bounds")}
@@ -173,6 +173,17 @@ POLICY_SCHEMA: dict[str, Any] = {
                 "A pandas-market-calendars name (NYSE, XLON, ...): decisions and the execution lag use that "
                 "market's sessions only, so a month-end on a holiday moves to the session before it. null = the "
                 "data's execution calendar alone."
+            ),
+        },
+        "min_trade": {
+            "type": "number",
+            "minimum": 0,
+            "default": 0,
+            "description": (
+                "Every policy, optional: on a rebalance, a trade with |target - held| below min_trade (absolute "
+                "weight) is dropped; sells always execute; when the buys exceed cash + sell proceeds they are "
+                "scaled down proportionally, so without venue.leverage: borrow the held net never goes above 1. "
+                "A trade under min_trade cannot trigger a band or corridor. 0 (the default) is off."
             ),
         },
         "tranches": {
@@ -275,6 +286,8 @@ class RebalancePolicy:
     width: tuple[float, float] | None = None
     #: corridor: ``{symbol: (below, above)}``.
     bounds: Mapping[str, tuple[float, float]] = field(default_factory=dict)
+    #: Every policy: the smallest trade (absolute weight) a rebalance places; 0 = off (:func:`place_orders`).
+    min_trade: float = 0.0
     #: False: built from the legacy ``rebalancing_freq`` / ``threshold`` keys (the run's files stay as they were).
     declared: bool = True
 
@@ -321,6 +334,8 @@ class RebalancePolicy:
         if self.trigger == "corridor":
             out["width"] = list(self.width or ())
             out["bounds"] = {k: list(v) for k, v in self.bounds.items()}
+        if self.min_trade > 0:  # off by default: a run without it records what it always did
+            out["min_trade"] = self.min_trade
         return out
 
 
@@ -419,6 +434,10 @@ def resolve_policy(spec: Mapping[str, Any] | RebalancePolicy) -> RebalancePolicy
     _check_frequency(freq)
     calendar = _check_calendar(spec.get("calendar"))
     kw: dict[str, Any] = {"cadence": cadence, "trigger": trigger, "frequency": freq, "calendar": calendar}
+    min_trade = spec.get("min_trade", 0)
+    if isinstance(min_trade, bool) or not isinstance(min_trade, (int, float, np.number)) or not min_trade >= 0:
+        raise ValueError(f"rebalancing_policy.min_trade must be a number >= 0 (absolute weight), got {min_trade!r}")
+    kw["min_trade"] = float(min_trade)
     if cadence == "tranche":
         n = spec.get("tranches")
         if isinstance(n, bool) or not isinstance(n, (int, np.integer)) or n < 2:
@@ -499,25 +518,48 @@ def blend_tranches(targets: np.ndarray, n: int) -> np.ndarray:
     return out / n
 
 
-def apply_drift_trigger(
+#: Buys within this much of the available cash are not scaled (float noise, not a shortfall).
+_CASH_TOLERANCE = 1e-12
+
+
+def place_orders(
     policy: RebalancePolicy,
     target_cells: np.ndarray,
     orders: np.ndarray,
     prices: np.ndarray,
     columns: pd.Index,
+    leverage: str,
 ) -> dict[str, Any]:
-    """``band`` / ``corridor``: keep a bar's orders only on a HIT, in place on *orders*.
+    """The trigger and ``min_trade``, against the held book: in place on *orders* and *target_cells*.
+
+    The seam runs this when the policy has a trigger or a ``min_trade`` above
+    0; otherwise every considered order stands as scheduled.
 
     The held book is tracked cost-free: after a bar with orders, each ordered
     cell holds its target and each untouched cell its drifted weight; between
     such bars every weight drifts with its price against a cash remainder of
-    ``1 - sum(weights)``. A bar is a hit when one ordered cell is outside its
-    trigger: for ``band``, ``|drifted - target|`` above the band (vectorbt's
-    band rule; today's ``threshold``); for ``corridor``, the drifted weight
-    outside the cell's own ``[target - below, target + above]``, or an exit
-    to 0 from a held weight. On a hit EVERY ordered cell trades to target
-    (TOM-1513: a corridor hit rebalances the whole book); otherwise the bar's
-    orders are all dropped. A cell with no order cannot trigger.
+    ``1 - sum(weights)``.
+
+    **Trigger.** A bar is a hit when one ordered cell is outside its trigger:
+    for ``band``, ``|drifted - target|`` above the band (vectorbt's band rule;
+    today's ``threshold``); for ``corridor``, the drifted weight outside the
+    cell's own ``[target - below, target + above]``, or an exit to 0 from a
+    held weight. On a hit EVERY ordered cell trades to target (TOM-1513: a
+    corridor hit rebalances the whole book); otherwise the bar's orders are
+    all dropped. A cell with no order cannot trigger. Without a trigger every
+    considered bar is placed.
+
+    **min_trade** (TOM-1513), on a placed bar, in one deterministic pass:
+
+    1. ``delta = target - held`` for every ordered cell;
+    2. a cell with ``|delta| < min_trade`` does not trade (it keeps its held
+       weight); such a cell cannot trigger either, so a dust exit never
+       rebalances the book;
+    3. sells always execute; when the buys exceed the cash plus the sell
+       proceeds, every buy is scaled down by the same factor. Without
+       ``venue.leverage: borrow`` the held net therefore never goes above 1.
+
+    A bar on which every trade is under ``min_trade`` is skipped.
     """
     n_inst = orders.shape[1]
     held = np.zeros(n_inst)
@@ -525,6 +567,10 @@ def apply_drift_trigger(
     order_rows = np.flatnonzero(orders.any(axis=1))
     skipped: list[int] = []
     partial = 0
+    dropped = 0
+    scales: list[float] = []
+    min_trade = float(policy.min_trade)
+    cap_buys = min_trade > 0 and leverage != "borrow"
     if policy.trigger == "corridor":
         below, above = policy.corridor_arrays(columns)
     for r in order_rows:
@@ -536,15 +582,30 @@ def apply_drift_trigger(
             value = held * np.where(np.isfinite(growth), growth, 1.0)
             total = (1.0 - held.sum()) + value.sum()
             drifted = value / total if total != 0 else value
-        target = target_cells[r]
-        if policy.trigger == "band":
-            hit = np.abs(drifted - target) > float(policy.band or 0.0)
+        target = target_cells[r]  # a view: a scaled buy is written into target_cells
+        trades = o & (np.abs(target - drifted) >= min_trade) if min_trade > 0 else o
+        if policy.trigger == "none":
+            placed = True
         else:
-            hit = (drifted < target - below) | (drifted > target + above) | ((target == 0) & (drifted != 0))
-        keep = o if (hit & o).any() else np.zeros_like(o)
+            if policy.trigger == "band":
+                hit = np.abs(drifted - target) > float(policy.band or 0.0)
+            else:
+                hit = (drifted < target - below) | (drifted > target + above) | ((target == 0) & (drifted != 0))
+            placed = bool((hit & trades).any())
+        keep = trades if placed else np.zeros_like(o)
         if keep.any():
+            if cap_buys:
+                delta = np.where(keep, target - drifted, 0.0)
+                buys = delta > 0
+                need = float(delta[buys].sum())
+                room = max((1.0 - float(drifted.sum())) - float(delta[delta < 0].sum()), 0.0)
+                if need > room + _CASH_TOLERANCE:
+                    scale = room / need
+                    target[buys] = drifted[buys] + delta[buys] * scale
+                    scales.append(scale)
             if not keep[o].all():
                 partial += 1
+                dropped += int((o & ~keep).sum())
             held = drifted
             held[keep] = target[keep]
             last = int(r)
@@ -557,4 +618,9 @@ def apply_drift_trigger(
         "skipped_rebalances": len(skipped),
         "partial_rebalances": int(partial),
         "first_skipped_rows": skipped[:5],
+        "min_trade": {
+            "dropped_trades": int(dropped),
+            "scaled_rebalances": len(scales),
+            "buy_scale_min": float(min(scales)) if scales else 1.0,
+        },
     }

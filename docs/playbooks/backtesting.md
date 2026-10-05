@@ -55,6 +55,10 @@ times a **trigger** (`none`, `band` or `corridor`; TOM-1513):
 - `band` — the whole book trades when a held weight drifted past the band (= `threshold`).
 - `corridor` — when one instrument is outside its own `[target - below, target + above]`
   corridor, the whole book trades back to target. An exit to 0 is always a hit.
+- `min_trade` (every policy, default 0 = off) — on a rebalance, a trade smaller than
+  `min_trade` (absolute weight) is dropped; sells always execute; buys above the cash plus
+  the sell proceeds are scaled down proportionally, so without `venue.leverage: borrow` the
+  held net never goes above 1. A trade under `min_trade` cannot trigger a band or corridor.
 
 **Group limits** (`group_limits`) keep each group's gross weight inside `[min, max]` on every
 decided row, before execution. The groups come from a universe metadata column (a

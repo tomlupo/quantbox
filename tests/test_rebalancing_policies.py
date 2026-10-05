@@ -376,6 +376,8 @@ def test_a_cadence_and_a_trigger_combine():
         ({"cadence": "periodic", "trigger": "corridor", "band": 0.05}, "does not take"),
         ({"cadence": "periodic", "band": 0.05}, "does not take"),
         ({"cadence": "tranche", "tranches": 3, "trigger": "corridor"}, "width"),
+        ({"policy": "periodic", "min_trade": -0.01}, "min_trade"),
+        ({"cadence": "periodic", "min_trade": "1%"}, "min_trade"),
     ],
 )
 def test_a_malformed_policy_is_refused(spec, match):
@@ -643,7 +645,7 @@ def test_every_policy_and_the_group_limits_are_declared_in_params_schema():
     assert set(props["rebalancing_policy"]["properties"]["policy"]["enum"]) == set(POLICIES)
     assert set(props["rebalancing_policy"]["properties"]["cadence"]["enum"]) == set(CADENCES)
     assert set(props["rebalancing_policy"]["properties"]["trigger"]["enum"]) == {*TRIGGERS, None}
-    for key in ("cadence", "trigger", "frequency", "calendar", "tranches", "band", "width", "bounds"):
+    for key in ("cadence", "trigger", "frequency", "calendar", "tranches", "band", "width", "bounds", "min_trade"):
         assert props["rebalancing_policy"]["properties"][key]["description"]
     assert set(props["group_limits"]["properties"]) >= {"by", "limits", "excess"}
 
@@ -673,6 +675,10 @@ def test_every_policy_and_the_group_limits_are_declared_in_params_schema():
         ({"policy": "band", "band": 0.05, "cadence": "periodic"}, False),
         ({"policy": "periodic", "trigger": "band"}, False),
         ({"trigger": "band", "band": 0.05}, False),
+        # min_trade: every policy, a number >= 0
+        ({"cadence": "tranche", "tranches": 5, "trigger": "corridor", "width": 0.02, "min_trade": 0.005}, True),
+        ({"policy": "periodic", "min_trade": 0.01}, True),
+        ({"cadence": "periodic", "min_trade": -0.01}, False),
     ],
 )
 def test_validate_checks_a_rebalancing_policy_against_the_schema(value, ok):
@@ -855,3 +861,132 @@ def test_risk_tranches_with_a_declared_tranche_cadence_is_refused():
         )
     assert plan["variant_policies"]["a"].cadence == "periodic"
     assert (plan["variant_policies"]["b"].cadence, plan["variant_policies"]["b"].tranches) == ("tranche", 4)
+
+
+# ----------------------------------------------------------------------
+# F. min_trade: drop small trades, sells first, buys scaled to the cash (TOM-1513)
+# ----------------------------------------------------------------------
+
+
+def _min_trade_case() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Flat prices; decided A .5 B .3 C .2 (net 1) on row 0, then A .49 B .21 C .30 from row 1."""
+    idx = pd.date_range("2024-01-01", periods=6, freq="D")
+    prices = pd.DataFrame({"A": 100.0, "B": 50.0, "C": 20.0}, index=idx)
+    decided = pd.DataFrame({"A": 0.5, "B": 0.3, "C": 0.2}, index=idx)
+    decided.iloc[1:] = [0.49, 0.21, 0.30]
+    return prices, decided
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_min_trade_drops_a_small_trade_and_scales_the_buys_to_the_cash_known_answer(engine):
+    """min_trade 0.02, decided on row 1 (traded on bar 2), held A .5 B .3 C .2 and no cash:
+
+      delta: A -.01 (|.01| < .02: dropped), B -.09 (a sell: always executes), C +.10 (a buy)
+      cash + sell proceeds = 0 + .09 < .10 of buys -> every buy x .9: C .2 + .09 = .29
+      held after bar 2: A .5, B .21, C .29 -> net 1, not 1.01.
+    From row 2 on the deltas are A -.01 and C +.01: both under min_trade, nothing trades.
+    """
+    prices, decided = _min_trade_case()
+    policy = {"cadence": "periodic", "frequency": "daily", "min_trade": 0.02}
+    book = _simulate(engine, prices, decided, schedule="bars", policy=policy)
+    idx = prices.index
+    assert _ordered_dates(book) == [idx[1], idx[2]]
+    assert book.orders.loc[idx[2]].tolist() == [False, True, True]
+    assert book.weights.loc[idx[2]].tolist() == pytest.approx([0.5, 0.21, 0.29])
+    traded = book.trades[book.trades["value"].abs() > 1e-9]
+    on_bar2 = traded[pd.to_datetime(traded["date"]) == idx[2]].set_index("symbol")["value"]
+    assert set(on_bar2.index) == {"B", "C"}
+    assert on_bar2["B"] < 0 < on_bar2["C"]
+    report = book.data_validation["rebalancing"]
+    assert report["policy"]["min_trade"] == 0.02
+    assert report["min_trade"] == {"dropped_trades": 1, "scaled_rebalances": 1, "buy_scale_min": pytest.approx(0.9)}
+    assert report["placed_rebalances"] == 2
+    assert report["partial_rebalances"] == 1
+    from quantbox.instrument_calendar import validate_data_validation
+
+    assert validate_data_validation(book.data_validation) == []
+    # min_trade 0 (the default) is off: the same book as no min_trade at all, and no min_trade section.
+    off = _simulate(engine, prices, decided, schedule="bars", policy={**policy, "min_trade": 0})
+    plain = _simulate(engine, prices, decided, schedule="bars", policy={"cadence": "periodic", "frequency": "daily"})
+    assert off.weights.equals(plain.weights) and off.orders.equals(plain.orders)
+    assert "min_trade" not in off.data_validation["rebalancing"]
+    assert "min_trade" not in off.data_validation["rebalancing"]["policy"]
+
+
+def test_min_trade_with_borrow_keeps_the_buys():
+    """venue.leverage: borrow: the buys are not scaled; the held net may go above 1 (the financing legs carry it)."""
+    prices, decided = _min_trade_case()
+    policy = {"cadence": "periodic", "min_trade": 0.02}
+    book = _simulate("rsims", prices, decided, policy=policy, leverage="borrow")
+    assert book.weights.loc[prices.index[2]].tolist() == pytest.approx([0.5, 0.21, 0.30])
+    assert book.data_validation["rebalancing"]["min_trade"]["scaled_rebalances"] == 0
+
+
+def test_a_trade_under_min_trade_cannot_trigger_a_rebalance():
+    """Only a cell whose trade survives min_trade can hit a trigger. Corridor 0.05, min_trade 0.01:
+
+      bar 1: entry A .3 B .5.   bar 3: A cut to .005 (outside its corridor: a hit).
+      bar 4: B +12%: B .56 / 1.06 = .528 (dev .028, inside .05, but a trade over min_trade).
+      bar 5 on: A's target is 0 and it holds .005 -- an exit, but a .005 trade, under min_trade.
+    The dust exit is NOT a hit: if it were, it would rebalance the whole book on bar 5 and trade B's .028.
+    """
+    idx = pd.date_range("2024-01-01", periods=9, freq="D")
+    prices = pd.DataFrame({"A": 100.0, "B": 50.0}, index=idx)
+    prices.iloc[4:, 1] = 56.0
+    decided = pd.DataFrame({"A": 0.3, "B": 0.5}, index=idx)
+    decided.iloc[2:, 0] = 0.005
+    decided.iloc[4:, 0] = 0.0
+    book = _simulate("rsims", prices, decided, policy={"policy": "corridor", "width": 0.05, "min_trade": 0.01})
+    assert _ordered_dates(book) == [idx[1], idx[3]]
+    assert book.orders.loc[idx[3]].tolist() == [True, False]  # B's 0 trade is under min_trade too
+
+
+def _held_net_after_each_rebalance(book: TradedBook, prices: pd.DataFrame) -> np.ndarray:
+    """The cost-free held book, replayed independently of the seam: drift between order bars, ordered cells set to
+    the book's target on their bar, the rest kept drifted. Returns the net exposure after every order bar."""
+    p = prices.reindex(index=book.weights.index, columns=book.weights.columns).to_numpy(dtype=float)
+    orders, target = book.orders.to_numpy(), book.weights.to_numpy()
+    held = np.zeros(orders.shape[1])
+    last = None
+    nets = []
+    for r in np.flatnonzero(orders.any(axis=1)):
+        if last is not None:
+            value = held * p[r] / p[last]
+            held = value / ((1.0 - held.sum()) + value.sum())
+        held = np.where(orders[r], target[r], held)
+        nets.append(held.sum())
+        last = r
+    return np.asarray(nets)
+
+
+def test_property_min_trade_never_lifts_the_held_net_above_1_without_borrow():
+    """A seeded randomized loop: 150 fully invested books (net 1 on every decided row), random min_trade,
+    cadence and trigger, both schedules. With min_trade > 0 and no borrow, the held net is <= 1 after every
+    rebalance. Disable the buy scaling and this goes red (dropped small sells leave the buys without cash)."""
+    rng = np.random.default_rng(1513)
+    checked = 0
+    for case in range(150):
+        n_inst = int(rng.integers(3, 7))
+        idx = pd.date_range("2024-01-01", periods=int(rng.integers(30, 80)), freq="D")
+        tickers = [f"T{i}" for i in range(n_inst)]
+        prices = pd.DataFrame(
+            100.0 * np.cumprod(1.0 + rng.normal(0.0, 0.02, size=(len(idx), n_inst)), axis=0),
+            index=idx,
+            columns=tickers,
+        )
+        raw = rng.dirichlet(np.ones(n_inst) * 3.0, len(idx))  # net 1 on every row
+        decided = pd.DataFrame(raw, index=idx, columns=tickers).iloc[:: int(rng.integers(1, 4))].reindex(idx).ffill()
+        cadence = [{"cadence": "periodic"}, {"cadence": "tranche", "tranches": int(rng.integers(2, 5))}][
+            int(rng.integers(0, 2))
+        ]
+        trigger = [{}, {"trigger": "band", "band": 0.02}, {"trigger": "corridor", "width": 0.02}][
+            int(rng.integers(0, 3))
+        ]
+        policy = {**cadence, **trigger, "min_trade": float(rng.uniform(0.005, 0.06))}
+        schedule = ["bars", "calendar"][int(rng.integers(0, 2))]
+        book = _simulate("rsims", prices, decided, schedule=schedule, policy=policy)
+        nets = _held_net_after_each_rebalance(book, prices)
+        assert len(nets), case
+        assert nets.max() <= 1.0 + 1e-9, (case, nets.max(), policy, schedule)
+        checked += len(nets)
+    assert checked > 1000

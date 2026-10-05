@@ -25,18 +25,20 @@ engine — the seam owns the schedule, an adapter only executes it (docs/adr/000
    whose held net exposure would exceed 1 down to net 1, proportionally — a
    deferred cell keeps its weight; ``borrow`` keeps it and the financing legs
    (:mod:`quantbox.financing`) carry the borrowing.
-5. **The rebalancing policy** (:mod:`quantbox.engine.policy`): ``periodic``
-   (today's ``rebalancing_freq``), ``tranche`` (the targets are the mean of
-   the last N decided rows), ``band`` (today's ``threshold``: a considered
-   rebalance is placed only when the held book has DRIFTED more than the band
-   from its target) or ``corridor`` (an instrument outside its own corridor
-   rebalances the whole book). An optional market ``calendar`` narrows the execution bars
-   to that market's sessions before step 1. The drift is the cost-free price
-   drift of the weights held after the last placed order
-   (:func:`quantbox.engine.policy.apply_drift_trigger`). An engine charging
-   costs holds a slightly different book, so a run with costs can trigger on
-   slightly different bars than vectorbt's in-engine threshold did (the
-   declared caveat).
+5. **The rebalancing policy** (:mod:`quantbox.engine.policy`), a cadence x a
+   trigger: the cadence ``periodic`` (today's ``rebalancing_freq``) or
+   ``tranche`` (the targets are the mean of the last N decided rows); the
+   trigger ``none``, ``band`` (today's ``threshold``: a considered rebalance
+   is placed only when the held book has DRIFTED more than the band from its
+   target) or ``corridor`` (an instrument outside its own corridor rebalances
+   the whole book); and an optional ``min_trade`` (drop the small trades,
+   scale the buys to the cash). An optional market ``calendar`` narrows the
+   execution bars to that market's sessions before step 1. The drift is the
+   cost-free price drift of the weights held after the last placed order
+   (:func:`quantbox.engine.policy.place_orders`), applied AFTER step 4. An
+   engine charging costs holds a slightly different book, so a run with
+   costs can trigger on slightly different bars than vectorbt's in-engine
+   threshold did (the declared caveat).
 6. **Input staleness**: for each instrument on each decision bar, the bars
    since its last real print — the age of the forward-filled price the signal
    saw. Recorded, never blocking (TOM-1430 gates on it).
@@ -69,8 +71,8 @@ from quantbox.instrument_calendar import InstrumentCalendar
 from ._lag import lag_positions
 from .policy import (
     RebalancePolicy,
-    apply_drift_trigger,
     blend_tranches,
+    place_orders,
     policy_execution_bars,
     schedule_policy,
 )
@@ -364,22 +366,23 @@ def schedule_book(
 
     leverage_report = _apply_leverage(target_cells, orders, leverage, decided_net, index)
     scheduled_rows = int(orders.any(axis=1).sum())
-    trigger = (
-        apply_drift_trigger(pol, target_cells, orders, cal.prices.to_numpy(dtype=float), columns)
-        if pol.trigger != "none"
+    # The trigger and min_trade read the held book; without either, every scheduled order stands.
+    placement = (
+        place_orders(pol, target_cells, orders, cal.prices.to_numpy(dtype=float), columns, leverage)
+        if pol.trigger != "none" or pol.min_trade > 0
         else None
     )
-    first_skipped = [pd.Timestamp(index[r]).isoformat() for r in (trigger or {}).get("first_skipped_rows", [])]
+    first_skipped = [pd.Timestamp(index[r]).isoformat() for r in (placement or {}).get("first_skipped_rows", [])]
     threshold_report = None
     rebalancing_report = None
-    if trigger is not None and not pol.declared:  # the legacy `threshold`: its section, as before
+    if placement is not None and not pol.declared:  # the legacy `threshold`: its section, as before
         threshold_report = {
             "threshold": float(pol.band or 0.0),
             "rule": "cost-free price drift of the held weights; a scheduled rebalance is placed when an ordered "
             "instrument drifted more than the threshold from its target",
-            "scheduled_rebalances": trigger["scheduled_rebalances"],
-            "placed_rebalances": trigger["placed_rebalances"],
-            "skipped_rebalances": trigger["skipped_rebalances"],
+            "scheduled_rebalances": placement["scheduled_rebalances"],
+            "placed_rebalances": placement["placed_rebalances"],
+            "skipped_rebalances": placement["skipped_rebalances"],
             "first_skipped": first_skipped,
         }
     if pol.declared:
@@ -392,11 +395,13 @@ def schedule_book(
             "scheduled_rebalances": scheduled_rows,
             "placed_rebalances": placed,
             "skipped_rebalances": scheduled_rows - placed,
-            "partial_rebalances": int((trigger or {}).get("partial_rebalances", 0)),
+            "partial_rebalances": int((placement or {}).get("partial_rebalances", 0)),
             "first_skipped": first_skipped,
         }
         if pol.cadence == "tranche":
             rebalancing_report["tranches"] = int(pol.tranches)
+        if placement is not None and pol.min_trade > 0:  # absent when off: the run's files stay as they were
+            rebalancing_report["min_trade"] = placement["min_trade"]
     held = pd.DataFrame(np.where(orders, target_cells, np.nan), index=index, columns=columns).ffill().fillna(0.0)
     orders_df = pd.DataFrame(orders, index=index, columns=columns)
 
