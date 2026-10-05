@@ -60,6 +60,13 @@ times a **trigger** (`none`, `band` or `corridor`; TOM-1513):
   the sell proceeds are scaled down proportionally, so without `venue.leverage: borrow` the
   held net never goes above 1. A trade under `min_trade` cannot trigger a band or corridor.
 
+The same `rebalancing_policy` block works on `trade.full_pipeline.v1` (TOM-1518): each live
+run asks the same code whether a rebalance is due on its last decided bar and to which
+targets, given the broker's held book (`quantbox.engine.policy.decide_rebalance`; what it
+decided is in `notes["rebalancing_policy"]`). Live refuses an int `frequency` above 1 and
+null (the live history window moves), and a declared policy's `min_trade` replaces
+`min_trade_size`.
+
 **Group limits** (`group_limits`) keep each group's gross weight inside `[min, max]` on every
 decided row, before execution. The groups come from a universe metadata column (a
 `local_file_data` universe file keeps its per-symbol columns, such as `asset_class`):

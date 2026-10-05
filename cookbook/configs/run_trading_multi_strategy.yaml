@@ -21,6 +21,10 @@ plugins:
       prices:
         lookback_days: 365
 
+      # The backtest's rebalancing policy, decided live by the same code (TOM-1518).
+      # It replaces the rebalancer's `tranches: 3` and its `min_trade_size: 0.01`.
+      rebalancing_policy: {cadence: tranche, tranches: 3, frequency: daily, min_trade: 0.01}
+
   strategies:
     - name: "strategy.crypto_trend.v1"
       weight: 0.6
@@ -36,10 +40,8 @@ plugins:
   rebalancing:
     name: "rebalancing.standard.v1"
     params:
-      tranches: 3
       max_leverage: 1
       allow_short: false
-      min_trade_size: 0.01
       min_notional: 1.0
       scaling_factor_min: 0.9
 
