@@ -282,7 +282,9 @@ class BacktestPipeline:
                     "type": "number",
                     "minimum": 0,
                     "default": 10000,
-                    "description": "Starting cash (rsims only).",
+                    "description": (
+                        "Starting cash, the same on every engine (TOM-1500): a fixed fee is a share of it."
+                    ),
                 },
                 "margin": {
                     "type": "number",
@@ -304,8 +306,11 @@ class BacktestPipeline:
                 },
                 "capitalise_profits": {
                     "type": "boolean",
-                    "default": False,
-                    "description": "Compound profits into sizing (rsims only).",
+                    "default": True,
+                    "description": (
+                        "Compound profits into sizing (rsims only). DEFAULT true, as vectorbt always "
+                        "compounds (TOM-1500); false sizes every bar off min(initial_cash, equity)."
+                    ),
                 },
                 "equity_basis": {
                     "type": "string",

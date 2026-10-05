@@ -10,6 +10,7 @@ status_changes:
   - 2026-10-04: proposed with TOM-1447 (P3a of the quantbox 1.0 spec, TOM-1325)
   - 2026-10-05: amended and accepted with TOM-1450 (3d-1) — Tom, 2026-10-05: one book builder for every door (alternative B), the seam owns the rebalancing schedule, the engines stay separate under it
   - 2026-10-05: decision 11 added with TOM-1450 (3d-2) — the rebalancing policies and group limits are seam semantics
+  - 2026-10-05: decision 12 added with TOM-1500 — the same defaults on every engine (compounding, starting cash), and every cost charged or refused
 ---
 
 # ADR-0008: Book simulation sits behind one engine seam, with vectorbt and rsims as adapters
@@ -123,6 +124,18 @@ the same strategy gave a different book through `backtest()` than through
     schedule; the groups come from universe metadata (`by:` a column of
     `load_universe()`), and an infeasible limit refuses the run. No adapter
     changed: `execute(...)` still receives targets and an orders mask.
+
+12. **The same defaults on every engine; a cost is charged or refused (TOM-1500).**
+    Tom, 2026-10-05: "same defaults for each engine". rsims compounds by default
+    (`capitalise_profits: true`), as vectorbt does, and both engines start from
+    the same `initial_cash` (10,000; vectorbt's own default was 100). Both charge
+    every `Costs` field: the proportional fee, the fixed fee per order and
+    slippage on the fill price (a buy fills at `close * (1 + slippage)`, the
+    position is marked at the close). rsims follows vectorbt's order rules: a
+    dust change (1e-9 relative) is no order, and a sell whose proceeds do not
+    cover its fees is not placed. Each adapter names the costs it charges
+    (`charged_costs()`); `simulate()` refuses a non-zero cost outside that set,
+    naming the engine and the cost. A cost is never dropped silently.
 
 ### The threshold caveat
 

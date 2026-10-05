@@ -6,6 +6,10 @@ its parameters (``trade_buffer``, ``initial_cash``, ``margin``,
 ``capitalise_profits``, ``equity_basis``), its capabilities (it charges the
 funding series it is handed; it is a margin simulator) and the normalisation
 of its long results frame into a :class:`~quantbox.engine.base.TradedBook`.
+Its defaults are vectorbt's (TOM-1500, "same defaults for each engine"): it
+compounds (``capitalise_profits: True``) and charges every
+:class:`~quantbox.engine.base.Costs` field — the proportional fee, the fixed
+fee per order and slippage on the fill price.
 It executes the seam's orders mask and nothing else: it trades on the bars the
 schedule orders, as vectorbt does (docs/adr/0008). A book with several strategy
 slices (MultiIndex columns) is simulated slice by slice.
@@ -55,9 +59,12 @@ class RsimsAdapter(EngineAdapter):
         "trade_buffer": 0.0,
         "initial_cash": 10000,
         "margin": 0.0,
-        "capitalise_profits": False,
+        "capitalise_profits": True,
         "equity_basis": "rsims",
     }
+
+    def charged_costs(self) -> frozenset[str]:
+        return frozenset({"fees", "fixed_fees", "slippage"})
 
     def plan_params(self, params: Mapping[str, Any], *, where: str = "") -> dict[str, Any]:
         equity_basis = str(params.get("equity_basis", "rsims"))
@@ -67,7 +74,7 @@ class RsimsAdapter(EngineAdapter):
             "trade_buffer": _number("trade_buffer", params.get("trade_buffer", 0.0), where),
             "initial_cash": _number("initial_cash", params.get("initial_cash", 10000), where),
             "margin": _number("margin", params.get("margin", 0.0), where),
-            "capitalise_profits": bool(params.get("capitalise_profits", False)),
+            "capitalise_profits": bool(params.get("capitalise_profits", True)),
             "equity_basis": equity_basis,
         }
 
@@ -83,7 +90,7 @@ class RsimsAdapter(EngineAdapter):
         cash_legs: Sequence[str] = (),
         trading_days: int = 365,
     ) -> TradedBook:
-        """rsims trades a cell only where ``orders`` is True. It charges ``costs.fees`` only."""
+        """rsims trades a cell only where ``orders`` is True, and charges every ``costs`` field."""
         from quantbox.metrics import compute_backtest_metrics
 
         params = self.check_params(params)
@@ -193,6 +200,8 @@ def _simulate(
         target_weights=weights,
         funding_rates=funding,
         commission_pct=costs.fees,
+        slippage=costs.slippage,
+        fixed_fees=costs.fixed_fees,
         fee_free=[c for c in cash_legs if c in weights.columns],
         orders=orders,
         **params,
@@ -228,13 +237,15 @@ def _trades(results: Mapping[Any, pd.DataFrame]) -> pd.DataFrame:
     frames = []
     for res in results.values():
         traded = res[(res["ticker"] != "Cash") & (res["Trades"].fillna(0.0) != 0.0)]
+        size = traded["Trades"].astype(float)
         frames.append(
             pd.DataFrame(
                 {
                     "date": traded.index.to_numpy(),
                     "symbol": traded["ticker"].astype(str).to_numpy(),
-                    "size": traded["Trades"].astype(float).to_numpy(),
-                    "price": traded["Close"].astype(float).to_numpy(),
+                    "size": size.to_numpy(),
+                    # The fill price: the close moved by the slippage (TradeValue is at the fill).
+                    "price": (traded["TradeValue"].astype(float) / size).to_numpy(),
                     "value": traded["TradeValue"].astype(float).to_numpy(),
                     "fees": traded["Commission"].astype(float).to_numpy(),
                 }

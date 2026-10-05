@@ -207,9 +207,9 @@ def backtest(
     fees : float
         Proportional fee rate.
     fixed_fees : float
-        Fixed fee per order (vectorbt; rsims charges ``fees`` only).
+        Fixed fee per order (every engine).
     slippage : float
-        Slippage rate (vectorbt; rsims charges ``fees`` only).
+        Slippage rate (every engine).
     rebalancing_freq : None | int | str | list
         Rebalancing schedule on the execution calendar, the same on every
         engine (:func:`quantbox.frequency.rebalancing_dates`). ``None`` =
@@ -223,8 +223,10 @@ def backtest(
         Numba JIT (vectorbt); shorthand for ``engine_params={"use_numba": ...}``.
     engine_params : dict | None
         The adapter's own parameters (rsims: ``trade_buffer``, ``initial_cash``,
-        ``margin``, ``capitalise_profits``, ``equity_basis``); a key the
-        adapter does not own is refused.
+        ``margin``, ``capitalise_profits``, ``equity_basis``; vectorbt:
+        ``use_numba``, ``use_order_func``, ``create_strategy_label``,
+        ``initial_cash``); a key the adapter does not own is refused. Both
+        start from 10,000 and compound by default.
     trading_days : int
         Annualization factor for metrics (365 for crypto).
     lag_bars : int | None

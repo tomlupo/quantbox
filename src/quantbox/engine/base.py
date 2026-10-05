@@ -8,7 +8,10 @@ EXECUTES orders (:meth:`EngineAdapter.execute`). It owns:
 - two **capabilities** that really differ between engines:
   :attr:`EngineAdapter.charges_funding` and :attr:`EngineAdapter.models_margin`;
 - its **output normalisation** (:meth:`EngineAdapter.execute` returns a
-  :class:`TradedBook`; :meth:`EngineAdapter.stats` answers a sweep's metric names).
+  :class:`TradedBook`; :meth:`EngineAdapter.stats` answers a sweep's metric names);
+- the **costs it charges** (:meth:`EngineAdapter.charged_costs`, the
+  :class:`Costs` fields). The seam refuses a non-zero cost an adapter does not
+  charge (TOM-1500): a cost is charged or refused, never dropped.
 
 Everything that decides WHAT is traded and WHEN is the seam's, the same for
 every engine (docs/adr/0008): the lag (:mod:`quantbox.engine._lag`), the
@@ -135,6 +138,14 @@ class EngineAdapter(ABC):
                 f"engine {self.name!r} does not take parameter(s) {unknown}; it takes {sorted(self.PARAMS) or 'none'}"
             )
         return self.plan_params({**self.PARAMS, **engine_params})
+
+    def charged_costs(self) -> frozenset[str]:
+        """The :class:`Costs` fields this adapter charges. None by default: a new adapter refuses every cost.
+
+        :func:`quantbox.engine.simulate` refuses a non-zero cost outside this
+        set, naming the engine and the cost (TOM-1500).
+        """
+        return frozenset()
 
     @abstractmethod
     def execute(

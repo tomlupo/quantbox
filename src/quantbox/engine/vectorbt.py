@@ -30,8 +30,17 @@ class VectorbtAdapter(EngineAdapter):
     charges_funding = False
     models_margin = False
     native_key = "vbt_portfolio"
-    #: Forwarded to ``vectorbt_engine.run``; the defaults are that function's.
-    PARAMS: Mapping[str, Any] = {"use_numba": True, "use_order_func": None, "create_strategy_label": True}
+    #: Forwarded to ``vectorbt_engine.run``. ``initial_cash`` is its ``init_cash``, 10,000 as on rsims
+    #: (TOM-1500, the same defaults on every engine): a fixed fee is then the same share of the book.
+    PARAMS: Mapping[str, Any] = {
+        "use_numba": True,
+        "use_order_func": None,
+        "create_strategy_label": True,
+        "initial_cash": 10000,
+    }
+
+    def charged_costs(self) -> frozenset[str]:
+        return frozenset({"fees", "fixed_fees", "slippage"})
 
     @classmethod
     def installed(cls) -> bool:
@@ -49,6 +58,10 @@ class VectorbtAdapter(EngineAdapter):
         for key, value in out.items():
             if not (isinstance(value, bool) or (value is None and key == "use_order_func")):
                 raise ValueError(f"{where}'{key}' must be true or false, got {value!r}")
+        cash = params.get("initial_cash", 10000)
+        if isinstance(cash, bool) or not isinstance(cash, (int, float)) or not cash > 0:
+            raise ValueError(f"{where}'initial_cash' must be a positive number, got {cash!r}")
+        out["initial_cash"] = float(cash)
         return out
 
     def execute(
@@ -67,6 +80,7 @@ class VectorbtAdapter(EngineAdapter):
         from quantbox.plugins.backtesting.vectorbt_engine import run as run_vectorbt
 
         params = self.check_params(params)
+        init_cash = params.pop("initial_cash")
         legs = [c for c in cash_legs if c in targets.columns]
         pf = run_vectorbt(
             prices,
@@ -77,6 +91,7 @@ class VectorbtAdapter(EngineAdapter):
             slippage=costs.slippage,
             fee_free=legs,
             residual_legs=tuple(cash_legs) if len(legs) == len(cash_legs) and legs else (),
+            init_cash=init_cash,
             **params,
         )
         # One strategy group: its metrics and the fill-gap check. Several slices: per slice, from stats().

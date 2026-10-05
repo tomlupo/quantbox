@@ -17,8 +17,12 @@ the SAME orders mask, so for one schedule they trade on identical dates
 THE COMMON SCOPE — where the two engines must agree on the numbers:
 
 - spot: long-only, gross exposure at most 1;
-- no funding, no slippage, no fixed fees (rsims charges ``Costs.fees`` only);
-- rsims sized off current equity (``capitalise_profits: True``), as vectorbt is.
+- no funding (vectorbt charges none);
+- both engines under their DEFAULTS (TOM-1500, Tom 2026-10-05: "same defaults for
+  each engine"): rsims compounds (``capitalise_profits`` defaults to True), as
+  vectorbt does, and both charge every field of :class:`~quantbox.engine.Costs`
+  (``fees``, ``slippage``, ``fixed_fees``). A cost an engine cannot model is
+  refused by the seam, never dropped.
 
 THE TOLERANCE, stated:
 
@@ -62,8 +66,8 @@ needs_vectorbt = pytest.mark.skipif(not VECTORBT, reason=NOT_CHECKED)
 
 TIMING = resolve_execution(None)  # next-bar, the mandatory default (docs/adr/0005)
 CAPITAL = 10_000.0
-#: rsims inside the common scope: compounding like vectorbt, no buffer, no margin.
-RSIMS_COMMON = {"capitalise_profits": True, "trade_buffer": 0.0, "margin": 0.0, "initial_cash": CAPITAL}
+#: rsims inside the common scope is rsims under its DEFAULTS (TOM-1500): nothing is passed.
+RSIMS_COMMON = None
 FEES = [0.0, 0.001]
 
 # ----------------------------------------------------------------------
@@ -233,40 +237,129 @@ def test_total_return_is_the_value_the_book_ends_with(engine, schedule):
 
 
 # ----------------------------------------------------------------------
-# Known disagreements, outside the common scope. strict: a fix turns these red.
+# Same defaults, every cost charged (TOM-1500). These were strict xfails until
+# rsims compounded by default and charged slippage and fixed fees.
 # ----------------------------------------------------------------------
 
+#: Every cost field at once, and each one alone: a book with spare cash (sum 0.9), so
+#: vectorbt can always afford the full buy and both engines hold the same book.
+COST_CASES = {
+    "slippage": Costs(slippage=0.0005),
+    "fixed_fees": Costs(fixed_fees=1.0),
+    "all": Costs(fees=0.001, slippage=0.0005, fixed_fees=1.0),
+}
+
 
 @needs_vectorbt
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "rsims' default capitalise_profits=False sizes every bar off min(initial_cash, equity): "
-        "a winning book stops compounding. vectorbt always sizes off equity. Under the DEFAULTS the "
-        "engines disagree by ~1-3% on these fixtures; parity holds with capitalise_profits: True."
-    ),
-)
-def test_parity_under_rsims_default_sizing():
+def test_parity_under_the_defaults():
+    """No engine params at all: rsims compounds by default, as vectorbt does."""
     prices, weights = _prices(), _books()["rotation"]
-    v = _simulate("vectorbt", prices, weights, 0.0)
+    v = simulate(prices, weights, engine="vectorbt", timing=TIMING, costs=Costs())
     r = simulate(prices, weights, engine="rsims", timing=TIMING, costs=Costs())
-    assert (v.value / _capital(v)).iloc[-1] == pytest.approx((r.value / CAPITAL).iloc[-1], rel=1e-6)
+    assert (v.value / _capital(v)).iloc[-1] == pytest.approx((r.value / CAPITAL).iloc[-1], rel=1e-9)
+    assert ((v.returns - r.returns).abs() <= 1e-12).all()
+
+
+def test_rsims_compounds_by_default():
+    """``capitalise_profits`` defaults to True on the adapter, the primitive and the pipeline schema."""
+    import inspect
+
+    from quantbox.plugins.backtesting.rsims_engine import fixed_commission_backtest_with_funding
+    from quantbox.plugins.pipeline.backtest_pipeline import BacktestPipeline
+
+    adapter = get_engine("rsims")
+    assert adapter.PARAMS["capitalise_profits"] is True
+    assert adapter.check_params(None)["capitalise_profits"] is True
+    default = inspect.signature(fixed_commission_backtest_with_funding).parameters["capitalise_profits"].default
+    assert default is True
+    schema = BacktestPipeline.meta.params_schema["properties"]["capitalise_profits"]
+    assert schema["default"] is True
 
 
 @needs_vectorbt
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "rsims charges Costs.fees only: Costs.slippage (and fixed_fees) reach the adapter and are "
-        "dropped without a word, so an rsims run with slippage reports a cheaper book than vectorbt."
-    ),
-)
-def test_parity_with_slippage():
-    prices, weights = _prices(), _books()["random_daily"]
-    costs = Costs(slippage=0.0005)
+@pytest.mark.parametrize("case", sorted(COST_CASES))
+@pytest.mark.parametrize("book", ["random_daily", "partial_cash"])
+def test_parity_with_every_cost(book, case):
+    """Slippage and fixed fees cost the same on both engines: the same value on every bar, the same fills."""
+    prices, weights, costs = _prices(), _books()[book], COST_CASES[case]
     v = simulate(prices, weights, engine="vectorbt", timing=TIMING, costs=costs)
     r = simulate(prices, weights, engine="rsims", timing=TIMING, costs=costs, engine_params=RSIMS_COMMON)
-    assert (v.value / _capital(v)).iloc[-1] == pytest.approx((r.value / CAPITAL).iloc[-1], rel=1e-4)
+    rel = ((v.value / _capital(v)) - (r.value / CAPITAL)).abs() / (v.value / _capital(v))
+    assert rel.max() <= 1e-9, f"{book} {case}: value gap {rel.max():.3e} on {rel.idxmax()}"
+    # A cost-free run would end higher: the costs were charged, not dropped.
+    free = simulate(prices, weights, engine="rsims", timing=TIMING, costs=Costs())
+    assert r.value.iloc[-1] < free.value.iloc[-1]
+    # Same fills: the fill price carries the slippage, the fees carry the fixed fee.
+    fv = v.trades.sort_values(["date", "symbol"]).reset_index(drop=True)
+    fr = r.trades[r.trades["value"].abs() > 1e-9].sort_values(["date", "symbol"]).reset_index(drop=True)
+    assert len(fv) == len(fr)
+    np.testing.assert_allclose(fr["price"], fv["price"], rtol=1e-12)
+    np.testing.assert_allclose(fr["fees"], fv["fees"], rtol=1e-6, atol=1e-9)
+
+
+#: One asset at half the book, slippage 1%, a fixed fee of 1.00 per order; 100 -> 100 -> 125.
+#:   bar 1: buy 5,000 / 100 = 50 units at 101.00: slippage 50.00, fee 1.00.  V = 9,949.00
+#:   bar 2: 50 x 25 = 1,250 (V 11,199); target 0.5 x 11,199 / 125 = 44.796 units: sell 5.204
+#:          at 123.75: slippage 5.204 x 1.25 = 6.505, fee 1.00.          V = 11,191.495 -> 11,191.50
+SLIP_PRICES = pd.DataFrame({"A": [100.0, 100.0, 125.0]}, index=pd.date_range("2024-01-01", periods=3, freq="D"))
+SLIP_WEIGHTS = pd.DataFrame({"A": 0.5}, index=SLIP_PRICES.index)
+SLIP_COSTS = Costs(slippage=0.01, fixed_fees=1.0)
+
+
+@pytest.mark.parametrize("engine", ["vectorbt", "rsims"])
+def test_closed_form_slippage_and_fixed_fees_to_the_cent(engine):
+    if engine == "vectorbt" and not VECTORBT:
+        pytest.skip(NOT_CHECKED)
+    book = simulate(SLIP_PRICES, SLIP_WEIGHTS, engine=engine, timing=TIMING, costs=SLIP_COSTS)
+    assert _to_the_cent(book).round(2).tolist() == [10_000.0, 9_949.0, 11_191.5]
+    trades = book.trades[book.trades["value"].abs() > 1e-9]
+    assert trades["price"].round(2).tolist() == [101.0, 123.75]
+    assert trades["size"].round(3).tolist() == [50.0, -5.204]
+    assert trades["fees"].round(2).tolist() == [1.0, 1.0]
+
+
+def test_every_adapter_charges_every_cost_field():
+    """Each adapter names the Costs fields it charges; a new Costs field is refused until an adapter charges it."""
+    from dataclasses import fields
+
+    from quantbox.engine import engine_names
+
+    every = {f.name for f in fields(Costs)}
+    assert every == {"fees", "fixed_fees", "slippage"}
+    for name in engine_names():
+        assert get_engine(name, require_installed=False).charged_costs() == every, name
+
+
+class _FeesOnly(EngineAdapter):
+    """A third engine that can model a proportional fee and nothing else (the refusal's control)."""
+
+    name = "fees_only"
+    distribution = "quantbox"
+    charges_funding = False
+    models_margin = False
+    native_key = "native"
+
+    def charged_costs(self) -> frozenset[str]:
+        return frozenset({"fees"})
+
+    def execute(self, prices, targets, orders, costs, funding=None, params=None, *, cash_legs=(), trading_days=365):
+        return get_engine("rsims").execute(
+            prices, targets, orders, Costs(fees=costs.fees), funding, None, cash_legs=cash_legs
+        )
+
+    def stats(self, book, names, *, trading_days=365):
+        return {}
+
+
+@pytest.mark.parametrize("costs", [Costs(slippage=0.0005), Costs(fixed_fees=1.0)], ids=["slippage", "fixed_fees"])
+def test_a_cost_an_engine_cannot_model_is_refused(costs):
+    """The seam refuses a non-zero cost the engine does not charge, naming both; it never drops it."""
+    weights = _books()["random_daily"]
+    with pytest.raises(ValueError, match=r"fees_only.*(slippage|fixed_fees)"):
+        simulate(_prices(), weights, engine=_FeesOnly(), timing=TIMING, costs=costs)
+    # The control: the costs it does model run.
+    book = simulate(_prices(), weights, engine=_FeesOnly(), timing=TIMING, costs=Costs(fees=0.001))
+    assert book.value.iloc[-1] > 0
 
 
 # ----------------------------------------------------------------------
@@ -586,11 +679,16 @@ def test_without_vectorbt_parity_reads_not_checked(tmp_path):
             outcome[case.get("name")] = "passed"
     passed = sorted(n for n, o in outcome.items() if o == "passed")
     assert passed == [
+        "test_a_cost_an_engine_cannot_model_is_refused[fixed_fees]",
+        "test_a_cost_an_engine_cannot_model_is_refused[slippage]",
         "test_a_nan_cell_holds_on_every_engine",
         "test_an_adapter_declares_only_the_two_capability_flags",
         "test_closed_form_fee_convention_rsims_to_the_cent",
         "test_closed_form_rsims_to_the_cent",
+        "test_closed_form_slippage_and_fixed_fees_to_the_cent[rsims]",
+        "test_every_adapter_charges_every_cost_field",
         "test_no_adapter_flag_but_the_capabilities_is_read_outside_the_engine_package",
+        "test_rsims_compounds_by_default",
         "test_the_default_leverage_is_one_value_for_every_engine",
         "test_the_flag_scan_sees_a_flag_read",
         "test_threshold_is_a_seam_computed_drift_trigger_known_answer[rsims]",

@@ -24,6 +24,7 @@ the engine runs them in one batch.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from collections.abc import Mapping
 from typing import Any
@@ -90,6 +91,7 @@ def simulate(
     traded the financing cash legs.
     """
     adapter = get_engine(engine)
+    _refuse_uncharged_costs(adapter, costs, where)
     if timing.schedule not in SCHEDULES:
         raise ValueError(f"execution.schedule must be one of {list(SCHEDULES)}, got {timing.schedule!r}")
     bars = timing.schedule == "bars"
@@ -134,6 +136,25 @@ def simulate(
     book.data_validation = staged["data_validation"]
     book.execution = timing_record(timing)
     return book
+
+
+def _refuse_uncharged_costs(adapter: EngineAdapter, costs: Costs, where: str) -> None:
+    """A non-zero cost the engine does not charge is refused, never dropped (TOM-1500).
+
+    Every :class:`Costs` field is checked, so a field added later is refused on
+    every engine until its adapter says it charges it.
+    """
+    charged = adapter.charged_costs()
+    uncharged = {
+        f.name: getattr(costs, f.name)
+        for f in dataclasses.fields(Costs)
+        if getattr(costs, f.name) and f.name not in charged
+    }
+    if uncharged:
+        raise ValueError(
+            f"{where}engine {adapter.name!r} cannot model the cost(s) {uncharged}; it charges "
+            f"{sorted(charged) or 'none'}. Set them to 0 or pick an engine that charges them."
+        )
 
 
 def _slices(decided: pd.DataFrame | dict[str, pd.DataFrame]) -> tuple[list[tuple[Any, pd.DataFrame]], list | None]:
