@@ -1673,8 +1673,10 @@ class TradingPipeline:
         The short clip and the gross cap are the ORDER GENERATOR's: an injected
         rebalancer's own (``risk_rules``, the caps it re-applies when it sizes,
         so re-applying them changes nothing), else the pipeline's ``risk``
-        block. A third-party rebalancer that declares no ``risk_rules`` gets no
-        clip and no cap here (it owns them, as before). ``group_limits`` and
+        block. A third-party rebalancer that declares no ``risk_rules`` keeps
+        its short side (no clip here), and gets the gross cap every other door
+        has: :func:`quantbox.decision.gross_cap` of its params, default 1
+        (TOM-1526; before, it got no cap). ``group_limits`` and
         ``venue.leverage`` are the pipeline's, as in the backtest.
         """
         spec = params.get("group_limits")
@@ -1683,7 +1685,9 @@ class TradingPipeline:
             caps = self._risk_rules(params)
         else:
             own = getattr(rebalancer, "risk_rules", None)
-            caps = own(rebal_params) if callable(own) else {"allow_short": True, "max_leverage": None}
+            caps = (
+                own(rebal_params) if callable(own) else {"allow_short": True, "max_leverage": gross_cap(rebal_params)}
+            )
         return DecisionRules(
             allow_short=bool(caps["allow_short"]),
             max_leverage=caps["max_leverage"],

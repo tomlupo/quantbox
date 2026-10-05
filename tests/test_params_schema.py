@@ -503,8 +503,8 @@ def test_synthetic_cookbook_knobs_reach_the_data_plugin(tmp_path, monkeypatch):
         seen["prices"] = dict(params)
         out = orig_m(self, universe, asof, params)
         seen["shape"] = out["prices"].shape
-        # Stop here: what is under test is the routing of the knobs. (The synthetic plugin's
-        # load_universe returns a list, which the backtest pipeline cannot store as parquet.)
+        # Stop here: what is under test is the routing of the knobs. The full run is
+        # tests/pipeline/test_cookbook_configs.py (TOM-1526).
         raise _Reached
 
     monkeypatch.setattr(SyntheticDataPlugin, "load_universe", spy_u)

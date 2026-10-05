@@ -23,11 +23,21 @@ class TestLoadUniverse:
     def test_default_symbols(self, plugin):
         universe = plugin.load_universe({"n_assets": 5})
         assert len(universe) == 5
-        assert universe[0] == "SYN_001"
+        assert universe["symbol"].iloc[0] == "SYN_001"
 
     def test_explicit_symbols(self, plugin):
         universe = plugin.load_universe({"symbols": ["BTC", "ETH", "SOL"]})
-        assert universe == ["BTC", "ETH", "SOL"]
+        assert universe["symbol"].tolist() == ["BTC", "ETH", "SOL"]
+
+    def test_the_universe_is_the_contracts_dataframe(self, plugin, tmp_path):
+        """DataPlugin.load_universe returns a DataFrame; a list could not be stored (TOM-1526)."""
+        from quantbox.store import FileArtifactStore
+
+        universe = plugin.load_universe({"n_assets": 3})
+        assert isinstance(universe, pd.DataFrame) and list(universe.columns) == ["symbol"]
+        FileArtifactStore(str(tmp_path), "run").put_parquet("universe", universe)
+        data = plugin.load_market_data(universe, "2026-02-01", {"n_steps": 5})
+        assert list(data["prices"].columns) == ["SYN_001", "SYN_002", "SYN_003"]
 
 
 class TestLoadMarketData:

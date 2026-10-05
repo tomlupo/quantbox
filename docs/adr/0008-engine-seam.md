@@ -202,7 +202,9 @@ the same strategy gave a different book through `backtest()` than through
     `backtest()`, `optimize()` and the sweep: a config without the key gave
     different targets in the backtest and live. It is now
     `quantbox.decision.DEFAULT_MAX_LEVERAGE = 1`, read by
-    `quantbox.decision.gross_cap` only (`DecisionRules` defaults to it too);
+    `quantbox.decision.gross_cap` only (`DecisionRules` defaults to it too;
+    in trading, an injected rebalancer without `risk_rules` gets it from its
+    params as well, TOM-1526);
     `backtest()` and `optimize()` take `max_leverage=`, the sweep reads it from
     `backtest_kwargs`. A levered book declares its leverage. A long-only book
     on `normalize` does not move: for a row without shorts the gross cap at 1

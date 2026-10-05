@@ -382,6 +382,53 @@ def test_the_sweep_caps_gross_at_one_unless_backtest_kwargs_declare_leverage():
     assert total_return(max_leverage=2) != pytest.approx(total_return())
 
 
+class _NoRulesRebalancer:
+    """A third-party rebalancer: ``generate_orders`` only, no ``risk_rules``. It records what it is asked to size."""
+
+    meta = type("M", (), {"name": "rebalancing.third_party.v1"})()
+
+    def __init__(self) -> None:
+        self.sized: list[dict[str, float]] = []
+
+    def generate_orders(self, weights: dict[str, float], broker: Any, params: dict[str, Any]) -> dict[str, Any]:
+        self.sized.append({str(k): float(v) for k, v in weights.items()})
+        return {"rebalancing": pd.DataFrame(), "orders": pd.DataFrame(), "total_value": 0.0, "weights": dict(weights)}
+
+
+@pytest.mark.parametrize("rebal_params", [{}, {"max_leverage": 2}], ids=["default", "declared_2"])
+def test_a_rebalancer_without_risk_rules_gets_the_default_gross_cap_in_trading(tmp_path, rebal_params):
+    """TOM-1526: before, a rebalancer with no ``risk_rules`` got NO gross cap in trading (gross 2 sized as 2),
+    while every other door capped at :data:`DEFAULT_MAX_LEVERAGE`. Tom, 2026-10-06: "Dostać domyślne 1"."""
+    from quantbox.plugins.broker.sim import SimPaperBroker
+
+    prices, levered = _levered()  # gross 2 on every row, shorts included
+    rebalancer = _NoRulesRebalancer()
+    result = TradingPipeline().run(
+        mode="paper",
+        asof=str(prices.index[-1].date()),
+        params={
+            "strategies": [{"name": "strategy.replay.v1", "weight": 1.0, "params": {}}],
+            "stable_coin_symbol": "USD",
+            "trading_enabled": False,
+            "_rebalancer_cfg": {"params": rebal_params},
+        },
+        data=_Data(prices),
+        store=FileArtifactStore(str(tmp_path / "third-party"), "run"),
+        broker=SimPaperBroker(cash=100_000.0, quote_currency="USD"),
+        risk=[],
+        strategies=[_Replay(levered)],
+        rebalancer=rebalancer,
+    )
+    cap = gross_cap(rebal_params)
+    decision = result.notes["decision"]
+    assert decision["rules"]["max_leverage"] == cap
+    assert decision["rules"]["allow_short"] is True  # the rebalancer still owns the short side
+    assert rebalancer.sized, "the rebalancer was never asked to size the targets"
+    sized = rebalancer.sized[-1]
+    assert sum(abs(w) for w in sized.values()) == pytest.approx(cap)
+    assert sized["B"] < 0
+
+
 # ----------------------------------------------------------------------
 # AC 2: without borrow the held net never goes above 1 after a rebalance, deferral included
 # ----------------------------------------------------------------------
