@@ -178,18 +178,15 @@ def test_a_ticker_without_prices_is_refused_on_the_bar_grid(engine):
 
 
 @pytest.mark.parametrize("engine", ENGINES)
-def test_a_ticker_without_prices_is_dropped_loudly_on_the_calendar(engine, caplog):
-    """The calendar trades the instruments the prices carry (ADR-0007) and SAYS what it drops."""
+def test_a_ticker_without_prices_is_refused_on_the_calendar(engine):
+    """TOM-1500: the calendar refuses it too (it used to drop it with a ``WEIGHTS:`` warning)."""
     prices = _prices()
     weights = _weights_decided_on(J - 2).assign(MISSING=0.5)
-    with caplog.at_level("WARNING", logger="quantbox.engine.book"):
-        book = simulate(prices, weights, engine=engine, timing=_timing("calendar"))
+    with pytest.raises(ValueError, match=r"missing \['MISSING'\]"):
+        simulate(prices, weights, engine=engine, timing=_timing("calendar"))
+    # A column of zeros holds nothing: not refused, and not in the book.
+    book = simulate(prices, weights.assign(MISSING=0.0), engine=engine, timing=_timing("calendar"))
     assert "MISSING" not in book.weights.columns
-    assert any("WEIGHTS:" in r.getMessage() and "MISSING" in r.getMessage() for r in caplog.records)
-    with pytest.raises(ValueError, match="No overlapping tickers"):
-        simulate(
-            prices[["A"]], pd.DataFrame({"MISSING": 1.0}, index=prices.index), engine=engine, timing=_timing("calendar")
-        )
 
 
 @pytest.mark.parametrize("engine", ENGINES)

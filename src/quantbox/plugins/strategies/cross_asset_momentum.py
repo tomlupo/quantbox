@@ -241,7 +241,7 @@ def apply_core_satellite(
     active: pd.DataFrame,
     passive: pd.DataFrame,
     core_weight: float = 0.6,
-    risk_off_ticker: str = "USDT",
+    risk_off_ticker: str | None = "USDT",
 ) -> pd.DataFrame:
     """
     Combine active and passive portfolios with core-satellite blend.
@@ -252,7 +252,8 @@ def apply_core_satellite(
         active: Active (momentum) weights — sums to <= 1
         passive: Passive weights (equal weight or market cap)
         core_weight: Weight allocated to passive (core), remainder to active (satellite)
-        risk_off_ticker: Ticker for unallocated weight
+        risk_off_ticker: Ticker for unallocated weight; None leaves it in cash
+            (no column is added — a ``None`` column has no price, TOM-1500)
 
     Returns:
         Combined weights DataFrame
@@ -264,6 +265,8 @@ def apply_core_satellite(
     active_scaled = active * satellite_weight
 
     combined = passive_scaled + active_scaled
+    if risk_off_ticker is None:
+        return combined
 
     # Unallocated active weight → risk-off
     active_sum = active_scaled.sum(axis=1)
@@ -472,12 +475,14 @@ class CrossAssetMomentumStrategy:
             )
 
         # 8. Core-satellite blend
-        # Expand to include risk-off ticker if not in valid_tickers
-        all_cols = (
-            list(prices.columns)
-            if self.risk_off_ticker in prices.columns
-            else (list(prices_filtered.columns) + [self.risk_off_ticker])
-        )
+        # Expand to include risk-off ticker if not in valid_tickers. Without one
+        # (None) the unallocated weight stays in cash: no column is added (TOM-1500).
+        if self.risk_off_ticker is None:
+            all_cols = list(prices_filtered.columns)
+        elif self.risk_off_ticker in prices.columns:
+            all_cols = list(prices.columns)
+        else:
+            all_cols = list(prices_filtered.columns) + [self.risk_off_ticker]
         active_expanded = active_weights.reindex(columns=all_cols, fill_value=0)
         passive_expanded = passive_weights.reindex(columns=all_cols, fill_value=0)
 

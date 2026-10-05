@@ -183,28 +183,21 @@ def _join(frames: list[tuple[Any, pd.DataFrame]], level_names: list | None) -> p
     return joined
 
 
-def _missing_tickers(prices: pd.DataFrame, slices: list[tuple[Any, pd.DataFrame]], bars: bool, where: str) -> None:
-    """A weight on a ticker with no price column at all: refused on ``bars``, dropped LOUDLY on the calendar.
+def _missing_tickers(prices: pd.DataFrame, slices: list[tuple[Any, pd.DataFrame]], where: str) -> None:
+    """A non-zero weight on a ticker with no price column at all is refused, on every schedule (TOM-1500).
 
-    The calendar keeps the instruments the prices carry (ADR-0007) and has
-    always dropped such a column; it now says so (``WEIGHTS:``). The bar grid
-    refuses it, as the helpers did before the one book function (review #235):
-    an engine would otherwise trade a flat book on it.
+    The calendar used to drop such a column with a ``WEIGHTS:`` warning; the
+    bar grid refused it (review #235). Both refuse now: a dropped weight is a
+    book the strategy did not decide. A column of zeros holds nothing and passes.
     """
     missing = sorted(
         {str(c) for _, w in slices for c in w.columns if c not in prices.columns and (w[c].fillna(0.0) != 0).any()}
     )
-    if not missing:
-        return
-    if bars:
-        raise ValueError(f"All tickers in weights must be present in prices (missing {missing})")
-    logger.warning(
-        "WEIGHTS: %sthe strategy holds weight on %d ticker(s) with NO price column, DROPPED from the book (its "
-        "weight is not traded): %s. Load prices for them or stop targeting them.",
-        where,
-        len(missing),
-        missing,
-    )
+    if missing:
+        raise ValueError(
+            f"{where}All tickers in weights must be present in prices (missing {missing}): load prices for "
+            "them or stop targeting them."
+        )
 
 
 def _refuse_held_without_price(carried: pd.DataFrame, held: pd.DataFrame) -> None:
@@ -258,7 +251,7 @@ def _stage(
        engine that does not model margin, at an assumed rate of 0) the
        LEND/BORROW cash legs are appended (:func:`quantbox.financing.add_cash_legs`).
     """
-    _missing_tickers(prices_wide, slices, timing.schedule == "bars", where)
+    _missing_tickers(prices_wide, slices, where)
     tickers = list(dict.fromkeys(c for _, w in slices for c in w.columns))
     weight_index = slices[0][1].index
     for _, w in slices[1:]:

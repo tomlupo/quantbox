@@ -220,9 +220,9 @@ book was not.
 - A `backtest()` weights frame stamped only on rebalance dates is carried onto
   the price bars from its first row (`_on_price_bars`), and a row stamped on a
   date with no price bar is decided on the next price bar.
-- On the calendar, a weight on a ticker with no price column is dropped with a
-  `WEIGHTS:` warning (the scheduled book always dropped it, silently); on
-  `bars` it is refused.
+- A non-zero weight on a ticker with no price column is refused on both
+  schedules (TOM-1500; the calendar used to drop it with a `WEIGHTS:`
+  warning, and the scheduled book before that dropped it silently).
 - A multi-slice book carries no `data_validation` and no top-level `metrics`;
   each slice's metrics come from the adapter's `stats()`.
 - The engine adapters refuse a parameter they do not own.
