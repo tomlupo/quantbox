@@ -333,6 +333,7 @@ def run(
     fee_free: Sequence[str] = (),
     orders: pd.DataFrame | None = None,
     residual_legs: Sequence[str] = (),
+    init_cash: float = 100.0,
 ) -> vbt.Portfolio:
     """Run a vectorbt backtest.
 
@@ -375,6 +376,10 @@ def run(
         ordered, they are sized to the residual ``1 - sum`` of the weights
         actually held after the bar's orders (an untouched, drifted cell at its
         current weight), split by sign — so the engine never runs out of cash.
+    init_cash : float
+        Starting cash (vectorbt's own default, 100). The engine seam passes
+        its ``initial_cash`` (10,000 on every engine), so a fixed fee is the
+        same share of the book on every engine (TOM-1500).
 
     Returns
     -------
@@ -519,6 +524,7 @@ def run(
             post_order_func_nb=post_order_func_nb_jit,
             group_by=group_by,
             cash_sharing=True,
+            init_cash=init_cash,
             use_numba=use_numba,
         )
     else:
@@ -532,6 +538,7 @@ def run(
             direction=direction_arr,
             group_by=group_by,
             cash_sharing=True,
+            init_cash=init_cash,
             call_seq="auto",
             fees=fees_arr,
             fixed_fees=fixed_fees_arr,

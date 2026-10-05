@@ -87,6 +87,10 @@ plugins:
         allow_short: true
 ```
 
+rsims has the same defaults as vectorbt (TOM-1500): it compounds, starts from the
+same `initial_cash` and charges `fees`, `slippage` and `fixed_fees` the same way. A
+cost an engine cannot model is refused, never dropped.
+
 **Additional rsims features:**
 - Funding rate simulation (long/short asymmetry)
 - Margin and leverage tracking
@@ -178,7 +182,11 @@ Reading a dataset without it raises an ImportError naming both.
 | Parameter | Default | Description |
 |---|---|---|
 | `engine` | `vectorbt` | `"vectorbt"` or `"rsims"` |
-| `fees` | `0.001` | Trading fee per side (0.001 = 10 bps) |
+| `fees` | `0.001` | Trading fee per side (0.001 = 10 bps), every engine |
+| `slippage` | `0` | Proportional slippage on the fill price (0.0005 = 5 bps), every engine |
+| `fixed_fees` | `0` | Fixed fee per order, in quote currency, every engine |
+| `initial_cash` | `10000` | Starting cash, every engine (a fixed fee is a share of it) |
+| `capitalise_profits` | `true` | rsims: size off current equity (compound), as vectorbt does; `false` sizes off `min(initial_cash, equity)` |
 | `rebalancing_freq` | `1` | The DECISION schedule on the execution calendar: every N execution bars, or `"1W"`, `"ME"`, `"BMS"`; period-end offsets decide on the period's last execution bar, others on the next one; the trade follows `lag_bars` execution bars later ([ADR-0007](../adr/0007-instrument-calendar-and-financing.md)) |
 | `threshold` | (none) | Drift band: a scheduled rebalance is placed only when a held weight drifted more than this (seam-computed, cost-free, every engine) |
 | `trading_days` | `365` | Days per year for annualization |

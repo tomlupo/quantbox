@@ -1,13 +1,13 @@
 {
   "schema": "quantbox/run@1",
-  "run_id": "2024-02-09__backtest_pipeline_v1__ccd90b192d7d__20261001T074159Z",
+  "run_id": "2024-02-09__backtest_pipeline_v1__a2d8982532ee__20261005T103533Z",
   "asof": "2024-02-09",
   "mode": "backtest",
   "pipeline": "backtest.pipeline.v1",
-  "config_hash": "ccd90b192d7d",
+  "config_hash": "a2d8982532ee",
   "config": {
     "path": null,
-    "sha256": "ccd90b192d7d1c83cb66a2a5dc84ddcfd2fa203d0195a3479c40c2f62f48086d",
+    "sha256": "a2d8982532eef1b680452eb29e881228e88025cb840628b3ec3e5eb4c05e2a21",
     "file_sha256": null,
     "git_blob_sha": null
   },
@@ -50,11 +50,12 @@
       }
     ],
     "aggregator": null,
-    "rebalancer": null
+    "rebalancer": null,
+    "overlays": []
   },
   "engine": {
     "name": "rsims",
-    "version": "0.7.0"
+    "version": "0.9.0"
   },
   "dataset": {
     "tier": "raw",
@@ -77,7 +78,9 @@
     "traded_weights": "traded_weights.parquet",
     "portfolio_daily": "portfolio_daily.parquet",
     "returns": "returns.parquet",
-    "metrics": "metrics.json"
+    "metrics": "metrics.json",
+    "data_validation": "data_validation.json",
+    "rebalance_schedule": "rebalance_schedule.parquet"
   },
   "files": {
     "returns": "returns.parquet",
@@ -89,16 +92,16 @@
     "n_assets": 2.0,
     "n_dates": 40.0,
     "total_return": -0.14692603224076517,
-    "cagr": -0.7829024339328287,
-    "sharpe": -9.355910125627055,
-    "sortino": -12.180585748113547,
+    "cagr": -0.7742312638463771,
+    "sharpe": -9.212958358325244,
+    "sortino": -11.876071104410707,
     "max_drawdown": -0.15080205883256248,
     "max_drawdown_duration_days": 37.0,
-    "annual_volatility": 0.15734144378047363,
-    "calmar": -5.19158982306797,
-    "win_rate": 0.28205128205128205,
+    "annual_volatility": 0.1557882431513842,
+    "calmar": -5.1340894802107195,
+    "win_rate": 0.275,
     "profit_factor": 0.264105037654571,
-    "var_95": -0.018378685763734404,
+    "var_95": -0.018348938938344737,
     "cvar_95": -0.021992121244332197,
     "execution_lag_bars": 1.0,
     "traded_mean_gross_exposure": 0.975,
@@ -107,18 +110,98 @@
     "traded_mean_turnover": 0.025,
     "traded_flat_bar_share": 0.025,
     "target_short_gross_share": 0.0,
-    "target_mean_net_exposure": 1.0
+    "target_mean_net_exposure": 1.0,
+    "calendar_ffilled_bars": 0.0,
+    "calendar_targeted_outside_window_bars": 0.0,
+    "calendar_deferred_trades": 0.0,
+    "calendar_legacy_coverage_drop": 0.0,
+    "execution_calendar_bars": 40.0,
+    "execution_calendar_bar_share": 1.0,
+    "decision_stale_inputs": 0.0,
+    "decision_max_staleness_bars": 0.0,
+    "index_price_bars_dropped": 0.0,
+    "index_weight_rows_dropped": 0.0,
+    "leverage_rebalances_above_net_1": 0.0,
+    "leverage_scaled_rebalances": 0.0,
+    "leverage_scale_mean": 1.0,
+    "leverage_scale_min": 1.0,
+    "leverage_scaled_after_deferral": 0.0,
+    "leverage_buys_zeroed_rebalances": 0.0,
+    "leverage_max_net_exposure_held": 1.0
   },
   "warnings": [],
   "execution": {
     "lag_bars": 1,
     "fill": "close",
     "same_bar": false,
-    "description": "next-bar (lag_bars=1): weights decided on bar t fill at the close of bar t+1 bar later"
+    "description": "next-bar (lag_bars=1): weights decided on bar t fill at the close of bar t+1 bar later",
+    "calendar": "majority"
   },
   "venue": {
     "declared": true,
     "allow_shorts": false,
-    "max_leverage": 1.5
+    "max_leverage": 1.5,
+    "leverage": "normalize",
+    "financing": null
+  },
+  "overlays": [],
+  "data_validation": {
+    "schema": "quantbox/data-validation@1",
+    "file": "data_validation.json",
+    "calendar": {
+      "n_bars": 40,
+      "n_instruments": 2,
+      "rows_without_any_price": 0,
+      "legacy_coverage_drop": 0,
+      "ffilled_bars": 0,
+      "instruments_without_prices": []
+    },
+    "execution_calendar": {
+      "calendar": "majority",
+      "execution_bars": 40,
+      "total_bars": 40
+    },
+    "timing": {
+      "lag_counted_in": "execution-calendar bars",
+      "decisions": 40,
+      "executed_decisions": 39,
+      "deferred_trades": 0,
+      "targeted_outside_window_bars": 0
+    },
+    "staleness": {
+      "instrument_decisions": 80,
+      "stale_decisions": 0,
+      "max_bars": 0,
+      "p95_bars": 0.0
+    },
+    "weight_age": {
+      "measured": false,
+      "reason": "rebalancing_freq 1 is not a calendar offset: no rebalance period",
+      "decisions": 39
+    },
+    "index_alignment": {
+      "bars_used": 40,
+      "warmup_price_bars_dropped": 0,
+      "price_bars_dropped": 0,
+      "weight_rows_dropped": 0
+    },
+    "leverage": {
+      "mode": "normalize",
+      "rebalances": 39,
+      "rebalances_above_net_1": 0,
+      "max_net_exposure_decided": 1.0,
+      "max_net_exposure_unscaled": 1.0,
+      "max_net_exposure_held": 1.0,
+      "scaled_rebalances": 0,
+      "scaled_after_deferral": 0,
+      "buys_zeroed_rebalances": 0,
+      "buys_zeroed_dates": [],
+      "scale_mean": 1.0,
+      "scale_min": 1.0,
+      "scale_max": 1.0
+    }
+  },
+  "run": {
+    "kind": "backtest"
   }
 }
