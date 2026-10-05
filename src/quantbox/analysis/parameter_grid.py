@@ -43,7 +43,7 @@ from typing import Any
 
 import pandas as pd
 
-from quantbox.execution import ExecutionTiming, resolve_sweep_lag_bars
+from quantbox.execution import resolve_execution, resolve_sweep_lag_bars
 from quantbox.parquet_io import read_parquet
 
 logger = logging.getLogger(__name__)
@@ -111,7 +111,8 @@ def sweep(
         Market data dict passed to strategy.run() (must contain ``"prices"``).
     backtest_kwargs
         ``engine`` (default vectorbt), costs (``fees``, ``fixed_fees``, ``slippage``),
-        ``rebalancing_freq`` and ``threshold``; any other key is the engine adapter's
+        ``rebalancing_freq``, ``threshold`` (the seam's schedule, every engine) and ``schedule``
+        (``calendar``, the default, or ``bars``); any other key is the engine adapter's
         own parameter (vectorbt: ``use_numba``, ...), refused when it does not own it.
     metrics
         Metric names, answered by the engine adapter (vectorbt: ``pf`` attribute names;
@@ -131,7 +132,7 @@ def sweep(
         Columns: sweep keys, slice-decoded keys (e.g. ``vol_target``,
         ``tranches``), then the requested ``metrics``.
     """
-    from quantbox.engine import Costs, get_engine, simulate_weights
+    from quantbox.engine import Costs, get_engine, simulate
 
     backtest_kwargs = dict(backtest_kwargs or {})
     # The engine and the schedule are the seam's; costs are Costs; anything else is the adapter's own
@@ -144,8 +145,9 @@ def sweep(
     )
     rebalancing_freq = backtest_kwargs.pop("rebalancing_freq", 1)
     threshold = backtest_kwargs.pop("threshold", None)
+    schedule = backtest_kwargs.pop("schedule", "calendar")  # execution.schedule: calendar | bars
     engine_params = adapter.check_params(backtest_kwargs)
-    timing = ExecutionTiming(resolve_sweep_lag_bars(lag_bars, shift_signal))
+    timing = resolve_execution({"lag_bars": resolve_sweep_lag_bars(lag_bars, shift_signal), "schedule": schedule})
 
     # Defensive: strip index.freq so vbt's wrapper.freq lookup doesn't trip on
     # a `<Day>` offset (vbt + recent pandas can't convert it to a Timedelta).
@@ -171,9 +173,14 @@ def sweep(
         strat = strategy_cls(**params)
         out = strat.run(data)
         weights = out["weights"]
-        # Bars with no decision behind them (the lag's first bars, the warm-up) are dropped, as the
-        # sweep always has; the lag itself is the seam's (docs/adr/0008).
-        book = simulate_weights(
+        # The warm-up (leading rows where no slice has decided anything) is not part of the book, as the
+        # sweep always had it; the slices are one batch through the one book function (docs/adr/0008).
+        decided_rows = weights.notna().any(axis=1).to_numpy()
+        weights = weights.iloc[int(decided_rows.argmax()) :] if decided_rows.any() else weights.iloc[:0]
+        if len(weights.index.intersection(prices.index)) < 2:
+            logger.warning("parameter_grid.sweep: insufficient overlap for %s", sweep_labels)
+            continue
+        book = simulate(
             prices,
             weights,
             engine=adapter,
@@ -182,11 +189,7 @@ def sweep(
             rebalancing_freq=rebalancing_freq,
             threshold=threshold,
             engine_params=engine_params,
-            leading="drop",
         )
-        if book is None:
-            logger.warning("parameter_grid.sweep: insufficient overlap for %s", sweep_labels)
-            continue
 
         # A strategy may return MultiIndex columns (strategy slices, the ticker last): one row per slice.
         slice_level_names = list(weights.columns.names[:-1]) if isinstance(weights.columns, pd.MultiIndex) else []

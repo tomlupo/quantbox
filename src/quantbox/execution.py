@@ -53,6 +53,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_LAG_BARS = 1
 MIN_LAG_BARS = 1
+#: ``execution.schedule``: the scheduled book (``calendar``) or the same book with every price bar executing.
+SCHEDULES = ("calendar", "bars")
 
 #: How the override is spelled in an error message — every refusal names it.
 SAME_BAR_OVERRIDE = 'execution.same_bar: {allow: true, reason: "<why same-bar is closer to reality here>"}'
@@ -95,6 +97,17 @@ EXECUTION_SCHEMA: dict[str, Any] = {
                 "loaded prices. A bar is an execution bar when at least half (majority) / any (union) / every "
                 "(intersection) instrument inside its life window prints on it, or when the ticker prints. "
                 "Rebalance decisions are scheduled on it and lag_bars counts its bars; PnL is marked on every bar."
+            ),
+        },
+        "schedule": {
+            "enum": list(SCHEDULES),
+            "default": "calendar",
+            "description": (
+                "How decided weights become a traded book (docs/adr/0008). calendar (default): the scheduled "
+                "book of ADR-0007 — instrument and execution calendars, deferral of unprinted orders, "
+                "venue.leverage. bars: the same book on a degenerate calendar — every price bar is an "
+                "execution bar, no deferral, no venue.leverage (declaring venue.leverage or venue.financing "
+                "with it is refused)."
             ),
         },
     },
@@ -141,8 +154,10 @@ class ExecutionTiming:
 
     lag_bars: int
     same_bar: SameBarOverride | None = None
-    #: ``execution.calendar`` (docs/adr/0007); only the backtest pipeline schedules on it.
+    #: ``execution.calendar`` (docs/adr/0007): decisions are scheduled on it and the lag counts its bars.
     calendar: str = DEFAULT_EXECUTION_CALENDAR
+    #: ``execution.schedule``: ``calendar`` (the scheduled book) or ``bars`` (every price bar executes).
+    schedule: str = "calendar"
 
 
 def resolve_execution(execution_cfg: Any) -> ExecutionTiming:
@@ -157,9 +172,11 @@ def resolve_execution(execution_cfg: Any) -> ExecutionTiming:
         return ExecutionTiming(DEFAULT_LAG_BARS)
     if not isinstance(execution_cfg, Mapping):
         raise ValueError(f"execution must be a mapping like {{lag_bars: 1}}, got {execution_cfg!r}")
-    unknown = sorted(set(execution_cfg) - {"lag_bars", "same_bar", "calendar"})
+    unknown = sorted(set(execution_cfg) - {"lag_bars", "same_bar", "calendar", "schedule"})
     if unknown:
-        raise ValueError(f"execution: unknown key(s) {unknown}; the keys are 'lag_bars', 'same_bar' and 'calendar'")
+        raise ValueError(
+            f"execution: unknown key(s) {unknown}; the keys are 'lag_bars', 'same_bar', 'calendar' and 'schedule'"
+        )
     lag = execution_cfg.get("lag_bars", DEFAULT_LAG_BARS)
     same_bar = _resolve_same_bar(execution_cfg.get("same_bar"))
     _check_lag(lag, same_bar)
@@ -168,7 +185,26 @@ def resolve_execution(execution_cfg: Any) -> ExecutionTiming:
             f"execution.same_bar is valid only with lag_bars 0, got lag_bars={lag!r}: the override "
             "would classify a next-bar run as research. Delete the same_bar block."
         )
-    return ExecutionTiming(int(lag), same_bar, resolve_execution_calendar(execution_cfg.get("calendar")))
+    schedule = execution_cfg.get("schedule", "calendar")
+    if schedule not in SCHEDULES:
+        raise ValueError(f"execution.schedule must be one of {list(SCHEDULES)}, got {schedule!r}")
+    return ExecutionTiming(int(lag), same_bar, resolve_execution_calendar(execution_cfg.get("calendar")), schedule)
+
+
+def check_schedule_venue(timing: ExecutionTiming, venue_cfg: Any) -> None:
+    """Refuse ``venue.leverage`` / ``venue.financing`` under ``execution.schedule: bars``.
+
+    The bar grid applies no ``venue.leverage`` and appends no financing legs
+    (docs/adr/0008): a block that asks for either would be silently ignored.
+    """
+    if timing.schedule != "bars" or not isinstance(venue_cfg, Mapping):
+        return
+    declared = sorted(k for k in ("leverage", "financing") if venue_cfg.get(k) is not None)
+    if declared:
+        raise ValueError(
+            f"execution.schedule: bars applies no venue.leverage and no venue.financing, but the config declares "
+            f"venue.{' and venue.'.join(declared)}. Drop it, or use execution.schedule: calendar (the default)."
+        )
 
 
 def resolve_lag_bars(execution_cfg: Any) -> int:
@@ -215,9 +251,11 @@ def _check_lag(lag: Any, same_bar: SameBarOverride | None = None) -> None:
         )
 
 
-def helper_execution(lag_bars: int | None, allow_same_bar: bool, same_bar_reason: str | None) -> ExecutionTiming:
+def helper_execution(
+    lag_bars: int | None, allow_same_bar: bool, same_bar_reason: str | None, schedule: str = "calendar"
+) -> ExecutionTiming:
     """The ``backtest()`` / ``optimize()`` keywords as an ``execution:`` block, through the same resolver."""
-    cfg: dict[str, Any] = {}
+    cfg: dict[str, Any] = {"schedule": schedule}
     if lag_bars is not None:
         cfg["lag_bars"] = lag_bars
     if allow_same_bar or same_bar_reason is not None:
@@ -267,33 +305,19 @@ def apply_execution_lag(
     return lag_frame(weights, lag_bars, same_bar=same_bar, fill_leading=fill_leading)
 
 
-def lag_buy_and_hold(
-    index: pd.Index,
-    rebalancing_freq: Any,
-    lag_bars: int,
-) -> Any:
-    """A buy-and-hold book's ONE trade on the first bar a decision exists — :func:`quantbox.engine.lag_buy_and_hold`."""
-    from quantbox.engine._lag import lag_buy_and_hold as _lag_buy_and_hold
+def materialise_nan_policy(weights: pd.DataFrame, engine: str | None = None) -> pd.DataFrame:
+    """Make the seam's NaN policy explicit in a weights frame: a NaN cell HOLDS the last target (leading NaN -> 0).
 
-    return _lag_buy_and_hold(index, rebalancing_freq, lag_bars)
-
-
-def materialise_nan_policy(weights: pd.DataFrame, engine: str | None) -> pd.DataFrame:
-    """Make the NaN policy an engine ALREADY applies explicit in the frame it is handed.
-
-    A NaN weight cell means "the strategy said nothing for this bar". Each
-    engine adapter answers that with its own policy
-    (:attr:`quantbox.engine.EngineAdapter.nan_policy`): vectorbt HOLDS the
-    last target (leading NaN -> 0), rsims goes FLAT. Both are idempotent, so
-    handing the engine the materialised frame changes no engine number; it only
-    makes the saved ``traded_weights`` describe the book that engine traded.
-    ``engine=None`` returns the frame untouched.
+    A NaN weight cell means "the strategy said nothing for this bar". The
+    policy is decided ONCE, in the engine seam (:func:`quantbox.engine.materialise_nan`),
+    for every engine (docs/adr/0008); *engine* is accepted for old callers and
+    does not change the answer. ``engine=None`` returns the frame untouched.
     """
     if engine is None:
         return weights
-    from quantbox.engine.registry import get_engine
+    from quantbox.engine.book import materialise_nan
 
-    return get_engine(engine, require_installed=False).materialise_nan(weights)
+    return materialise_nan(weights)
 
 
 def describe_execution(lag_bars: int, same_bar: SameBarOverride | None = None) -> str:
@@ -325,8 +349,11 @@ def execution_record(lag_bars: int, same_bar: SameBarOverride | None = None) -> 
 
 
 def timing_record(timing: ExecutionTiming) -> dict[str, Any]:
-    """:func:`execution_record` of a resolved timing."""
-    return execution_record(timing.lag_bars, timing.same_bar)
+    """:func:`execution_record` of a resolved timing; ``schedule`` is recorded only when it is ``bars``."""
+    record = execution_record(timing.lag_bars, timing.same_bar)
+    if timing.schedule != "calendar":
+        record["schedule"] = timing.schedule
+    return record
 
 
 def run_record(execution: Mapping[str, Any]) -> dict[str, str]:

@@ -30,7 +30,7 @@ import pandas as pd
 import pytest
 
 from quantbox.analysis.parameter_grid import sweep
-from quantbox.engine import simulate_book
+from quantbox.engine import simulate
 from quantbox.execution import (
     apply_execution_lag,
     exposure_metrics,
@@ -178,7 +178,7 @@ def test_a_lagged_weight_never_lands_on_a_bar_without_a_price():
     prices = _prices()
     prices.iloc[35:, 0] = np.nan  # `A` stops trading after bar 34
     weights = _weights_decided_on(0)
-    book = simulate_book(prices, weights, engine="vectorbt", timing=resolve_execution(None), leverage="normalize")
+    book = simulate(prices, weights, engine="vectorbt", timing=resolve_execution(None), leverage="normalize")
     traded = book.weights
     assert traded["A"].iloc[34] == 1.0
     assert (traded["A"].iloc[35:] == 0.0).all()
@@ -544,10 +544,12 @@ def _run_nan_gap(tmp_path, engine: str):
     return result, store.read_parquet("traded_weights").set_index("date")
 
 
-def test_mid_series_nan_rows_vectorbt_saved_book_is_the_held_book(tmp_path):
-    """vectorbt forward-fills a NaN weight row (holds the last target). The saved
-    and measured book must say the same: NOT flat on those bars."""
-    result, traded = _run_nan_gap(tmp_path, "vectorbt")
+@pytest.mark.parametrize("engine", ["vectorbt", "rsims"])
+def test_mid_series_nan_rows_saved_book_is_the_held_book(tmp_path, engine):
+    """A NaN weight row holds the last target, on every engine: the seam decides the NaN
+    policy once (docs/adr/0008; rsims went flat until TOM-1450). The saved and measured
+    book must say the same: NOT flat on those bars."""
+    result, traded = _run_nan_gap(tmp_path, engine)
     assert not traded.isna().any().any()
     assert (traded["A"].iloc[16:22] == 1.0).all()  # gap rows 15..20, lagged one bar: held, not flat
     # Only the lag's leading bar is flat; one entry trade in N bars.
@@ -555,18 +557,6 @@ def test_mid_series_nan_rows_vectorbt_saved_book_is_the_held_book(tmp_path):
     assert result.metrics["traded_mean_turnover"] == pytest.approx(1 / N)
     # The engine agrees: it held `A` across the jump on bar J=20, inside the gap.
     assert result.metrics["total_return"] == pytest.approx(JUMP, abs=1e-9)
-
-
-def test_mid_series_nan_rows_rsims_saved_book_is_the_flat_book(tmp_path):
-    """rsims treats a NaN weight as 0 (goes flat). Known engine disagreement,
-    pre-existing; the saved book materialises what THIS engine did."""
-    result, traded = _run_nan_gap(tmp_path, "rsims")
-    assert not traded.isna().any().any()
-    assert (traded["A"].iloc[16:22] == 0.0).all()
-    assert result.metrics["traded_flat_bar_share"] == pytest.approx(7 / N)
-    assert result.metrics["traded_mean_turnover"] == pytest.approx(3 / N)  # in, out, back in
-    # The engine agrees: flat across the jump.
-    assert result.metrics["total_return"] == pytest.approx(0.0, abs=1e-9)
 
 
 def test_materialising_the_nan_policy_does_not_change_vectorbt_numbers():

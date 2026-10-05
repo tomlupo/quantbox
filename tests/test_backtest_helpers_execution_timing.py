@@ -11,7 +11,9 @@ import pandas as pd
 import pytest
 from test_execution_timing import JUMP, J, _prices, _run_pipeline, _weights_decided_on
 
-from quantbox.plugins.backtesting import _lag_for_engine, backtest, optimize
+from quantbox.engine import Costs, simulate
+from quantbox.execution import ExecutionTiming, resolve_execution
+from quantbox.plugins.backtesting import _on_price_bars, backtest, optimize
 
 
 def _decided_fn(prices, params):
@@ -33,20 +35,39 @@ def test_backtest_default_a_decision_two_bars_before_the_jump_earns_it():
     assert result["metrics"]["total_return"] == pytest.approx(JUMP, abs=1e-9)
 
 
-def test_each_strategy_of_a_dict_is_lagged_on_the_engine_grid():
-    """A dict of weights is lagged per strategy, one bar on the price grid each.
+@pytest.mark.parametrize("engine", ["vectorbt", "rsims"])
+def test_each_strategy_of_a_dict_is_one_slice_lagged_one_price_bar(engine):
+    """A dict of weights is one strategy slice each, lagged one PRICE bar each.
 
-    (Through ``backtest()`` a dict trips ``compute_backtest_metrics`` on grouped
-    returns, before and after this change, so the lag is checked at its seam.)
+    A sparse frame (two rows) is carried onto the price bars by the door
+    (:func:`_on_price_bars`), so the lag moves its decision one bar, not one row.
     """
     prices = _prices()
     sparse = _weights_decided_on(J - 1).iloc[[0, J - 1]]  # decided on two dates only
-    lagged = _lag_for_engine(prices, {"late": sparse, "same": _weights_decided_on(J - 2)}, 1)
-    assert pd.isna(lagged["late"]["A"].iloc[J - 1])  # no decision here: the engine ffills it
-    assert lagged["late"]["A"].iloc[J] == 1.0  # one PRICE bar later, not one weights row later
-    assert lagged["same"]["A"].iloc[J - 1] == 1.0
+    book = simulate(
+        prices,
+        _on_price_bars(prices, {"late": sparse, "same": _weights_decided_on(J - 2)}),
+        engine=engine,
+        timing=resolve_execution(None),
+        costs=Costs(),
+    )
+    held = book.weights
+    assert held[("late", "A")].iloc[J - 1] == 0.0  # decided on J-1: not held yet
+    assert held[("late", "A")].iloc[J] == 1.0  # one PRICE bar later, not one weights row later
+    assert held[("same", "A")].iloc[J - 1] == 1.0
+    assert book.value.shape[1] == 2  # one value curve per slice
     with pytest.raises(ValueError, match="lag_bars must be >= 1"):
-        _lag_for_engine(prices, sparse, 0)
+        simulate(prices, sparse, engine=engine, timing=ExecutionTiming(0))
+
+
+def test_a_sparse_frame_is_carried_onto_the_price_bars():
+    prices = _prices()
+    sparse = _weights_decided_on(J - 1).iloc[[0, J - 1]]
+    on_bars = _on_price_bars(prices, sparse)
+    assert on_bars.index.equals(prices.index)
+    assert (on_bars["A"].iloc[: J - 1] == 0.0).all() and (on_bars["A"].iloc[J - 1 :] == 1.0).all()
+    dense = _weights_decided_on(J - 1)
+    assert _on_price_bars(prices, dense) is dense
 
 
 def test_backtest_records_the_execution_timing():

@@ -60,15 +60,18 @@ CASH_LEGS = (LEND, BORROW)
 #: Net exposure above 1 by more than this needs borrowing (float noise below it does not).
 NET_EXPOSURE_TOLERANCE = 1e-6
 
-#: ``venue.leverage`` values; the default depends on the engine (:func:`resolve_leverage`).
+#: ``venue.leverage`` values (:func:`resolve_leverage`).
 LEVERAGE_MODES = ("normalize", "borrow")
+#: ``venue.leverage`` when a config does not say — ONE value for every engine (docs/adr/0008, Tom 2026-10-05).
+DEFAULT_LEVERAGE = "normalize"
 LEVERAGE_SCHEMA: dict[str, Any] = {
     "enum": list(LEVERAGE_MODES),
     "description": (
         "What a decision with net exposure above 1 becomes (docs/adr/0007). normalize: the whole basket is "
         "scaled proportionally to net 1 on that rebalance (counted). borrow: held as decided; the excess is "
         "borrowed at venue.financing, or at an ASSUMED rate of 0 without that block (recorded and warned). "
-        "Default: normalize on vectorbt (it cannot borrow), borrow on rsims (a margin simulator)."
+        "Default: normalize, on every engine — the same config gives the same book whichever engine runs it "
+        "(docs/adr/0008). A levered perps book declares borrow."
     ),
 }
 
@@ -145,13 +148,10 @@ class Financing:
 ASSUMED_FREE = Financing(rate_ticker=None, rate_annual=0.0, assumed=True)
 
 
-def resolve_leverage(value: Any, engine: str | None) -> str:
-    """``venue.leverage`` -> ``normalize`` | ``borrow``; absent: the engine adapter's ``default_leverage``
-    (normalize on vectorbt, borrow on rsims)."""
+def resolve_leverage(value: Any) -> str:
+    """``venue.leverage`` -> ``normalize`` | ``borrow``; absent: :data:`DEFAULT_LEVERAGE`, whatever the engine."""
     if value is None:
-        from quantbox.engine.registry import get_engine
-
-        return get_engine(engine, require_installed=False).default_leverage
+        return DEFAULT_LEVERAGE
     if value not in LEVERAGE_MODES:
         raise ValueError(f"venue.leverage must be one of {list(LEVERAGE_MODES)}, got {value!r}")
     return str(value)

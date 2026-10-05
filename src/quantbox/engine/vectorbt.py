@@ -1,11 +1,12 @@
 """The vectorbt adapter (the ``[vectorbt]`` extra) — open-source vectorbt behind the engine seam.
 
 Owns: the vectorbt primitive (:func:`quantbox.plugins.backtesting.vectorbt_engine.run`),
-its NaN policy (a NaN weight HOLDS the last target), its default leverage
-(``normalize``: vectorbt cannot borrow without the financing cash legs), the
-fill-gap check (did the engine hold the book it was handed?) and the
-normalisation of a ``vbt.Portfolio`` into a :class:`~quantbox.engine.base.TradedBook`.
-The native portfolio stays reachable as ``book.native``.
+called on its orders-mask path (the seam's schedule; the in-engine threshold
+is not used), the fill-gap check (did the engine hold the book it was handed?)
+and the normalisation of a ``vbt.Portfolio`` into a
+:class:`~quantbox.engine.base.TradedBook`. It charges no funding and cannot
+borrow without the financing cash legs. The native portfolio stays reachable
+as ``book.native``.
 """
 
 from __future__ import annotations
@@ -26,9 +27,6 @@ class VectorbtAdapter(EngineAdapter):
     name = "vectorbt"
     distribution = "vectorbt"
     extra = "vectorbt"
-    nan_policy = "hold"
-    default_leverage = "normalize"
-    decides_every_bar = False
     charges_funding = False
     models_margin = False
     native_key = "vbt_portfolio"
@@ -53,59 +51,45 @@ class VectorbtAdapter(EngineAdapter):
                 raise ValueError(f"{where}'{key}' must be true or false, got {value!r}")
         return out
 
-    def run(
+    def execute(
         self,
         prices: pd.DataFrame,
-        weights: pd.DataFrame | dict[str, pd.DataFrame],
-        *,
+        targets: pd.DataFrame,
+        orders: pd.DataFrame,
         costs: Costs,
-        orders: pd.DataFrame | None = None,
-        rebalancing_freq: Any = 1,
-        threshold: float | None = None,
         funding: pd.DataFrame | None = None,
-        cash_legs: Sequence[str] = (),
         params: Mapping[str, Any] | None = None,
+        *,
+        cash_legs: Sequence[str] = (),
         trading_days: int = 365,
     ) -> TradedBook:
         from quantbox.metrics import compute_backtest_metrics
         from quantbox.plugins.backtesting.vectorbt_engine import run as run_vectorbt
 
         params = self.check_params(params)
-        columns = weights.columns if isinstance(weights, pd.DataFrame) else []
-        legs = [c for c in cash_legs if c in columns]
-        if orders is not None:
-            pf = run_vectorbt(
-                prices,
-                weights,
-                orders=orders,
-                threshold=threshold,
-                fees=costs.fees,
-                fixed_fees=costs.fixed_fees,
-                slippage=costs.slippage,
-                fee_free=legs,
-                residual_legs=tuple(cash_legs) if len(legs) == len(cash_legs) and legs else (),
-                **params,
-            )
-        else:
-            pf = run_vectorbt(
-                prices,
-                weights,
-                rebalancing_freq=rebalancing_freq,
-                threshold=threshold,
-                fees=costs.fees,
-                fixed_fees=costs.fixed_fees,
-                slippage=costs.slippage,
-                **params,
-            )
-        metrics = compute_backtest_metrics(pf, trading_days=trading_days)
-        if orders is not None:
-            metrics.update(self._fill_gaps(pf, prices, weights, orders, costs, threshold, cash_legs))
+        legs = [c for c in cash_legs if c in targets.columns]
+        pf = run_vectorbt(
+            prices,
+            targets,
+            orders=orders,
+            fees=costs.fees,
+            fixed_fees=costs.fixed_fees,
+            slippage=costs.slippage,
+            fee_free=legs,
+            residual_legs=tuple(cash_legs) if len(legs) == len(cash_legs) and legs else (),
+            **params,
+        )
+        # One strategy group: its metrics and the fill-gap check. Several slices: per slice, from stats().
+        metrics: dict[str, Any] = {}
+        if targets.columns.nlevels == 1:
+            metrics = compute_backtest_metrics(pf, trading_days=trading_days)
+            metrics.update(self._fill_gaps(pf, prices, targets, orders, costs, cash_legs))
         return TradedBook(
             engine=self.name,
             returns=pf.returns(),
             value=pf.value(),
-            weights=weights,
-            turnover=weight_turnover(weights),
+            weights=targets,
+            turnover=weight_turnover(targets),
             trades_fn=lambda: _trades(pf),
             metrics=metrics,
             native=pf,
@@ -120,23 +104,19 @@ class VectorbtAdapter(EngineAdapter):
         weights: pd.DataFrame,
         orders: pd.DataFrame,
         costs: Costs,
-        threshold: float | None,
         cash_legs: Sequence[str],
     ) -> dict[str, float]:
         """Measured, not assumed: did the engine hold the book it was handed after each rebalance?
 
-        The backstop for every way a book can ask for more cash than it has. A
-        threshold run skips rebalances by design: there, only the bars the engine
-        traded count. The cash legs are the engine's residual by construction;
+        The backstop for every way a book can ask for more cash than it has. The
+        threshold is the seam's (bars it skips carry no order), so every ordered
+        bar counts. The cash legs are the engine's residual by construction;
         the real cells are the check.
         """
         from quantbox.plugins.backtesting.vectorbt_engine import rebalance_fill_gaps
 
         real_orders = orders.drop(columns=[c for c in cash_legs if c in orders.columns])
         bars = prices.index[orders.any(axis=1).to_numpy()]
-        if threshold is not None:
-            traded_rows = sorted(set(pf.orders.values["idx"].tolist()))
-            bars = bars.intersection(prices.index[traded_rows])
         gaps = rebalance_fill_gaps(pf, weights, bars, real_orders)
         allowed = 1e-6 + 2.0 * (costs.fees + costs.slippage) * gaps["turnover"] + (1e-3 if costs.fixed_fees else 0.0)
         under = gaps["gap"] > allowed

@@ -3,12 +3,12 @@
 Owns: the rsims primitive
 (:func:`quantbox.plugins.backtesting.rsims_engine.fixed_commission_backtest_with_funding`),
 its parameters (``trade_buffer``, ``initial_cash``, ``margin``,
-``capitalise_profits``, ``equity_basis``), its NaN policy (a NaN weight goes
-FLAT), its defaults (``venue.leverage: borrow``: a margin book; it decides on
-every execution bar; it charges the funding series it is handed) and the
-normalisation of its long results frame into a
-:class:`~quantbox.engine.base.TradedBook`. A book with several strategy slices
-(a dict of frames, or MultiIndex columns) is simulated slice by slice.
+``capitalise_profits``, ``equity_basis``), its capabilities (it charges the
+funding series it is handed; it is a margin simulator) and the normalisation
+of its long results frame into a :class:`~quantbox.engine.base.TradedBook`.
+It executes the seam's orders mask and nothing else: it trades on the bars the
+schedule orders, as vectorbt does (docs/adr/0008). A book with several strategy
+slices (MultiIndex columns) is simulated slice by slice.
 """
 
 from __future__ import annotations
@@ -48,9 +48,6 @@ class RsimsAdapter(EngineAdapter):
     name = "rsims"
     distribution = "quantbox"  # rsims lives in quantbox
     extra = None
-    nan_policy = "flat"
-    default_leverage = "borrow"
-    decides_every_bar = True
     charges_funding = True
     models_margin = True
     native_key = "rsims_results"
@@ -74,26 +71,24 @@ class RsimsAdapter(EngineAdapter):
             "equity_basis": equity_basis,
         }
 
-    def run(
+    def execute(
         self,
         prices: pd.DataFrame,
-        weights: pd.DataFrame | dict[str, pd.DataFrame],
-        *,
+        targets: pd.DataFrame,
+        orders: pd.DataFrame,
         costs: Costs,
-        orders: pd.DataFrame | None = None,
-        rebalancing_freq: Any = 1,
-        threshold: float | None = None,
         funding: pd.DataFrame | None = None,
-        cash_legs: Sequence[str] = (),
         params: Mapping[str, Any] | None = None,
+        *,
+        cash_legs: Sequence[str] = (),
         trading_days: int = 365,
     ) -> TradedBook:
-        """rsims trades every bar it is handed (``orders`` masks cells); ``rebalancing_freq`` and
-        ``threshold`` are vectorbt's schedule and are not read. It charges ``costs.fees`` only."""
+        """rsims trades a cell only where ``orders`` is True. It charges ``costs.fees`` only."""
         from quantbox.metrics import compute_backtest_metrics
 
         params = self.check_params(params)
-        slices = list(_slices(weights))
+        slices = list(_slices(targets))
+        order_slices = dict(_slices(orders))
         results: dict[Any, pd.DataFrame] = {}
         values: dict[Any, pd.Series] = {}
         modelled = False
@@ -101,7 +96,7 @@ class RsimsAdapter(EngineAdapter):
             p, w = _on_one_grid(prices, w)
             f, has_funding = _funding_on(funding, p)
             modelled = modelled or has_funding
-            res = _simulate(p, w, f, orders, costs, cash_legs, params)
+            res = _simulate(p, w, f, order_slices[key], costs, cash_legs, params)
             results[key] = res
             values[key] = _equity(res)
         if len(slices) == 1:
@@ -120,8 +115,8 @@ class RsimsAdapter(EngineAdapter):
             engine=self.name,
             returns=returns,
             value=value,
-            weights=weights,
-            turnover=weight_turnover(weights),
+            weights=targets,
+            turnover=weight_turnover(targets),
             trades_fn=lambda: _trades(results),
             metrics=metrics,
             native=native,
@@ -149,16 +144,13 @@ class RsimsAdapter(EngineAdapter):
         return out
 
 
-def _slices(weights: pd.DataFrame | dict[str, pd.DataFrame]) -> Iterator[tuple[Any, pd.DataFrame]]:
-    """One frame per strategy slice: a dict's entries, or a MultiIndex's non-ticker levels."""
-    if isinstance(weights, dict):
-        yield from weights.items()
-        return
+def _slices(weights: pd.DataFrame) -> Iterator[tuple[Any, pd.DataFrame]]:
+    """One frame per strategy slice: a MultiIndex's non-ticker levels (one slice for flat columns)."""
     if weights.columns.nlevels == 1:
         yield None, weights
         return
     levels = list(range(weights.columns.nlevels - 1))
-    for key, frame in weights.T.groupby(level=levels, sort=False):
+    for key, frame in weights.T.groupby(level=levels[0] if len(levels) == 1 else levels, sort=False):
         w = frame.T
         w.columns = w.columns.get_level_values(-1)
         yield key, w
@@ -189,7 +181,7 @@ def _simulate(
     prices: pd.DataFrame,
     weights: pd.DataFrame,
     funding: pd.DataFrame,
-    orders: pd.DataFrame | None,
+    orders: pd.DataFrame,
     costs: Costs,
     cash_legs: Sequence[str],
     params: Mapping[str, Any],

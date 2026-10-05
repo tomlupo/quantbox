@@ -1,18 +1,22 @@
 """The seam's types: what goes in (:class:`Costs`), what comes out (:class:`TradedBook`), and the adapter contract.
 
-An adapter (:class:`EngineAdapter`) wraps ONE simulation library. It owns:
+An adapter (:class:`EngineAdapter`) wraps ONE simulation library and only
+EXECUTES orders (:meth:`EngineAdapter.execute`). It owns:
 
 - its **parameters** (:meth:`EngineAdapter.plan_params`: the keys it reads,
   validated, refused when unknown);
-- its **NaN policy** (:attr:`EngineAdapter.nan_policy`, applied by
-  :meth:`EngineAdapter.materialise_nan`);
-- its **defaults** where the engines differ (leverage, decision bars, funding);
-- its **output normalisation** (:meth:`EngineAdapter.run` returns a
+- two **capabilities** that really differ between engines:
+  :attr:`EngineAdapter.charges_funding` and :attr:`EngineAdapter.models_margin`;
+- its **output normalisation** (:meth:`EngineAdapter.execute` returns a
   :class:`TradedBook`; :meth:`EngineAdapter.stats` answers a sweep's metric names).
 
-Nothing outside an adapter module asks which engine it is talking to. The
-lag is not an adapter's business: the seam applies it before a book reaches
-:meth:`EngineAdapter.run` (:mod:`quantbox.engine._lag`).
+Everything that decides WHAT is traded and WHEN is the seam's, the same for
+every engine (docs/adr/0008): the lag (:mod:`quantbox.engine._lag`), the
+rebalancing schedule and its threshold (:mod:`quantbox.engine.schedule`), the
+NaN policy (:func:`quantbox.engine.book.materialise_nan`) and the default
+``venue.leverage`` (:data:`quantbox.financing.DEFAULT_LEVERAGE`). An adapter
+receives fully specified targets and a per-cell orders mask. Nothing outside
+an adapter module asks which engine it is talking to.
 """
 
 from __future__ import annotations
@@ -43,7 +47,9 @@ class TradedBook:
 
     ``returns`` / ``value`` are per bar (a frame with one column per strategy
     slice when the book has several). ``weights`` is the book the engine
-    held (lagged; on the scheduled path, after deferral and leverage).
+    held (lagged, after the schedule, deferral and leverage; MultiIndex
+    columns, one slice each, when the book has several). ``orders`` is the
+    per-cell orders mask the engine executed.
     ``turnover`` is ``sum |w[t] - w[t-1]|`` of those weights; ``trades`` has
     one row per fill (``date``, ``symbol``, ``size``, ``price``, ``value``,
     ``fees``). ``native`` is the engine's own object (a ``vbt.Portfolio`` on
@@ -53,7 +59,7 @@ class TradedBook:
     engine: str
     returns: pd.Series | pd.DataFrame
     value: pd.Series | pd.DataFrame
-    weights: pd.DataFrame | dict[str, pd.DataFrame]
+    weights: pd.DataFrame
     turnover: pd.Series
     #: Builds :attr:`trades` on first use (a fill table can be large; most callers never read it).
     trades_fn: Callable[[], pd.DataFrame]
@@ -63,9 +69,10 @@ class TradedBook:
     native_key: str
     funding_modelled: bool = False
     execution: dict[str, Any] = field(default_factory=dict)
-    #: The scheduled path only: the real-book prices, the rebalance schedule, the financing
-    #: record, the calendar/timing/leverage metrics and data_validation.json.
+    #: Set by the seam: the real-book prices, the orders mask, the rebalance schedule, the financing
+    #: record, the calendar/timing/leverage metrics and data_validation.json (one-slice books).
     prices: pd.DataFrame | None = None
+    orders: pd.DataFrame | None = None
     schedule: pd.DataFrame | None = None
     financing: dict[str, Any] | None = None
     book_metrics: dict[str, float] = field(default_factory=dict)
@@ -87,14 +94,9 @@ class TradedBook:
 TRADE_COLUMNS = ("date", "symbol", "size", "price", "value", "fees")
 
 
-def weight_turnover(weights: pd.DataFrame | dict[str, pd.DataFrame]) -> pd.Series:
-    """``sum |w[t] - w[t-1]|`` per bar, the first bar against a flat book (summed over strategies)."""
-    frames = weights.values() if isinstance(weights, dict) else [weights]
-    total: pd.Series | None = None
-    for w in frames:
-        t = turnover_series(w.select_dtypes(include="number").fillna(0.0), from_flat=True)
-        total = t if total is None else total.add(t, fill_value=0.0)
-    return total if total is not None else pd.Series(dtype=float)
+def weight_turnover(weights: pd.DataFrame) -> pd.Series:
+    """``sum |w[t] - w[t-1]|`` per bar, the first bar against a flat book (summed over strategy slices)."""
+    return turnover_series(weights.select_dtypes(include="number").fillna(0.0), from_flat=True)
 
 
 class EngineAdapter(ABC):
@@ -106,12 +108,6 @@ class EngineAdapter(ABC):
     distribution: ClassVar[str]
     #: The quantbox extra that installs it; None when it ships in core.
     extra: ClassVar[str | None] = None
-    #: A NaN weight cell: ``hold`` the last target, or go ``flat``.
-    nan_policy: ClassVar[str]
-    #: ``venue.leverage`` when the config does not say (docs/adr/0007).
-    default_leverage: ClassVar[str]
-    #: True: decides on every execution bar (``rebalancing_freq`` / ``threshold`` are not its schedule).
-    decides_every_bar: ClassVar[bool]
     #: True: charges the funding series it is handed (perps).
     charges_funding: ClassVar[bool]
     #: True: a margin simulator — borrowing at an assumed rate of 0 needs no financing cash legs.
@@ -140,28 +136,27 @@ class EngineAdapter(ABC):
             )
         return self.plan_params({**self.PARAMS, **engine_params})
 
-    def materialise_nan(self, weights: pd.DataFrame) -> pd.DataFrame:
-        """Make this engine's NaN policy explicit in the frame (idempotent: changes no engine number)."""
-        if self.nan_policy == "hold":
-            return weights.ffill().fillna(0.0)
-        return weights.fillna(0.0)
-
     @abstractmethod
-    def run(
+    def execute(
         self,
         prices: pd.DataFrame,
-        weights: pd.DataFrame | dict[str, pd.DataFrame],
-        *,
+        targets: pd.DataFrame,
+        orders: pd.DataFrame,
         costs: Costs,
-        orders: pd.DataFrame | None = None,
-        rebalancing_freq: Any = 1,
-        threshold: float | None = None,
         funding: pd.DataFrame | None = None,
-        cash_legs: Sequence[str] = (),
         params: Mapping[str, Any] | None = None,
+        *,
+        cash_legs: Sequence[str] = (),
         trading_days: int = 365,
     ) -> TradedBook:
-        """Simulate an ALREADY-LAGGED book: row ``t`` of *weights* fills at ``close[t]``."""
+        """Execute the seam's orders: on a bar where ``orders`` is True for a cell, trade it to ``targets``.
+
+        *targets* and *orders* share one index and one set of columns (MultiIndex
+        columns, the ticker last, carry one strategy slice each); *prices* is
+        on the same bars, one column per ticker. Row ``t`` fills at
+        ``close[t]`` — the book is ALREADY lagged and scheduled. A cell with no
+        order keeps its position. *targets* hold no NaN.
+        """
 
     @abstractmethod
     def stats(self, book: TradedBook, names: Sequence[str], *, trading_days: int = 365) -> dict[tuple, dict[str, Any]]:

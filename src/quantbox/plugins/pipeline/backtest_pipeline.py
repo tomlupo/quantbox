@@ -14,9 +14,10 @@ Workflow
 4. Apply venue constraint (``venue.allow_shorts``) then risk transforms
    (tranching, leverage cap)
 5-6. Hand the decided book to the engine seam
-   (:func:`quantbox.engine.simulate_book`): calendars, the execution lag
-   (``execution.lag_bars``, default 1 = next-bar), leverage, financing legs,
-   then the engine adapter — the ONE place decided weights become traded weights
+   (:func:`quantbox.engine.simulate`): calendars, the rebalancing schedule,
+   the execution lag (``execution.lag_bars``, default 1 = next-bar), leverage,
+   financing legs, then the engine adapter — the ONE place decided weights
+   become traded weights
 7. Compute performance + traded-book metrics
 8. Save artifacts (weights_history = decided targets, traded_weights = what
    the engine received, returns, metrics, portfolio_daily)
@@ -62,11 +63,21 @@ from quantbox.contracts import (
     RunResult,
     StrategyPlugin,
 )
-from quantbox.engine import DEFAULT_ENGINE, Costs, EngineAdapter, TradedBook, engine_names, get_engine, simulate_book
+from quantbox.engine import (
+    DEFAULT_ENGINE,
+    NAN_POLICY,
+    Costs,
+    TradedBook,
+    engine_names,
+    get_engine,
+    materialise_nan,
+    simulate,
+)
 from quantbox.exceptions import DataLoadError
 from quantbox.execution import (
     EXECUTION_SCHEMA,
     VENUE_SCHEMA,
+    check_schedule_venue,
     clip_shorts,
     exposure_metrics,
     resolve_allow_shorts,
@@ -209,7 +220,12 @@ class BacktestPipeline:
                 "threshold": {
                     "type": ["number", "null"],
                     "default": None,
-                    "description": "Deviation threshold for rebalancing bands (vectorbt only).",
+                    "description": (
+                        "Rebalancing band (absolute weight), on every engine: a scheduled rebalance is placed "
+                        "only when an instrument's held weight has drifted more than this from its target. The "
+                        "seam computes the drift cost-free (docs/adr/0008); a run with costs can trigger on "
+                        "slightly different bars than an in-engine band would."
+                    ),
                 },
                 "initial_cash": {
                     "type": "number",
@@ -376,8 +392,12 @@ class BacktestPipeline:
         engine = adapter.name
         timing = resolve_execution(params.get("execution"))
         allow_shorts, venue_declared = resolve_allow_shorts(params.get("venue"), params.get("risk"))
+        check_schedule_venue(timing, params.get("venue"))
         financing = resolve_financing((params.get("venue") or {}).get("financing"))
-        leverage = resolve_leverage((params.get("venue") or {}).get("leverage"), engine)
+        # schedule: bars applies no venue.leverage (recorded as "none"); the calendar's default is one value.
+        leverage = (
+            "none" if timing.schedule == "bars" else resolve_leverage((params.get("venue") or {}).get("leverage"))
+        )
         if financing is None and leverage == "borrow":
             # Borrowing without a declared price: free, ASSUMED, and recorded as such.
             financing = ASSUMED_FREE
@@ -610,9 +630,7 @@ class BacktestPipeline:
 
         # --- Stage 3b: the overlay chain modifies the DECIDED book ---
         base_weights = weights_history
-        weights_history, overlays_applied = self._apply_overlay_stage(
-            weights_history, market_data, overlay_chain, get_engine(engine)
-        )
+        weights_history, overlays_applied = self._apply_overlay_stage(weights_history, market_data, overlay_chain)
         overlay_artifacts: dict[str, str] = {}
         if overlays_applied:
             base_save = base_weights.copy()
@@ -918,7 +936,7 @@ class BacktestPipeline:
             # Stage 3: aggregate (trivial for single strategy)
             wh = self._aggregate_weights_history(s_results, {"_strategies_cfg": v_strategies_cfg})
             # Stage 3b: the overlay chain is run-level — every variant gets the same one.
-            wh, overlays_applied = self._apply_overlay_stage(wh, market_data, overlay_chain, get_engine(engine))
+            wh, overlays_applied = self._apply_overlay_stage(wh, market_data, overlay_chain)
 
             # Stage 4: venue constraint + risk transforms
             v_allow_shorts = allow_shorts if venue_declared else bool(v_risk_cfg.get("allow_short", False))
@@ -1160,14 +1178,13 @@ class BacktestPipeline:
         weights: pd.DataFrame,
         market_data: dict[str, Any],
         chain: list[OverlayLink],
-        engine: EngineAdapter,
     ) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
         """Run the overlay chain on the decided weights; a no-op without overlays.
 
-        The engine adapter's NaN policy is materialised FIRST: a NaN cell means
-        "hold" to vectorbt and "flat" to rsims, and an overlay multiplying a NaN would
-        lose its effect on exactly the bars it targets. The policy is idempotent,
-        so the engine later receives the same book it would have built itself.
+        The seam's NaN policy is materialised FIRST (:func:`quantbox.engine.materialise_nan`,
+        HOLD, the same on every engine): an overlay multiplying a NaN would lose
+        its effect on exactly the bars it targets. The policy is idempotent, so
+        the seam later builds the same book from it.
         No lag is applied here — the engine seam schedules and lags the overlaid book once.
 
         The filled value must not LEAK past the chain, though: the risk
@@ -1178,21 +1195,19 @@ class BacktestPipeline:
         book downstream is the one the run without overlays builds. A cell the
         chain CHANGED keeps the overlay's number.
 
-        Under a HOLD policy (vectorbt) a NaN resolves to the PREVIOUS row's
-        value, so "untouched" alone is not enough: the first bar after an
-        overlay window closes is untouched yet must stay explicit, or the engine
-        holds the last REDUCED weight instead of returning to the base one. A
-        NaN goes back only where the previous row was untouched too. Under the
-        FLAT policy (rsims) a NaN resolves to 0 whatever came before.
+        Under the HOLD policy a NaN resolves to the PREVIOUS row's value, so
+        "untouched" alone is not enough: the first bar after an overlay window
+        closes is untouched yet must stay explicit, or the seam holds the last
+        REDUCED weight instead of returning to the base one. A NaN goes back
+        only where the previous row was untouched too.
         """
         if not chain:
             return weights, []
-        materialised = engine.materialise_nan(weights)
+        assert NAN_POLICY == "hold"  # the mask below is the hold policy's
+        materialised = materialise_nan(weights)
         out, record = apply_overlays(materialised, market_data, chain)
         same = out.eq(materialised) | (out.isna() & materialised.isna())
-        untouched = weights.isna() & same
-        if engine.nan_policy == "hold":
-            untouched &= same.shift(1, fill_value=True)
+        untouched = weights.isna() & same & same.shift(1, fill_value=True)
         return out.mask(untouched), record
 
     # ==================================================================
@@ -1232,15 +1247,16 @@ class BacktestPipeline:
         *,
         where: str = "",
     ) -> TradedBook:
-        """The decided book through the engine seam (:func:`quantbox.engine.simulate_book`).
+        """The decided book through the engine seam (:func:`quantbox.engine.simulate`).
 
         The ONLY place decided weights become traded weights, shared by the
         single-run and variants flows and by every engine: calendars, the
-        execution lag, ``venue.leverage``, financing legs and the adapter
-        (docs/adr/0007, 0008). The engine reads the funding series only when it
-        charges funding.
+        rebalancing schedule and threshold, the execution lag,
+        ``venue.leverage``, financing legs and the adapter (docs/adr/0007,
+        0008). The engine reads the funding series only when it charges funding.
         """
-        return simulate_book(
+        leverage = plan["venue"]["leverage"]
+        return simulate(
             prices_wide,
             weights,
             engine=plan["engine"],
@@ -1248,7 +1264,7 @@ class BacktestPipeline:
             costs=Costs(fees=costs["fees"], fixed_fees=costs["fixed_fees"], slippage=costs["slippage"]),
             rebalancing_freq=rebalancing_freq,
             threshold=threshold,
-            leverage=plan["venue"]["leverage"],
+            leverage=None if leverage == "none" else leverage,
             financing=plan.get("financing"),
             funding=market_data.get("funding_rates"),
             engine_params=plan["engine_params"],
