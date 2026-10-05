@@ -11,6 +11,7 @@ status_changes:
   - 2026-10-05: amended and accepted with TOM-1450 (3d-1) — Tom, 2026-10-05: one book builder for every door (alternative B), the seam owns the rebalancing schedule, the engines stay separate under it
   - 2026-10-05: decision 11 added with TOM-1450 (3d-2) — the rebalancing policies and group limits are seam semantics
   - 2026-10-05: decision 12 added with TOM-1500 — the same defaults on every engine (compounding, starting cash), and every cost charged or refused
+  - 2026-10-05: decision 11 amended with TOM-1513 — Tom, 2026-10-05: a policy is a cadence x a trigger, a corridor hit rebalances the whole book ("hit corridora triggeruje cały rebalancing"), min_trade on every policy, risk.tranches is an alias of the tranche cadence; the corridor + normalize caveat is removed
 ---
 
 # ADR-0008: Book simulation sits behind one engine seam, with vectorbt and rsims as adapters
@@ -105,14 +106,33 @@ the same strategy gave a different book through `backtest()` than through
     `rebalancing_freq` and `threshold`). Book simulation is the one capability
     that sits behind a seam, because it has two implementations. We do not
     build one combined backtester.
-11. **Rebalancing policies and group limits are seam semantics (TOM-1450 3d-2).**
-    `rebalancing_policy` declares one of four policies
-    (`quantbox.engine.policy`), each an orders mask in the seam:
-    `periodic` (today's `rebalancing_freq`), `tranche` (the targets are the
-    mean of N staggered tranches, one refreshed per decision), `band` (today's
-    `threshold`: the whole book trades when a held weight drifted past the
-    band) and `corridor` (only the instruments outside their own
-    `[target - below, target + above]` corridor trade; an exit always trades).
+11. **Rebalancing policies and group limits are seam semantics (TOM-1450 3d-2, amended by TOM-1513).**
+    `rebalancing_policy` declares a policy (`quantbox.engine.policy`), an
+    orders mask in the seam. A policy is a **cadence x a trigger**:
+    - the cadence sets the targets: `periodic` (the decided row; today's
+      `rebalancing_freq`) or `tranche` (the mean of N staggered tranches, one
+      refreshed per decision);
+    - the trigger decides whether a considered bar trades: `none` (always),
+      `band` (a held weight drifted past one width for every asset; today's
+      `threshold`) or `corridor` (a held weight outside its own
+      `[target - below, target + above]`; an exit to 0 is always a hit). On a
+      hit **the whole book trades to target**: the corridor widths are only the
+      trigger, and `band` and `corridor` differ in the trigger only.
+
+    So robo's "tranches 5 + 2% corridor" is one config:
+    `{cadence: tranche, tranches: 5, frequency: daily, trigger: corridor,
+    width: 0.02}`. The single-key spellings (`policy: periodic | tranche |
+    band | corridor`) keep working and map to this form.
+    `risk.tranches: N` of `backtest.pipeline.v1` is a deprecated alias of the
+    tranche cadence (one tranche concept; it warns).
+
+    Every policy takes an optional **`min_trade`** (default 0 = off). On a
+    placed rebalance, in one pass: `delta = target - held`; a trade with
+    `|delta| < min_trade` is dropped (and cannot trigger); sells always
+    execute; when the buys exceed the cash plus the sell proceeds they are
+    scaled down proportionally, so without `venue.leverage: borrow` the held
+    net never goes above 1.
+
     Every policy takes a `frequency` (`weekly` / `monthly` / ... = the last
     execution bar of the period, or any `rebalancing_freq` form) and an
     optional market `calendar` (pandas-market-calendars): the execution bars
@@ -191,11 +211,13 @@ book was not.
   run manifest records `funding.modelled` from the primary variant's book.
 - `quantbox sweep` takes `backtest.engine` and records `engine` in `sweep@1`.
 - A new engine is one adapter class (`execute`, `stats`) plus one registry row.
-- The policies of TOM-1450 3d (periodic on a market calendar, tranche, band,
-  corridor) are orders masks in the seam; no adapter changed for them
-  (decision 11). `tests/test_rebalancing_policies.py` holds a known answer per
-  policy, the same orders and trades on both adapters, and a seeded
-  randomized check that a group limit holds on every rebalance date.
+- The policies of TOM-1450 3d and TOM-1513 (a cadence on a market calendar x
+  a trigger, and `min_trade`) are orders masks in the seam; no adapter changed
+  for them (decision 11). `tests/test_rebalancing_policies.py` holds a known
+  answer per cadence, trigger and `min_trade`, the same orders and trades on
+  both adapters (the robo-shaped tranche + corridor config included), and
+  seeded randomized checks that a group limit holds on every rebalance date
+  and that `min_trade` without borrow never lifts the held net above 1.
 
 ### Unintended (and accepted)
 
@@ -204,19 +226,26 @@ book was not.
   `annualized_volatility`, `max_drawdown`, `calmar_ratio`). Any other name is
   warned and left out.
 - The threshold caveat above. It applies to `band` and `corridor` too.
-- A corridor's held book mixes targets and drifted weights by design, so a
-  group limit binds its TARGETS, not the held book between rebalances.
+- A group limit binds the TARGETS, not the held book between rebalances.
   `venue.leverage: normalize` scales a row above net 1 down proportionally:
   a group maximum still holds, a group minimum can fall below its bound by
-  that scale.
-- `venue.leverage: normalize` runs before the drift trigger (as it did for
-  `threshold`), so it scales a bar as if every ordered cell trades. Under
-  `band` that holds, because a placed bar trades every ordered cell. Under
-  `corridor` only some cells trade, so the held net exposure of a levered book
-  can end a bar above 1. A corridor book above net 1 should declare
-  `venue.leverage: borrow` (review round 1 of #239; open for Tom).
+  that scale. With `min_trade` the held book can differ from the targets: a
+  dropped trade keeps its drifted weight, and scaled buys stop short of target.
+- `venue.leverage: normalize` runs before the trigger and `min_trade` (as it
+  did for `threshold`), so it scales a bar as if every ordered cell trades.
+  A placed bar trades every ordered cell (a hit rebalances the whole book),
+  so that holds for every trigger; the corridor + normalize caveat of #239 is
+  gone. `min_trade` drops trades after normalize and caps the buys at the
+  cash, so it cannot lift the held net above 1 either. Where normalize runs
+  is unchanged and still open for Tom (TOM-1513 item 3).
 - A tranche holds its target weights between refreshes (the book is the mean
   of the tranche targets), not a separately drifting sub-account.
+- `risk.tranches` used to be a rolling mean of N bars before the seam. As the
+  tranche cadence it books the same on a daily schedule after the first N-1
+  decisions; the warmup, a non-daily schedule and the legacy no-venue clip
+  order book differently than before (TOM-1513).
+- A corridor hit now trades the whole book, so every corridor result of #239
+  moves (TOM-1513 records the before/after).
 - A `backtest()` weights frame stamped only on rebalance dates is carried onto
   the price bars from its first row (`_on_price_bars`), and a row stamped on a
   date with no price bar is decided on the next price bar.

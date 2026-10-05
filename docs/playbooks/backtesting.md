@@ -34,10 +34,14 @@ plugins:
 
 **Rebalancing policies** (`rebalancing_policy`, TOM-1450; replaces the two keys above — declare
 one spelling, not both). Every policy is an orders mask in the seam, the same on both engines
-(`quantbox.engine.policy` has the full rules):
+(`quantbox.engine.policy` has the full rules). A policy is a **cadence** (`periodic` or `tranche`)
+times a **trigger** (`none`, `band` or `corridor`; TOM-1513):
 
 ```yaml
-      rebalancing_policy: {policy: periodic, frequency: monthly, calendar: NYSE}
+      rebalancing_policy: {cadence: tranche, tranches: 5, frequency: daily, trigger: corridor, width: 0.02}
+      # rebalancing_policy: {cadence: periodic, frequency: monthly, calendar: NYSE}
+      # the single-key spelling still works and means the same thing:
+      # rebalancing_policy: {policy: periodic, frequency: monthly, calendar: NYSE}
       # rebalancing_policy: {policy: tranche, tranches: 4, frequency: weekly}
       # rebalancing_policy: {policy: band, band: 0.05}
       # rebalancing_policy: {policy: corridor, width: [0.02, 0.05], bounds: {SPY: [0.01, 0.03]}}
@@ -49,8 +53,12 @@ one spelling, not both). Every policy is an orders mask in the seam, the same on
   market's sessions only: March 2024 ends on Thursday the 28th (Good Friday), not Sunday the 31st.
 - `tranche` — the book is the mean of N tranches; one tranche is refreshed on each decision.
 - `band` — the whole book trades when a held weight drifted past the band (= `threshold`).
-- `corridor` — only the instruments outside their own `[target - below, target + above]`
-  corridor trade, back to target. An exit to 0 always trades.
+- `corridor` — when one instrument is outside its own `[target - below, target + above]`
+  corridor, the whole book trades back to target. An exit to 0 is always a hit.
+- `min_trade` (every policy, default 0 = off) — on a rebalance, a trade smaller than
+  `min_trade` (absolute weight) is dropped; sells always execute; buys above the cash plus
+  the sell proceeds are scaled down proportionally, so without `venue.leverage: borrow` the
+  held net never goes above 1. A trade under `min_trade` cannot trigger a band or corridor.
 
 **Group limits** (`group_limits`) keep each group's gross weight inside `[min, max]` on every
 decided row, before execution. The groups come from a universe metadata column (a
@@ -200,7 +208,7 @@ Reading a dataset without it raises an ImportError naming both.
 | `execution.schedule` | `calendar` | `calendar`: the scheduled book; `bars`: every price bar executes, no deferral, no `venue.leverage` ([ADR-0008](../adr/0008-engine-seam.md)) |
 | `risk.max_leverage` | `99` | Gross cap per bar; only ever scales DOWN (both engines) |
 | `risk.allow_short` | `false` | Legacy short switch (both engines); prefer `venue.allow_shorts` |
-| `risk.tranches` | `1` | Rolling-mean tranching of target weights (both engines) |
+| `risk.tranches` | `1` | DEPRECATED (TOM-1513): the tranche cadence, `rebalancing_policy: {cadence: tranche, tranches: N}`; warns |
 
 ### Execution timing and venue constraints
 

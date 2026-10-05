@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "quantbox/data-validation@1",
   "title": "quantbox data validation (data-validation@1)",
-  "description": "<run_dir>/data_validation.json, written by backtest.pipeline.v1 (ADR-0007): what each missing price meant, the execution calendar, decision vs execution timing, input staleness, decision weight age, index alignment and leverage. Minors: 1 adds weight_age; 2 makes leverage.max_net_exposure_unscaled, scaled_after_deferral and buys_zeroed_dates (always written since minor 0) required; 3 adds index_alignment; 4 adds threshold and leverage.mode none (execution.schedule bars, ADR-0008); 5 adds rebalancing and groups (TOM-1450). The stable shape the data-validation step (TOM-1430) reads. VERSIONING as run@1: adding a field is MINOR (x-schema-minor), renaming, removing or changing a meaning is MAJOR (data-validation@2).",
-  "x-schema-minor": 5,
+  "description": "<run_dir>/data_validation.json, written by backtest.pipeline.v1 (ADR-0007): what each missing price meant, the execution calendar, decision vs execution timing, input staleness, decision weight age, index alignment and leverage. Minors: 1 adds weight_age; 2 makes leverage.max_net_exposure_unscaled, scaled_after_deferral and buys_zeroed_dates (always written since minor 0) required; 3 adds index_alignment; 4 adds threshold and leverage.mode none (execution.schedule bars, ADR-0008); 5 adds rebalancing and groups (TOM-1450); 6 adds rebalancing.policy.cadence, trigger and min_trade, the tranche+band and tranche+corridor policy names, and rebalancing.min_trade (TOM-1513). The stable shape the data-validation step (TOM-1430) reads. VERSIONING as run@1: adding a field is MINOR (x-schema-minor), renaming, removing or changing a meaning is MAJOR (data-validation@2).",
+  "x-schema-minor": 6,
   "type": "object",
   "required": ["schema", "calendar", "execution_calendar", "timing", "staleness", "leverage"],
   "properties": {
@@ -153,19 +153,22 @@
     },
     "rebalancing": {
       "type": "object",
-      "description": "Present only when the run declares rebalancing_policy (minor 5, TOM-1450): the policy (periodic, tranche, band, corridor; quantbox.engine.policy) and what it did. scheduled = bars with orders before the drift trigger, placed = after it, partial = bars on which a corridor traded only some instruments.",
+      "description": "Present only when the run declares rebalancing_policy (minor 5, TOM-1450): the policy (periodic, tranche, band, corridor; quantbox.engine.policy) and what it did. scheduled = bars with orders before the drift trigger, placed = after it, partial = placed bars on which only some ordered instruments traded: since TOM-1513 a trigger hit trades the whole book, so only min_trade drops make a bar partial.",
       "required": ["policy", "scheduled_rebalances", "placed_rebalances", "skipped_rebalances", "partial_rebalances"],
       "properties": {
         "policy": {
           "type": "object",
           "required": ["policy", "frequency", "calendar"],
           "properties": {
-            "policy": {"enum": ["periodic", "tranche", "band", "corridor"]},
+            "policy": {"enum": ["periodic", "tranche", "band", "corridor", "tranche+band", "tranche+corridor"]},
+            "cadence": {"enum": ["periodic", "tranche"]},
+            "trigger": {"enum": ["none", "band", "corridor"]},
             "calendar": {"type": ["string", "null"]},
             "tranches": {"type": "integer", "minimum": 2},
             "band": {"type": "number", "exclusiveMinimum": 0},
             "width": {"type": "array", "items": {"type": "number", "minimum": 0}},
-            "bounds": {"type": "object"}
+            "bounds": {"type": "object"},
+            "min_trade": {"type": "number", "exclusiveMinimum": 0}
           }
         },
         "execution_bars_outside_market_sessions": {"type": "integer", "minimum": 0},
@@ -174,7 +177,17 @@
         "skipped_rebalances": {"type": "integer", "minimum": 0},
         "partial_rebalances": {"type": "integer", "minimum": 0},
         "first_skipped": {"type": "array", "items": {"type": "string"}},
-        "tranches": {"type": "integer", "minimum": 2}
+        "tranches": {"type": "integer", "minimum": 2},
+        "min_trade": {
+          "type": "object",
+          "description": "Present only when policy.min_trade > 0 (minor 6, TOM-1513): trades dropped under min_trade on placed rebalances, rebalances whose buys were scaled to the cash, and the smallest buy scale.",
+          "required": ["dropped_trades", "scaled_rebalances", "buy_scale_min"],
+          "properties": {
+            "dropped_trades": {"type": "integer", "minimum": 0},
+            "scaled_rebalances": {"type": "integer", "minimum": 0},
+            "buy_scale_min": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        }
       }
     },
     "groups": {

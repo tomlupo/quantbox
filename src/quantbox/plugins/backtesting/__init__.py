@@ -248,7 +248,10 @@ def backtest(
         default, every engine) or ``"borrow"`` (held as decided, free
         financing). Refused with ``schedule="bars"``.
     policy : dict | None
-        The rebalancing policy (:mod:`quantbox.engine.policy`), e.g.
+        The rebalancing policy (:mod:`quantbox.engine.policy`): a cadence x a
+        trigger, e.g. ``{"cadence": "tranche", "tranches": 5, "frequency":
+        "daily", "trigger": "corridor", "width": 0.02}``, or the single-key
+        spelling, e.g.
         ``{"policy": "periodic", "frequency": "monthly", "calendar": "NYSE"}``,
         ``{"policy": "tranche", "tranches": 4, "frequency": "weekly"}``,
         ``{"policy": "band", "band": 0.05}`` or
