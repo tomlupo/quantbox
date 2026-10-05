@@ -196,6 +196,12 @@ book was not.
   `venue.leverage: normalize` scales a row above net 1 down proportionally:
   a group maximum still holds, a group minimum can fall below its bound by
   that scale.
+- `venue.leverage: normalize` runs before the drift trigger (as it did for
+  `threshold`), so it scales a bar as if every ordered cell trades. Under
+  `band` that holds, because a placed bar trades every ordered cell. Under
+  `corridor` only some cells trade, so the held net exposure of a levered book
+  can end a bar above 1. A corridor book above net 1 should declare
+  `venue.leverage: borrow` (review round 1 of #239; open for Tom).
 - A tranche holds its target weights between refreshes (the book is the mean
   of the tranche targets), not a separately drifting sub-account.
 - A `backtest()` weights frame stamped only on rebalance dates is carried onto
