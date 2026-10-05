@@ -390,3 +390,80 @@ def test_an_unknown_overlay_id_is_refused_by_explain_and_run(tmp_path):
     cfg["plugins"]["overlays"] = [{"name": "overlay.does_not_exist.v1"}]
     planned = _both_refuse(cfg, config_path, "overlay.does_not_exist.v1")
     assert planned["plugins_resolved"] is False
+
+
+# ---------------------------------------------------------------------------
+# Rebalancing policies and group limits (TOM-1450 3d-2): explain plans what the seam applies
+# ---------------------------------------------------------------------------
+
+
+def _policy_config(tmp_path: Path, engine: str) -> tuple[dict, Path]:
+    """The inline config, with a universe FILE carrying asset_class metadata, a policy and a group limit."""
+    import pandas as pd
+
+    cfg, config_path = _inline_config(tmp_path, engine)
+    universe_path = tmp_path / "universe.parquet"
+    pd.DataFrame({"symbol": ["A", "USD"], "asset_class": ["crypto", "cash"]}).to_parquet(universe_path, index=False)
+    params = cfg["plugins"]["pipeline"]["params"]
+    params.pop("universe")
+    params["rebalancing_policy"] = {"policy": "periodic", "frequency": "weekly", "calendar": "NYSE"}
+    params["group_limits"] = {"by": "asset_class", "limits": {"crypto": {"max": 0.5}}}
+    cfg["plugins"]["data"]["params_init"]["universe_path"] = str(universe_path)
+    cfg["plugins"]["strategies"][0]["params_init"]["weights"] = {"A": 0.8, "USD": 0.2}
+    config_path.write_text(yaml.safe_dump(cfg))
+    return cfg, config_path
+
+
+@pytest.mark.parametrize("engine", ["vectorbt", "rsims"])
+def test_explain_plans_the_rebalancing_policy_and_group_limits_the_run_applies(tmp_path, engine):
+    import pandas as pd
+
+    cfg, config_path = _policy_config(tmp_path, engine)
+    planned, recorded = _explain_and_run(cfg, config_path)
+
+    assert planned["ok"] is True, planned["errors"]
+    assert validate_explain(planned) == []
+    assert _shared(planned) == _shared(recorded)
+    assert planned["rebalancing"] == {"policy": "periodic", "frequency": "weekly", "calendar": "NYSE"}
+    assert planned["group_limits"] == {
+        "by": "asset_class",
+        "excess": "redistribute",
+        "limits": {"crypto": {"min": 0.0, "max": 0.5}},
+    }
+    run_dir = Path(recorded["artifacts"]["returns"]).resolve().parent
+    validation = json.loads((run_dir / "data_validation.json").read_text())
+    assert validation["rebalancing"]["policy"] == planned["rebalancing"]
+    assert {k: validation["groups"][k] for k in ("by", "excess", "limits")} == planned["group_limits"]
+    traded = pd.read_parquet(run_dir / "traded_weights.parquet").set_index("date")
+    assert traded["A"].max() == pytest.approx(0.5)  # 0.8 decided, capped at the crypto max
+    decisions = pd.read_parquet(run_dir / "rebalance_schedule.parquet")["decision_date"]
+    assert len(decisions) >= 4
+    assert all(pd.Timestamp(d).dayofweek < 5 for d in decisions)  # NYSE sessions: never a weekend
+
+
+def test_a_policy_with_the_legacy_schedule_keys_is_refused_by_explain_and_run(tmp_path):
+    cfg, config_path = _policy_config(tmp_path, "rsims")
+    cfg["plugins"]["pipeline"]["params"]["rebalancing_freq"] = "ME"
+    config_path.write_text(yaml.safe_dump(cfg))
+    _both_refuse(cfg, config_path, "rebalancing_policy")
+
+
+def test_a_malformed_policy_is_refused_by_explain_and_run(tmp_path):
+    cfg, config_path = _policy_config(tmp_path, "rsims")
+    cfg["plugins"]["pipeline"]["params"]["rebalancing_policy"] = {"policy": "tranche"}
+    config_path.write_text(yaml.safe_dump(cfg))
+    _both_refuse(cfg, config_path, "tranches")
+
+
+def test_a_group_limit_on_a_missing_metadata_column_is_refused_by_the_run(tmp_path):
+    cfg, config_path = _policy_config(tmp_path, "rsims")
+    cfg["plugins"]["pipeline"]["params"]["group_limits"]["by"] = "sector"
+    with pytest.raises(ValueError, match="sector"):
+        run_from_config(copy.deepcopy(cfg), PluginRegistry.discover(), config_path=config_path)
+
+
+def test_a_variant_overriding_the_legacy_keys_under_a_declared_policy_is_refused(tmp_path):
+    cfg, config_path = _policy_config(tmp_path, "rsims")
+    cfg["plugins"]["pipeline"]["params"]["variants"] = [_variant(overrides={"threshold": 0.05})]
+    config_path.write_text(yaml.safe_dump(cfg))
+    _both_refuse(cfg, config_path, "overrides.rebalancing_policy")
