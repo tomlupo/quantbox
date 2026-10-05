@@ -13,17 +13,31 @@ The acceptance criteria of TOM-1520, each as a test:
 - without borrow, the held net never goes above 1 after a rebalance —
   deferral included (the one case where a final target can still need cash
   the account does not have). It fails when the cash cap is disabled.
+
+TOM-1525 adds one gross-cap default (``risk.max_leverage: 1``) read in one
+place (:func:`quantbox.decision.gross_cap`): the same config WITHOUT the key
+gives the same targets in the backtest and in trading.
 """
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from quantbox.decision import DecisionRules, final_book, final_targets, risk_caps_row
+import quantbox
+from quantbox.decision import (
+    DEFAULT_MAX_LEVERAGE,
+    DecisionRules,
+    final_book,
+    final_targets,
+    gross_cap,
+    risk_caps_row,
+)
 from quantbox.engine.groups import resolve_group_limits
 from quantbox.engine.schedule import schedule_book
 from quantbox.instrument_calendar import execution_bars, instrument_calendar
@@ -60,7 +74,7 @@ def test_the_short_clip_runs_before_the_gross_cap():
     [("normalize", {"A": 0.75, "B": 0.25}, 1), ("borrow", {"A": 1.2, "B": 0.4}, 0), ("none", {"A": 1.2, "B": 0.4}, 0)],
 )
 def test_normalize_scales_a_row_above_net_one_and_borrow_keeps_it(leverage, expected, normalised):
-    out, report = final_targets(_row(A=1.2, B=0.4), DecisionRules(leverage=leverage))
+    out, report = final_targets(_row(A=1.2, B=0.4), DecisionRules(max_leverage=None, leverage=leverage))
     assert out.iloc[0].to_dict() == pytest.approx(expected)
     assert report["rows_normalised"] == normalised
     assert report["rows_above_net_1"] == 1  # measured in every mode
@@ -69,7 +83,7 @@ def test_normalize_scales_a_row_above_net_one_and_borrow_keeps_it(leverage, expe
 
 def test_a_long_short_row_is_normalised_on_its_net_not_its_gross():
     """Gross 2.0, net 0.6: nothing to normalise (net is what needs cash); the gross cap is a separate rule."""
-    out, report = final_targets(_row(A=1.3, B=-0.7), DecisionRules())
+    out, report = final_targets(_row(A=1.3, B=-0.7), DecisionRules(max_leverage=None))
     assert out.iloc[0].to_dict() == pytest.approx({"A": 1.3, "B": -0.7})
     assert report["rows_normalised"] == 0
 
@@ -78,7 +92,7 @@ def test_group_limits_run_before_the_normalisation():
     """A group max holds after normalisation (it only scales down), and the row ends at net 1."""
     universe = pd.DataFrame({"symbol": ["A", "B", "C"], "asset_class": ["equity", "equity", "bond"]})
     groups = resolve_group_limits({"by": "asset_class", "limits": {"equity": {"max": 0.6}}}).bind(universe)
-    out, report = final_targets(_row(A=0.8, B=0.4, C=0.4), DecisionRules(groups=groups))
+    out, report = final_targets(_row(A=0.8, B=0.4, C=0.4), DecisionRules(max_leverage=None, groups=groups))
     row = out.iloc[0]
     assert row["A"] + row["B"] <= 0.6 + 1e-12
     assert row.sum() == pytest.approx(1.0)
@@ -89,11 +103,11 @@ def test_a_nan_cell_no_step_changed_stays_nan():
     """The seam fills a NaN on the price bars (HOLD); the decision must not fill it on the strategy's rows first."""
     idx = pd.date_range("2024-01-01", periods=3, freq="D")
     raw = pd.DataFrame({"A": [0.5, np.nan, 0.6], "B": [0.3, 0.3, np.nan]}, index=idx)
-    out, _ = final_targets(raw, DecisionRules())
+    out, _ = final_targets(raw, DecisionRules(max_leverage=None))
     assert np.isnan(out.loc[idx[1], "A"]) and np.isnan(out.loc[idx[2], "B"])
     # ...but a held cell that makes its row need normalising is written explicitly (the row's net counts it).
     raw2 = pd.DataFrame({"A": [0.5, np.nan], "B": [0.3, 0.9]}, index=idx[:2])
-    out2, _ = final_targets(raw2, DecisionRules())
+    out2, _ = final_targets(raw2, DecisionRules(max_leverage=None))
     assert out2.loc[idx[1]].sum() == pytest.approx(1.0) and out2.loc[idx[1], "A"] == pytest.approx(0.5 / 1.4)
 
 
@@ -101,7 +115,7 @@ def test_final_book_decides_every_strategy_slice_on_its_own():
     idx = pd.date_range("2024-01-01", periods=2, freq="D")
     cols = pd.MultiIndex.from_product([["s1", "s2"], ["A", "B"]], names=["slice", "ticker"])
     book = pd.DataFrame([[1.0, 1.0, 0.2, 0.2], [0.5, 0.5, 0.6, 0.6]], index=idx, columns=cols)
-    out, reports = final_book(book, DecisionRules())
+    out, reports = final_book(book, DecisionRules(max_leverage=None))
     assert out["s1"].sum(axis=1).tolist() == pytest.approx([1.0, 1.0])
     assert out["s2"].sum(axis=1).tolist() == pytest.approx([0.4, 1.0])
     assert [r["rows_normalised"] for r in reports] == [1, 1]
@@ -260,6 +274,115 @@ def test_a_levered_perps_book_is_normalised_live_unless_it_declares_borrow(tmp_p
 
 
 # ----------------------------------------------------------------------
+# TOM-1525: one gross-cap default (1), read in one place, in every door
+# ----------------------------------------------------------------------
+
+
+def test_the_gross_cap_default_is_one_and_one_reader_returns_it():
+    """Tom, 2026-10-06: "Jedno: 1 wszędzie". Before: 99 in the backtest, 1 in trading, none in the L1 doors."""
+    assert DEFAULT_MAX_LEVERAGE == 1.0
+    assert gross_cap(None) == 1.0 and gross_cap({}) == 1.0 and gross_cap({"allow_short": True}) == 1.0
+    assert gross_cap({"max_leverage": 2}) == 2.0
+    assert DecisionRules().max_leverage == 1.0
+
+
+def test_every_reader_of_max_leverage_gets_the_same_default():
+    """The backtest plan (what ``config explain`` prints as ``venue.max_leverage``), trading, both rebalancers."""
+    assert BacktestPipeline().plan({})["venue"]["max_leverage"] == 1.0
+    assert TradingPipeline._risk_rules({})["max_leverage"] == 1.0
+    assert StandardRebalancer().risk_rules({})["max_leverage"] == 1.0
+    assert FuturesRebalancer().risk_rules({})["max_leverage"] == 1.0
+
+
+def test_max_leverage_is_read_in_one_place():
+    """No module but ``quantbox.decision`` reads ``max_leverage`` out of a config with its own default:
+    the 99 lived in ``backtest_pipeline._max_leverage``, and a second literal default is how the paths split."""
+    src = Path(quantbox.__file__).parent
+    pattern = re.compile(r"""\.get\(\s*["']max_leverage["']\s*,""")  # a .get with a default of its own
+    readers = sorted(
+        str(p.relative_to(src)) for p in src.rglob("*.py") if p.name != "decision.py" and pattern.search(p.read_text())
+    )
+    assert readers == [], f"max_leverage read with a local default in {readers}; call quantbox.decision.gross_cap"
+
+
+@pytest.mark.parametrize("allow_short", [True, False])
+def test_without_max_leverage_backtest_and_trading_give_the_same_targets_gross_at_most_one(tmp_path, allow_short):
+    """The acceptance test of TOM-1525: the config does not name ``max_leverage``."""
+    cfg = {"risk": {"allow_short": allow_short}}
+    prices = _prices()
+    decided = _decided(prices)
+    book = decided if allow_short else decided.clip(lower=0)
+    assert (book.abs().sum(axis=1) > 1.0).mean() > 0.5  # the decided book really needs the cap
+    held = _backtest_targets(tmp_path, cfg, prices, decided)
+    for d in (5, 17, 30, N_BARS - 2):
+        live = _trading_targets(tmp_path, cfg, prices, decided, d)
+        backtest = held.loc[prices.index[d + 1]]
+        np.testing.assert_allclose(live.to_numpy(), backtest.to_numpy(), rtol=0, atol=1e-12, err_msg=f"bar {d}")
+        assert live.abs().sum() <= 1.0 + 1e-9, f"bar {d}: live gross {live.abs().sum()}"
+        assert backtest.abs().sum() <= 1.0 + 1e-9, f"bar {d}: backtest gross {backtest.abs().sum()}"
+
+
+def _levered() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Long 1.5 / short 0.5 on every bar: gross 2, net 1 — normalize leaves it, only the gross cap moves it."""
+    prices = _prices()
+    return prices, pd.DataFrame({"A": 1.5, "B": -0.5, "C": 0.0, "D": 0.0}, index=prices.index)
+
+
+def test_backtest_caps_gross_at_one_unless_the_call_declares_its_leverage():
+    from quantbox.plugins.backtesting import backtest
+
+    prices, weights = _levered()
+    default = backtest(prices, weights, engine="rsims", fees=0.0)
+    decision = default["book"].data_validation["decision"]
+    assert decision["rules"]["max_leverage"] == 1.0
+    assert decision["rows_gross_capped"] == len(prices)
+    levered = backtest(prices, weights, engine="rsims", fees=0.0, max_leverage=2)
+    decision = levered["book"].data_validation["decision"]
+    assert decision["rules"]["max_leverage"] == 2.0 and decision["rows_gross_capped"] == 0
+    assert levered["metrics"]["total_return"] != pytest.approx(default["metrics"]["total_return"])
+
+
+def test_optimize_caps_gross_at_one_unless_the_call_declares_its_leverage():
+    from quantbox.plugins.backtesting import backtest, optimize
+
+    prices, weights = _levered()
+
+    def weights_fn(p: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
+        return weights.loc[p.index] * params["k"]
+
+    kw: dict[str, Any] = {"engine": "rsims", "fees": 0.0}
+    default = optimize(prices, weights_fn, {"k": [1.0]}, **kw)["all_results"].loc[0, "total_return"]
+    levered = optimize(prices, weights_fn, {"k": [1.0]}, **kw, max_leverage=2)["all_results"].loc[0, "total_return"]
+    assert default == pytest.approx(backtest(prices, weights, **kw)["metrics"]["total_return"])
+    assert levered == pytest.approx(backtest(prices, weights, **kw, max_leverage=2)["metrics"]["total_return"])
+    assert levered != pytest.approx(default)
+
+
+class _Levered:
+    """A sweep strategy: the levered book, whatever its parameter."""
+
+    def __init__(self, k: float = 1.0) -> None:
+        self.k = k
+
+    def run(self, data: dict[str, pd.DataFrame]) -> dict[str, Any]:
+        return {"weights": _levered()[1] * self.k}
+
+
+def test_the_sweep_caps_gross_at_one_unless_backtest_kwargs_declare_leverage():
+    from quantbox.analysis import sweep
+
+    prices, _ = _levered()
+
+    def total_return(**extra: Any) -> float:
+        kw = {"engine": "rsims", "fees": 0.0, **extra}
+        out = sweep(_Levered, {}, {"k": [1.0]}, {"prices": prices}, backtest_kwargs=kw, metrics=("total_return",))
+        return float(out["total_return"].iloc[0])
+
+    assert total_return() == pytest.approx(total_return(max_leverage=1))
+    assert total_return(max_leverage=2) != pytest.approx(total_return())
+
+
+# ----------------------------------------------------------------------
 # AC 2: without borrow the held net never goes above 1 after a rebalance, deferral included
 # ----------------------------------------------------------------------
 
@@ -302,7 +425,7 @@ def _drifted_held_net(prices: pd.DataFrame, cal_prices: pd.DataFrame, book) -> n
 @pytest.mark.parametrize("seed", range(12))
 def test_without_borrow_the_held_net_never_goes_above_one_after_a_rebalance(seed):
     prices, raw = _deferral_case(seed)
-    final, _ = final_targets(raw, DecisionRules())
+    final, _ = final_targets(raw, DecisionRules(max_leverage=None))
     assert (final.sum(axis=1) <= 1.0 + 1e-9).all()  # the decision's half: every target is final
     cal = instrument_calendar(prices)
     bars = execution_bars(cal, "majority")
@@ -317,7 +440,7 @@ def test_borrow_lifts_the_cash_cap():
     worst = 0.0
     for seed in range(12):
         prices, raw = _deferral_case(seed)
-        final, _ = final_targets(raw, DecisionRules())
+        final, _ = final_targets(raw, DecisionRules(max_leverage=None))
         cal = instrument_calendar(prices)
         book = schedule_book(final, cal, execution_bars(cal, "majority"), 1, 1, leverage="borrow")
         worst = max(worst, _drifted_held_net(prices, cal.prices, book).max())

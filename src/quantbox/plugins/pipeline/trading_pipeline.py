@@ -36,7 +36,7 @@ from quantbox.contracts import (
     RunResult,
     StrategyPlugin,
 )
-from quantbox.decision import DecisionRules, final_targets, log_normalisation, risk_caps_row
+from quantbox.decision import DecisionRules, final_targets, gross_cap, log_normalisation, risk_caps_row
 from quantbox.engine.groups import GROUP_LIMITS_SCHEMA, GroupLimits, resolve_group_limits
 from quantbox.engine.policy import (
     POLICY_SCHEMA,
@@ -1652,11 +1652,12 @@ class TradingPipeline:
 
     @staticmethod
     def _risk_rules(params: dict[str, Any]) -> dict[str, Any]:
-        """The decision's short clip and gross cap from the pipeline's own ``risk`` block (defaults 1 / no shorts)."""
+        """The decision's short clip and gross cap from the pipeline's own ``risk`` block (no shorts by default;
+        the gross cap's default is :func:`quantbox.decision.gross_cap`'s, the backtest's too)."""
         risk_cfg = params.get("risk") or {}
         return {
             "allow_short": bool(risk_cfg.get("allow_short", False)),
-            "max_leverage": float(risk_cfg.get("max_leverage", 1)),
+            "max_leverage": gross_cap(risk_cfg),
         }
 
     def _decision_rules(

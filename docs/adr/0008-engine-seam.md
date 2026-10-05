@@ -14,6 +14,7 @@ status_changes:
   - 2026-10-05: decision 11 amended with TOM-1513 — Tom, 2026-10-05: a policy is a cadence x a trigger, a corridor hit rebalances the whole book ("hit corridora triggeruje cały rebalancing"), min_trade on every policy, risk.tranches is an alias of the tranche cadence; the corridor + normalize caveat is removed
   - 2026-10-05: decision 11 extended with TOM-1518 — live trading decides with the same policy code; the live rebalancers keep target weights -> orders only
   - 2026-10-05: decisions 6 and 11 amended with TOM-1520 — Tom, 2026-10-05: "Normalizacja jest częścią strategii" — venue.leverage normalisation and the group limits are the DECISION (quantbox.decision), shared by backtest and live; the seam measures leverage and, without borrow, caps every rebalance's buys at the cash
+  - 2026-10-06: decisions 12 and 13 amended with TOM-1525 — Tom, 2026-10-06: "Jedno: 1 wszędzie" — one risk.max_leverage default (1), read by quantbox.decision.gross_cap only, in every door
 ---
 
 # ADR-0008: Book simulation sits behind one engine seam, with vectorbt and rsims as adapters
@@ -174,6 +175,8 @@ the same strategy gave a different book through `backtest()` than through
     cover its fees is not placed. Each adapter names the costs it charges
     (`charged_costs()`); `simulate()` refuses a non-zero cost outside that set,
     naming the engine and the cost. A cost is never dropped silently.
+    The gross cap has one default too (TOM-1525, decision 13): `risk.max_leverage`
+    is 1 wherever a config, a call or `backtest_kwargs` leaves it out.
 
 13. **Normalisation is part of the decision (TOM-1520).** Tom, 2026-10-05:
     "Normalizacja jest częścią strategii, bo pokazuje, co byśmy robili w
@@ -192,6 +195,22 @@ the same strategy gave a different book through `backtest()` than through
     `borrow`, every placed rebalance caps its buys at the cash plus the sell
     proceeds (`place_bar`), which binds only when a deferred cell still holds
     its old weight. `simulate(groups=...)` stays for a direct caller.
+
+    **One gross-cap default (TOM-1525).** Tom, 2026-10-06: "Jedno: 1
+    wszędzie". The `risk.max_leverage` default was 99 in `backtest.pipeline.v1`,
+    1 in `trade.full_pipeline.v1` and its rebalancers, and absent (no cap) in
+    `backtest()`, `optimize()` and the sweep: a config without the key gave
+    different targets in the backtest and live. It is now
+    `quantbox.decision.DEFAULT_MAX_LEVERAGE = 1`, read by
+    `quantbox.decision.gross_cap` only (`DecisionRules` defaults to it too);
+    `backtest()` and `optimize()` take `max_leverage=`, the sweep reads it from
+    `backtest_kwargs`. A levered book declares its leverage. A long-only book
+    on `normalize` does not move: for a row without shorts the gross cap at 1
+    IS the normalisation to net 1 (the run reports the row under
+    `rows_gross_capped` instead of `rows_normalised`). A book with shorts,
+    `borrow` or `schedule: bars` and a row above gross 1 moves.
+    `tests/test_decision_layer.py` holds the backtest-vs-trading test without
+    the key.
 
 ### The threshold caveat
 

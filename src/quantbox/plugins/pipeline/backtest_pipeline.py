@@ -66,7 +66,14 @@ from quantbox.contracts import (
     RunResult,
     StrategyPlugin,
 )
-from quantbox.decision import DecisionRules, decision_metrics, final_targets, log_normalisation, with_decision
+from quantbox.decision import (
+    DecisionRules,
+    decision_metrics,
+    final_targets,
+    gross_cap,
+    log_normalisation,
+    with_decision,
+)
 from quantbox.engine import (
     DEFAULT_ENGINE,
     NAN_POLICY,
@@ -104,11 +111,6 @@ from quantbox.plugins.datasources._utils import interval_step, normalize_data_fr
 from quantbox.strategy_runner import build_strategy_context, run_strategies
 
 logger = logging.getLogger(__name__)
-
-
-def _max_leverage(risk_cfg: dict[str, Any]) -> float:
-    """The gross cap the leverage transform applies — 99 (effectively none) when unset."""
-    return float(risk_cfg.get("max_leverage", 99))
 
 
 def _variant_risk_cfg(base_risk_cfg: dict[str, Any], variant: dict[str, Any]) -> dict[str, Any]:
@@ -388,9 +390,19 @@ class BacktestPipeline:
                     "default": {},
                     "description": (
                         "Risk transforms applied to the weights time series and handed to risk plugins "
-                        "(allow_short, max_leverage, ...). tranches: N is DEPRECATED (TOM-1513): it is the "
-                        "seam's tranche cadence, rebalancing_policy {cadence: tranche, tranches: N}, and warns."
+                        "(allow_short, max_leverage, ...). max_leverage is the decision's gross cap, default 1 "
+                        "as in trading (TOM-1525): a levered book declares it. tranches: N is DEPRECATED "
+                        "(TOM-1513): it is the seam's tranche cadence, rebalancing_policy {cadence: tranche, "
+                        "tranches: N}, and warns."
                     ),
+                    "properties": {
+                        "max_leverage": {
+                            "type": "number",
+                            "minimum": 0,
+                            "default": 1,
+                            "description": "The decision's gross cap (sum |w| per row); default 1, as in trading.",
+                        },
+                    },
                 },
                 "strategy_weights": {
                     "type": "object",
@@ -522,7 +534,7 @@ class BacktestPipeline:
             "venue": {
                 "declared": venue_declared,
                 "allow_shorts": allow_shorts,
-                "max_leverage": _max_leverage(risk_cfg),
+                "max_leverage": gross_cap(risk_cfg),
                 # A decision with net exposure above 1: scaled to 1, or borrowed (docs/adr/0007).
                 "leverage": leverage,
                 # What borrowed / idle cash costs; null = not declared (and not borrowing).
@@ -1345,7 +1357,7 @@ class BacktestPipeline:
         """
         rules = DecisionRules(
             allow_short=allow_shorts,
-            max_leverage=_max_leverage(risk_cfg),
+            max_leverage=gross_cap(risk_cfg),
             groups=groups,
             leverage=plan["venue"]["leverage"],
         )

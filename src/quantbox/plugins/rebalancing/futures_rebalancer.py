@@ -31,7 +31,7 @@ import numpy as np
 import pandas as pd
 
 from quantbox.contracts import BrokerPlugin, PluginMeta
-from quantbox.decision import risk_caps_row
+from quantbox.decision import gross_cap, risk_caps_row
 from quantbox.engine.policy import TRANCHES_MOVED
 from quantbox.portfolio_value import (
     BASIS_MARGIN,
@@ -170,7 +170,7 @@ class FuturesRebalancer:
         if int(params.get("tranches", 1) or 1) > 1:
             raise ValueError(TRANCHES_MOVED)
         # NO short clamping — negative weights are valid for futures
-        return {"allow_short": True, "max_leverage": float(params.get("max_leverage", 1))}
+        return {"allow_short": True, "max_leverage": gross_cap(params)}
 
     # ==================================================================
     # Order generation

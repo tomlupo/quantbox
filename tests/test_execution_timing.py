@@ -373,7 +373,7 @@ plugins:
     assert manifest["venue"] == {
         "declared": True,
         "allow_shorts": False,
-        "max_leverage": 99.0,
+        "max_leverage": 1.0,  # TOM-1525: the one default
         "leverage": "normalize",
         "financing": None,
     }
@@ -439,7 +439,7 @@ def test_shorts_traded_without_a_venue_block_warn_and_are_measured(tmp_path, cap
     assert result.notes["venue"] == {
         "declared": False,
         "allow_shorts": True,
-        "max_leverage": 99.0,
+        "max_leverage": 1.0,  # TOM-1525: the one default
         "leverage": "normalize",
         "financing": None,
     }

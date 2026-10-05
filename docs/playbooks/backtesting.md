@@ -213,7 +213,7 @@ Reading a dataset without it raises an ImportError naming both.
 | `venue.leverage` | `normalize` (every engine) | How the decision is normalised: a target row above net 1 is scaled to 1, or borrowed — [Missing prices and financing](#missing-prices-and-financing) |
 | `execution.calendar` | `majority` | The execution calendar: `majority` \| `union` \| `intersection` \| a ticker — [Missing prices and financing](#missing-prices-and-financing) |
 | `execution.schedule` | `calendar` | `calendar`: the scheduled book; `bars`: every price bar executes, no deferral, no `venue.leverage` ([ADR-0008](../adr/0008-engine-seam.md)) |
-| `risk.max_leverage` | `99` | Gross cap per bar; only ever scales DOWN (both engines) |
+| `risk.max_leverage` | `1` | Gross cap per bar (`sum \|w\|`); only ever scales DOWN (both engines). The same default in trading, `backtest()`, `optimize()` and the sweep (`quantbox.decision.DEFAULT_MAX_LEVERAGE`, TOM-1525): a levered book declares it |
 | `risk.allow_short` | `false` | Legacy short switch (both engines); prefer `venue.allow_shorts` |
 | `risk.tranches` | `1` | DEPRECATED (TOM-1513): the tranche cadence, `rebalancing_policy: {cadence: tranche, tranches: N}`; warns |
 

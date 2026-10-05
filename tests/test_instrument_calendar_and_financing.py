@@ -642,7 +642,9 @@ def test_financing_holds_the_full_book_and_charges_rate_plus_spread(tmp_path, w_
         "leverage": "borrow",
         "financing": {"rate": "CASH", "borrow_spread_bps": borrow_bps, "lend_spread_bps": lend_bps},
     }
-    result, store = _run(tmp_path, prices, {"A": w_a, "CASH": 0.0}, rebalancing_freq=1, venue=venue)
+    # A levered book declares its gross cap (TOM-1525: the default is 1).
+    risk = {"max_leverage": 1.5}
+    result, store = _run(tmp_path, prices, {"A": w_a, "CASH": 0.0}, rebalancing_freq=1, venue=venue, risk=risk)
 
     traded = store.read_parquet("traded_weights").set_index("date")
     assert (traded["A"].iloc[1:] == w_a).all()
@@ -668,7 +670,8 @@ def test_normalize_is_the_default_and_scales_a_levered_decision_to_net_one(tmp_p
     DECISION (TOM-1520), each one counted, and the held book is A at 1.0 — its return is A's, no cut buys."""
     prices = _levered_panel()
     with caplog.at_level(logging.WARNING):
-        result, store = _run(tmp_path, prices, {"A": 1.5, "CASH": 0.0}, rebalancing_freq=1)
+        # The gross cap above the book (TOM-1525: its default 1 would scale the row first), so normalize does.
+        result, store = _run(tmp_path, prices, {"A": 1.5, "CASH": 0.0}, rebalancing_freq=1, risk={"max_leverage": 2})
 
     traded = store.read_parquet("traded_weights").set_index("date")
     np.testing.assert_allclose(traded["A"].iloc[1:].to_numpy(), 1.0, rtol=1e-12)
@@ -701,6 +704,7 @@ def test_borrow_without_financing_runs_at_an_assumed_zero_rate_and_says_so(tmp_p
             {"A": 1.5, "CASH": 0.0},
             rebalancing_freq=1,
             venue={"allow_shorts": False, "leverage": "borrow"},
+            risk={"max_leverage": 1.5},  # a levered book declares its gross cap (TOM-1525)
         )
     traded = store.read_parquet("traded_weights").set_index("date")
     assert (traded["A"].iloc[1:] == 1.5).all()
@@ -837,7 +841,8 @@ def test_the_default_leverage_is_normalize_on_every_engine(tmp_path, engine):
 
 def test_rsims_borrows_when_declared_it_has_no_cash_floor(tmp_path):
     venue = {"allow_shorts": False, "leverage": "borrow"}
-    result, store = _run(tmp_path, _levered_panel(), {"A": 1.5, "CASH": 0.0}, engine="rsims", venue=venue)
+    risk = {"max_leverage": 1.5}  # a levered book declares its gross cap (TOM-1525)
+    result, store = _run(tmp_path, _levered_panel(), {"A": 1.5, "CASH": 0.0}, engine="rsims", venue=venue, risk=risk)
     traded = store.read_parquet("traded_weights").set_index("date")
     assert (traded["A"].iloc[1:] == 1.5).all()
     assert result.notes["venue"]["leverage"] == "borrow"

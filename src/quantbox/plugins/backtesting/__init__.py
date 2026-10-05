@@ -23,8 +23,8 @@ Quick start::
 :func:`quantbox.engine.simulate` — the same schedule as ``quantbox run -c``:
 the instrument and execution calendars (``schedule="calendar"``, the default;
 ``schedule="bars"`` makes every price bar an execution bar), the rebalancing
-schedule and threshold on every engine, ``venue.leverage`` (``leverage=``,
-default normalize), and the execution timing (:mod:`quantbox.execution`):
+schedule and threshold on every engine, the gross cap (``max_leverage=``,
+default 1), ``venue.leverage`` (``leverage=``, default normalize), and the execution timing (:mod:`quantbox.execution`):
 weights decided on bar ``t`` fill at the close of bar ``t + lag_bars``,
 default 1 (next-bar).
 ``lag_bars=0`` (same-bar) is refused (docs/adr/0005) unless the call also
@@ -130,9 +130,10 @@ def _backtest(
     policy: dict[str, Any] | None = None,
     group_limits: dict[str, Any] | None = None,
     universe: pd.DataFrame | None = None,
+    max_leverage: float | None = None,
 ) -> dict[str, Any]:
     """``backtest()`` with an already-resolved timing (``optimize()`` resolves it once per call)."""
-    from quantbox.decision import DecisionRules, decision_metrics, final_book, with_decision
+    from quantbox.decision import DecisionRules, decision_metrics, final_book, gross_cap, with_decision
     from quantbox.engine import Costs, get_engine, simulate
     from quantbox.engine.groups import resolve_group_limits
     from quantbox.financing import DEFAULT_LEVERAGE, resolve_leverage
@@ -144,11 +145,16 @@ def _backtest(
             raise ValueError("group_limits needs universe=: a frame with `symbol` and the group column it names")
         groups = resolve_group_limits(group_limits).bind(universe)
     lev = None if leverage is None else resolve_leverage(leverage)
-    # The decision (TOM-1520): group limits, then venue.leverage normalisation, on the decided rows —
-    # the seam executes final targets. schedule: bars measures leverage only (simulate refuses one declared).
+    # The decision (TOM-1520): the gross cap (TOM-1525: default 1, the pipelines' too), the group limits,
+    # then venue.leverage normalisation, on the decided rows — the seam executes final targets.
+    # schedule: bars measures leverage only (simulate refuses one declared).
     final, reports = final_book(
         _on_price_bars(prices, weights),
-        DecisionRules(groups=groups, leverage="none" if timing.schedule == "bars" else (lev or DEFAULT_LEVERAGE)),
+        DecisionRules(
+            max_leverage=gross_cap({"max_leverage": max_leverage}),
+            groups=groups,
+            leverage="none" if timing.schedule == "bars" else (lev or DEFAULT_LEVERAGE),
+        ),
     )
     book = simulate(
         prices,
@@ -199,6 +205,7 @@ def backtest(
     policy: dict[str, Any] | None = None,
     group_limits: dict[str, Any] | None = None,
     universe: pd.DataFrame | None = None,
+    max_leverage: float | None = None,
 ) -> dict[str, Any]:
     """High-level backtest through the engine seam (:func:`quantbox.engine.simulate`, docs/adr/0008).
 
@@ -272,6 +279,11 @@ def backtest(
         ``{"by": "asset_class", "limits": {"equity": {"max": 0.6}}}``, the groups
         read from *universe* (``symbol`` + the ``by`` column). An infeasible
         limit raises ``ValueError``.
+    max_leverage : float | None
+        The decision's gross cap, ``risk.max_leverage`` of ``quantbox run``:
+        a row whose ``sum |w|`` is above it is scaled down to it. ``None`` =
+        the default, 1 (:data:`quantbox.decision.DEFAULT_MAX_LEVERAGE`), the
+        same as the pipelines (TOM-1525); a levered book declares it.
 
     Returns
     -------
@@ -303,4 +315,5 @@ def backtest(
         policy=policy,
         group_limits=group_limits,
         universe=universe,
+        max_leverage=max_leverage,
     )
