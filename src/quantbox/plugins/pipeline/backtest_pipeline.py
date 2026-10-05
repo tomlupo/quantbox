@@ -46,8 +46,7 @@ the same::
 from __future__ import annotations
 
 import logging
-import warnings
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -75,7 +74,13 @@ from quantbox.engine import (
     simulate,
 )
 from quantbox.engine.groups import GROUP_LIMITS_SCHEMA, GroupLimits, resolve_group_limits
-from quantbox.engine.policy import POLICY_SCHEMA, RebalancePolicy, legacy_policy, resolve_policy
+from quantbox.engine.policy import (
+    POLICY_SCHEMA,
+    RebalancePolicy,
+    legacy_policy,
+    resolve_policy,
+    tranches_alias,
+)
 from quantbox.exceptions import DataLoadError
 from quantbox.execution import (
     EXECUTION_SCHEMA,
@@ -162,24 +167,11 @@ def _risk_tranches(policy: RebalancePolicy, risk_cfg: dict[str, Any], where: str
     what ``rebalancing_policy: {cadence: tranche, tranches: N}`` books. It is
     no longer a rolling mean of N bars before the seam; the two agree on a
     daily schedule after the first N-1 decisions (tests/test_rebalancing_policies.py
-    proves it). Declaring tranches twice is refused.
+    proves it). Declaring tranches twice is refused. The one implementation is
+    :func:`quantbox.engine.policy.tranches_alias`, which live trading calls too
+    (TOM-1518).
     """
-    n = int(risk_cfg.get("tranches", 1))
-    if n <= 1:
-        return policy
-    if policy.cadence == "tranche":
-        raise ValueError(
-            f"{where}risk.tranches ({n}) and rebalancing_policy cadence tranche ({policy.tranches}) both declare "
-            "tranches; declare rebalancing_policy.tranches only (risk.tranches is deprecated, TOM-1513)"
-        )
-    msg = (
-        f"{where}risk.tranches: {n} is deprecated (TOM-1513). It is the seam's tranche cadence: declare "
-        f"rebalancing_policy {{cadence: tranche, tranches: {n}}} instead (same book). It no longer averages "
-        "N bars before the seam: the first N-1 decisions and a non-daily schedule book differently than before."
-    )
-    warnings.warn(msg, DeprecationWarning, stacklevel=2)
-    logger.warning("DEPRECATED: %s", msg)
-    return replace(policy, cadence="tranche", tranches=n)
+    return tranches_alias(policy, risk_cfg.get("tranches", 1), key=f"{where}risk.tranches")
 
 
 def _number(key: str, value: Any, *, cast: type = float, where: str = "") -> Any:

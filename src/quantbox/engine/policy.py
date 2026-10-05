@@ -71,12 +71,15 @@ an engine-internal band would. Both engines trade on the bars the seam keeps
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 #: The single-key spellings (TOM-1450), in the order the docs list them.
 POLICIES = ("periodic", "tranche", "band", "corridor")
@@ -522,6 +525,69 @@ def blend_tranches(targets: np.ndarray, n: int) -> np.ndarray:
 _CASH_TOLERANCE = 1e-12
 
 
+@dataclass(frozen=True)
+class BarPlacement:
+    """What the trigger and ``min_trade`` decide on ONE considered bar (:func:`place_bar`)."""
+
+    #: True: the bar trades (no trigger, or a hit) and at least one trade survives ``min_trade``.
+    placed: bool
+    #: The trigger fired on some trading cell (``None`` without a trigger).
+    hit: bool | None
+    #: Per cell: it trades on this bar.
+    trades: np.ndarray
+    #: Per cell: the target after the buy cap (a scaled buy stops short of its target).
+    targets: np.ndarray
+    #: The buy scale when the buys were capped at the cash, else ``None``.
+    scale: float | None
+
+
+def place_bar(
+    policy: RebalancePolicy,
+    target: np.ndarray,
+    drifted: np.ndarray,
+    ordered: np.ndarray,
+    *,
+    leverage: str,
+    corridor: tuple[np.ndarray, np.ndarray] | None = None,
+) -> BarPlacement:
+    """THE trigger and ``min_trade`` rule for one considered bar, against the held book *drifted*.
+
+    The one implementation the backtest seam (:func:`place_orders`, bar by bar)
+    and live trading (:func:`decide_rebalance`, once per run) both call
+    (TOM-1518). *target* is the bar's target per cell, *ordered* the cells the
+    schedule orders on it, *corridor* the ``(below, above)`` arrays of a
+    ``corridor`` trigger (:meth:`RebalancePolicy.corridor_arrays`). The rule
+    itself is stated in :func:`place_orders`.
+    """
+    target = np.array(target, dtype=float, copy=True)
+    min_trade = float(policy.min_trade)
+    trades = ordered & (np.abs(target - drifted) >= min_trade) if min_trade > 0 else ordered.copy()
+    hit: bool | None = None
+    if policy.trigger == "none":
+        placed = True
+    else:
+        if policy.trigger == "band":
+            cells = np.abs(drifted - target) > float(policy.band or 0.0)
+        else:
+            if corridor is None:
+                raise ValueError("place_bar: a corridor trigger needs the (below, above) corridor arrays")
+            below, above = corridor
+            cells = (drifted < target - below) | (drifted > target + above) | ((target == 0) & (drifted != 0))
+        hit = bool((cells & trades).any())
+        placed = hit
+    keep = trades if placed else np.zeros_like(ordered)
+    scale: float | None = None
+    if keep.any() and min_trade > 0 and leverage != "borrow":
+        delta = np.where(keep, target - drifted, 0.0)
+        buys = delta > 0
+        need = float(delta[buys].sum())
+        room = max((1.0 - float(drifted.sum())) - float(delta[delta < 0].sum()), 0.0)
+        if need > room + _CASH_TOLERANCE:
+            scale = room / need
+            target[buys] = drifted[buys] + delta[buys] * scale
+    return BarPlacement(placed=bool(keep.any()), hit=hit, trades=keep, targets=target, scale=scale)
+
+
 def place_orders(
     policy: RebalancePolicy,
     target_cells: np.ndarray,
@@ -569,10 +635,7 @@ def place_orders(
     partial = 0
     dropped = 0
     scales: list[float] = []
-    min_trade = float(policy.min_trade)
-    cap_buys = min_trade > 0 and leverage != "borrow"
-    if policy.trigger == "corridor":
-        below, above = policy.corridor_arrays(columns)
+    corridor = policy.corridor_arrays(columns) if policy.trigger == "corridor" else None
     for r in order_rows:
         o = orders[r].copy()
         if last is None:
@@ -582,27 +645,13 @@ def place_orders(
             value = held * np.where(np.isfinite(growth), growth, 1.0)
             total = (1.0 - held.sum()) + value.sum()
             drifted = value / total if total != 0 else value
-        target = target_cells[r]  # a view: a scaled buy is written into target_cells
-        trades = o & (np.abs(target - drifted) >= min_trade) if min_trade > 0 else o
-        if policy.trigger == "none":
-            placed = True
-        else:
-            if policy.trigger == "band":
-                hit = np.abs(drifted - target) > float(policy.band or 0.0)
-            else:
-                hit = (drifted < target - below) | (drifted > target + above) | ((target == 0) & (drifted != 0))
-            placed = bool((hit & trades).any())
-        keep = trades if placed else np.zeros_like(o)
+        bar = place_bar(policy, target_cells[r], drifted, o, leverage=leverage, corridor=corridor)
+        keep = bar.trades
+        target = bar.targets
+        target_cells[r] = target  # a scaled buy is written into target_cells
         if keep.any():
-            if cap_buys:
-                delta = np.where(keep, target - drifted, 0.0)
-                buys = delta > 0
-                need = float(delta[buys].sum())
-                room = max((1.0 - float(drifted.sum())) - float(delta[delta < 0].sum()), 0.0)
-                if need > room + _CASH_TOLERANCE:
-                    scale = room / need
-                    target[buys] = drifted[buys] + delta[buys] * scale
-                    scales.append(scale)
+            if bar.scale is not None:
+                scales.append(bar.scale)
             if not keep[o].all():
                 partial += 1
                 dropped += int((o & ~keep).sum())
@@ -624,3 +673,281 @@ def place_orders(
             "buy_scale_min": float(min(scales)) if scales else 1.0,
         },
     }
+
+
+# ----------------------------------------------------------------------
+# One tranche concept: the deprecated `tranches: N` keys (TOM-1513, TOM-1518)
+# ----------------------------------------------------------------------
+
+
+#: What a live rebalancer says to ``tranches: N > 1`` handed to it directly (not through the pipeline).
+TRANCHES_MOVED = (
+    "rebalancer tranches > 1: a rebalancer no longer tranches (TOM-1518). The tranche cadence is the rebalancing "
+    "policy's: declare rebalancing_policy {cadence: tranche, tranches: N} on trade.full_pipeline.v1, which "
+    "decides it with the backtest's own code (quantbox.engine.policy)"
+)
+
+
+def tranches_alias(policy: RebalancePolicy, n: Any, *, key: str) -> RebalancePolicy:
+    """``<key>: N`` (N > 1): the DEPRECATED spelling of the tranche cadence (TOM-1513).
+
+    One tranche concept, for the backtest (``risk.tranches``) and for live
+    trading (``risk.tranches`` and the rebalancers' ``tranches``, TOM-1518):
+    the alias sets the policy's cadence to ``tranche`` with N tranches and keeps
+    its frequency and trigger, so it books exactly what ``rebalancing_policy:
+    {cadence: tranche, tranches: N}`` books. It is no longer a rolling mean of N
+    bars before the policy; the two agree on a daily schedule after the first
+    N-1 decisions. Declaring tranches twice is refused. *key* names the
+    declaring key in the messages.
+    """
+    import warnings
+
+    n = int(n if n is not None else 1)
+    if n <= 1:
+        return policy
+    if policy.cadence == "tranche":
+        raise ValueError(
+            f"{key} ({n}) and rebalancing_policy cadence tranche ({policy.tranches}) both declare tranches; "
+            f"declare rebalancing_policy.tranches only ({key} is deprecated, TOM-1513)"
+        )
+    msg = (
+        f"{key}: {n} is deprecated (TOM-1513). It is the tranche cadence of the rebalancing policy: declare "
+        f"rebalancing_policy {{cadence: tranche, tranches: {n}}} instead (same book). It no longer averages "
+        "N bars before the policy: the first N-1 decisions and a non-daily schedule book differently than before."
+    )
+    warnings.warn(msg, DeprecationWarning, stacklevel=3)
+    logger.warning("DEPRECATED: %s", msg)
+    return replace(policy, cadence="tranche", tranches=n)
+
+
+# ----------------------------------------------------------------------
+# Live trading: the same policy, decided once per run (TOM-1518)
+# ----------------------------------------------------------------------
+
+
+def trades_every_bar(policy: RebalancePolicy) -> bool:
+    """True: the policy trades every bar to the decided row (periodic, daily, no trigger, no min_trade, no calendar).
+
+    Live trading needs neither the weights history nor the held book for it:
+    the run trades the last decided row, as it always did.
+    """
+    freq = policy.rebalancing_freq
+    daily = isinstance(freq, (int, np.integer)) and not isinstance(freq, bool) and int(freq) == 1
+    return (
+        policy.cadence == "periodic"
+        and policy.trigger == "none"
+        and policy.min_trade == 0
+        and policy.calendar is None
+        and daily
+    )
+
+
+def next_execution_bar(last: pd.Timestamp, bar: pd.Timedelta, calendar: str | None) -> pd.Timestamp:
+    """The execution bar after *last*: *last* + one *bar*, moved on to the next session of *calendar*.
+
+    Live trading cannot see the bars after its decision bar, so it asks the
+    calendar instead: a period-END frequency (``weekly``, ``monthly``, ...)
+    decides on the last execution bar of the period, and *last* is that bar
+    when the next one falls in a later period.
+    """
+    from quantbox.frequency import _ALWAYS_OPEN_CALENDARS
+
+    if bar <= pd.Timedelta(0):
+        raise ValueError(f"next_execution_bar: the bar size must be positive, got {bar!r}")
+    cand = pd.Timestamp(last) + bar
+    if calendar is None or calendar in _ALWAYS_OPEN_CALENDARS:
+        return cand
+    for _ in range(64):  # the longest market closure is far shorter than 64 bars of a day
+        if market_sessions(pd.DatetimeIndex([cand]), calendar)[0]:
+            return cand
+        cand = cand + bar
+    raise ValueError(f"next_execution_bar: no {calendar} session within 64 bars after {last}")
+
+
+def _live_decisions(
+    exec_idx: pd.DatetimeIndex, policy: RebalancePolicy, next_bar: pd.Timestamp | None
+) -> pd.DatetimeIndex:
+    """The decision bars of *exec_idx* a live run can know on its last bar, without the bars after it."""
+    from quantbox.frequency import _period_end, parse_rebalance_offset, rebalancing_dates
+
+    freq = policy.rebalancing_freq
+    if freq is None:
+        raise ValueError(
+            "rebalancing_policy.frequency null (buy-and-hold: the first bar of the data) has no live meaning: "
+            "the live history window moves every run"
+        )
+    if isinstance(freq, (int, np.integer)) and not isinstance(freq, bool):
+        if int(freq) != 1:
+            raise ValueError(
+                f"rebalancing_policy.frequency {freq} (every n-th bar from the first bar of the data) cannot be "
+                "traded live: the live history window moves every run, so the n-th bar moves with it. Declare a "
+                "calendar frequency (weekly, monthly, an offset such as 'W-FRI') or a list of dates"
+            )
+        return exec_idx
+    if isinstance(freq, (str, pd.DateOffset)) and _period_end(parse_rebalance_offset(freq)):
+        if next_bar is None:
+            raise ValueError(
+                f"rebalancing_policy.frequency {freq!r} decides on the LAST bar of a period: a live run needs the "
+                "next execution bar to know whether today is that bar"
+            )
+        ext = exec_idx.append(pd.DatetimeIndex([next_bar]))
+        return rebalancing_dates(ext, freq).intersection(exec_idx)
+    return rebalancing_dates(exec_idx, freq)
+
+
+@dataclass(frozen=True)
+class LiveDecision:
+    """What the rebalancing policy decides for ONE live run (:func:`decide_rebalance`)."""
+
+    policy: RebalancePolicy
+    #: The last decided row: the bar the run decides on.
+    decision_bar: pd.Timestamp
+    #: The decision bar is a considered bar of the policy's frequency (and calendar).
+    considered: bool
+    #: The run trades: a considered bar, a trigger hit (or no trigger), and a trade above min_trade.
+    placed: bool
+    #: The trigger fired (``None`` without a trigger, or on a bar that is not considered).
+    hit: bool | None
+    #: The book the run should hold after its orders: a traded cell at its target, every other cell
+    #: at its held weight. ``None`` when nothing trades and the held book was not read.
+    targets: pd.Series | None
+    #: The cells that trade.
+    trades: tuple[str, ...]
+    #: The policy's targets on a considered bar (tranche: the mean of the tranches), before the trigger.
+    policy_targets: pd.Series | None
+    #: The buy scale when min_trade capped the buys at the cash, else ``None``.
+    scale: float | None
+    #: Considered bars in the history (tranche: the decided rows it blends).
+    decisions: int
+    reason: str
+
+    def record(self) -> dict[str, Any]:
+        """JSON-safe: the run notes record this (``notes['rebalancing_policy']``)."""
+
+        def _weights(s: pd.Series | None) -> dict[str, float] | None:
+            return None if s is None else {str(k): float(v) for k, v in s.items()}
+
+        return {
+            "policy": self.policy.record(),
+            "decision_bar": pd.Timestamp(self.decision_bar).isoformat(),
+            "considered": self.considered,
+            "placed": self.placed,
+            "hit": self.hit,
+            "trades": list(self.trades),
+            "targets": _weights(self.targets),
+            "policy_targets": _weights(self.policy_targets),
+            "buy_scale": self.scale,
+            "decisions": self.decisions,
+            "reason": self.reason,
+        }
+
+
+def decide_rebalance(
+    policy: Mapping[str, Any] | RebalancePolicy,
+    decided: pd.DataFrame,
+    held: pd.Series | None = None,
+    *,
+    next_bar: pd.Timestamp | None = None,
+    leverage: str = "normalize",
+) -> LiveDecision:
+    """The rebalancing policy for a LIVE run: is a rebalance due on the last decided row, and to which targets.
+
+    The live half of the one policy (TOM-1518): the cadence, the trigger and
+    ``min_trade`` are the backtest seam's own (:func:`blend_tranches`,
+    :func:`place_bar`), applied to the last bar only.
+
+    - *decided*: the decided weights history (date x symbol); its last row is
+      the run's decision bar. NaN cells hold the last decided target, as in
+      the seam.
+    - *held*: the held book from the broker, as weights of the same book the
+      targets size (symbol -> weight; cash is the remainder). Needed only when
+      the policy has a trigger or a ``min_trade``.
+    - *next_bar*: the next execution bar (:func:`next_execution_bar`), needed
+      by a period-end frequency only.
+    - *leverage*: ``venue.leverage``; ``borrow`` lifts the buy cap of ``min_trade``.
+
+    Refused (``ValueError``): an empty history, a frequency the live window
+    cannot anchor (an int above 1, null), a trigger or ``min_trade`` without
+    the held book.
+    """
+    pol = resolve_policy(policy)
+    if decided is None or decided.empty:
+        raise ValueError("decide_rebalance: the decided weights history is empty")
+    frame = decided.sort_index().ffill().fillna(0.0)  # the seam's NaN policy: hold the last target
+    columns = frame.columns.astype(str)
+    frame.columns = columns
+    if held is not None:
+        held = pd.Series(held, dtype=float)
+        held.index = held.index.astype(str)
+        extra = [c for c in held.index if c not in set(columns) and held[c] != 0]
+        if extra:  # held but never decided: its target is 0
+            frame = frame.reindex(columns=[*columns, *extra], fill_value=0.0)
+            columns = frame.columns
+    index = pd.DatetimeIndex(frame.index)
+    last = pd.Timestamp(index[-1])
+    exec_mask = policy_execution_bars(pd.Series(True, index=index), pol).to_numpy()
+    exec_idx = index[exec_mask]
+    decisions = _live_decisions(exec_idx, pol, next_bar) if len(exec_idx) else exec_idx
+    considered = bool(len(decisions)) and pd.Timestamp(decisions[-1]) == last
+    held_s = None if held is None else held.reindex(columns).fillna(0.0)
+
+    def _out(**kw: Any) -> LiveDecision:
+        return LiveDecision(policy=pol, decision_bar=last, decisions=int(len(decisions)), **kw)
+
+    if not considered:
+        why = (
+            f"{last.isoformat()} is not a session of {pol.calendar}"
+            if not exec_mask[-1]
+            else f"{last.isoformat()} is not a decision bar of frequency {pol.frequency!r}"
+        )
+        return _out(
+            considered=False,
+            placed=False,
+            hit=None,
+            targets=held_s,
+            trades=(),
+            policy_targets=None,
+            scale=None,
+            reason=why,
+        )
+    rows = frame.loc[decisions].to_numpy(dtype=float)
+    target = blend_tranches(rows, pol.tranches)[-1] if pol.cadence == "tranche" else rows[-1]
+    policy_targets = pd.Series(target, index=columns)
+    if pol.trigger == "none" and pol.min_trade == 0:
+        return _out(
+            considered=True,
+            placed=True,
+            hit=None,
+            targets=policy_targets.copy(),
+            trades=tuple(str(c) for c in columns),
+            policy_targets=policy_targets,
+            scale=None,
+            reason="considered bar, no trigger: the whole book trades to target",
+        )
+    if held_s is None:
+        raise ValueError(
+            f"decide_rebalance: trigger {pol.trigger!r} / min_trade {pol.min_trade} read the held book; none was given"
+        )
+    drifted = held_s.to_numpy(dtype=float)
+    corridor = pol.corridor_arrays(columns) if pol.trigger == "corridor" else None
+    bar = place_bar(pol, target, drifted, np.ones(len(columns), dtype=bool), leverage=leverage, corridor=corridor)
+    final = pd.Series(np.where(bar.trades, bar.targets, drifted), index=columns)
+    traded = tuple(str(c) for c, t in zip(columns, bar.trades, strict=True) if t)
+    if bar.placed:
+        reason = "trigger hit: the whole book trades to target" if bar.hit else "considered bar: trades to target"
+        if len(traded) < len(columns) and pol.min_trade > 0:
+            reason += f" ({len(columns) - len(traded)} trade(s) under min_trade {pol.min_trade} dropped)"
+    elif bar.hit is False:
+        reason = f"no {pol.trigger} hit: the held book stays inside its trigger"
+    else:
+        reason = f"every trade is under min_trade {pol.min_trade}"
+    return _out(
+        considered=True,
+        placed=bar.placed,
+        hit=bar.hit,
+        targets=final,
+        trades=traded,
+        policy_targets=policy_targets,
+        scale=bar.scale,
+        reason=reason,
+    )

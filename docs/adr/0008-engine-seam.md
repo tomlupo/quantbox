@@ -12,6 +12,7 @@ status_changes:
   - 2026-10-05: decision 11 added with TOM-1450 (3d-2) — the rebalancing policies and group limits are seam semantics
   - 2026-10-05: decision 12 added with TOM-1500 — the same defaults on every engine (compounding, starting cash), and every cost charged or refused
   - 2026-10-05: decision 11 amended with TOM-1513 — Tom, 2026-10-05: a policy is a cadence x a trigger, a corridor hit rebalances the whole book ("hit corridora triggeruje cały rebalancing"), min_trade on every policy, risk.tranches is an alias of the tranche cadence; the corridor + normalize caveat is removed
+  - 2026-10-05: decision 11 extended with TOM-1518 — live trading decides with the same policy code; the live rebalancers keep target weights -> orders only
 ---
 
 # ADR-0008: Book simulation sits behind one engine seam, with vectorbt and rsims as adapters
@@ -144,6 +145,19 @@ the same strategy gave a different book through `backtest()` than through
     schedule; the groups come from universe metadata (`by:` a column of
     `load_universe()`), and an infeasible limit refuses the run. No adapter
     changed: `execute(...)` still receives targets and an orders mask.
+
+    **Live trading reads the same policy (TOM-1518).** `trade.full_pipeline.v1`
+    takes `rebalancing_policy` and, once per run, asks
+    `quantbox.engine.policy.decide_rebalance` whether its last decided bar is a
+    considered bar and which targets trade, given the broker's held book. The
+    trigger and `min_trade` are one function (`place_bar`) that the seam calls
+    bar by bar and live calls once; the tranche targets are `blend_tranches`
+    for both. The live rebalancers (`rebalancing.standard.v1`,
+    `rebalancing.futures.v1`) keep target weights -> orders only (lot size,
+    min notional, venue rules); their `tranches` and `risk.tranches` are
+    aliases of the tranche cadence (`tranches_alias`, the backtest's too).
+    `tests/test_live_policy_parity.py` asserts the same decision and targets on
+    every bar.
 
 12. **The same defaults on every engine; a cost is charged or refused (TOM-1500).**
     Tom, 2026-10-05: "same defaults for each engine". rsims compounds by default
