@@ -239,6 +239,47 @@ def test_a_bar_that_is_not_considered_sends_no_orders_and_holds_the_book(tmp_pat
     assert set(targets["symbol"]) == {"A"}  # the held book, not the decided row
 
 
+class _Levered:
+    meta = type("M", (), {"name": "strategy.levered.v1"})()
+
+    def run(self, data: Any, params: Any = None, context: Any = None) -> dict[str, Any]:
+        return {"weights": pd.DataFrame({"A": 2.0, "B": 0.0}, index=data["prices"].index)}
+
+
+@pytest.mark.parametrize("path", ["rebalancer", "pipeline"])
+def test_the_trigger_reads_the_risk_transformed_targets_as_the_backtest_does(tmp_path, path):
+    """Round 1 of #244: raw target A=2.0 under max_leverage 1 is A=1.0, which the book already holds.
+
+    The backtest caps every decided row before the seam, so a band of 0.5 sees
+    no drift. Live must too: a trigger on the raw 2.0 would fire a rebalance
+    the order generator then clamps back to the held book.
+    """
+    price_a = float(_prices()["A"].iloc[-1])
+    broker = SimPaperBroker(cash=0.0, quote_currency="USD", positions={"A": 10_000.0 / price_a})
+    params = {
+        "strategies": [{"name": "strategy.levered.v1", "weight": 1.0, "params": {}}],
+        "stable_coin_symbol": "USD",
+        "trading_enabled": False,
+        "rebalancing_policy": {"policy": "band", "band": 0.5},
+        "risk": {"max_leverage": 1.0},
+        "_rebalancer_cfg": {"params": {"max_leverage": 1.0}},
+    }
+    result = TradingPipeline().run(
+        mode="paper",
+        asof=ASOF,
+        params=params,
+        data=_Data(),
+        store=FileArtifactStore(str(tmp_path / path), "run"),
+        broker=broker,
+        risk=[],
+        strategies=[_Levered()],
+        rebalancer=StandardRebalancer() if path == "rebalancer" else None,
+    )
+    record = result.notes["rebalancing_policy"]
+    assert record["policy_targets"]["A"] == pytest.approx(1.0)
+    assert record["placed"] is False, record["reason"]
+
+
 def test_an_untraded_instrument_is_held_by_the_policy():
     orders = pd.DataFrame(
         {

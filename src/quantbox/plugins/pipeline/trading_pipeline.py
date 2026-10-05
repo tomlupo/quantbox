@@ -913,6 +913,11 @@ class TradingPipeline:
                     return rebalancer.generate_orders(weights=weights, broker=broker, params=rebal_params)
 
                 book_capital = float(rebal_params.get("capital_at_risk", DEFAULT_CAPITAL_AT_RISK))
+                own_transforms = getattr(rebalancer, "_apply_risk_transforms", None)
+                if callable(own_transforms):
+                    history = self._transform_history(
+                        history, lambda w: own_transforms(w, rebal_params), (type(rebalancer).__module__,)
+                    )
             elif live_book:
                 internal_params = {**params, "min_trade_size": 0.0} if policy.declared else params
 
@@ -929,6 +934,8 @@ class TradingPipeline:
                     return out
 
                 book_capital = float(params.get("capital_at_risk", DEFAULT_CAPITAL_AT_RISK))
+            if not (live_book and rebalancer is not None):
+                history = self._transform_history(history, lambda w: self._apply_risk_transforms(w, params))
             if live_book:
                 try:
                     policy_decision, order_result = self._policy_orders(
@@ -1620,6 +1627,37 @@ class TradingPipeline:
                     "declare rebalancing_policy.min_trade only (the backtest's floor, TOM-1518)"
                 )
         return policy
+
+    @staticmethod
+    def _transform_history(
+        history: pd.DataFrame,
+        transform: Callable[[dict[str, float]], dict[str, float]],
+        quiet_loggers: tuple[str, ...] = (),
+    ) -> pd.DataFrame:
+        """The risk transforms the order generator applies, on EVERY decided row, before the policy.
+
+        As in the backtest (venue / risk transforms per row, then the seam), the
+        trigger and ``min_trade`` compare the held book with the targets the
+        orders will actually size: a leverage cap or a short clip that binds
+        cannot fire a rebalance the order generator then clamps away. The
+        transforms are idempotent on their own output (a capped row is under
+        the cap, a clipped row has no short), so sizing the decided targets
+        again changes nothing. NaN cells hold the last target first (the
+        seam's NaN policy). The transform's per-row leverage warnings are held
+        back here (the sizing pass of the last row logs them once).
+        """
+        filled = history.sort_index().ffill().fillna(0.0)
+        quiet = [logger, *(logging.getLogger(n) for n in quiet_loggers)]
+        levels = [lg.level for lg in quiet]
+        try:
+            for lg in quiet:
+                lg.setLevel(logging.ERROR)
+            rows = [transform({str(k): float(v) for k, v in row.items()}) for _, row in filled.iterrows()]
+        finally:
+            for lg, level in zip(quiet, levels, strict=True):
+                lg.setLevel(level)
+        out = pd.DataFrame(rows, index=filled.index)
+        return out.reindex(columns=[str(c) for c in filled.columns]).fillna(0.0)
 
     @staticmethod
     def _held_weights(rebalancing_df: Any, capital_at_risk: float) -> pd.Series:
