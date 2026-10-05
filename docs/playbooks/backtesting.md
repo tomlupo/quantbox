@@ -49,8 +49,8 @@ one spelling, not both). Every policy is an orders mask in the seam, the same on
   market's sessions only: March 2024 ends on Thursday the 28th (Good Friday), not Sunday the 31st.
 - `tranche` — the book is the mean of N tranches; one tranche is refreshed on each decision.
 - `band` — the whole book trades when a held weight drifted past the band (= `threshold`).
-- `corridor` — only the instruments outside their own `[target - below, target + above]`
-  corridor trade, back to target. An exit to 0 always trades.
+- `corridor` — when one instrument is outside its own `[target - below, target + above]`
+  corridor, the whole book trades back to target. An exit to 0 is always a hit.
 
 **Group limits** (`group_limits`) keep each group's gross weight inside `[min, max]` on every
 decided row, before execution. The groups come from a universe metadata column (a

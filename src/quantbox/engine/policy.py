@@ -40,10 +40,14 @@ The four policies:
 ``corridor``
     Each instrument has its own corridor around its target, ``width`` =
     ``[below, above]`` (absolute weight; one number = symmetric), per
-    instrument in ``bounds``. On a considered bar only the instruments whose
-    held weight is OUTSIDE their corridor trade, back to target; the others
-    keep their drifted weight. A target of 0 with a held weight always trades:
-    an exit is never left inside a corridor.
+    instrument in ``bounds``. The corridors are only the TRIGGER: when any
+    instrument's held weight is outside its corridor on a considered bar,
+    EVERY ordered instrument trades back to target (TOM-1513, Tom 2026-10-05:
+    "a corridor hit triggers the whole rebalance"). A target of 0 with a held
+    weight is always a hit: an exit is never left inside a corridor.
+
+``band`` and ``corridor`` take the same action; they differ in the trigger
+only (one absolute width for every instrument vs a corridor per instrument).
 
 ``band`` and ``corridor`` read the held book. The seam tracks it cost-free
 (the price drift of the weights held since each placed order, against a cash
@@ -96,8 +100,8 @@ POLICY_SCHEMA: dict[str, Any] = {
         "How decided weights become orders, in the engine seam, the same on every engine (docs/adr/0008, "
         "TOM-1450). periodic: trade every instrument to target on every considered bar. tranche: the book is "
         "the mean of N staggered tranches, each refreshed every N-th decision. band: trade the whole book when "
-        "a held weight drifted more than `band` from target. corridor: trade only the instruments whose held "
-        "weight left their own [target - below, target + above] corridor. Replaces rebalancing_freq + "
+        "a held weight drifted more than `band` from target. corridor: trade the whole book when a held weight "
+        "left its own [target - below, target + above] corridor. Replaces rebalancing_freq + "
         "threshold (declare one or the other, not both)."
     ),
     "required": ["policy"],
@@ -372,16 +376,18 @@ def apply_drift_trigger(
     prices: np.ndarray,
     columns: pd.Index,
 ) -> dict[str, Any]:
-    """``band`` / ``corridor``: drop the orders the held book does not need, in place on *orders*.
+    """``band`` / ``corridor``: keep a bar's orders only on a HIT, in place on *orders*.
 
     The held book is tracked cost-free: after a bar with orders, each ordered
     cell holds its target and each untouched cell its drifted weight; between
     such bars every weight drifts with its price against a cash remainder of
-    ``1 - sum(weights)``. ``band`` keeps a bar's orders when ``max |drifted -
-    target|`` over its ordered cells exceeds the band, and drops them all
-    otherwise (vectorbt's band rule; today's ``threshold``). ``corridor`` keeps
-    the cells outside their own corridor (and every exit to 0 from a held
-    weight) and drops the rest. A cell with no order cannot trigger.
+    ``1 - sum(weights)``. A bar is a hit when one ordered cell is outside its
+    trigger: for ``band``, ``|drifted - target|`` above the band (vectorbt's
+    band rule; today's ``threshold``); for ``corridor``, the drifted weight
+    outside the cell's own ``[target - below, target + above]``, or an exit
+    to 0 from a held weight. On a hit EVERY ordered cell trades to target
+    (TOM-1513: a corridor hit rebalances the whole book); otherwise the bar's
+    orders are all dropped. A cell with no order cannot trigger.
     """
     n_inst = orders.shape[1]
     held = np.zeros(n_inst)
@@ -402,11 +408,10 @@ def apply_drift_trigger(
             drifted = value / total if total != 0 else value
         target = target_cells[r]
         if policy.policy == "band":
-            keep = o if np.abs(drifted[o] - target[o]).max() > float(policy.band or 0.0) else np.zeros_like(o)
+            hit = np.abs(drifted - target) > float(policy.band or 0.0)
         else:
-            outside = (drifted < target - below) | (drifted > target + above)
-            exit_ = (target == 0) & (drifted != 0)
-            keep = o & (outside | exit_)
+            hit = (drifted < target - below) | (drifted > target + above) | ((target == 0) & (drifted != 0))
+        keep = o if (hit & o).any() else np.zeros_like(o)
         if keep.any():
             if not keep[o].all():
                 partial += 1

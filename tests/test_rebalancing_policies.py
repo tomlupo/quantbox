@@ -182,8 +182,8 @@ def test_band_trades_the_whole_book_when_a_weight_drifts_past_the_band_known_ans
 #: Corridor by hand. A and B at 0.4 each, 0.2 cash; A +10% a bar from bar 2, B flat.
 #:   after k bars: A = .4g / (.6 + .4g), B = .4 / (.6 + .4g), g = 1.1**k
 #:   k=1: A .4231 B .3846   k=2: A .4465 B .3690   k=3: A .4701 (dev .0701) B .3532 (dev .0468)
-#:   width 0.05: bar 4 trades A ONLY (B is inside its corridor and keeps its drifted weight).
-#:   bar 5 (A +10% from its reset): A .44 / 1.04 = .4231, B .3532 / 1.04 = .3396 (dev .0604): B ONLY.
+#:   width 0.05: bar 4 is a HIT (A is outside), so EVERY asset trades to target: A and B (TOM-1513).
+#:   bar 5 (A +10% from the reset): A .44 / 1.04 = .4231 (dev .0231), B .4 / 1.04 = .3846 (dev .0154): no hit.
 CORRIDOR_PRICES = pd.DataFrame(
     {"A": [100.0, 100.0] + [100.0 * 1.1**k for k in range(1, 5)], "B": 50.0},
     index=pd.date_range("2024-01-01", periods=6, freq="D"),
@@ -191,51 +191,61 @@ CORRIDOR_PRICES = pd.DataFrame(
 
 
 @pytest.mark.parametrize("engine", ENGINES)
-def test_corridor_trades_only_the_assets_outside_their_corridor_known_answer(engine):
+def test_a_corridor_hit_rebalances_the_whole_book_known_answer(engine):
+    """One asset outside its corridor -> every asset trades to target (Tom, 2026-10-05, TOM-1513)."""
     weights = pd.DataFrame({"A": 0.4, "B": 0.4}, index=CORRIDOR_PRICES.index)
     book = _simulate(engine, CORRIDOR_PRICES, weights, policy={"policy": "corridor", "width": 0.05})
     o = book.orders
     idx = CORRIDOR_PRICES.index
-    assert _ordered_dates(book) == [idx[1], idx[4], idx[5]]
+    assert _ordered_dates(book) == [idx[1], idx[4]]
     assert o.loc[idx[1]].tolist() == [True, True]  # the entry: both far outside
-    assert o.loc[idx[4]].tolist() == [True, False]  # A drifted .0701 > .05; B .0468 inside
-    assert o.loc[idx[5]].tolist() == [False, True]  # B drifted .0604 > .05; A .0231 inside
-    assert book.weights.loc[idx[4], "A"] == pytest.approx(0.4)
-    assert book.weights.loc[idx[4], "B"] == pytest.approx(0.4)  # the HELD book on the seam is the target row
+    assert o.loc[idx[4]].tolist() == [True, True]  # A drifted .0701 > .05: a hit; B (.0468, inside) trades too
+    assert book.weights.loc[idx[4]].tolist() == pytest.approx([0.4, 0.4])
     report = book.data_validation["rebalancing"]
-    assert report["partial_rebalances"] == 2
+    assert (report["placed_rebalances"], report["partial_rebalances"]) == (2, 0)
     traded = book.trades[book.trades["value"].abs() > 1e-9]
-    assert set(traded.loc[pd.to_datetime(traded["date"]) == idx[4], "symbol"]) == {"A"}
-    assert set(traded.loc[pd.to_datetime(traded["date"]) == idx[5], "symbol"]) == {"B"}
+    assert set(traded.loc[pd.to_datetime(traded["date"]) == idx[4], "symbol"]) == {"A", "B"}
+    # The engine holds the target book after the hit: B's drifted .3532 was bought back up to .4.
+    on_hit = traded[pd.to_datetime(traded["date"]) == idx[4]].set_index("symbol")["value"]
+    assert on_hit["A"] < 0 < on_hit["B"]
 
 
 def test_corridor_bounds_are_per_asset_and_asymmetric():
-    """B's own corridor [-0.04, +0.04]: its .0468 drift on bar 4 is now outside, so bar 4 trades both."""
+    """B's own corridor [-0.04, +0.04]: bar 4 trades both. An asymmetric corridor triggers on one side only."""
     weights = pd.DataFrame({"A": 0.4, "B": 0.4}, index=CORRIDOR_PRICES.index)
+    idx = CORRIDOR_PRICES.index
     policy = {"policy": "corridor", "width": 0.05, "bounds": {"B": [0.04, 0.04]}}
     book = _simulate("rsims", CORRIDOR_PRICES, weights, policy=policy)
-    assert book.orders.loc[CORRIDOR_PRICES.index[4]].tolist() == [True, True]
-    # Asymmetric: B may fall 0.10 below target before it trades; A only 0.01 ABOVE (both are entered from flat).
-    asym = {"policy": "corridor", "width": 0.05, "bounds": {"A": [0.3, 0.01], "B": [0.10, 0.5]}}
-    book = _simulate("rsims", CORRIDOR_PRICES, weights, policy=asym)
-    o = book.orders
-    assert o.loc[CORRIDOR_PRICES.index[2]].tolist() == [True, False]  # A +.0231 > .01 above
-    assert not o.loc[CORRIDOR_PRICES.index[2:], "B"].any()  # B never falls .10 below
+    assert book.orders.loc[idx[4]].tolist() == [True, True]
+    # A may rise only 0.01 ABOVE its target: its +.0231 on bar 2 is a hit, and the whole book trades.
+    up = {"policy": "corridor", "width": 0.05, "bounds": {"A": [0.3, 0.01], "B": [0.10, 0.5]}}
+    assert _ordered_dates(_simulate("rsims", CORRIDOR_PRICES, weights, policy=up))[:2] == [idx[1], idx[2]]
+    # Flipped: A may rise 0.3, B may fall 0.10. A peaks at +.094, B at -.0626: only the entry trades.
+    down = {"policy": "corridor", "width": 0.05, "bounds": {"A": [0.01, 0.3], "B": [0.10, 0.5]}}
+    assert _ordered_dates(_simulate("rsims", CORRIDOR_PRICES, weights, policy=down)) == [idx[1]]
 
 
-def test_corridor_always_trades_an_exit():
-    """A target of 0 with a held weight is outside every corridor: an exit is never left inside one."""
+def test_corridor_always_trades_an_exit_and_the_exit_rebalances_the_whole_book():
+    """A target of 0 with a held weight is a hit even inside its corridor; like every hit, the whole book trades."""
     idx = pd.date_range("2024-01-01", periods=6, freq="D")
     prices = pd.DataFrame({"A": 100.0, "B": 50.0}, index=idx)
-    weights = pd.DataFrame({"A": 0.04, "B": 0.5}, index=idx)
-    weights.iloc[3:, 0] = 0.0
-    book = _simulate("rsims", prices, weights, policy={"policy": "corridor", "width": 0.05})
-    # A at 0.04 is inside its corridor from a flat book (|0 - 0.04| < 0.05): never entered...
-    assert not book.orders.loc[idx[1], "A"]
-    weights.iloc[:3, 0] = 0.3  # ...so enter it at 0.3 (0 < 0.3 - 0.25), then exit at 0 (0.3 < 0 + 0.35: inside)
+    weights = pd.DataFrame({"A": 0.3, "B": 0.5}, index=idx)
+    weights.iloc[3:, 0] = 0.0  # enter A at 0.3 (0 < 0.3 - 0.25), then exit at 0 (0.3 < 0 + 0.35: inside)
     book = _simulate("rsims", prices, weights, policy={"policy": "corridor", "width": [0.25, 0.35]})
-    assert book.orders.loc[idx[1], "A"] and book.orders.loc[idx[4], "A"]
-    assert book.weights.loc[idx[4], "A"] == 0.0
+    assert _ordered_dates(book) == [idx[1], idx[4]]
+    assert book.orders.loc[idx[4]].tolist() == [True, True]
+    assert book.weights.loc[idx[4]].tolist() == [0.0, 0.5]
+
+
+@pytest.mark.skipif(not VECTORBT, reason=NOT_CHECKED)
+def test_a_corridor_on_a_fully_invested_book_never_runs_short_of_cash(caplog):
+    """Net 1, no fees: after a whole-book hit the engine holds the target (#239 cut buys for lack of cash)."""
+    prices = _daily_247("2024-01-01", "2024-06-30", tickers=("A", "B", "C"), seed=21)
+    decided = pd.DataFrame({"A": 0.5, "B": 0.3, "C": 0.2}, index=prices.index)
+    with caplog.at_level("WARNING", logger="quantbox.engine.vectorbt"):
+        book = _simulate("vectorbt", prices, decided, policy={"policy": "corridor", "width": 0.02})
+    assert book.data_validation["rebalancing"]["placed_rebalances"] > 2
+    assert "buys were cut for lack of cash" not in caplog.text
 
 
 # ----------------------------------------------------------------------
@@ -483,25 +493,32 @@ def test_property_a_group_limit_holds_on_every_rebalance_date():
     On every bar the seam places orders, the TARGET book it trades to keeps every
     group inside [min, max]. ``schedule: bars`` so every cell of an order row is
     ordered (no deferral), long-only with gross <= 1 so ``venue.leverage`` never
-    scales; the periodic, tranche and band policies trade every ordered cell to
-    its target. (A corridor trades only the cells outside their corridor, so its
-    held book mixes targets and drifted weights by design.)
+    scales; every policy trades every ordered cell to its target on a placed bar
+    (a corridor hit rebalances the whole book, TOM-1513). Every band case runs
+    a corridor of the same width too, without drawing from the seeded stream.
     """
     rng = np.random.default_rng(20261005)
     checked_rows = 0
+    corridor_rows = 0
     for case in range(200):
         prices, decided, limits, policy = _random_case(rng)
-        book = _simulate("rsims", prices, decided, schedule="bars", policy=policy, groups=limits)
-        rows = book.orders.any(axis=1).to_numpy()
-        assert rows.any(), case
-        held = book.weights.to_numpy()[rows]
-        member = np.array([limits.membership[c] for c in book.weights.columns])
-        for g, (lo, hi) in limits.limits.items():
-            gross = np.abs(held[:, member == g]).sum(axis=1)
-            assert (gross <= hi + 1e-9).all(), (case, g, gross.max(), hi, policy)
-            assert (gross >= lo - 1e-9).all(), (case, g, gross.min(), lo, policy)
-        checked_rows += int(rows.sum())
+        policies = [policy]
+        if policy["policy"] == "band":
+            policies.append({"policy": "corridor", "width": policy["band"]})
+        for pol in policies:
+            book = _simulate("rsims", prices, decided, schedule="bars", policy=pol, groups=limits)
+            rows = book.orders.any(axis=1).to_numpy()
+            assert rows.any(), case
+            held = book.weights.to_numpy()[rows]
+            member = np.array([limits.membership[c] for c in book.weights.columns])
+            for g, (lo, hi) in limits.limits.items():
+                gross = np.abs(held[:, member == g]).sum(axis=1)
+                assert (gross <= hi + 1e-9).all(), (case, g, gross.max(), hi, pol)
+                assert (gross >= lo - 1e-9).all(), (case, g, gross.min(), lo, pol)
+            checked_rows += int(rows.sum())
+            corridor_rows += int(rows.sum()) if pol["policy"] == "corridor" else 0
     assert checked_rows > 2000  # the loop looked at real rebalances, not an empty schedule
+    assert corridor_rows > 100
 
 
 # ----------------------------------------------------------------------

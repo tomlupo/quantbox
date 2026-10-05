@@ -153,7 +153,7 @@
     },
     "rebalancing": {
       "type": "object",
-      "description": "Present only when the run declares rebalancing_policy (minor 5, TOM-1450): the policy (periodic, tranche, band, corridor; quantbox.engine.policy) and what it did. scheduled = bars with orders before the drift trigger, placed = after it, partial = bars on which a corridor traded only some instruments.",
+      "description": "Present only when the run declares rebalancing_policy (minor 5, TOM-1450): the policy (periodic, tranche, band, corridor; quantbox.engine.policy) and what it did. scheduled = bars with orders before the drift trigger, placed = after it, partial = bars on which only some ordered instruments traded (0 under a trigger since TOM-1513: a corridor hit trades the whole book).",
       "required": ["policy", "scheduled_rebalances", "placed_rebalances", "skipped_rebalances", "partial_rebalances"],
       "properties": {
         "policy": {

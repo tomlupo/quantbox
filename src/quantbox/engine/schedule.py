@@ -29,8 +29,8 @@ engine — the seam owns the schedule, an adapter only executes it (docs/adr/000
    (today's ``rebalancing_freq``), ``tranche`` (the targets are the mean of
    the last N decided rows), ``band`` (today's ``threshold``: a considered
    rebalance is placed only when the held book has DRIFTED more than the band
-   from its target) or ``corridor`` (only the instruments outside their own
-   corridor trade). An optional market ``calendar`` narrows the execution bars
+   from its target) or ``corridor`` (an instrument outside its own corridor
+   rebalances the whole book). An optional market ``calendar`` narrows the execution bars
    to that market's sessions before step 1. The drift is the cost-free price
    drift of the weights held after the last placed order
    (:func:`quantbox.engine.policy.apply_drift_trigger`). An engine charging
