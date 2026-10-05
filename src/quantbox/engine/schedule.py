@@ -330,7 +330,7 @@ def schedule_book(
     # Targets: the decided row (tranche: the mean of the last N decided rows), 0 outside the
     # instrument's window at the execution bar.
     targets = decided.to_numpy(dtype=float)[dec_rows] if len(dec_rows) else np.zeros((0, n_inst))
-    if pol.policy == "tranche":
+    if pol.cadence == "tranche":
         targets = blend_tranches(targets, pol.tranches)
     inside_exe = inside[exe_rows] if len(exe_rows) else np.zeros((0, n_inst), dtype=bool)
     outside_targeted = (targets != 0) & ~inside_exe
@@ -366,7 +366,7 @@ def schedule_book(
     scheduled_rows = int(orders.any(axis=1).sum())
     trigger = (
         apply_drift_trigger(pol, target_cells, orders, cal.prices.to_numpy(dtype=float), columns)
-        if pol.policy in ("band", "corridor")
+        if pol.trigger != "none"
         else None
     )
     first_skipped = [pd.Timestamp(index[r]).isoformat() for r in (trigger or {}).get("first_skipped_rows", [])]
@@ -395,7 +395,7 @@ def schedule_book(
             "partial_rebalances": int((trigger or {}).get("partial_rebalances", 0)),
             "first_skipped": first_skipped,
         }
-        if pol.policy == "tranche":
+        if pol.cadence == "tranche":
             rebalancing_report["tranches"] = int(pol.tranches)
     held = pd.DataFrame(np.where(orders, target_cells, np.nan), index=index, columns=columns).ffill().fillna(0.0)
     orders_df = pd.DataFrame(orders, index=index, columns=columns)

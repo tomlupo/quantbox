@@ -1051,7 +1051,7 @@ class BacktestPipeline:
                     "strategy_params": strat_params,
                     "fees": v_costs["fees"],
                     "rebalancing_freq": v_policy.frequency,
-                    "threshold": v_policy.band if v_policy.policy == "band" else None,
+                    "threshold": v_policy.band if v_policy.trigger == "band" else None,
                     "rebalancing_policy": v_policy.record(),
                     "risk": v_risk_cfg,
                     # Optional explicit flag — when set, this variant becomes

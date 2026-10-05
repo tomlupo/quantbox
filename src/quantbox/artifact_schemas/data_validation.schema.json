@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "quantbox/data-validation@1",
   "title": "quantbox data validation (data-validation@1)",
-  "description": "<run_dir>/data_validation.json, written by backtest.pipeline.v1 (ADR-0007): what each missing price meant, the execution calendar, decision vs execution timing, input staleness, decision weight age, index alignment and leverage. Minors: 1 adds weight_age; 2 makes leverage.max_net_exposure_unscaled, scaled_after_deferral and buys_zeroed_dates (always written since minor 0) required; 3 adds index_alignment; 4 adds threshold and leverage.mode none (execution.schedule bars, ADR-0008); 5 adds rebalancing and groups (TOM-1450). The stable shape the data-validation step (TOM-1430) reads. VERSIONING as run@1: adding a field is MINOR (x-schema-minor), renaming, removing or changing a meaning is MAJOR (data-validation@2).",
-  "x-schema-minor": 5,
+  "description": "<run_dir>/data_validation.json, written by backtest.pipeline.v1 (ADR-0007): what each missing price meant, the execution calendar, decision vs execution timing, input staleness, decision weight age, index alignment and leverage. Minors: 1 adds weight_age; 2 makes leverage.max_net_exposure_unscaled, scaled_after_deferral and buys_zeroed_dates (always written since minor 0) required; 3 adds index_alignment; 4 adds threshold and leverage.mode none (execution.schedule bars, ADR-0008); 5 adds rebalancing and groups (TOM-1450); 6 adds rebalancing.policy.cadence and trigger, the tranche+band and tranche+corridor policy names (TOM-1513). The stable shape the data-validation step (TOM-1430) reads. VERSIONING as run@1: adding a field is MINOR (x-schema-minor), renaming, removing or changing a meaning is MAJOR (data-validation@2).",
+  "x-schema-minor": 6,
   "type": "object",
   "required": ["schema", "calendar", "execution_calendar", "timing", "staleness", "leverage"],
   "properties": {
@@ -160,7 +160,9 @@
           "type": "object",
           "required": ["policy", "frequency", "calendar"],
           "properties": {
-            "policy": {"enum": ["periodic", "tranche", "band", "corridor"]},
+            "policy": {"enum": ["periodic", "tranche", "band", "corridor", "tranche+band", "tranche+corridor"]},
+            "cadence": {"enum": ["periodic", "tranche"]},
+            "trigger": {"enum": ["none", "band", "corridor"]},
             "calendar": {"type": ["string", "null"]},
             "tranches": {"type": "integer", "minimum": 2},
             "band": {"type": "number", "exclusiveMinimum": 0},

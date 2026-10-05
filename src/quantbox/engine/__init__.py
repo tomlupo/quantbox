@@ -19,7 +19,7 @@ The seam owns everything that decides what is traded and when, the same for
 every engine: the execution lag (docs/adr/0005, 0006), applied in ONE place,
 :func:`quantbox.engine._lag.lag_positions`; the rebalancing schedule and its
 threshold (:mod:`quantbox.engine.schedule`) and the rebalancing policies
-(:mod:`quantbox.engine.policy`: periodic, tranche, band, corridor), as a
+(:mod:`quantbox.engine.policy`: a cadence, periodic or tranche, x a trigger, none, band or corridor), as a
 per-cell orders mask; group limits on the decided book
 (:mod:`quantbox.engine.groups`); the
 NaN policy (:func:`materialise_nan`); the default ``venue.leverage``. An
@@ -34,13 +34,15 @@ from ._lag import lag_frame, lag_positions
 from .base import Costs, EngineAdapter, TradedBook
 from .book import NAN_POLICY, materialise_nan, simulate
 from .groups import GroupLimits, apply_group_limits, resolve_group_limits
-from .policy import POLICIES, RebalancePolicy, resolve_policy
+from .policy import CADENCES, POLICIES, TRIGGERS, RebalancePolicy, resolve_policy
 from .registry import DEFAULT_ENGINE, engine_distribution, engine_names, get_engine
 
 __all__ = [
     "DEFAULT_ENGINE",
     "NAN_POLICY",
+    "CADENCES",
     "POLICIES",
+    "TRIGGERS",
     "Costs",
     "EngineAdapter",
     "GroupLimits",

@@ -424,7 +424,13 @@ def test_explain_plans_the_rebalancing_policy_and_group_limits_the_run_applies(t
     assert planned["ok"] is True, planned["errors"]
     assert validate_explain(planned) == []
     assert _shared(planned) == _shared(recorded)
-    assert planned["rebalancing"] == {"policy": "periodic", "frequency": "weekly", "calendar": "NYSE"}
+    assert planned["rebalancing"] == {
+        "policy": "periodic",
+        "cadence": "periodic",
+        "trigger": "none",
+        "frequency": "weekly",
+        "calendar": "NYSE",
+    }
     assert planned["group_limits"] == {
         "by": "asset_class",
         "excess": "redistribute",

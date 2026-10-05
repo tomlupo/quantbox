@@ -34,10 +34,14 @@ plugins:
 
 **Rebalancing policies** (`rebalancing_policy`, TOM-1450; replaces the two keys above — declare
 one spelling, not both). Every policy is an orders mask in the seam, the same on both engines
-(`quantbox.engine.policy` has the full rules):
+(`quantbox.engine.policy` has the full rules). A policy is a **cadence** (`periodic` or `tranche`)
+times a **trigger** (`none`, `band` or `corridor`; TOM-1513):
 
 ```yaml
-      rebalancing_policy: {policy: periodic, frequency: monthly, calendar: NYSE}
+      rebalancing_policy: {cadence: tranche, tranches: 5, frequency: daily, trigger: corridor, width: 0.02}
+      # rebalancing_policy: {cadence: periodic, frequency: monthly, calendar: NYSE}
+      # the single-key spelling still works and means the same thing:
+      # rebalancing_policy: {policy: periodic, frequency: monthly, calendar: NYSE}
       # rebalancing_policy: {policy: tranche, tranches: 4, frequency: weekly}
       # rebalancing_policy: {policy: band, band: 0.05}
       # rebalancing_policy: {policy: corridor, width: [0.02, 0.05], bounds: {SPY: [0.01, 0.03]}}

@@ -28,7 +28,7 @@ import pytest
 
 from quantbox.engine import Costs, TradedBook, get_engine, simulate
 from quantbox.engine.groups import GroupLimits, apply_group_limits, resolve_group_limits
-from quantbox.engine.policy import POLICIES, RebalancePolicy, resolve_policy
+from quantbox.engine.policy import CADENCES, POLICIES, TRIGGERS, RebalancePolicy, resolve_policy
 from quantbox.execution import resolve_execution
 
 VECTORBT = get_engine("vectorbt", require_installed=False).installed()
@@ -156,6 +156,53 @@ def test_tranche_counts_decisions_not_bars():
     assert _ordered_dates(book) == list(prices.index[1::2])
 
 
+@pytest.mark.parametrize("engine", ENGINES)
+def test_tranche_cadence_with_a_corridor_trigger_known_answer(engine):
+    """Five tranches, a decision every bar, a 0.3 corridor (TOM-1513). Flat prices: the held book is the last placed one.
+
+    Decided: A on rows 0-4, B from row 5. Tranche targets (decided on row d, held from d+1):
+      d=0: A 1 (entry from flat: a hit)
+      d=5: A .8 B .2  held A 1 B 0: |.2| inside .3 -> no trade
+      d=6: A .6 B .4  held A 1 B 0: |.4| outside   -> trade to .6/.4 on row 7
+      d=7: A .4 B .6  held .6/.4: |.2| inside      -> no trade
+      d=8: A .2 B .8  held .6/.4: |.4| outside     -> trade to .2/.8 on row 9
+      d=9: A 0  B 1   held .2/.8: A exits to 0     -> a hit, trade to 0/1 on row 10
+    Neither half alone gives this book: the tranche cadence trades every bar, the corridor alone trades on row 6.
+    """
+    prices, decided = _two_asset_switch()
+    policy = {"cadence": "tranche", "tranches": 5, "frequency": "daily", "trigger": "corridor", "width": 0.3}
+    book = _simulate(engine, prices, decided, schedule="bars", policy=policy)
+    idx = prices.index
+    assert _ordered_dates(book) == [idx[1], idx[7], idx[9], idx[10]]
+    assert _trade_dates(book).equals(pd.DatetimeIndex([idx[1], idx[7], idx[9], idx[10]]))
+    w = book.weights
+    assert w.loc[idx[7]].tolist() == pytest.approx([0.6, 0.4])
+    assert w.loc[idx[9]].tolist() == pytest.approx([0.2, 0.8])
+    assert w.loc[idx[10]].tolist() == pytest.approx([0.0, 1.0])
+    report = book.data_validation["rebalancing"]
+    assert report["policy"]["policy"] == "tranche+corridor"
+    assert report["tranches"] == 5
+    corridor_only = _simulate(engine, prices, decided, schedule="bars", policy={"policy": "corridor", "width": 0.3})
+    assert _ordered_dates(corridor_only) == [idx[1], idx[6]]
+
+
+def test_the_robo_shaped_config_trades_the_same_on_both_engines():
+    """robo's 'tranches 5 + 2% corridor' (tranche, daily, N=5, corridor 0.02): identical orders, trades and returns."""
+    if not VECTORBT:
+        pytest.skip(NOT_CHECKED)
+    prices, decided = _parity_book()
+    robo = {"cadence": "tranche", "tranches": 5, "frequency": "daily", "trigger": "corridor", "width": 0.02}
+    v = _simulate("vectorbt", prices, decided, policy=robo, fees=0.001)
+    r = _simulate("rsims", prices, decided, policy=robo, fees=0.001)
+    assert v.orders.equals(r.orders)
+    assert v.weights.equals(r.weights)
+    placed = v.data_validation["rebalancing"]["placed_rebalances"]
+    assert 5 <= placed < v.data_validation["rebalancing"]["scheduled_rebalances"]  # the trigger skipped bars
+    assert _trade_dates(v).equals(_trade_dates(r))
+    gap = (v.returns - r.returns).abs()
+    assert gap.max() <= 1e-9, f"return gap {gap.max():.3e} on {gap.idxmax()}"
+
+
 #: The drift band by hand (the same case as tests/test_engine_parity.py): A at 0.5, the rest cash, A +10% a bar
 #: from bar 2. Drift 0.0238, 0.0476, 0.0709 -> a 5% band trades on bar 1 (entry), 4 and 7.
 BAND_PRICES = pd.DataFrame(
@@ -255,6 +302,51 @@ def test_a_corridor_on_a_fully_invested_book_never_runs_short_of_cash(caplog):
 
 def test_the_four_policies():
     assert POLICIES == ("periodic", "tranche", "band", "corridor")
+    assert CADENCES == ("periodic", "tranche")
+    assert TRIGGERS == ("none", "band", "corridor")
+
+
+@pytest.mark.parametrize(
+    ("single", "cadence", "trigger"),
+    [
+        ({"policy": "periodic"}, "periodic", "none"),
+        ({"policy": "tranche", "tranches": 3}, "tranche", "none"),
+        ({"policy": "band", "band": 0.05}, "periodic", "band"),
+        ({"policy": "corridor", "width": 0.05}, "periodic", "corridor"),
+    ],
+)
+def test_a_single_key_policy_is_a_cadence_and_a_trigger(single, cadence, trigger):
+    """The TOM-1450 spelling keeps working: it maps to the cadence x trigger form and builds the same policy."""
+    pol = resolve_policy(single)
+    assert (pol.cadence, pol.trigger) == (cadence, trigger)
+    rest = {k: v for k, v in single.items() if k != "policy"}
+    assert resolve_policy({"cadence": cadence, "trigger": trigger, **rest}) == pol
+    assert pol.policy == single["policy"]
+
+
+def test_a_cadence_and_a_trigger_combine():
+    """robo's 'tranches 5 + 2% corridor' as ONE config (TOM-1513)."""
+    pol = resolve_policy(
+        {"cadence": "tranche", "tranches": 5, "frequency": "daily", "trigger": "corridor", "width": 0.02}
+    )
+    assert (pol.cadence, pol.tranches, pol.trigger, pol.width) == ("tranche", 5, "corridor", (0.02, 0.02))
+    assert pol.policy == "tranche+corridor"
+    assert pol.record() == {
+        "policy": "tranche+corridor",
+        "cadence": "tranche",
+        "trigger": "corridor",
+        "frequency": "daily",
+        "calendar": None,
+        "tranches": 5,
+        "width": [0.02, 0.02],
+        "bounds": {},
+    }
+    assert (
+        resolve_policy({"cadence": "tranche", "tranches": 2, "trigger": "band", "band": 0.1}).policy == "tranche+band"
+    )
+    # No trigger is the default; null is the same.
+    assert resolve_policy({"cadence": "periodic"}).trigger == "none"
+    assert resolve_policy({"cadence": "periodic", "trigger": None}).trigger == "none"
 
 
 @pytest.mark.parametrize(
@@ -273,6 +365,17 @@ def test_the_four_policies():
         ({"policy": "periodic", "frequency": "1m"}, "ambiguous"),
         ({"policy": "periodic", "frequency": 0}, "frequency"),
         ({"frequency": "monthly"}, "policy"),
+        ({"cadence": "weekly"}, "cadence must be one of"),
+        ({"cadence": "periodic", "trigger": "threshold"}, "trigger must be one of"),
+        ({"policy": "band", "band": 0.05, "cadence": "tranche"}, "not both"),
+        ({"policy": "periodic", "trigger": "band"}, "not both"),
+        ({"trigger": "band", "band": 0.05}, "cadence"),
+        ({"cadence": "tranche"}, "tranches"),
+        ({"cadence": "periodic", "tranches": 3}, "does not take"),
+        ({"cadence": "periodic", "trigger": "band"}, "band"),
+        ({"cadence": "periodic", "trigger": "corridor", "band": 0.05}, "does not take"),
+        ({"cadence": "periodic", "band": 0.05}, "does not take"),
+        ({"cadence": "tranche", "tranches": 3, "trigger": "corridor"}, "width"),
     ],
 )
 def test_a_malformed_policy_is_refused(spec, match):
@@ -293,6 +396,8 @@ def test_a_policy_records_itself():
     assert isinstance(pol, RebalancePolicy)
     assert pol.record() == {
         "policy": "corridor",
+        "cadence": "periodic",
+        "trigger": "corridor",
         "frequency": "weekly",
         "calendar": None,
         "width": [0.02, 0.05],
@@ -536,7 +641,9 @@ def _pipeline_schema() -> dict[str, Any]:
 def test_every_policy_and_the_group_limits_are_declared_in_params_schema():
     props = _pipeline_schema()["properties"]
     assert set(props["rebalancing_policy"]["properties"]["policy"]["enum"]) == set(POLICIES)
-    for key in ("frequency", "calendar", "tranches", "band", "width", "bounds"):
+    assert set(props["rebalancing_policy"]["properties"]["cadence"]["enum"]) == set(CADENCES)
+    assert set(props["rebalancing_policy"]["properties"]["trigger"]["enum"]) == {*TRIGGERS, None}
+    for key in ("cadence", "trigger", "frequency", "calendar", "tranches", "band", "width", "bounds"):
         assert props["rebalancing_policy"]["properties"][key]["description"]
     assert set(props["group_limits"]["properties"]) >= {"by", "limits", "excess"}
 
@@ -552,6 +659,20 @@ def test_every_policy_and_the_group_limits_are_declared_in_params_schema():
         ({"policy": "band"}, False),
         ({"policy": "periodic", "tranches": 3}, False),
         ({"policy": "corridor", "width": 0.05, "colour": "red"}, False),
+        # cadence x trigger (TOM-1513)
+        ({"cadence": "tranche", "tranches": 5, "frequency": "daily", "trigger": "corridor", "width": 0.02}, True),
+        ({"cadence": "periodic", "frequency": "monthly", "trigger": "band", "band": 0.05}, True),
+        ({"cadence": "periodic"}, True),
+        ({"cadence": "periodic", "trigger": None}, True),
+        ({"cadence": "periodic", "trigger": "none"}, True),
+        ({"cadence": "tranche"}, False),
+        ({"cadence": "periodic", "tranches": 3}, False),
+        ({"cadence": "periodic", "trigger": "band"}, False),
+        ({"cadence": "periodic", "trigger": "corridor", "band": 0.05, "width": 0.1}, False),
+        ({"cadence": "periodic", "band": 0.05}, False),
+        ({"policy": "band", "band": 0.05, "cadence": "periodic"}, False),
+        ({"policy": "periodic", "trigger": "band"}, False),
+        ({"trigger": "band", "band": 0.05}, False),
     ],
 )
 def test_validate_checks_a_rebalancing_policy_against_the_schema(value, ok):
@@ -576,7 +697,21 @@ def test_plan_resolves_the_policy_and_refuses_what_the_run_would_refuse():
     assert plan["rebalancing"]["calendar"] == "NYSE"
     assert plan["group_limits"]["limits"] == {"equity": {"min": 0.0, "max": 0.6}}
     legacy = BacktestPipeline().plan({"engine": "rsims", "rebalancing_freq": "ME", "threshold": 0.05})
-    assert legacy["rebalancing"] == {"policy": "band", "frequency": "ME", "calendar": None, "band": 0.05}
+    assert legacy["rebalancing"] == {
+        "policy": "band",
+        "cadence": "periodic",
+        "trigger": "band",
+        "frequency": "ME",
+        "calendar": None,
+        "band": 0.05,
+    }
+    combined = BacktestPipeline().plan(
+        {
+            "engine": "rsims",
+            "rebalancing_policy": {"cadence": "tranche", "tranches": 5, "trigger": "band", "band": 0.02},
+        }
+    )
+    assert (combined["rebalancing"]["cadence"], combined["rebalancing"]["trigger"]) == ("tranche", "band")
     with pytest.raises(ValueError, match="rebalancing_policy"):
         BacktestPipeline().plan(
             {"engine": "rsims", "rebalancing_policy": {"policy": "band", "band": 0.1}, "threshold": 0.1}
