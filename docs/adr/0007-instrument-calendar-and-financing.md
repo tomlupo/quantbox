@@ -110,7 +110,9 @@ calendar is read from the prices themselves (or from one series of them).
   the last execution bar of the month, never a raw holiday row and never the
   first bar of the next month. Any other offset (`MS`, `BMS`, `D`) and an
   explicit date snap FORWARD. An integer `n` is every n-th execution bar;
-  `None` (buy-and-hold) the first one. rsims decides on every execution bar.
+  `None` (buy-and-hold) the first one. Every engine follows this schedule
+  (amended by [ADR-0008](0008-engine-seam.md), TOM-1450: rsims decided on every
+  execution bar until then).
   The weight decided on bar `d` is the strategy's row `d`, computed from data
   stamped on or before `d`.
 - **Execution bar** = the decision bar plus `lag_bars` bars OF THE EXECUTION
@@ -160,7 +162,7 @@ calendar is read from the prices themselves (or from one series of them).
     counted. Read on the strategy's own rows, before the engine seam drops
     the ones that are not bars; executed decisions only.
   - **Not measured: any other schedule** — an `int`, `nW`, explicit dates,
-    rsims (it decides on every execution bar), buy-and-hold. With no period
+    buy-and-hold. With no period
     there is no saying whose step a weekend row is; the guard does not guess.
     `weight_age` says `measured: false` with the `reason` and carries no
     counts, and no `decision_stale_weights*` metric is written — never a 0
@@ -276,10 +278,10 @@ backtest ends reads as rate 0 after its last price; those bars are counted
 ```yaml
 venue:
   allow_shorts: true
-  leverage: normalize   # normalize | borrow; default normalize on vectorbt, borrow on rsims
+  leverage: normalize   # normalize | borrow; default normalize on every engine (ADR-0008)
 ```
 
-- **`normalize`** (the vectorbt default) bounds the book HELD after each bar's
+- **`normalize`** (the default, every engine; ADR-0008) bounds the book HELD after each bar's
   orders, not the decided row: a deferred cell keeps its previous weight, so a
   rotation out of an instrument that did not print would otherwise ask for net
   above 1 (review round 2). On every bar whose held net exposure — ordered

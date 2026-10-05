@@ -26,9 +26,11 @@ plugins:
       trading_days: 365
 ```
 
-**Rebalancing modes:**
-- `rebalancing_freq: N` — periodic rebalancing every N days
-- `threshold: 0.05` — rebalance when any weight drifts more than 5% from target
+**Rebalancing modes** (the seam's schedule — both engines follow it, docs/adr/0008):
+- `rebalancing_freq: N` — periodic rebalancing every N execution bars (or `"W-FRI"`, `"ME"`, ...)
+- `threshold: 0.05` — a scheduled rebalance is placed only when a held weight drifted more than
+  5% from its target. The seam measures the drift cost-free; with costs a rebalance near the band
+  edge can fall on a slightly different bar than an in-engine band would.
 
 ### rsims (futures)
 
@@ -143,15 +145,16 @@ Reading a dataset without it raises an ImportError naming both.
 | `engine` | `vectorbt` | `"vectorbt"` or `"rsims"` |
 | `fees` | `0.001` | Trading fee per side (0.001 = 10 bps) |
 | `rebalancing_freq` | `1` | The DECISION schedule on the execution calendar: every N execution bars, or `"1W"`, `"ME"`, `"BMS"`; period-end offsets decide on the period's last execution bar, others on the next one; the trade follows `lag_bars` execution bars later ([ADR-0007](../adr/0007-instrument-calendar-and-financing.md)) |
-| `threshold` | (none) | Drift threshold for rebalancing-bands mode |
+| `threshold` | (none) | Drift band: a scheduled rebalance is placed only when a held weight drifted more than this (seam-computed, cost-free, every engine) |
 | `trading_days` | `365` | Days per year for annualization |
 | `universe.top_n` | — | Universe size (top N by volume/mcap) |
 | `prices.lookback_days` | — | Price history window |
 | `execution.lag_bars` | `1` | Bars between deciding a weight and filling it — see [Execution timing and venue constraints](#execution-timing-and-venue-constraints) |
 | `venue.allow_shorts` | (unset) | Whether the venue can hold shorts — same section |
 | `venue.financing` | (unset) | What borrowed / idle cash costs — [Missing prices and financing](#missing-prices-and-financing) |
-| `venue.leverage` | `normalize` (vectorbt) / `borrow` (rsims) | Net exposure above 1: scaled to 1, or borrowed — [Missing prices and financing](#missing-prices-and-financing) |
+| `venue.leverage` | `normalize` (every engine) | Net exposure above 1: scaled to 1, or borrowed — [Missing prices and financing](#missing-prices-and-financing) |
 | `execution.calendar` | `majority` | The execution calendar: `majority` \| `union` \| `intersection` \| a ticker — [Missing prices and financing](#missing-prices-and-financing) |
+| `execution.schedule` | `calendar` | `calendar`: the scheduled book; `bars`: every price bar executes, no deferral, no `venue.leverage` ([ADR-0008](../adr/0008-engine-seam.md)) |
 | `risk.max_leverage` | `99` | Gross cap per bar; only ever scales DOWN (both engines) |
 | `risk.allow_short` | `false` | Legacy short switch (both engines); prefer `venue.allow_shorts` |
 | `risk.tranches` | `1` | Rolling-mean tranching of target weights (both engines) |
@@ -164,9 +167,9 @@ Both engines are **same-bar primitives**: the weight row they are handed for bar
 between deciding and filling. It is applied in exactly one place, inside
 the engine seam (`quantbox.engine._lag.lag_positions`, docs/adr/0008: after
 aggregation, venue clipping and risk transforms, before any engine adapter),
-so it holds for the vectorbt `from_orders` branch, the vectorbt order-func
-(`threshold`) branch, rsims, the variants flow, the sweep, `backtest()` and
-`optimize()` alike. `quantbox sweep` (`analysis.parameter_grid`) uses the same setting,
+so it holds for both engines, the variants flow, the sweep, `backtest()` and
+`optimize()` alike — they all build the book with the one function
+`quantbox.engine.simulate`. `quantbox sweep` (`analysis.parameter_grid`) uses the same setting,
 and so do the Python helpers `backtest()` and `optimize()`
 (`quantbox.plugins.backtesting`): keyword `lag_bars=`, same default, same
 refusal of `0`, and the result carries the same `execution` record. The L1
@@ -241,7 +244,7 @@ now says `ME`.
 ```yaml
       venue:
         allow_shorts: true
-        leverage: borrow           # normalize (vectorbt default) | borrow (rsims default)
+        leverage: borrow           # normalize (the default, every engine) | borrow
         financing:
           rate: "LT12TRUU Index"   # ticker in the prices (cash TR index) | annual number (0.0 = free)
           borrow_spread_bps: 0     # borrowed cash: rate + spread
@@ -271,8 +274,9 @@ wider panel; a `TIMING:` warning names them. Any other schedule reports `measure
 dropped; an `INDEX:` warning names price bars with no weight row), `leverage`. Summaries go to
 `run_manifest.json` `data_validation` and `metrics.json`.
 
-Every vectorbt run records `engine_underfilled_rebalances` and `engine_max_fill_gap` (a
-`threshold` run on the bars it traded). They compare the book the engine held after each
+Every vectorbt run records `engine_underfilled_rebalances` and `engine_max_fill_gap` (on
+the bars the seam ordered). A `threshold` run also records `threshold_skipped_rebalances`
+and a `threshold` section in `data_validation.json`. They compare the book the engine held after each
 rebalance with `traded_weights`.
 
 #### Same-bar research runs: the explicit override
@@ -310,19 +314,13 @@ ogólny research"*.
 Refused: `lag_bars: 0` alone, `allow: false`, an empty or missing `reason`,
 and an override next to `lag_bars >= 1`.
 
-**NaN weight rows — one saved book per engine, and the engines disagree.** A
-NaN weight cell mid-series means "the strategy said nothing for this bar". The
-engines have always answered that differently: **vectorbt forward-fills** (holds
-the last target; leading NaN → 0) while **rsims treats NaN as 0** (goes flat).
-This pipeline does not change either engine's numbers; it materialises the
-policy the chosen engine already applies into the frame it hands over
-(`quantbox.engine.EngineAdapter.materialise_nan`), so `traded_weights` and the
-`traded_*` metrics describe the book that engine actually traded — and never
-contain NaN. The disagreement itself is a **known issue**: the same config with
-mid-series NaN weights gives different books on the two engines. Emit explicit
-weights for every bar to avoid depending on it. (The sweep path hands vectorbt
-the raw frame, so it holds through NaN rows like any vectorbt run; it saves no
-weights.)
+**NaN weight rows — one policy, every engine.** A NaN weight cell mid-series
+means "the strategy said nothing for this bar". The seam answers it once
+(`quantbox.engine.materialise_nan`, docs/adr/0008): the cell HOLDS the last
+decided target; a leading NaN is 0. Every engine receives the materialised
+book, so `traded_weights` never contains NaN and the same config gives the same
+book on both engines. (Until TOM-1450 rsims treated NaN as 0 — went flat — so an
+rsims run with mid-series NaN weights moves.)
 
 **Shorts are never silent.** Whatever the config says, every run measures
 `target_short_gross_share` (the strategy's targets) and
@@ -360,9 +358,8 @@ reach the `DatasetManifest`, so the venue has to be declared in the config.
 > On the reviewer's toy the split was: same-bar −0.1792, next-bar −0.1589,
 > same-bar with only the first rebalance zeroed −0.1553 — there the lost first
 > period ALONE moves the number by more than the whole same-bar → next-bar delta.
-> Buy-and-hold (`rebalancing_freq: null`) is the exception: its one trade moves
-> to bar `lag_bars` (`quantbox.engine.lag_buy_and_hold`) — on bar 0 it would
-> trade the flat row and never enter.
+> Buy-and-hold (`rebalancing_freq: null`) is the exception: its one decision is
+> the first bar, and it fills `lag_bars` execution bars later.
 
 ### Arms: one base config, many runs
 
@@ -418,8 +415,8 @@ The `metrics` artifact includes:
   `traded_short_gross_share` (short gross / total gross over the run),
   `traded_mean_turnover` (mean per-bar `sum(|w[t] - w[t-1]|)`),
   `traded_flat_bar_share` (share of bars with zero gross). They describe the
-  target book handed to the engine; with `rebalancing_freq` ≠ 1 or a `threshold`
-  the engine trades a subset of those bars and positions drift in between.
+  book held after the seam's orders; with `rebalancing_freq` ≠ 1 or a `threshold`
+  the engine trades a subset of the bars and positions drift in between.
 - **`target_short_gross_share`, `target_mean_net_exposure`** — the same
   statistics of the strategy's targets, so a clipped short book is visible.
 
