@@ -140,7 +140,9 @@ def test_export_of_a_run_carries_its_returns_metrics_and_provenance():
     # provenance from the manifest — engine, execution, dataset, funding
     prov = next(t for t in payload["tables"] if t["title"] == "Run provenance")
     rows = {r[0]: r[1:] for r in prov["rows"]}
-    assert rows["engine"] == ["rsims 0.7.0"]
+    # The golden records the quantbox version it was regenerated with: read it, never pin it.
+    assert manifest["engine"]["name"] == "rsims"
+    assert rows["engine"] == [f"rsims {manifest['engine']['version']}"]
     assert rows["execution.lag_bars"] == [1]
     assert rows["dataset.sha256"] == [manifest["dataset"]["sha256"]]
     assert rows["funding.modelled"] == ["true"]

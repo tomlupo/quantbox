@@ -77,7 +77,7 @@ def main() -> None:
         manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
 
         for old in HERE.iterdir():
-            if old.name != Path(__file__).name:
+            if old.is_file() and old.name != Path(__file__).name:  # not __pycache__/
                 old.unlink()
         for rel in run_files(manifest).values():
             shutil.copy2(run_dir / rel, HERE / rel)
