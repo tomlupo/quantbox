@@ -90,9 +90,16 @@ repos:
       # pipeline_smoke is deliberately INCLUDED: 4.5s, and it is the L1
       # structural guard that catches "pytest is green but the pipeline
       # cannot load its plugins" — the class unit tests miss by design.
+      #
+      # The entry UNSETS every `GIT_*` variable before pytest (TOM-1497, the
+      # shape of qute-plugins TOM-1152). Git exports `GIT_DIR` to hooks, and
+      # from a linked worktree a test's own `git init` in a tmp dir then wrote
+      # into THIS repository: `core.bare=true` on 2026-10-01. The tests strip
+      # GIT_* one by one; this line is the belt to their braces, and it also
+      # covers the next test that forgets.
       - id: pytest-not-slow
         name: pytest (suite minus slow — pre-push)
-        entry: uv run pytest -q -m "not slow and not canonical_reproduction"
+        entry: "bash -c 'for v in $(compgen -e); do case $v in GIT_*) unset $v;; esac; done; exec uv run pytest -q -m \"not slow and not canonical_reproduction\"'"
         language: system
         types_or: [python, pyi, toml]
         pass_filenames: false
