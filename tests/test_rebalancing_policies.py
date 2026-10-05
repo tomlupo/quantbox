@@ -11,8 +11,10 @@ engine. Nothing here calls an adapter directly.
   seeded randomized loop (hypothesis is not a dev dependency) asserting the
   limits hold on every rebalance date;
 - D. the pipeline: ``rebalancing_policy`` and ``group_limits`` are in
-  ``params_schema`` (validate), ``plan()`` resolves them (config explain), and a
-  run writes them to ``data_validation.json``.
+  ``params_schema`` (validate) and ``plan()`` resolves them (config explain). The
+  run that writes them to ``data_validation.json`` is a pipeline smoke test in
+  ``tests/pipeline/test_rebalancing_policies_e2e.py`` (CI's smoke job runs that
+  directory only).
 """
 
 from __future__ import annotations
@@ -570,62 +572,5 @@ def test_plan_resolves_the_policy_and_refuses_what_the_run_would_refuse():
         )
 
 
-class _Fixed:
-    meta = type("M", (), {"name": "strategy.fixed.v1"})()
-
-    def __init__(self, frame: pd.DataFrame):
-        self.frame = frame
-
-    def run(self, data: Any, params: Any = None, context: Any = None) -> dict[str, Any]:
-        return {"weights": self.frame}
-
-
-class _Data:
-    def __init__(self, prices: pd.DataFrame, universe: pd.DataFrame):
-        self.prices, self.universe = prices, universe
-
-    def load_universe(self, params: dict[str, Any]) -> pd.DataFrame:
-        return self.universe
-
-    def load_market_data(self, universe: Any, asof: str, params: dict[str, Any]) -> dict[str, pd.DataFrame]:
-        return {"prices": self.prices}
-
-
-@pytest.mark.pipeline_smoke
-def test_a_backtest_run_with_a_policy_and_group_limits_end_to_end(tmp_path):
-    from quantbox.instrument_calendar import validate_data_validation
-    from quantbox.plugins.pipeline.backtest_pipeline import BacktestPipeline
-    from quantbox.store import FileArtifactStore
-
-    prices = _daily_247("2024-01-01", "2024-06-30", tickers=("A", "B", "C"), seed=9)
-    decided = pd.DataFrame({"A": 0.5, "B": 0.3, "C": 0.2}, index=prices.index)
-    universe = UNIVERSE[UNIVERSE["symbol"].isin(["A", "B", "C"])].reset_index(drop=True)
-    store = FileArtifactStore(str(tmp_path), "run")
-    params = {
-        "engine": "rsims",
-        "fees": 0.0,
-        "strategies": [{"name": "strategy.fixed.v1", "weight": 1.0}],
-        "rebalancing_policy": {"policy": "periodic", "frequency": "monthly", "calendar": "NYSE"},
-        "group_limits": {"by": "asset_class", "limits": {"equity": {"max": 0.6}}},
-    }
-    result = BacktestPipeline().run(
-        mode="backtest",
-        asof="2024-06-30",
-        params=params,
-        data=_Data(prices, universe),
-        store=store,
-        broker=None,
-        risk=[],
-        strategies=[_Fixed(decided)],
-    )
-    validation = json.loads((store.root / "data_validation.json").read_text())
-    assert validate_data_validation(validation) == []
-    assert validation["rebalancing"]["policy"]["calendar"] == "NYSE"
-    assert validation["groups"]["limits"] == {"equity": {"min": 0.0, "max": 0.6}}
-    traded = store.read_parquet("traded_weights").set_index("date")
-    assert traded.iloc[-1][["A", "B"]].sum() == pytest.approx(0.6)
-    assert traded.iloc[-1]["C"] == pytest.approx(0.4)
-    schedule = store.read_parquet("rebalance_schedule")
-    assert [d.strftime("%Y-%m-%d") for d in schedule["decision_date"]][:3] == ["2024-01-31", "2024-02-29", "2024-03-28"]
-    assert result.metrics["rebalance_placed"] == 5.0
-    assert result.notes["rebalancing"]["policy"] == "periodic"
+# The end-to-end run of a policy and group limits through the pipeline is a
+# pipeline smoke test: tests/pipeline/test_rebalancing_policies_e2e.py (TOM-1500).
