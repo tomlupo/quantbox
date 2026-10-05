@@ -88,8 +88,8 @@ class DecisionRules:
     """What :func:`final_targets` applies: the short clip, the gross cap, the group limits and ``venue.leverage``."""
 
     allow_short: bool = True
-    #: The gross cap, :data:`DEFAULT_MAX_LEVERAGE` unless given; ``None`` = no cap (a third-party
-    #: rebalancer that owns its caps, or a test of the other steps).
+    #: The gross cap, :data:`DEFAULT_MAX_LEVERAGE` unless given; ``None`` = no cap (a test of the
+    #: other steps; no pipeline passes it, TOM-1526).
     max_leverage: float | None = DEFAULT_MAX_LEVERAGE
     #: Bound to a universe (:meth:`GroupLimits.bind`); ``None`` = no group limits.
     groups: GroupLimits | None = None
