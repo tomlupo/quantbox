@@ -183,6 +183,21 @@ class TestRunFromConfig:
         assert call_kwargs["aggregator"] is None
         assert isinstance(result, RunResult)
 
+    def test_run_pipeline_defaults_to_the_pipeline_plugin_name(self, MockStore):
+        """``run.pipeline`` is optional: validate never required it, ``run --dry-run`` names the pipeline from
+        ``plugins.pipeline.name``, and the run stopped with KeyError 'pipeline' (run_stress_test.yaml, TOM-1526)."""
+        pipe_cls, pipe_inst = _make_pipeline_cls()
+        data_cls, _ = _make_data_cls()
+        registry = _make_registry(pipelines={"test.pipeline.v1": pipe_cls}, data={"test.data.v1": data_cls})
+        cfg = _minimal_config()
+        del cfg["run"]["pipeline"]
+
+        run_from_config(cfg, registry)
+
+        pipe_inst.run.assert_called_once()
+        run_id = MockStore.call_args.args[1]
+        assert "test_pipeline_v1" in run_id, run_id
+
     # 2. Unknown pipeline name → PluginNotFoundError ----------------------
 
     def test_unknown_pipeline_raises(self, MockStore):

@@ -560,7 +560,8 @@ def resolve_run(
     return ResolvedRun(
         mode=mode,
         asof=run_cfg["asof"],
-        pipeline_key=run_cfg["pipeline"],
+        # Optional: validate never required it and `run --dry-run` names plugins.pipeline.name (TOM-1526).
+        pipeline_key=run_cfg.get("pipeline") or pipe_name,
         pipe_name=pipe_name,
         data_name=data_name,
         pipeline=pipeline,
