@@ -7,6 +7,11 @@ the same bars-per-year, as-of date, calendar and frequency in its backtest and
 in paper/live; only ``mode`` differs. TOM-1338 fixed the symptom (live handed
 252 where the backtest handed 365); this removes the cause, two runners.
 
+The runner returns DECIDED weights. Both pipelines then turn them into the
+final TARGET weights with the one decision, :func:`quantbox.decision.final_targets`
+(short clip, gross cap, group limits, ``venue.leverage`` normalisation;
+TOM-1520), before any rebalancing policy reads them.
+
 A strategy reads its annualisation through :func:`resolve_annualize`, the one
 annualisation block: an explicit per-strategy value wins, else the context's
 ``bars_per_year``. The ``_pipeline_annualize`` param that the pipelines used to

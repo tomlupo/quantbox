@@ -13,6 +13,7 @@ status_changes:
   - 2026-10-05: decision 12 added with TOM-1500 — the same defaults on every engine (compounding, starting cash), and every cost charged or refused
   - 2026-10-05: decision 11 amended with TOM-1513 — Tom, 2026-10-05: a policy is a cadence x a trigger, a corridor hit rebalances the whole book ("hit corridora triggeruje cały rebalancing"), min_trade on every policy, risk.tranches is an alias of the tranche cadence; the corridor + normalize caveat is removed
   - 2026-10-05: decision 11 extended with TOM-1518 — live trading decides with the same policy code; the live rebalancers keep target weights -> orders only
+  - 2026-10-05: decisions 6 and 11 amended with TOM-1520 — Tom, 2026-10-05: "Normalizacja jest częścią strategii" — venue.leverage normalisation and the group limits are the DECISION (quantbox.decision), shared by backtest and live; the seam measures leverage and, without borrow, caps every rebalance's buys at the cash
 ---
 
 # ADR-0008: Book simulation sits behind one engine seam, with vectorbt and rsims as adapters
@@ -84,7 +85,9 @@ the same strategy gave a different book through `backtest()` than through
    is 0) for every engine; adapters receive fully specified targets. The
    default `venue.leverage` is `normalize` for every engine
    (`quantbox.financing.DEFAULT_LEVERAGE`); a levered perps book declares
-   `borrow`.
+   `borrow`. Since TOM-1520 the normalisation itself is the decision's (see
+   decision 13): the seam measures leverage and, under `normalize`, caps the
+   buys of every placed rebalance at the cash plus the sell proceeds.
 7. **No branch on the engine name outside an adapter.** The one table of
    names is `quantbox.engine.registry`. `tests/test_engine_seam.py` scans
    the source tree and fails on a comparison against an engine-name literal
@@ -142,7 +145,8 @@ the same strategy gave a different book through `backtest()` than through
     spelling of `periodic` / `band` and write the same files; declaring both
     spellings is refused. `group_limits` (`quantbox.engine.groups`) keeps each
     group's gross weight inside `[min, max]` on every decided row, before the
-    schedule; the groups come from universe metadata (`by:` a column of
+    schedule (since TOM-1520 in the decision, decision 13, before the
+    normalisation); the groups come from universe metadata (`by:` a column of
     `load_universe()`), and an infeasible limit refuses the run. No adapter
     changed: `execute(...)` still receives targets and an orders mask.
 
@@ -170,6 +174,24 @@ the same strategy gave a different book through `backtest()` than through
     cover its fees is not placed. Each adapter names the costs it charges
     (`charged_costs()`); `simulate()` refuses a non-zero cost outside that set,
     naming the engine and the cost. A cost is never dropped silently.
+
+13. **Normalisation is part of the decision (TOM-1520).** Tom, 2026-10-05:
+    "Normalizacja jest częścią strategii, bo pokazuje, co byśmy robili w
+    realnym świecie." The order is signals -> weights -> the decision ->
+    TARGET weights -> the rebalancing policy (cadence x trigger) -> execution.
+    `quantbox.decision.final_targets` is ONE ordered transform: the short clip,
+    the `risk.max_leverage` gross cap, the group limits, then `venue.leverage`
+    (`normalize` scales a row above net 1 to net 1; `borrow` keeps it; `none`,
+    `schedule: bars`, measures it). `backtest.pipeline.v1`,
+    `trade.full_pipeline.v1`, `backtest()`, `optimize()` and the sweep call it,
+    so one config gives identical target weights in a backtest and live
+    (`tests/test_decision_layer.py`). Before, live trading applied no
+    normalisation at all and capped before it clipped, the backtest clipped
+    before it capped (the TOM-1518 gaps). The seam stops normalising: it
+    measures `leverage`, and execution never borrows silently — without
+    `borrow`, every placed rebalance caps its buys at the cash plus the sell
+    proceeds (`place_bar`), which binds only when a deferred cell still holds
+    its old weight. `simulate(groups=...)` stays for a direct caller.
 
 ### The threshold caveat
 
@@ -245,13 +267,18 @@ book was not.
   a group maximum still holds, a group minimum can fall below its bound by
   that scale. With `min_trade` the held book can differ from the targets: a
   dropped trade keeps its drifted weight, and scaled buys stop short of target.
-- `venue.leverage: normalize` runs before the trigger and `min_trade` (as it
-  did for `threshold`), so it scales a bar as if every ordered cell trades.
-  A placed bar trades every ordered cell (a hit rebalances the whole book),
-  so that holds for every trigger; the corridor + normalize caveat of #239 is
-  gone. `min_trade` drops trades after normalize and caps the buys at the
-  cash, so it cannot lift the held net above 1 either. Where normalize runs
-  is unchanged and still open for Tom (TOM-1513 item 3).
+- `venue.leverage: normalize` runs in the decision, before the cadence, the
+  trigger and `min_trade` (decision 13; TOM-1513 item 3 answered by Tom). The
+  tranche cadence therefore averages FINAL rows: a book whose decided rows sit
+  above net 1 tranches differently than when the seam normalised the blended
+  target (TOM-1520 records the before/after). `min_trade` drops trades on
+  final targets and the cash cap caps the buys, so neither can lift the held
+  net above 1.
+- The cash cap reads the cost-free drifted book; `traded_weights` is the
+  target path (a deferred cell at its old TARGET). Where a deferred position
+  drifted down, the cap lets the buys spend that room, so the target path's
+  `max_net_exposure_held` can sit slightly above 1 while the book really held
+  stays at 1 (and vectorbt, which cannot borrow, fills it exactly).
 - A tranche holds its target weights between refreshes (the book is the mean
   of the tranche targets), not a separately drifting sub-account.
 - `risk.tranches` used to be a rolling mean of N bars before the seam. As the

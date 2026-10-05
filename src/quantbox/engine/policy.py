@@ -525,6 +525,18 @@ def blend_tranches(targets: np.ndarray, n: int) -> np.ndarray:
 _CASH_TOLERANCE = 1e-12
 
 
+def cash_capped(leverage: str, min_trade: float) -> bool:
+    """Whether a placed rebalance caps its buys at the cash plus the sell proceeds.
+
+    ALWAYS under ``venue.leverage: normalize`` — execution never borrows
+    silently (TOM-1520); never under ``borrow``. ``none`` (``schedule: bars``,
+    leverage measured only) caps under ``min_trade`` alone, as before.
+    """
+    if leverage == "borrow":
+        return False
+    return leverage == "normalize" or min_trade > 0
+
+
 @dataclass(frozen=True)
 class BarPlacement:
     """What the trigger and ``min_trade`` decide on ONE considered bar (:func:`place_bar`)."""
@@ -577,7 +589,7 @@ def place_bar(
         placed = hit
     keep = trades if placed else np.zeros_like(ordered)
     scale: float | None = None
-    if keep.any() and min_trade > 0 and leverage != "borrow":
+    if keep.any() and cash_capped(leverage, min_trade):
         delta = np.where(keep, target - drifted, 0.0)
         buys = delta > 0
         need = float(delta[buys].sum())
@@ -596,10 +608,11 @@ def place_orders(
     columns: pd.Index,
     leverage: str,
 ) -> dict[str, Any]:
-    """The trigger and ``min_trade``, against the held book: in place on *orders* and *target_cells*.
+    """The trigger, ``min_trade`` and the cash cap, against the held book: in place on *orders* and *target_cells*.
 
     The seam runs this when the policy has a trigger or a ``min_trade`` above
-    0; otherwise every considered order stands as scheduled.
+    0, or the book does not borrow (``venue.leverage: normalize``, TOM-1520);
+    otherwise every considered order stands as scheduled.
 
     The held book is tracked cost-free: after a bar with orders, each ordered
     cell holds its target and each untouched cell its drifted weight; between
@@ -626,6 +639,13 @@ def place_orders(
        ``venue.leverage: borrow`` the held net therefore never goes above 1.
 
     A bar on which every trade is under ``min_trade`` is skipped.
+
+    **The cash cap** (step 3) runs on EVERY placed bar under
+    ``venue.leverage: normalize``, with or without ``min_trade``
+    (:func:`cash_capped`, TOM-1520): execution never borrows silently. With
+    final targets (net at most 1) and every cell ordered it never binds
+    (``sum(target - held) <= 1 - sum(held)``); it binds when a deferred cell
+    still holds its old weight.
     """
     n_inst = orders.shape[1]
     held = np.zeros(n_inst)
@@ -635,6 +655,7 @@ def place_orders(
     partial = 0
     dropped = 0
     scales: list[float] = []
+    capped_rows: list[int] = []
     corridor = policy.corridor_arrays(columns) if policy.trigger == "corridor" else None
     for r in order_rows:
         o = orders[r].copy()
@@ -652,6 +673,7 @@ def place_orders(
         if keep.any():
             if bar.scale is not None:
                 scales.append(bar.scale)
+                capped_rows.append(int(r))
             if not keep[o].all():
                 partial += 1
                 dropped += int((o & ~keep).sum())
@@ -667,6 +689,8 @@ def place_orders(
         "skipped_rebalances": len(skipped),
         "partial_rebalances": int(partial),
         "first_skipped_rows": skipped[:5],
+        "cash_capped_rows": capped_rows,
+        "cash_cap_scales": scales,
         "min_trade": {
             "dropped_trades": int(dropped),
             "scaled_rebalances": len(scales),
@@ -815,7 +839,7 @@ class LiveDecision:
     trades: tuple[str, ...]
     #: The policy's targets on a considered bar (tranche: the mean of the tranches), before the trigger.
     policy_targets: pd.Series | None
-    #: The buy scale when min_trade capped the buys at the cash, else ``None``.
+    #: The buy scale when the cash cap scaled the buys (:func:`cash_capped`), else ``None``.
     scale: float | None
     #: Considered bars in the history (tranche: the decided rows it blends).
     decisions: int
@@ -864,7 +888,8 @@ def decide_rebalance(
       the policy has a trigger or a ``min_trade``.
     - *next_bar*: the next execution bar (:func:`next_execution_bar`), needed
       by a period-end frequency only.
-    - *leverage*: ``venue.leverage``; ``borrow`` lifts the buy cap of ``min_trade``.
+    - *leverage*: ``venue.leverage``; ``borrow`` lifts the cash cap of the buys (:func:`cash_capped`).
+      *decided* is expected FINAL (:func:`quantbox.decision.final_targets`): the policy reads target weights.
 
     Refused (``ValueError``): an empty history, a frequency the live window
     cannot anchor (an int above 1, null), a trigger or ``min_trade`` without

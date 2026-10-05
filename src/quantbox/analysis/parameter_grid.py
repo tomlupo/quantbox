@@ -132,7 +132,9 @@ def sweep(
         Columns: sweep keys, slice-decoded keys (e.g. ``vol_target``,
         ``tranches``), then the requested ``metrics``.
     """
+    from quantbox.decision import DecisionRules, final_book
     from quantbox.engine import Costs, get_engine, simulate
+    from quantbox.financing import DEFAULT_LEVERAGE
 
     backtest_kwargs = dict(backtest_kwargs or {})
     # The engine and the schedule are the seam's; costs are Costs; anything else is the adapter's own
@@ -180,6 +182,11 @@ def sweep(
         if len(weights.index.intersection(prices.index)) < 2:
             logger.warning("parameter_grid.sweep: insufficient overlap for %s", sweep_labels)
             continue
+        # The decision (TOM-1520): each slice normalised to net 1 on its decided rows (the default
+        # venue.leverage; schedule: bars only measures it) — the seam executes final targets.
+        weights, _ = final_book(
+            weights, DecisionRules(leverage="none" if timing.schedule == "bars" else DEFAULT_LEVERAGE)
+        )
         book = simulate(
             prices,
             weights,

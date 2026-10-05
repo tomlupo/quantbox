@@ -210,7 +210,7 @@ Reading a dataset without it raises an ImportError naming both.
 | `execution.lag_bars` | `1` | Bars between deciding a weight and filling it — see [Execution timing and venue constraints](#execution-timing-and-venue-constraints) |
 | `venue.allow_shorts` | (unset) | Whether the venue can hold shorts — same section |
 | `venue.financing` | (unset) | What borrowed / idle cash costs — [Missing prices and financing](#missing-prices-and-financing) |
-| `venue.leverage` | `normalize` (every engine) | Net exposure above 1: scaled to 1, or borrowed — [Missing prices and financing](#missing-prices-and-financing) |
+| `venue.leverage` | `normalize` (every engine) | How the decision is normalised: a target row above net 1 is scaled to 1, or borrowed — [Missing prices and financing](#missing-prices-and-financing) |
 | `execution.calendar` | `majority` | The execution calendar: `majority` \| `union` \| `intersection` \| a ticker — [Missing prices and financing](#missing-prices-and-financing) |
 | `execution.schedule` | `calendar` | `calendar`: the scheduled book; `bars`: every price bar executes, no deferral, no `venue.leverage` ([ADR-0008](../adr/0008-engine-seam.md)) |
 | `risk.max_leverage` | `99` | Gross cap per bar; only ever scales DOWN (both engines) |
@@ -250,7 +250,7 @@ plugins:
 |---|---|---|---|
 | `execution.lag_bars` | int ≥ 1 | `1` | Weights decided with data through bar `t` fill at the **close of bar `t + lag_bars`**. `0` (same-bar — the signal filled at the very close it was computed from, which no order could have achieved) is **refused** by every entry point and is an error in `quantbox validate` ([ADR-0005](../adr/0005-next-bar-is-mandatory.md)), unless `execution.same_bar` grants it (below). |
 | `execution.same_bar` | `{allow: true, reason: str}` | — | The explicit same-bar override ([ADR-0006](../adr/0006-same-bar-explicit-override.md)): valid only next to `lag_bars: 0`, `reason` non-empty. The run is then **research, not a backtest** — see [Same-bar research runs](#same-bar-research-runs-the-explicit-override). |
-| `venue.allow_shorts` | bool | — | `false`: negative **target** weights are clipped to `0` *before* tranching and the leverage cap. **The long side is not re-normalised** — the book carries less gross; it is never re-levered to refill it. `true`: shorts pass through. Must not contradict an explicit `risk.allow_short` (the run refuses). |
+| `venue.allow_shorts` | bool | — | `false`: negative **target** weights are clipped to `0` *before* the leverage cap, the group limits, the normalisation and tranching (the decision's first step, `quantbox.decision`). **The long side is not re-levered** — the book carries less gross. `true`: shorts pass through. Must not contradict an explicit `risk.allow_short` (the run refuses). |
 
 Unknown keys, non-integers, booleans, `0` (without the override) and negative lags are **refused**
 (`ConfigValidationError` from the runner, `ValueError` from the pipeline, before
@@ -309,10 +309,13 @@ now says `ME`.
           lend_spread_bps: 0       # idle cash:     rate - spread
 ```
 
-`leverage: normalize` keeps the book HELD after each bar's orders at net 1 or below: when
-it would go above (a decision above 1, or a deferred instrument still holding its weight),
-the cells ordered on that bar are scaled down, or their buys set to 0 when the deferred
-cells alone fill it (counted, warned).
+`venue.leverage` is part of the DECISION (TOM-1520, `quantbox.decision`): the target weights
+are final before any rebalancing policy reads them, and live trading computes the same ones.
+`leverage: normalize` scales every decided row whose net exposure is above 1 down to net 1
+(after the short clip, the `risk.max_leverage` gross cap and the group limits; counted in
+`data_validation.json` `decision`, warned). Execution then never borrows: on every placed
+rebalance the buys are capped at the cash plus the sell proceeds, which binds only when a
+deferred instrument still holds its old weight (`leverage.cash_capped_rebalances`, warned).
 `leverage: borrow` holds it; with `financing` the residual `1 - sum(w)` is held as two
 synthetic cash legs (idle cash earns `rate - lend_spread`, borrowed cash pays `rate +
 borrow_spread`, both trade without fees). `borrow` without `financing` runs at an ASSUMED rate
@@ -329,7 +332,9 @@ because the strategy stamped them on a non-execution bar after the decision bar:
 weights on the decision bars, the EXECUTION calendar, never on calendar period-ends from a
 wider panel; a `TIMING:` warning names them. Any other schedule reports `measured: false`
 — the check does not cover it), `index_alignment` (what the price/weight index intersection
-dropped; an `INDEX:` warning names price bars with no weight row), `leverage`. Summaries go to
+dropped; an `INDEX:` warning names price bars with no weight row), `leverage` (measured on the
+held book, and the cash cap) and `decision` (the rules, and the rows the decision clipped,
+capped and normalised). Summaries go to
 `run_manifest.json` `data_validation` and `metrics.json`.
 
 Every vectorbt run records `engine_underfilled_rebalances` and `engine_max_fill_gap` (on

@@ -67,8 +67,10 @@ DEFAULT_LEVERAGE = "normalize"
 LEVERAGE_SCHEMA: dict[str, Any] = {
     "enum": list(LEVERAGE_MODES),
     "description": (
-        "What a decision with net exposure above 1 becomes (docs/adr/0007). normalize: the whole basket is "
-        "scaled proportionally to net 1 on that rebalance (counted). borrow: held as decided; the excess is "
+        "How the decision is normalised: what a target row with net exposure above 1 becomes (docs/adr/0007 "
+        "section 3, TOM-1520). normalize: the row is scaled proportionally to net 1 in the decision, before "
+        "any rebalancing policy reads it (counted), and execution caps each rebalance's buys at the cash. "
+        "borrow: held as decided; the excess is "
         "borrowed at venue.financing, or at an ASSUMED rate of 0 without that block (recorded and warned). "
         "Default: normalize, on every engine — the same config gives the same book whichever engine runs it "
         "(docs/adr/0008). A levered perps book declares borrow."

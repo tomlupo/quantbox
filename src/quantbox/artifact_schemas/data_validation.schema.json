@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "quantbox/data-validation@1",
   "title": "quantbox data validation (data-validation@1)",
-  "description": "<run_dir>/data_validation.json, written by backtest.pipeline.v1 (ADR-0007): what each missing price meant, the execution calendar, decision vs execution timing, input staleness, decision weight age, index alignment and leverage. Minors: 1 adds weight_age; 2 makes leverage.max_net_exposure_unscaled, scaled_after_deferral and buys_zeroed_dates (always written since minor 0) required; 3 adds index_alignment; 4 adds threshold and leverage.mode none (execution.schedule bars, ADR-0008); 5 adds rebalancing and groups (TOM-1450); 6 adds rebalancing.policy.cadence, trigger and min_trade, the tranche+band and tranche+corridor policy names, and rebalancing.min_trade (TOM-1513). The stable shape the data-validation step (TOM-1430) reads. VERSIONING as run@1: adding a field is MINOR (x-schema-minor), renaming, removing or changing a meaning is MAJOR (data-validation@2).",
-  "x-schema-minor": 6,
+  "description": "<run_dir>/data_validation.json, written by backtest.pipeline.v1 (ADR-0007): what each missing price meant, the execution calendar, decision vs execution timing, input staleness, decision weight age, index alignment and leverage. Minors: 1 adds weight_age; 2 makes leverage.max_net_exposure_unscaled, scaled_after_deferral and buys_zeroed_dates (always written since minor 0) required; 3 adds index_alignment; 4 adds threshold and leverage.mode none (execution.schedule bars, ADR-0008); 5 adds rebalancing and groups (TOM-1450); 6 adds rebalancing.policy.cadence, trigger and min_trade, the tranche+band and tranche+corridor policy names, and rebalancing.min_trade (TOM-1513); 7 adds decision and leverage.cash_capped_rebalances, cash_cap_scale_min and first_cash_capped_dates (TOM-1520: normalisation is part of the decision, the seam only measures leverage and caps the buys at the cash; leverage.scaled_rebalances, scaled_after_deferral, buys_zeroed_* and scale_* are 0 / 1.0 since). The stable shape the data-validation step (TOM-1430) reads. VERSIONING as run@1: adding a field is MINOR (x-schema-minor), renaming, removing or changing a meaning is MAJOR (data-validation@2).",
+  "x-schema-minor": 7,
   "type": "object",
   "required": ["schema", "calendar", "execution_calendar", "timing", "staleness", "leverage"],
   "properties": {
@@ -127,15 +127,45 @@
         "rebalances": {"type": "integer", "minimum": 0},
         "rebalances_above_net_1": {"type": "integer", "minimum": 0},
         "max_net_exposure_decided": {"type": "number"},
-        "max_net_exposure_unscaled": {"type": "number", "description": "The largest net exposure a rebalance would have HELD (ordered cells at target, deferred cells at their previous weight) before venue.leverage."},
-        "max_net_exposure_held": {"type": "number", "description": "The largest net exposure held after venue.leverage."},
-        "scaled_after_deferral": {"type": "integer", "minimum": 0, "description": "Scaled rebalances on which a deferred cell kept its weight."},
-        "buys_zeroed_rebalances": {"type": "integer", "minimum": 0, "description": "Rebalances where the deferred cells alone held net exposure at or above 1, so every ordered buy was set to 0."},
+        "max_net_exposure_unscaled": {"type": "number", "description": "The largest net exposure a rebalance would have HELD (ordered cells at target, deferred cells at their previous weight) before the cash cap."},
+        "max_net_exposure_held": {"type": "number", "description": "The largest net exposure held (ordered cells at target, deferred cells at their previous TARGET) after the cash cap. The cap reads the drifted book, so this target path can sit slightly above 1 where a deferred position drifted down."},
+        "scaled_after_deferral": {"type": "integer", "minimum": 0, "description": "Always 0 since minor 7: the seam no longer scales a rebalance (TOM-1520)."},
+        "buys_zeroed_rebalances": {"type": "integer", "minimum": 0, "description": "Always 0 since minor 7 (TOM-1520): a deferred book with no cash left is cash_capped_rebalances with cash_cap_scale_min 0."},
         "buys_zeroed_dates": {"type": "array", "items": {"type": "string"}},
-        "scaled_rebalances": {"type": "integer", "minimum": 0},
+        "scaled_rebalances": {"type": "integer", "minimum": 0, "description": "Always 0 since minor 7: normalisation is the decision's (decision.rows_normalised)."},
         "scale_mean": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
         "scale_min": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
-        "scale_max": {"type": "number", "exclusiveMinimum": 0, "maximum": 1}
+        "scale_max": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+        "cash_capped_rebalances": {"type": "integer", "minimum": 0, "description": "Minor 7 (TOM-1520): placed rebalances whose buys needed more than the cash plus the sell proceeds of the drifted held book and were scaled down (normalize never borrows). Binds where a deferred cell still holds its old weight."},
+        "cash_cap_scale_min": {"type": "number", "minimum": 0, "maximum": 1},
+        "first_cash_capped_dates": {"type": "array", "items": {"type": "string"}, "maxItems": 5}
+      }
+    },
+    "decision": {
+      "type": "object",
+      "description": "Minor 7 (TOM-1520): the decision that turned the decided weights into the FINAL target weights before the rebalancing policy (quantbox.decision.final_targets, the transform live trading calls too): its rules (order: short clip, gross cap, group limits, normalisation) and the decided rows each step changed.",
+      "required": ["rules", "rows", "rows_short_clipped", "rows_gross_capped", "rows_above_net_1", "rows_normalised", "scale_mean", "scale_min", "max_net_exposure_decided", "max_net_exposure_final"],
+      "properties": {
+        "rules": {
+          "type": "object",
+          "required": ["order", "allow_short", "max_leverage", "group_limits", "leverage"],
+          "properties": {
+            "order": {"type": "array", "items": {"type": "string"}},
+            "allow_short": {"type": "boolean"},
+            "max_leverage": {"type": ["number", "null"]},
+            "group_limits": {"type": ["object", "null"]},
+            "leverage": {"enum": ["normalize", "borrow", "none"]}
+          }
+        },
+        "rows": {"type": "integer", "minimum": 0},
+        "rows_short_clipped": {"type": "integer", "minimum": 0},
+        "rows_gross_capped": {"type": "integer", "minimum": 0},
+        "rows_above_net_1": {"type": "integer", "minimum": 0, "description": "Decided rows above net 1 after the clip, the cap and the group limits; measured in every mode."},
+        "rows_normalised": {"type": "integer", "minimum": 0, "description": "Rows scaled to net 1 (normalize only)."},
+        "scale_mean": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+        "scale_min": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+        "max_net_exposure_decided": {"type": "number"},
+        "max_net_exposure_final": {"type": "number"}
       }
     },
     "threshold": {
@@ -192,7 +222,7 @@
     },
     "groups": {
       "type": "object",
-      "description": "Present only when the run declares group_limits (minor 5, TOM-1450): the limits on each group's gross weight in the decided book (quantbox.engine.groups) and how many rows they changed.",
+      "description": "Present only when the run declares group_limits (minor 5, TOM-1450): the limits on each group's gross weight in the decided book (quantbox.engine.groups) and how many rows they changed. Since minor 7 (TOM-1520) the rows are the decision's (the strategy's own rows), applied before the normalisation.",
       "required": ["by", "excess", "limits", "rows", "rows_adjusted", "flat_rows"],
       "properties": {
         "by": {"type": "string"},

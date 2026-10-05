@@ -6,8 +6,10 @@ book, for every door (``quantbox run`` and its variants, ``backtest()``,
 
 1. the price/weight alignment and each instrument's calendar;
 2. the schedule (:func:`quantbox.engine.schedule.schedule_book`): the NaN
-   policy, decision bars, the lag, deferral, ``venue.leverage``, the threshold —
-   a held book and a per-cell ORDERS mask;
+   policy, decision bars, the lag, deferral, the rebalancing policy and the
+   cash cap (``venue.leverage`` is measured; the decision normalised the
+   targets before, :mod:`quantbox.decision`) — a held book and a per-cell
+   ORDERS mask;
 3. the financing cash legs (:mod:`quantbox.financing`), when declared;
 4. the adapter, which only executes the orders (:meth:`EngineAdapter.execute`).
 
@@ -82,9 +84,14 @@ def simulate(
     Declaring both is refused. Every engine gets the same schedule.
     *groups* (bound to a universe, :class:`quantbox.engine.groups.GroupLimits`)
     keeps each group's gross weight inside its limits on every decided row,
-    before the schedule.
+    before the schedule — for a direct caller; the pipelines and ``backtest()``
+    apply them in the decision (:func:`quantbox.decision.final_targets`) and pass none.
     *leverage* is ``venue.leverage``; None = :data:`quantbox.financing.DEFAULT_LEVERAGE`
-    on the calendar, and nothing is applied on ``bars``. *financing* (one slice
+    on the calendar, and nothing is applied on ``bars``. The seam does NOT
+    normalise (TOM-1520): *decided* should be the final targets of
+    :func:`quantbox.decision.final_targets`; under ``normalize`` the seam only
+    caps each rebalance's buys at the cash plus the sell proceeds (it never
+    borrows), under ``borrow`` the financing legs carry the excess. *financing* (one slice
     only) appends the LEND/BORROW cash legs. The result's ``weights`` /
     ``prices`` / ``orders`` are the REAL book (what is held after each bar's
     orders, saved as ``traded_weights``); the engine itself may also have
@@ -321,11 +328,10 @@ def _stage(
             "index_price_bars_dropped": float(alignment["price_bars_dropped"]),
             "index_weight_rows_dropped": float(alignment["weight_rows_dropped"]),
             "leverage_rebalances_above_net_1": float(lev["rebalances_above_net_1"]),
-            "leverage_scaled_rebalances": float(lev["scaled_rebalances"]),
-            "leverage_scale_mean": lev["scale_mean"],
-            "leverage_scale_min": lev["scale_min"],
-            "leverage_scaled_after_deferral": float(lev["scaled_after_deferral"]),
-            "leverage_buys_zeroed_rebalances": float(lev["buys_zeroed_rebalances"]),
+            # The seam no longer scales a target (TOM-1520): the decision normalises
+            # (leverage_normalised_rows, written by the pipeline), execution caps the buys at the cash.
+            "leverage_cash_capped_rebalances": float(lev["cash_capped_rebalances"]),
+            "leverage_cash_cap_scale_min": lev["cash_cap_scale_min"],
             "leverage_max_net_exposure_held": lev["max_net_exposure_held"],
         }
         age = one.report["weight_age"]

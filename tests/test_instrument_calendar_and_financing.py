@@ -664,8 +664,8 @@ def test_financing_holds_the_full_book_and_charges_rate_plus_spread(tmp_path, w_
 
 
 def test_normalize_is_the_default_and_scales_a_levered_decision_to_net_one(tmp_path, caplog):
-    """No venue.leverage on vectorbt = normalize: a 1.5 book is scaled by exactly 2/3 on every
-    rebalance, each one counted, and the held book is A at 1.0 — its return is A's, no cut buys."""
+    """No venue.leverage on vectorbt = normalize: every decided 1.5 row is scaled by exactly 2/3 in the
+    DECISION (TOM-1520), each one counted, and the held book is A at 1.0 — its return is A's, no cut buys."""
     prices = _levered_panel()
     with caplog.at_level(logging.WARNING):
         result, store = _run(tmp_path, prices, {"A": 1.5, "CASH": 0.0}, rebalancing_freq=1)
@@ -673,12 +673,17 @@ def test_normalize_is_the_default_and_scales_a_levered_decision_to_net_one(tmp_p
     traded = store.read_parquet("traded_weights").set_index("date")
     np.testing.assert_allclose(traded["A"].iloc[1:].to_numpy(), 1.0, rtol=1e-12)
     n_rebalances = len(prices) - 1  # the last decision has no execution bar
+    decision = _validation(store)["decision"]
+    assert decision["rules"]["leverage"] == "normalize"
+    assert decision["rows_normalised"] == len(prices) == decision["rows_above_net_1"]
+    assert decision["scale_mean"] == pytest.approx(2 / 3) and decision["scale_min"] == pytest.approx(2 / 3)
+    assert decision["max_net_exposure_decided"] == pytest.approx(1.5)
+    assert decision["max_net_exposure_final"] == pytest.approx(1.0)
     lev = _validation(store)["leverage"]
-    assert lev["mode"] == "normalize"
-    assert lev["scaled_rebalances"] == n_rebalances == lev["rebalances"]
-    assert lev["scale_mean"] == pytest.approx(2 / 3) and lev["scale_min"] == pytest.approx(2 / 3)
-    assert lev["max_net_exposure_decided"] == pytest.approx(1.5)
-    assert result.metrics["leverage_scaled_rebalances"] == float(n_rebalances)
+    assert lev["mode"] == "normalize" and lev["rebalances"] == n_rebalances
+    assert lev["scaled_rebalances"] == 0 and lev["cash_capped_rebalances"] == 0  # the seam only measures
+    assert lev["max_net_exposure_decided"] == pytest.approx(1.0)  # the seam receives final targets
+    assert result.metrics["leverage_normalised_rows"] == float(len(prices))
     assert result.notes["venue"]["leverage"] == "normalize" and result.notes["venue"]["financing"] is None
     assert "SCALED to net 1" in caplog.text
     assert result.metrics["engine_underfilled_rebalances"] == 0.0
@@ -734,17 +739,18 @@ def _total_return(store: FileArtifactStore) -> float:
 @pytest.mark.parametrize(
     ("w_b", "venue", "a_held", "expected", "counter"),
     [
-        # B's deferred 0.5 leaves room for 0.5 of A: A's order is scaled by 0.5 -> half of A's 10%.
-        (0.5, None, 0.5, 0.05, "scaled_rebalances"),
-        # B's deferred 1.0 leaves NO room: A's buy is set to 0 — held, recorded and counted, not cut by the engine.
-        (1.0, None, 0.0, 0.0, "buys_zeroed_rebalances"),
+        # B's deferred 0.5 leaves cash for 0.5 of A: A's buy is capped at it -> half of A's 10%.
+        (0.5, None, 0.5, 0.05, "cash_capped_rebalances"),
+        # B's deferred 1.0 leaves NO cash: A's buy is capped to 0 — held, recorded and counted, not cut by the engine.
+        (1.0, None, 0.0, 0.0, "cash_capped_rebalances"),
         # borrow holds both (net 2): A's 10% is booked, the held net 2 is counted and warned on.
         (1.0, {"allow_shorts": False, "leverage": "borrow"}, 1.0, 0.10, "rebalances_above_net_1"),
     ],
 )
 def test_leverage_applies_to_the_book_held_after_a_deferral(tmp_path, caplog, w_b, venue, a_held, expected, counter):
-    """A deferred cell keeps its weight, so the HELD book — not the decided row — is what venue.leverage
-    must bound. traded_weights is that held book, and the engine holds exactly it."""
+    """A deferred cell keeps its weight, so a FINAL target (net 1) can still need cash the account does not
+    have. Without borrow the buys are capped at the cash plus the sell proceeds (TOM-1520; it used to be the
+    held-book normalisation, same numbers here). traded_weights is that held book, and the engine holds it."""
     prices, decided = _rotation(w_b)
     params: dict[str, Any] = {"rebalancing_freq": 1}
     if venue is not None:
@@ -763,9 +769,10 @@ def test_leverage_applies_to_the_book_held_after_a_deferral(tmp_path, caplog, w_
         assert "ASSUMED FREE" in caplog.text
 
 
-def test_with_no_room_a_short_cover_is_a_buy_and_waits_too():
-    """Deferred B is 1.2 (held over from a 1.2 / -0.2 book); covering the -0.2 short in C would RAISE
-    the held net, so with no room it waits like any buy: the held net never exceeds the last bar's."""
+def test_a_short_cover_is_a_buy_and_shares_the_cash_cap():
+    """Deferred B is 1.0 (held over from a 1.0 / -0.2 book, net 0.8); covering the -0.2 short in C RAISES
+    the held net like any buy. The 0.2 of cash left is shared by the cover and the buy of A, scaled by the
+    same factor 0.2 / 0.7 (TOM-1520; the held-book normalisation used to make both wait): held net 1."""
     idx = pd.date_range("2024-01-01", periods=6, freq="D")
     prices = pd.DataFrame(
         {"A": [100.0] * 6, "B": [100, 100, 100, np.nan, 100, 100.0], "C": [100.0] * 6, "D": [100.0] * 6},
@@ -776,11 +783,13 @@ def test_with_no_room_a_short_cover_is_a_buy_and_waits_too():
     decided.loc[idx[2] :, "A"] = 0.5  # rotate: sell B (deferred), cover C, buy A
     cal, book = _book(prices, decided)
     jan4 = pd.Timestamp("2024-01-04")
-    assert book.weights.loc[jan4, "B"] == pytest.approx(1.0)
-    assert book.weights.loc[jan4, "C"] == pytest.approx(-0.2)  # the cover waits
-    assert book.weights.loc[jan4, "A"] == pytest.approx(0.0)
+    scale = 0.2 / 0.7
+    assert book.weights.loc[jan4, "B"] == pytest.approx(1.0)  # deferred
+    assert book.weights.loc[jan4, "C"] == pytest.approx(-0.2 + 0.2 * scale)
+    assert book.weights.loc[jan4, "A"] == pytest.approx(0.5 * scale)
     assert (book.weights.sum(axis=1) <= 1.0 + 1e-9).all()
-    assert book.report["leverage"]["buys_zeroed_rebalances"] == 1
+    assert book.report["leverage"]["cash_capped_rebalances"] == 1
+    assert book.report["leverage"]["cash_cap_scale_min"] == pytest.approx(scale)
 
 
 def test_the_fill_check_runs_on_a_threshold_run_too(tmp_path):
