@@ -111,8 +111,9 @@ def sweep(
         Market data dict passed to strategy.run() (must contain ``"prices"``).
     backtest_kwargs
         ``engine`` (default vectorbt), costs (``fees``, ``fixed_fees``, ``slippage``),
-        ``rebalancing_freq``, ``threshold`` (the seam's schedule, every engine) and ``schedule``
-        (``calendar``, the default, or ``bars``); any other key is the engine adapter's
+        ``rebalancing_freq``, ``threshold`` (the seam's schedule, every engine), ``schedule``
+        (``calendar``, the default, or ``bars``) and ``max_leverage`` (the decision's gross cap,
+        default 1, TOM-1525); any other key is the engine adapter's
         own parameter (vectorbt: ``use_numba``, ...), refused when it does not own it.
     metrics
         Metric names, answered by the engine adapter (vectorbt: ``pf`` attribute names;
@@ -132,7 +133,7 @@ def sweep(
         Columns: sweep keys, slice-decoded keys (e.g. ``vol_target``,
         ``tranches``), then the requested ``metrics``.
     """
-    from quantbox.decision import DecisionRules, final_book
+    from quantbox.decision import DecisionRules, final_book, gross_cap
     from quantbox.engine import Costs, get_engine, simulate
     from quantbox.financing import DEFAULT_LEVERAGE
 
@@ -148,6 +149,8 @@ def sweep(
     rebalancing_freq = backtest_kwargs.pop("rebalancing_freq", 1)
     threshold = backtest_kwargs.pop("threshold", None)
     schedule = backtest_kwargs.pop("schedule", "calendar")  # execution.schedule: calendar | bars
+    # The decision's gross cap, risk.max_leverage: default 1, as every door (TOM-1525).
+    max_leverage = gross_cap({"max_leverage": backtest_kwargs.pop("max_leverage", None)})
     engine_params = adapter.check_params(backtest_kwargs)
     timing = resolve_execution({"lag_bars": resolve_sweep_lag_bars(lag_bars, shift_signal), "schedule": schedule})
 
@@ -182,10 +185,14 @@ def sweep(
         if len(weights.index.intersection(prices.index)) < 2:
             logger.warning("parameter_grid.sweep: insufficient overlap for %s", sweep_labels)
             continue
-        # The decision (TOM-1520): each slice normalised to net 1 on its decided rows (the default
-        # venue.leverage; schedule: bars only measures it) — the seam executes final targets.
+        # The decision (TOM-1520): each slice capped at max_leverage gross, then normalised to net 1 on
+        # its decided rows (the default venue.leverage; schedule: bars only measures it) — the seam
+        # executes final targets.
         weights, _ = final_book(
-            weights, DecisionRules(leverage="none" if timing.schedule == "bars" else DEFAULT_LEVERAGE)
+            weights,
+            DecisionRules(
+                max_leverage=max_leverage, leverage="none" if timing.schedule == "bars" else DEFAULT_LEVERAGE
+            ),
         )
         book = simulate(
             prices,

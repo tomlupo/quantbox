@@ -53,6 +53,7 @@ def optimize(
     same_bar_reason: str | None = None,
     schedule: str = "calendar",
     leverage: str | None = None,
+    max_leverage: float | None = None,
 ) -> dict[str, Any]:
     """Optimize strategy parameters via grid search or walk-forward.
 
@@ -78,6 +79,8 @@ def optimize(
             non-empty reason; the result is then RESEARCH, not a backtest.
         schedule, leverage: As in ``backtest()``: the calendar schedule (default)
             or ``"bars"``, and ``venue.leverage`` on the calendar.
+        max_leverage: The gross cap, as in ``backtest()``: ``None`` = the
+            default, 1 (TOM-1525); a levered search declares it.
 
     Returns:
         ``{"best_params", "best_metric", "all_results", "execution"}`` for grid
@@ -99,6 +102,7 @@ def optimize(
         engine_params=engine_params,
         trading_days=trading_days,
         leverage=leverage,
+        max_leverage=max_leverage,
     )
 
     if method == "walk_forward":

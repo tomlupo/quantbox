@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 from quantbox.contracts import BrokerPlugin, PluginMeta
-from quantbox.decision import risk_caps_row
+from quantbox.decision import gross_cap, risk_caps_row
 from quantbox.engine.policy import TRANCHES_MOVED
 from quantbox.portfolio_value import BASIS_MARK, DEFAULT_RECONCILIATION_TOLERANCE, resolve_portfolio_value
 
@@ -211,7 +211,7 @@ class StandardRebalancer:
             raise ValueError(TRANCHES_MOVED)
         return {
             "allow_short": bool(params.get("allow_short", False)),
-            "max_leverage": float(params.get("max_leverage", 1)),
+            "max_leverage": gross_cap(params),
         }
 
     # ==================================================================

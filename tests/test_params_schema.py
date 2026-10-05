@@ -83,6 +83,10 @@ _READ_ELSEWHERE = {
     # The rsims adapter reads its own params (docs/adr/0008).
     "backtest.pipeline.v1": ("quantbox.frequency", "quantbox.engine.rsims"),
     "trade.full_pipeline.v1": ("quantbox.frequency",),
+    # max_leverage is read by the one reader of the gross cap (TOM-1525).
+    "rebalancing.futures.v1": ("quantbox.decision",),
+    "rebalancing.standard.v1": ("quantbox.decision",),
+    "risk.trading_basic.v1": ("quantbox.decision",),
 }
 
 

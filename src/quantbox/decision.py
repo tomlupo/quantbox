@@ -18,7 +18,11 @@ ONE ordered transform, row by row:
 1. **short clip** — without ``allow_short`` a negative weight becomes 0; the
    long side is not re-levered;
 2. **gross cap** — a row whose gross ``sum |w|`` is above ``max_leverage`` is
-   scaled down to it, proportionally;
+   scaled down to it, proportionally. The default is
+   :data:`DEFAULT_MAX_LEVERAGE` (1) in every door, read by :func:`gross_cap`
+   only (TOM-1525: it was 99 in the backtest, 1 in trading and absent in
+   ``backtest()``, ``optimize()`` and the sweep); a levered book declares
+   ``risk.max_leverage``;
 3. **group limits** (:mod:`quantbox.engine.groups`) — each group's gross
    inside its ``[min, max]``;
 4. **normalisation** (``venue.leverage``) — ``normalize`` scales a row whose
@@ -61,6 +65,22 @@ logger = logging.getLogger(__name__)
 DECISION_LEVERAGE = (*LEVERAGE_MODES, "none")
 #: The steps of :func:`final_targets`, in the order they run.
 ORDER = ("short_clip", "gross_cap", "group_limits", "normalise")
+#: The gross cap when a config names none: ONE value for the backtest, trading and the L1 doors (TOM-1525).
+DEFAULT_MAX_LEVERAGE = 1.0
+
+
+def gross_cap(params: Mapping[str, Any] | None) -> float:
+    """``max_leverage`` from a ``risk`` block (or a rebalancer's / risk plugin's params);
+    :data:`DEFAULT_MAX_LEVERAGE` when unset.
+
+    The one reader of the key: the backtest and trading pipelines, the
+    rebalancers, the risk plugin and the L1 doors call it, so no door holds a
+    default of its own.
+    """
+    if not params:
+        return DEFAULT_MAX_LEVERAGE
+    value = params.get("max_leverage")
+    return DEFAULT_MAX_LEVERAGE if value is None else float(value)
 
 
 @dataclass(frozen=True)
@@ -68,8 +88,9 @@ class DecisionRules:
     """What :func:`final_targets` applies: the short clip, the gross cap, the group limits and ``venue.leverage``."""
 
     allow_short: bool = True
-    #: The gross cap; ``None`` = no cap.
-    max_leverage: float | None = None
+    #: The gross cap, :data:`DEFAULT_MAX_LEVERAGE` unless given; ``None`` = no cap (a third-party
+    #: rebalancer that owns its caps, or a test of the other steps).
+    max_leverage: float | None = DEFAULT_MAX_LEVERAGE
     #: Bound to a universe (:meth:`GroupLimits.bind`); ``None`` = no group limits.
     groups: GroupLimits | None = None
     leverage: str = "normalize"

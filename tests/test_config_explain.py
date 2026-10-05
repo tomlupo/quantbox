@@ -116,7 +116,9 @@ def test_explain_agrees_with_the_run_manifest_lock_pinned(tmp_path, root, fake_d
     assert planned["funding"]["source_path"] == str(root / "perp-daily" / "funding_rates.parquet")
     assert planned["funding"]["modelled"] is (engine == "rsims")
     assert planned["execution"]["lag_bars"] == 2
-    assert planned["venue"]["allow_shorts"] is True and planned["venue"]["max_leverage"] == 99.0
+    assert (
+        planned["venue"]["allow_shorts"] is True and planned["venue"]["max_leverage"] == 1.0
+    )  # TOM-1525: the one default
 
 
 def test_explain_reads_no_data_and_writes_no_artifacts(tmp_path, root, fake_datasets):  # noqa: F811
