@@ -2,11 +2,11 @@
 # Minimal QuantBox config — every field explained
 # ============================================================
 # Copy this file, adjust params, and run:
-#   uv run quantbox run -c config/example_minimal.yaml
+#   uv run quantbox run -c cookbook/configs/example_minimal.yaml
 # Validate before running:
-#   uv run quantbox validate -c config/example_minimal.yaml
+#   uv run quantbox validate -c cookbook/configs/example_minimal.yaml
 # Preview without executing:
-#   uv run quantbox run --dry-run -c config/example_minimal.yaml
+#   uv run quantbox run --dry-run -c cookbook/configs/example_minimal.yaml
 # ============================================================
 
 # --- Run settings ---
@@ -49,12 +49,12 @@ plugins:
 
   # -- Data: where market data comes from --
   data:
-    # Plugin ID for data source (curated dataset plugin, Tier-1)
-    name: "dataset.curated.v1"
+    # Plugin ID for data source (local parquet files, or a quantbox-datasets dataset by name)
+    name: "local_file_data"
     # Constructor params (used when instantiating the plugin)
     params_init:
-      dataset_id: "crypto-spot-daily"   # Registered dataset slug
-      mode: static
+      # By name, rooted at $QUANTBOX_DATASETS_ROOT, at the sha pinned in datasets.lock at the repo root
+      dataset: etf-daily
 
   # -- Strategies: compute target weights --
   # List of strategies; each gets a weight for blending

@@ -2,7 +2,7 @@
 # Uses real data + stress test risk plugin to validate targets
 # against historical crisis scenarios before execution.
 #
-# Usage: quantbox run -c configs/run_stress_test.yaml
+# Usage: quantbox run -c cookbook/configs/run_stress_test.yaml
 
 run:
   mode: backtest
