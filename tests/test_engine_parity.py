@@ -6,16 +6,18 @@ capability, so the two are each other's cross-check (part A). Part B is an
 analytic closed-form case, worked out by hand and asserted to the cent: it
 catches an assumption BOTH engines share, which part A cannot.
 
-Every book goes in through :func:`quantbox.engine.simulate_weights`, the seam
-that ``backtest()``, ``optimize()`` and the sweep call. Nothing here calls an
-engine primitive directly.
+Every book goes in through :func:`quantbox.engine.simulate`, the one book
+function every door calls. Nothing here calls an engine primitive directly.
 
-THE COMMON SCOPE — where the two engines must agree:
+The seam owns the schedule (TOM-1450, docs/adr/0008): both engines execute
+the SAME orders mask, so for one schedule they trade on identical dates
+(part C), whatever the schedule. The NaN policy and the default
+``venue.leverage`` are the seam's too, one value for every engine.
+
+THE COMMON SCOPE — where the two engines must agree on the numbers:
 
 - spot: long-only, gross exposure at most 1;
 - no funding, no slippage, no fixed fees (rsims charges ``Costs.fees`` only);
-- a decision on every bar (``rebalancing_freq=1``): rsims decides every bar;
-- no NaN weight cell (vectorbt holds the last target, rsims goes flat);
 - rsims sized off current equity (``capitalise_profits: True``), as vectorbt is.
 
 THE TOLERANCE, stated:
@@ -51,7 +53,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from quantbox.engine import Costs, TradedBook, get_engine, simulate_weights
+from quantbox.engine import Costs, EngineAdapter, TradedBook, get_engine, simulate
 from quantbox.execution import resolve_execution
 
 VECTORBT = get_engine("vectorbt", require_installed=False).installed()
@@ -105,13 +107,12 @@ def _books() -> dict[str, pd.DataFrame]:
 BOOKS = sorted(_books())
 
 
-def _simulate(engine: str, prices: pd.DataFrame, weights: pd.DataFrame, fees: float, **kw) -> TradedBook:
+def _simulate(
+    engine: str, prices: pd.DataFrame, weights: pd.DataFrame, fees: float, schedule: str = "calendar", **kw
+) -> TradedBook:
     params = RSIMS_COMMON if engine == "rsims" else None
-    book = simulate_weights(
-        prices, weights, engine=engine, timing=TIMING, costs=Costs(fees=fees), engine_params=params, **kw
-    )
-    assert book is not None
-    return book
+    timing = resolve_execution({"schedule": schedule})
+    return simulate(prices, weights, engine=engine, timing=timing, costs=Costs(fees=fees), engine_params=params, **kw)
 
 
 def _capital(book: TradedBook) -> float:
@@ -220,14 +221,14 @@ def test_both_engines_report_the_same_metrics(runs, book, fees):
 
 @needs_vectorbt
 @pytest.mark.parametrize("engine", ["vectorbt", "rsims"])
-@pytest.mark.parametrize("leading", ["flat", "drop"])
-def test_total_return_is_the_value_the_book_ends_with(engine, leading):
+@pytest.mark.parametrize("schedule", ["calendar", "bars"])
+def test_total_return_is_the_value_the_book_ends_with(engine, schedule):
     """``metrics.total_return`` must equal the value curve's own total return, first bar included.
 
-    ``leading="drop"`` (the sweep) trades on the first bar, so its entry fee is
-    the first return. A total return compounded from the SECOND return drops it.
+    A book that trades on its first bar pays its entry fee in the first
+    return. A total return compounded from the SECOND return drops it.
     """
-    book = _simulate(engine, _prices(), _books()["rotation"], 0.001, leading=leading)
+    book = _simulate(engine, _prices(), _books()["rotation"], 0.001, schedule=schedule)
     assert book.metrics["total_return"] == pytest.approx(book.value.iloc[-1] / _capital(book) - 1.0, abs=1e-12)
 
 
@@ -248,7 +249,7 @@ def test_total_return_is_the_value_the_book_ends_with(engine, leading):
 def test_parity_under_rsims_default_sizing():
     prices, weights = _prices(), _books()["rotation"]
     v = _simulate("vectorbt", prices, weights, 0.0)
-    r = simulate_weights(prices, weights, engine="rsims", timing=TIMING, costs=Costs())
+    r = simulate(prices, weights, engine="rsims", timing=TIMING, costs=Costs())
     assert (v.value / _capital(v)).iloc[-1] == pytest.approx((r.value / CAPITAL).iloc[-1], rel=1e-6)
 
 
@@ -263,9 +264,195 @@ def test_parity_under_rsims_default_sizing():
 def test_parity_with_slippage():
     prices, weights = _prices(), _books()["random_daily"]
     costs = Costs(slippage=0.0005)
-    v = simulate_weights(prices, weights, engine="vectorbt", timing=TIMING, costs=costs)
-    r = simulate_weights(prices, weights, engine="rsims", timing=TIMING, costs=costs, engine_params=RSIMS_COMMON)
+    v = simulate(prices, weights, engine="vectorbt", timing=TIMING, costs=costs)
+    r = simulate(prices, weights, engine="rsims", timing=TIMING, costs=costs, engine_params=RSIMS_COMMON)
     assert (v.value / _capital(v)).iloc[-1] == pytest.approx((r.value / CAPITAL).iloc[-1], rel=1e-4)
+
+
+# ----------------------------------------------------------------------
+# C. One schedule, owned by the seam: both engines trade on identical dates (TOM-1450)
+# ----------------------------------------------------------------------
+
+#: (rebalancing_freq, threshold): every schedule shape the seam builds today.
+SCHEDULES = [
+    (1, None),
+    (5, None),
+    ("W-FRI", None),
+    ("ME", None),
+    (None, None),  # buy-and-hold: one decision
+    (1, 0.05),  # a drift band
+    (5, 0.02),
+]
+SCHEDULE_IDS = [f"freq={f}-threshold={t}" for f, t in SCHEDULES]
+
+
+def _trade_dates(book: TradedBook) -> pd.DatetimeIndex:
+    """The bars the engine actually traded on (a fill with a non-dust notional)."""
+    trades = book.trades
+    traded = trades[trades["value"].abs() > 1e-9]
+    return pd.DatetimeIndex(sorted(set(pd.to_datetime(traded["date"]))))
+
+
+def _ordered_dates(book: TradedBook) -> pd.DatetimeIndex:
+    return pd.DatetimeIndex(book.orders.index[book.orders.any(axis=1).to_numpy()])
+
+
+@needs_vectorbt
+@pytest.mark.parametrize(("freq", "threshold"), SCHEDULES, ids=SCHEDULE_IDS)
+@pytest.mark.parametrize("schedule", ["calendar", "bars"])
+@pytest.mark.parametrize("book", ["random_daily", "rotation"])
+def test_both_engines_trade_on_identical_dates_for_the_same_schedule(book, schedule, freq, threshold):
+    """The schedule is the seam's orders mask; each engine trades exactly on its bars, no other.
+
+    Until TOM-1450 rsims decided on every bar whatever ``rebalancing_freq`` said
+    and ignored ``threshold``; vectorbt followed both. Now both execute one mask.
+    """
+    prices, weights = _prices(), _books()[book]
+    kw = {"rebalancing_freq": freq, "threshold": threshold}
+    # A FULLY invested book with fees: rsims pays the fee from cash and trims the excess on the next
+    # ordered bar, where vectorbt has nothing to trade (the fee convention, pinned to the cent in part B).
+    fees = 0.0 if book == "rotation" else 0.001
+    v = _simulate("vectorbt", prices, weights, fees, schedule=schedule, **kw)
+    r = _simulate("rsims", prices, weights, fees, schedule=schedule, **kw)
+    assert v.orders.equals(r.orders)
+    ordered = _ordered_dates(v)
+    assert len(ordered) >= 1
+    traded_v, traded_r = _trade_dates(v), _trade_dates(r)
+    assert traded_v.equals(traded_r), (
+        f"the engines traded on different dates: {traded_v.symmetric_difference(traded_r)}"
+    )
+    assert traded_v.isin(ordered).all(), "an engine traded off the seam's schedule"
+    if book == "random_daily":  # new weights every bar: every ordered bar has something to trade
+        assert traded_v.equals(ordered)
+    # (rotation: an ordered bar already 100% in the one asset has nothing to trade, on both engines.)
+    if freq not in (1, None) and threshold is None:
+        assert len(ordered) < len(prices) // 3  # a real, sparse schedule — not every bar
+
+
+@needs_vectorbt
+@pytest.mark.parametrize(("freq", "threshold"), [s for s in SCHEDULES if s[1] is None], ids=lambda x: str(x))
+@pytest.mark.parametrize("book", BOOKS)
+def test_both_engines_produce_the_same_book_on_any_schedule_without_fees(book, freq, threshold):
+    """Same dates and the same numbers: without fees the two engines agree to round-off on every schedule."""
+    prices, weights = _prices(), _books()[book]
+    v = _simulate("vectorbt", prices, weights, 0.0, rebalancing_freq=freq)
+    r = _simulate("rsims", prices, weights, 0.0, rebalancing_freq=freq)
+    gap = (v.returns - r.returns).abs()
+    assert gap.max() <= 1e-12, f"{book} freq={freq}: return gap {gap.max():.3e} on {gap.idxmax()}"
+
+
+#: The drift band by hand. One asset at 0.5, the rest cash; A rises 10% a bar from bar 2.
+#:   bar 0 decides 0.5 -> fills at close[1] (next-bar): held 0.5.
+#:   drifted weight of A after k bars of +10%: 0.5 g / (0.5 + 0.5 g), g = 1.1**k
+#:     k=1: 0.5238 (|dev| 0.0238)   k=2: 0.5476 (0.0476)   k=3: 0.5709 (0.0709 > 0.05: TRADE, back to 0.5)
+#:   so with a 5% band: trades on bar 1 (entry) and bar 4, then bar 7, ...
+BAND_PRICES = pd.DataFrame(
+    {"A": [100.0, 100.0] + [100.0 * 1.1**k for k in range(1, 9)]},
+    index=pd.date_range("2024-01-01", periods=10, freq="D"),
+)
+
+
+@pytest.mark.parametrize("engine", ["vectorbt", "rsims"])
+def test_threshold_is_a_seam_computed_drift_trigger_known_answer(engine):
+    if engine == "vectorbt" and not VECTORBT:
+        pytest.skip(NOT_CHECKED)
+    weights = pd.DataFrame({"A": 0.5}, index=BAND_PRICES.index)
+    book = _simulate(engine, BAND_PRICES, weights, 0.0, threshold=0.05)
+    idx = BAND_PRICES.index
+    assert list(_ordered_dates(book)) == [idx[1], idx[4], idx[7]]
+    assert _trade_dates(book).equals(pd.DatetimeIndex([idx[1], idx[4], idx[7]]))
+    assert book.data_validation["threshold"]["skipped_rebalances"] == 9 - 3
+    assert book.book_metrics["threshold_skipped_rebalances"] == 6.0
+
+
+def test_a_nan_cell_holds_on_every_engine():
+    """The NaN policy is the seam's, one for every engine: a NaN cell holds the last target."""
+    weights = _books()["in_and_out"].copy()
+    weights.iloc[30:40] = np.nan
+    engines = ["rsims", "vectorbt"] if VECTORBT else ["rsims"]
+    for engine in engines:
+        held = _simulate(engine, _prices(), weights, 0.0).weights
+        assert (held.iloc[31:41] == held.iloc[30]).all().all(), engine
+        assert held.iloc[31]["A"] == 0.5, engine
+
+
+def test_the_default_leverage_is_one_value_for_every_engine():
+    """The same config gives the same book when only ``engine`` changes: normalize, on every engine."""
+    from quantbox.financing import DEFAULT_LEVERAGE, resolve_leverage
+
+    assert DEFAULT_LEVERAGE == "normalize"
+    assert resolve_leverage(None) == "normalize"
+    levered = pd.DataFrame({"A": 0.9, "B": 0.6, "C": 0.0}, index=_prices().index)
+    engines = ["rsims", "vectorbt"] if VECTORBT else ["rsims"]
+    held = {e: _simulate(e, _prices(), levered, 0.0).weights for e in engines}
+    for e, w in held.items():
+        assert w.sum(axis=1).max() == pytest.approx(1.0), e  # scaled to net 1
+        assert w.iloc[-1]["A"] == pytest.approx(0.6), e
+    if VECTORBT:
+        assert held["rsims"].equals(held["vectorbt"])
+
+
+# ----------------------------------------------------------------------
+# D. Capabilities: only charges_funding / models_margin are read outside the engine package
+# ----------------------------------------------------------------------
+
+SRC = Path(__file__).resolve().parents[1] / "src" / "quantbox"
+ENGINE_PACKAGE = SRC / "engine"
+#: The two capability differences an adapter may declare (docs/adr/0008).
+ALLOWED_FLAGS = {"charges_funding", "models_margin"}
+#: Adapter attributes that NAME the adapter, not a behaviour.
+IDENTITY = {"name", "distribution", "extra", "native_key", "PARAMS"}
+#: Flags the seam took over in TOM-1450: reading one again outside the engine is the regression.
+RETIRED_FLAGS = {"nan_policy", "default_leverage", "decides_every_bar"}
+
+
+def _adapter_flags() -> set[str]:
+    """Every class-level attribute an adapter declares, minus its identity."""
+    declared = set(EngineAdapter.__annotations__)
+    return (declared - IDENTITY) | RETIRED_FLAGS
+
+
+def _flag_reads(path: Path, flags: set[str]) -> list[str]:
+    import ast
+
+    found = []
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Attribute) and node.attr in flags:
+            found.append(f"{path.name}:{node.lineno}:{node.attr}")
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value in flags
+        ):
+            found.append(f"{path.name}:{node.lineno}:{node.args[1].value}")
+    return found
+
+
+def test_an_adapter_declares_only_the_two_capability_flags():
+    assert set(EngineAdapter.__annotations__) - IDENTITY == ALLOWED_FLAGS
+    for name in ("vectorbt", "rsims"):
+        adapter = get_engine(name, require_installed=False)
+        for flag in RETIRED_FLAGS:
+            assert not hasattr(adapter, flag), f"{name}.{flag} is back: the seam owns it (TOM-1450)"
+
+
+def test_no_adapter_flag_but_the_capabilities_is_read_outside_the_engine_package():
+    scanned = [p for p in SRC.rglob("*.py") if ENGINE_PACKAGE not in p.parents]
+    assert len(scanned) > 100, "the scan saw almost no files — it is blind"
+    forbidden = _adapter_flags() - ALLOWED_FLAGS
+    assert forbidden >= RETIRED_FLAGS
+    reads = [hit for p in scanned for hit in _flag_reads(p, forbidden)]
+    assert reads == []
+
+
+def test_the_flag_scan_sees_a_flag_read(tmp_path):
+    """The control: the scan finds the shape it forbids, as an attribute and through getattr."""
+    probe = tmp_path / "probe.py"
+    probe.write_text("def f(a):\n    return a.decides_every_bar or getattr(a, 'nan_policy')\n", encoding="utf-8")
+    assert _flag_reads(probe, RETIRED_FLAGS) == ["probe.py:2:decides_every_bar", "probe.py:2:nan_policy"]
 
 
 # ----------------------------------------------------------------------
@@ -364,7 +551,7 @@ _BLOCK_VECTORBT = textwrap.dedent(
 def test_without_vectorbt_parity_reads_not_checked(tmp_path):
     """This module, run with vectorbt blocked: every parity test SKIPS as NOT CHECKED; none passes.
 
-    Only the rsims closed-form cases (which need no vectorbt) may pass.
+    Only the cases that need no vectorbt (rsims closed forms, the seam's own rules, the source scans) may pass.
     """
     report = tmp_path / "junit.xml"
     proc = subprocess.run(
@@ -399,8 +586,14 @@ def test_without_vectorbt_parity_reads_not_checked(tmp_path):
             outcome[case.get("name")] = "passed"
     passed = sorted(n for n, o in outcome.items() if o == "passed")
     assert passed == [
+        "test_a_nan_cell_holds_on_every_engine",
+        "test_an_adapter_declares_only_the_two_capability_flags",
         "test_closed_form_fee_convention_rsims_to_the_cent",
         "test_closed_form_rsims_to_the_cent",
+        "test_no_adapter_flag_but_the_capabilities_is_read_outside_the_engine_package",
+        "test_the_default_leverage_is_one_value_for_every_engine",
+        "test_the_flag_scan_sees_a_flag_read",
+        "test_threshold_is_a_seam_computed_drift_trigger_known_answer[rsims]",
     ], json.dumps(outcome, indent=1)
     assert set(outcome.values()) == {"passed", "skipped"}, json.dumps(outcome, indent=1)
     assert sum(o == "skipped" for o in outcome.values()) >= 20  # the parity tests were collected and refused

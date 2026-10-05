@@ -87,7 +87,7 @@ def _schedule(store: FileArtifactStore) -> pd.DataFrame:
 def _book(prices: pd.DataFrame, weights: pd.DataFrame, *, freq: Any = 1, lag: int = 1, calendar: str = "majority"):
     cal = instrument_calendar(prices)
     bars = execution_bars(cal, calendar, prices[calendar] if calendar in prices.columns else None)
-    return cal, schedule_book(weights, cal, bars, freq, lag, engine="vectorbt", leverage="normalize")
+    return cal, schedule_book(weights, cal, bars, freq, lag, leverage="normalize")
 
 
 def _step(index: pd.Index, ticker_weights: dict[str, float], from_date: str, columns: list[str]) -> pd.DataFrame:
@@ -475,13 +475,13 @@ def _sparse_union() -> pd.DataFrame:
         pytest.param(_business_me, "ME", 0, id="correct-ME"),
         # no calendar period, not measured (never a 0 that reads as clean)
         pytest.param(_calendar_me, 1, None, id="lab-shape-int-1"),
-        pytest.param(_calendar_me, None, None, id="lab-shape-rsims"),
+        pytest.param(_calendar_me, None, None, id="lab-shape-buy-and-hold"),
         pytest.param(_business_me, 5, None, id="int-5"),
         pytest.param(_business_me, "2W-FRI", None, id="2W-FRI"),
         pytest.param(_business_me, 21, None, id="int-21"),
         pytest.param(_weekly_sunday, 21, None, id="w-sun-signal-int-21"),
         pytest.param(_constant_x_scaler, 1, None, id="scaler-int-1"),
-        pytest.param(_constant_x_scaler, None, None, id="scaler-rsims"),
+        pytest.param(_constant_x_scaler, None, None, id="scaler-buy-and-hold"),
     ],
 )
 def test_weight_age_counts_missed_stamps_on_calendar_schedules(weights, freq, stale):
@@ -498,7 +498,6 @@ def test_weight_age_counts_missed_stamps_on_calendar_schedules(weights, freq, st
         execution_bars(cal, "majority"),
         freq,
         1,
-        engine="vectorbt" if freq is not None else "rsims",
         leverage="normalize",
         weight_rows=w,
     )
@@ -524,7 +523,6 @@ def test_a_daily_signal_on_a_crypto_and_equity_panel_is_not_stale(freq):
         execution_bars(cal, "A", prices["A"]),
         freq,
         1,
-        engine="vectorbt",
         leverage="normalize",
         weight_rows=signal,
     )
@@ -544,7 +542,6 @@ def test_a_decision_past_the_last_bar_is_not_counted():
         execution_bars(cal, "majority"),
         "ME",
         1,
-        engine="vectorbt",
         leverage="normalize",
         weight_rows=w,
     )
@@ -819,8 +816,19 @@ def test_without_financing_an_unlevered_vectorbt_book_runs_and_is_filled(tmp_pat
     assert _validation(store)["leverage"]["scaled_rebalances"] == 0
 
 
-def test_rsims_borrows_by_default_it_has_no_cash_floor(tmp_path):
-    result, store = _run(tmp_path, _levered_panel(), {"A": 1.5, "CASH": 0.0}, engine="rsims")
+@pytest.mark.parametrize("engine", ENGINES)
+def test_the_default_leverage_is_normalize_on_every_engine(tmp_path, engine):
+    """One default for every engine (ADR-0008, TOM-1450): until then rsims borrowed by default."""
+    result, store = _run(tmp_path, _levered_panel(), {"A": 1.5, "CASH": 0.0}, engine=engine)
+    traded = store.read_parquet("traded_weights").set_index("date")
+    assert (traded["A"].iloc[1:] == 1.0).all()
+    assert result.notes["venue"]["leverage"] == "normalize"
+    assert result.notes["venue"]["financing"] is None
+
+
+def test_rsims_borrows_when_declared_it_has_no_cash_floor(tmp_path):
+    venue = {"allow_shorts": False, "leverage": "borrow"}
+    result, store = _run(tmp_path, _levered_panel(), {"A": 1.5, "CASH": 0.0}, engine="rsims", venue=venue)
     traded = store.read_parquet("traded_weights").set_index("date")
     assert (traded["A"].iloc[1:] == 1.5).all()
     assert result.notes["venue"]["leverage"] == "borrow"

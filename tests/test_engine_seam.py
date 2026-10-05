@@ -17,8 +17,9 @@ import pandas as pd
 import pytest
 from test_execution_timing import JUMP, J, _Data, _FixedWeights, _prices, _run_pipeline, _weights_decided_on
 
+import quantbox.engine as engine_seam
 from quantbox.analysis.parameter_grid import sweep
-from quantbox.engine import Costs, TradedBook, engine_names, get_engine, simulate_weights
+from quantbox.engine import Costs, TradedBook, engine_names, get_engine, simulate
 from quantbox.execution import resolve_execution
 from quantbox.plugins.backtesting import backtest, optimize
 from quantbox.plugins.pipeline.backtest_pipeline import BacktestPipeline
@@ -112,7 +113,7 @@ def test_sweep(engine):
 @pytest.mark.parametrize("engine", ENGINES)
 @pytest.mark.parametrize(("decided_on", "expected"), DECISIONS)
 def test_the_seam_itself(engine, decided_on, expected):
-    book = simulate_weights(
+    book = simulate(
         _prices(), _weights_decided_on(decided_on), engine=engine, timing=resolve_execution(None), costs=Costs()
     )
     assert book.engine == engine
@@ -142,14 +143,14 @@ def test_native_is_the_rsims_results_frame_on_rsims():
 
 @pytest.mark.parametrize("engine", ENGINES)
 def test_a_book_reports_turnover_and_trades(engine):
-    book = simulate_weights(_prices(), _weights_decided_on(J - 2), engine=engine, timing=resolve_execution(None))
+    book = simulate(_prices(), _weights_decided_on(J - 2), engine=engine, timing=resolve_execution(None))
     # One entry trade, on the bar the J-2 decision fills (next-bar: J-1).
     assert book.turnover.sum() == pytest.approx(1.0)
     assert book.turnover.idxmax() == _prices().index[J - 1]
     trades = book.trades
     assert list(trades.columns) == ["date", "symbol", "size", "price", "value", "fees"]
-    # The entry is a buy on that bar. (rsims re-sizes every bar off its initial cash, so it also
-    # trims after the jump; vectorbt holds between rebalances. Each engine's own policy.)
+    # The entry is a buy on that bar. (rsims re-sizes on every ordered bar off its initial cash, so
+    # it also trims after the jump; vectorbt's book is already at target. Each engine's own sizing.)
     bought = trades[trades["symbol"] == "A"].sort_values("date")
     assert bought["size"].iloc[0] > 0
     assert pd.Timestamp(bought["date"].iloc[0]) == _prices().index[J - 1]
@@ -162,39 +163,131 @@ def test_an_adapter_refuses_a_parameter_it_does_not_own():
         backtest(_prices(), _weights_decided_on(J - 2), engine="vectorbt", engine_params={"trade_buffer": 0.1})
 
 
+def _timing(schedule: str):
+    return resolve_execution({"schedule": schedule})
+
+
 @pytest.mark.parametrize("engine", ENGINES)
-@pytest.mark.parametrize("leading", ["flat", "drop"])
-def test_a_ticker_without_prices_is_refused_on_both_engines(engine, leading):
+def test_a_ticker_without_prices_is_refused_on_the_bar_grid(engine):
     """Review round 1 (#235): the sweep's grid manufactured an all-NaN price column, and rsims
     traded a flat book on it instead of refusing."""
     prices = _prices()[["A"]]
     weights = pd.DataFrame({"MISSING": 1.0}, index=prices.index)
     with pytest.raises(ValueError, match="(?i)prices"):
-        simulate_weights(prices, weights, engine=engine, timing=resolve_execution(None), leading=leading)
+        simulate(prices, weights, engine=engine, timing=_timing("bars"))
 
 
 @pytest.mark.parametrize("engine", ENGINES)
-@pytest.mark.parametrize("leading", ["flat", "drop"])
-def test_a_weight_on_a_bar_with_no_price_yet_is_refused_on_both_engines(engine, leading):
+def test_a_ticker_without_prices_is_dropped_loudly_on_the_calendar(engine, caplog):
+    """The calendar trades the instruments the prices carry (ADR-0007) and SAYS what it drops."""
+    prices = _prices()
+    weights = _weights_decided_on(J - 2).assign(MISSING=0.5)
+    with caplog.at_level("WARNING", logger="quantbox.engine.book"):
+        book = simulate(prices, weights, engine=engine, timing=_timing("calendar"))
+    assert "MISSING" not in book.weights.columns
+    assert any("WEIGHTS:" in r.getMessage() and "MISSING" in r.getMessage() for r in caplog.records)
+    with pytest.raises(ValueError, match="No overlapping tickers"):
+        simulate(
+            prices[["A"]], pd.DataFrame({"MISSING": 1.0}, index=prices.index), engine=engine, timing=_timing("calendar")
+        )
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_a_weight_on_a_bar_with_no_price_yet_is_refused_on_the_bar_grid(engine):
     """The class of review round 1 (#235): the column exists, but holds no price yet on a bar
     the book holds it. rsims traded it flat; the sweep's grid back-filled a FUTURE price into it."""
     prices = _prices()
     prices.loc[prices.index[: J + 2], "A"] = float("nan")  # A starts printing after the decision executes
-    weights = _weights_decided_on(J - 2)
     with pytest.raises(ValueError, match="(?i)no price"):
-        simulate_weights(prices, weights, engine=engine, timing=resolve_execution(None), leading=leading)
+        simulate(prices, _weights_decided_on(J - 2), engine=engine, timing=_timing("bars"))
 
 
 @pytest.mark.parametrize("engine", ENGINES)
-@pytest.mark.parametrize("leading", ["flat", "drop"])
-def test_a_zero_weight_before_a_ticker_prints_still_runs(engine, leading):
+def test_a_weight_before_a_ticker_prints_is_forced_flat_on_the_calendar(engine, caplog):
+    """The calendar's answer to the same book: outside the life window the target is 0, counted and warned."""
+    prices = _prices()
+    prices.loc[prices.index[: J + 2], "A"] = float("nan")
+    with caplog.at_level("WARNING", logger="quantbox.engine.schedule"):
+        book = simulate(prices, _weights_decided_on(J - 2), engine=engine, timing=_timing("calendar"))
+    first_print = prices["A"].first_valid_index()
+    assert (book.weights["A"].loc[: first_print - pd.Timedelta(days=1)] == 0.0).all()
+    assert book.book_metrics["calendar_targeted_outside_window_bars"] > 0
+    assert any("CALENDAR:" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+@pytest.mark.parametrize("schedule", ["calendar", "bars"])
+def test_a_zero_weight_before_a_ticker_prints_still_runs(engine, schedule):
     """The refusal is about HELD weight: an unlisted ticker carried at 0 is a normal warm-up."""
     prices = _prices()
     prices.loc[prices.index[: J - 4], "A"] = float("nan")
-    book = simulate_weights(
-        prices, _weights_decided_on(J - 2), engine=engine, timing=resolve_execution(None), leading=leading
+    book = simulate(prices, _weights_decided_on(J - 2), engine=engine, timing=_timing(schedule))
+    assert book.value.iloc[-1] > 0
+
+
+# ----------------------------------------------------------------------
+# schedule: bars is the scheduled book on a degenerate calendar (TOM-1450)
+# ----------------------------------------------------------------------
+
+
+def _holiday_prices() -> pd.DataFrame:
+    """Two instruments; B does not print on bar 10 (a holiday)."""
+    idx = pd.date_range("2024-01-01", periods=20, freq="D")
+    p = pd.DataFrame({"A": 100.0, "B": 50.0}, index=idx)
+    p.iloc[10, 1] = float("nan")
+    return p
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_bars_has_no_deferral_the_calendar_defers(engine):
+    prices = _holiday_prices()
+    weights = pd.DataFrame({"A": 0.5, "B": 0.0}, index=prices.index)
+    weights.iloc[9:, 1] = 0.5  # B decided on bar 9: fills on bar 10, a bar B does not print
+    calendar = simulate(prices, weights, engine=engine, timing=_timing("calendar"), costs=Costs())
+    bars = simulate(prices, weights, engine=engine, timing=_timing("bars"), costs=Costs())
+    assert calendar.book_metrics["calendar_deferred_trades"] == 1.0
+    assert calendar.weights["B"].iloc[10] == 0.0 and calendar.weights["B"].iloc[11] == 0.5
+    assert bars.book_metrics["calendar_deferred_trades"] == 0.0
+    assert bars.weights["B"].iloc[10] == 0.5  # every price bar executes; the price is carried
+    assert bars.execution["schedule"] == "bars" and "schedule" not in calendar.execution
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_bars_applies_no_leverage_the_calendar_normalises(engine):
+    prices = _prices()
+    levered = pd.DataFrame({"A": 0.8, "USD": 0.7}, index=prices.index)
+    calendar = simulate(prices, levered, engine=engine, timing=_timing("calendar"))
+    bars = simulate(prices, levered, engine=engine, timing=_timing("bars"))
+    assert calendar.weights.sum(axis=1).max() == pytest.approx(1.0)
+    assert bars.weights.sum(axis=1).max() == pytest.approx(1.5)
+    assert bars.data_validation["leverage"]["mode"] == "none"
+    with pytest.raises(ValueError, match="schedule: bars"):
+        simulate(prices, levered, engine=engine, timing=_timing("bars"), leverage="normalize")
+
+
+def test_the_two_builders_are_gone():
+    """One public book function (TOM-1450): the bar-grid builder and its leading= modes were deleted."""
+    assert not hasattr(engine_seam, "simulate_weights")
+    assert not hasattr(engine_seam, "simulate_book")
+    assert not hasattr(engine_seam, "lag_buy_and_hold")
+    assert engine_seam.simulate.__module__ == "quantbox.engine.book"
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_a_multi_slice_book_is_scheduled_slice_by_slice(engine):
+    """The sweep's MultiIndex slices are batching inside the one function, not a mode."""
+    prices = _prices()
+    early, late = _weights_decided_on(J - 2), _weights_decided_on(J - 1)
+    both = pd.concat({"early": early, "late": late}, axis=1, names=["slice", "ticker"])
+    book = simulate(prices, both, engine=engine, timing=resolve_execution(None), costs=Costs())
+    alone = simulate(prices, early, engine=engine, timing=resolve_execution(None), costs=Costs())
+    assert book.weights[("early", "A")].equals(alone.weights["A"])
+    assert book.orders[("late", "A")].equals(
+        simulate(prices, late, engine=engine, timing=resolve_execution(None)).orders["A"]
     )
-    assert book is not None
+    stats = get_engine(engine).stats(book, ["total_return"])
+    assert stats[("early",)]["total_return"] == pytest.approx(JUMP, abs=1e-9)
+    assert stats[("late",)]["total_return"] == pytest.approx(0.0, abs=1e-9)
 
 
 def test_an_unknown_engine_is_refused_everywhere(tmp_path):
