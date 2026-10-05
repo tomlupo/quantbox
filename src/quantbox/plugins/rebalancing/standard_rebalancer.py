@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 
 from quantbox.contracts import BrokerPlugin, PluginMeta
+from quantbox.decision import risk_caps_row
 from quantbox.engine.policy import TRANCHES_MOVED
 from quantbox.portfolio_value import BASIS_MARK, DEFAULT_RECONCILIATION_TOLERANCE, resolve_portfolio_value
 
@@ -189,37 +190,29 @@ class StandardRebalancer:
         weights: dict[str, float],
         params: dict[str, Any],
     ) -> dict[str, float]:
-        """Apply the leverage cap and negative-weight clamping.
+        """The short clip, then the gross cap: :func:`quantbox.decision.risk_caps_row` with :meth:`risk_rules`.
 
-        No tranching: the rebalancing policy owns WHEN and to WHICH targets
-        (``quantbox.engine.policy``, the backtest's own code; TOM-1518). This
-        plugin turns target weights into orders.
+        The decision's own steps 1-2, in the decision's order (TOM-1520: the
+        clip used to run after the cap here, the other way round from the
+        backtest). trade.full_pipeline.v1 already applied them to the targets
+        it hands in, so this changes nothing there; a direct caller gets the
+        same caps. No tranching: the rebalancing policy owns WHEN and to WHICH
+        targets (``quantbox.engine.policy``, TOM-1518). This plugin turns
+        target weights into orders.
         """
+        caps = self.risk_rules(params)
+        s = pd.Series(risk_caps_row(weights, **caps), dtype=float)
+        s = s[s != 0].sort_values(ascending=False)
+        return {str(k): float(v) for k, v in s.items()}
+
+    def risk_rules(self, params: dict[str, Any]) -> dict[str, Any]:
+        """This order generator's short clip and gross cap, as the decision reads them (TOM-1520)."""
         if int(params.get("tranches", 1) or 1) > 1:
             raise ValueError(TRANCHES_MOVED)
-        max_leverage = float(params.get("max_leverage", 1))
-        allow_short = bool(params.get("allow_short", False))
-
-        s = pd.Series(weights, dtype=float)
-
-        # Max leverage
-        gross = s.abs().sum()
-        if gross > max_leverage:
-            logger.warning(
-                "Leverage %.4f exceeds max_leverage %.1f, scaling down",
-                gross,
-                max_leverage,
-            )
-            s = s / gross * max_leverage
-
-        # Clamp negatives
-        if not allow_short:
-            s = s.clip(lower=0)
-
-        # Drop zeros and sort
-        s = s[s != 0].sort_values(ascending=False)
-
-        return {str(k): float(v) for k, v in s.items()}
+        return {
+            "allow_short": bool(params.get("allow_short", False)),
+            "max_leverage": float(params.get("max_leverage", 1)),
+        }
 
     # ==================================================================
     # Order generation

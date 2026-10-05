@@ -31,6 +31,7 @@ import numpy as np
 import pandas as pd
 
 from quantbox.contracts import BrokerPlugin, PluginMeta
+from quantbox.decision import risk_caps_row
 from quantbox.engine.policy import TRANCHES_MOVED
 from quantbox.portfolio_value import (
     BASIS_MARGIN,
@@ -151,34 +152,25 @@ class FuturesRebalancer:
         weights: dict[str, float],
         params: dict[str, Any],
     ) -> dict[str, float]:
-        """Apply the leverage cap. No short clamping.
+        """The gross cap (:func:`quantbox.decision.risk_caps_row` with :meth:`risk_rules`). No short clamping.
 
+        The decision's own step 2 (TOM-1520): trade.full_pipeline.v1 already
+        applied it to the targets it hands in, so this changes nothing there.
         No tranching: the rebalancing policy owns WHEN and to WHICH targets
-        (``quantbox.engine.policy``, the backtest's own code; TOM-1518). This
-        plugin turns target weights into orders.
+        (``quantbox.engine.policy``, TOM-1518). This plugin turns target
+        weights into orders.
         """
-        if int(params.get("tranches", 1) or 1) > 1:
-            raise ValueError(TRANCHES_MOVED)
-        max_leverage = float(params.get("max_leverage", 1))
-
-        s = pd.Series(weights, dtype=float)
-
-        # Leverage cap on gross exposure
-        gross = s.abs().sum()
-        if gross > max_leverage:
-            logger.warning(
-                "Leverage %.4f exceeds max_leverage %.1f, scaling down",
-                gross,
-                max_leverage,
-            )
-            s = s / gross * max_leverage
-
-        # NO short clamping — negative weights are valid for futures
-
+        s = pd.Series(risk_caps_row(weights, **self.risk_rules(params)), dtype=float)
         # Drop zeros and sort by absolute value descending
         s = s[s != 0].reindex(s[s != 0].abs().sort_values(ascending=False).index)
-
         return {str(k): float(v) for k, v in s.items()}
+
+    def risk_rules(self, params: dict[str, Any]) -> dict[str, Any]:
+        """This order generator's caps, as the decision reads them (TOM-1520): no short clip, a gross cap."""
+        if int(params.get("tranches", 1) or 1) > 1:
+            raise ValueError(TRANCHES_MOVED)
+        # NO short clamping — negative weights are valid for futures
+        return {"allow_short": True, "max_leverage": float(params.get("max_leverage", 1))}
 
     # ==================================================================
     # Order generation

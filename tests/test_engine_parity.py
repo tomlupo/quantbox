@@ -470,19 +470,29 @@ def test_a_nan_cell_holds_on_every_engine():
 
 
 def test_the_default_leverage_is_one_value_for_every_engine():
-    """The same config gives the same book when only ``engine`` changes: normalize, on every engine."""
+    """The same config gives the same book when only ``engine`` changes: normalize, on every engine.
+
+    Since TOM-1520 the normalisation is the decision's (:func:`quantbox.decision.final_targets`) and the
+    seam executes final targets; a levered book handed to the seam directly is held to net 1 by its cash
+    cap instead (it never borrows), the same on every engine.
+    """
+    from quantbox.decision import DecisionRules, final_targets
     from quantbox.financing import DEFAULT_LEVERAGE, resolve_leverage
 
     assert DEFAULT_LEVERAGE == "normalize"
     assert resolve_leverage(None) == "normalize"
     levered = pd.DataFrame({"A": 0.9, "B": 0.6, "C": 0.0}, index=_prices().index)
+    final, _ = final_targets(levered, DecisionRules(leverage=DEFAULT_LEVERAGE))
     engines = ["rsims", "vectorbt"] if VECTORBT else ["rsims"]
-    held = {e: _simulate(e, _prices(), levered, 0.0).weights for e in engines}
+    held = {e: _simulate(e, _prices(), final, 0.0).weights for e in engines}
+    raw = {e: _simulate(e, _prices(), levered, 0.0).weights for e in engines}
     for e, w in held.items():
         assert w.sum(axis=1).max() == pytest.approx(1.0), e  # scaled to net 1
         assert w.iloc[-1]["A"] == pytest.approx(0.6), e
+        assert raw[e].sum(axis=1).max() <= 1.0 + 1e-9, e  # the cash cap: never borrows
     if VECTORBT:
         assert held["rsims"].equals(held["vectorbt"])
+        assert raw["rsims"].equals(raw["vectorbt"])
 
 
 # ----------------------------------------------------------------------

@@ -20,22 +20,27 @@ engine — the seam owns the schedule, an adapter only executes it (docs/adr/000
    print, it keeps its previous weight and its order is DEFERRED to its own
    next printed bar (``deferred_trades``). A later decision that reaches the
    instrument first supersedes the deferred one.
-4. **Leverage** (``venue.leverage``), on the HELD book after deferral
-   (:func:`_apply_leverage`): ``normalize`` scales the cells ordered on a bar
-   whose held net exposure would exceed 1 down to net 1, proportionally — a
-   deferred cell keeps its weight; ``borrow`` keeps it and the financing legs
-   (:mod:`quantbox.financing`) carry the borrowing.
+4. **Leverage** (``venue.leverage``) is MEASURED here, never applied
+   (:func:`_measure_leverage`). Normalisation is part of the decision
+   (:mod:`quantbox.decision`, TOM-1520): the targets the seam receives are
+   final. ``borrow``: the financing legs (:mod:`quantbox.financing`) carry
+   the borrowing. ``normalize``: execution never borrows — on every placed
+   rebalance the buys are capped at the cash plus the sell proceeds
+   (:func:`quantbox.engine.policy.place_bar`). That cap binds only where a
+   final target can still need cash the account does not have: a deferred
+   cell (an instrument that did not print) still holds its old weight.
 5. **The rebalancing policy** (:mod:`quantbox.engine.policy`), a cadence x a
    trigger: the cadence ``periodic`` (today's ``rebalancing_freq``) or
    ``tranche`` (the targets are the mean of the last N decided rows); the
    trigger ``none``, ``band`` (today's ``threshold``: a considered rebalance
    is placed only when the held book has DRIFTED more than the band from its
    target) or ``corridor`` (an instrument outside its own corridor rebalances
-   the whole book); and an optional ``min_trade`` (drop the small trades,
-   scale the buys to the cash). An optional market ``calendar`` narrows the
-   execution bars to that market's sessions before step 1. The drift is the
-   cost-free price drift of the weights held after the last placed order
-   (:func:`quantbox.engine.policy.place_orders`), applied AFTER step 4. An
+   the whole book); and an optional ``min_trade`` (drop the small trades). An
+   optional market ``calendar`` narrows the execution bars to that market's
+   sessions before step 1. The drift is the cost-free price drift of the
+   weights held after the last placed order
+   (:func:`quantbox.engine.policy.place_orders`); the cash cap of step 4 reads
+   the same drifted book. An
    engine charging costs holds a slightly different book, so a run with
    costs can trigger on slightly different bars than vectorbt's in-engine
    threshold did (the declared caveat).
@@ -46,7 +51,7 @@ engine — the seam owns the schedule, an adapter only executes it (docs/adr/000
 ``schedule: bars`` is this same function on a DEGENERATE calendar
 (:mod:`quantbox.engine.book`): every price bar is an execution bar, every
 instrument prints on it (no deferral), and ``venue.leverage`` is ``none`` —
-measured, never applied.
+measured, never applied, and no cash cap (as before TOM-1520).
 
 The result is the held book (``weights``: what the portfolio holds after each
 bar's orders, saved as ``traded_weights``), the per-cell ``orders`` mask the
@@ -215,69 +220,58 @@ def _decision_weight_age(
     }
 
 
-def _apply_leverage(
-    target_cells: np.ndarray, orders: np.ndarray, leverage: str, decided_net: np.ndarray, index: pd.Index
-) -> dict[str, Any]:
-    """Apply ``venue.leverage`` to the HELD book, bar by bar, in place on *target_cells*.
-
-    What the engine holds after a bar's orders is the ordered cells at their
-    targets plus every untouched (deferred) cell at its previous weight — not
-    the decided row. ``normalize`` therefore scales only the cells ORDERED on
-    a bar whose held net exposure would exceed 1, until it is 1 (a deferred
-    cell cannot trade); when the deferred cells alone are already at or above
-    1, every buy ordered on that bar is set to 0 (no ordered cell rises above
-    its previous weight; sells and new shorts still go through). ``borrow`` and
-    ``none`` (``schedule: bars``) change nothing and only measure. All count, on the held book.
-    """
-    tol = NET_EXPOSURE_TOLERANCE
+def _held_net(target_cells: np.ndarray, orders: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The order rows and the net exposure HELD after each (ordered cells at target, the others at their last)."""
     n_inst = orders.shape[1]
     held_prev = np.zeros(n_inst)
     order_rows = np.flatnonzero(orders.any(axis=1))
-    above = 0
-    after_deferral = 0
-    zeroed: list[int] = []
-    scales: list[float] = []
-    max_unscaled = 0.0
-    max_held = 0.0
-    for r in order_rows:
+    nets = np.zeros(len(order_rows))
+    for i, r in enumerate(order_rows):
         o = orders[r]
-        t = target_cells[r]
-        deferred_net = float(held_prev[~o].sum())
-        ordered_net = float(t[o].sum())
-        net = deferred_net + ordered_net
-        max_unscaled = max(max_unscaled, net)
-        if net > 1.0 + tol:
-            above += 1
-            if leverage == "normalize":
-                if (~o).any():
-                    after_deferral += 1
-                if deferred_net < 1.0 - tol and ordered_net > 0:
-                    scale = (1.0 - deferred_net) / ordered_net
-                    t[o] = t[o] * scale
-                    scales.append(scale)
-                else:
-                    # No room: no ordered cell may RISE above its weight (a buy, a short
-                    # cover included). The held net then cannot exceed the last bar's.
-                    t[o] = np.minimum(t[o], held_prev[o])
-                    zeroed.append(int(r))
-        held_prev[o] = t[o]
-        max_held = max(max_held, float(held_prev.sum()))
-    scaled = len(scales) + len(zeroed) if leverage == "normalize" else 0
-    sc = np.asarray(scales)
+        held_prev[o] = target_cells[r][o]
+        nets[i] = float(held_prev.sum())
+    return order_rows, nets
+
+
+def _measure_leverage(
+    leverage: str,
+    decided_net: np.ndarray,
+    unscaled: tuple[np.ndarray, np.ndarray],
+    held: tuple[np.ndarray, np.ndarray],
+    placement: dict[str, Any] | None,
+    index: pd.Index,
+) -> dict[str, Any]:
+    """``venue.leverage``, MEASURED on the held book (TOM-1520: the seam no longer scales a target).
+
+    *unscaled* is the held net before the cash cap, *held* after it (both
+    from :func:`_held_net`). Normalisation is the decision's
+    (:mod:`quantbox.decision`), so ``scaled_rebalances``, ``scaled_after_deferral``,
+    ``buys_zeroed_*`` and ``scale_*`` are always 0 / 1.0 here (data-validation@1
+    keeps the keys). The cash cap is ``cash_capped_*``: rebalances whose buys
+    were scaled to the cash plus the sell proceeds.
+    """
+    tol = NET_EXPOSURE_TOLERANCE
+    order_rows, unscaled_net = unscaled
+    _, held_net = held
+    capped = (placement or {}).get("cash_capped_rows", [])
+    cap_scales = (placement or {}).get("cash_cap_scales", [])
     return {
         "mode": leverage,
         "rebalances": int(len(order_rows)),
-        "rebalances_above_net_1": int(above),
+        "rebalances_above_net_1": int((unscaled_net > 1.0 + tol).sum()),
         "max_net_exposure_decided": float(decided_net.max()) if len(decided_net) else 0.0,
-        "max_net_exposure_unscaled": float(max_unscaled),
-        "max_net_exposure_held": float(max_held),
-        "scaled_rebalances": int(scaled),
-        "scaled_after_deferral": int(after_deferral) if leverage == "normalize" else 0,
-        "buys_zeroed_rebalances": len(zeroed),
-        "buys_zeroed_dates": [pd.Timestamp(index[r]).isoformat() for r in zeroed],
-        "scale_mean": float(sc.mean()) if len(sc) else 1.0,
-        "scale_min": float(sc.min()) if len(sc) else 1.0,
-        "scale_max": float(sc.max()) if len(sc) else 1.0,
+        "max_net_exposure_unscaled": float(unscaled_net.max()) if len(unscaled_net) else 0.0,
+        "max_net_exposure_held": float(held_net.max()) if len(held_net) else 0.0,
+        "scaled_rebalances": 0,
+        "scaled_after_deferral": 0,
+        "buys_zeroed_rebalances": 0,
+        "buys_zeroed_dates": [],
+        "scale_mean": 1.0,
+        "scale_min": 1.0,
+        "scale_max": 1.0,
+        "cash_capped_rebalances": int(len(capped)),
+        "cash_cap_scale_min": float(min(cap_scales)) if cap_scales else 1.0,
+        "first_cash_capped_dates": [pd.Timestamp(index[r]).isoformat() for r in capped[:5]],
     }
 
 
@@ -364,18 +358,23 @@ def schedule_book(
             orders[p, j] = True
             target_cells[p, j] = targets[i, j]  # later deferrals to the same bar overwrite: the newest wins
 
-    leverage_report = _apply_leverage(target_cells, orders, leverage, decided_net, index)
+    unscaled = _held_net(target_cells, orders)
     scheduled_rows = int(orders.any(axis=1).sum())
-    # The trigger and min_trade read the held book; without either, every scheduled order stands.
+    # The trigger, min_trade and the cash cap read the held book; without any of them, every scheduled
+    # order stands as scheduled. The cash cap is on whenever the book does not borrow (TOM-1520).
     placement = (
         place_orders(pol, target_cells, orders, cal.prices.to_numpy(dtype=float), columns, leverage)
-        if pol.trigger != "none" or pol.min_trade > 0
+        if pol.trigger != "none" or pol.min_trade > 0 or leverage == "normalize"
         else None
+    )
+    leverage_report = _measure_leverage(
+        leverage, decided_net, unscaled, _held_net(target_cells, orders), placement, index
     )
     first_skipped = [pd.Timestamp(index[r]).isoformat() for r in (placement or {}).get("first_skipped_rows", [])]
     threshold_report = None
     rebalancing_report = None
-    if placement is not None and not pol.declared:  # the legacy `threshold`: its section, as before
+    if pol.trigger != "none" and not pol.declared:  # the legacy `threshold`: its section, as before
+        assert placement is not None
         threshold_report = {
             "threshold": float(pol.band or 0.0),
             "rule": "cost-free price drift of the held weights; a scheduled rebalance is placed when an ordered "
@@ -485,24 +484,15 @@ def schedule_book(
             n_out,
             report["timing"]["instruments_targeted_outside_window"],
         )
-    if leverage == "normalize" and leverage_report["scaled_rebalances"]:
+    if leverage_report["cash_capped_rebalances"]:
         logger.warning(
-            "LEVERAGE: %d of %d rebalance(s) would have HELD net exposure above 1 (max %.4f) and were SCALED to "
-            "net 1 (venue.leverage: normalize, the default; scale mean %.4f, min %.4f; %d after a deferral). "
-            "Declare venue.leverage: borrow with venue.financing to hold the levered book.",
-            leverage_report["scaled_rebalances"],
+            "CASH: on %d of %d rebalance(s) the buys needed more than the cash plus the sell proceeds (a deferred "
+            "position still held its old weight, or the targets were not final) and were SCALED down (smallest "
+            "scale %.4f; venue.leverage: normalize never borrows). First: %s",
+            leverage_report["cash_capped_rebalances"],
             leverage_report["rebalances"],
-            leverage_report["max_net_exposure_unscaled"],
-            leverage_report["scale_mean"],
-            leverage_report["scale_min"],
-            leverage_report["scaled_after_deferral"],
-        )
-    if leverage_report["buys_zeroed_rebalances"]:
-        logger.warning(
-            "LEVERAGE: on %d rebalance(s) the DEFERRED positions alone held net exposure at or above 1, so every "
-            "buy ordered on that bar was set to 0 (venue.leverage: normalize): %s",
-            leverage_report["buys_zeroed_rebalances"],
-            leverage_report["buys_zeroed_dates"],
+            leverage_report["cash_cap_scale_min"],
+            leverage_report["first_cash_capped_dates"],
         )
     if report["staleness"]["stale_decisions"]:
         logger.info(

@@ -554,6 +554,10 @@ def test_the_backtest_helper_takes_a_policy_and_group_limits():
     book = out["book"]
     assert book.weights.iloc[-1].to_dict() == pytest.approx({"A": 0.375, "B": 0.225, "C": 0.4})
     assert book.data_validation["rebalancing"]["policy"]["tranches"] == 2
+    # The group limits run in the decision (TOM-1520); backtest() still records them, as the pipeline does.
+    assert book.data_validation["groups"]["rows_adjusted"] == len(idx)
+    assert book.data_validation["decision"]["rules"]["group_limits"]["by"] == "asset_class"
+    assert book.book_metrics["group_limit_rows_adjusted"] == float(len(idx))
     with pytest.raises(ValueError, match="universe="):
         backtest(prices, decided, engine="rsims", group_limits={"by": "asset_class", "limits": {"e": {"max": 1}}})
 

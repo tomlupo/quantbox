@@ -3,6 +3,7 @@ adr: 0007
 title: Instrument and execution calendars, decision vs execution timing, venue.leverage and venue.financing
 status: proposed
 date: 2026-10-04
+amended_by: "TOM-1520 (2026-10-05): section 3 — venue.leverage normalize is part of the decision; the seam measures leverage and caps buys at the cash"
 ---
 
 # ADR-0007: Instrument and execution calendars, decision vs execution timing, `venue.leverage` and `venue.financing`
@@ -212,7 +213,7 @@ calendar is read from the prices themselves (or from one series of them).
 - **Recorded.** `rebalance_schedule.parquet` has one row per executed decision:
   `decision_date`, `execution_date`, `deferred_instruments` (`;`-joined).
   `traded_weights.parquet` is now the book HELD after each bar's orders: the
-  ordered cells at their targets AFTER `venue.leverage` (section 3), every
+  ordered cells at their targets AFTER the cash cap (section 3), every
   deferred cell at its previous weight (before, it was the lagged decided
   weights, which between rebalances the vectorbt engine never held). The
   engine is checked against it on every run (`engine_underfilled_rebalances`).
@@ -281,19 +282,34 @@ venue:
   leverage: normalize   # normalize | borrow; default normalize on every engine (ADR-0008)
 ```
 
-- **`normalize`** (the default, every engine; ADR-0008) bounds the book HELD after each bar's
-  orders, not the decided row: a deferred cell keeps its previous weight, so a
-  rotation out of an instrument that did not print would otherwise ask for net
-  above 1 (review round 2). On every bar whose held net exposure — ordered
-  cells at target plus deferred cells at their weight — is above 1 (+1e-6),
-  the ORDERED cells are scaled proportionally until the held net is 1. When
-  the deferred cells alone are at or above 1, every buy ordered on that bar is
-  set to 0 (`buys_zeroed_rebalances`, with dates, warned). With no deferral
-  this is the decided row scaled to net 1. Recorded in `data_validation.json`
-  `leverage`, the manifest and `leverage_*` metrics, and warned about:
-  `rebalances_above_net_1` (on the held book), `scaled_rebalances`
-  (`scaled_after_deferral` of them on a bar with a deferred cell), the mean,
-  min and max scale, `max_net_exposure_decided` / `_unscaled` / `_held`.
+- **`normalize`** (the default, every engine; ADR-0008) is part of the
+  DECISION (amended by TOM-1520 — Tom, 2026-10-05: "Normalizacja jest częścią
+  strategii, bo pokazuje, co byśmy robili w realnym świecie. [...] Konto bez
+  lewara nie otrzymuje wag, gdzie wymagany jest lewar."). The order is signals
+  -> weights -> the decision -> TARGET weights -> the rebalancing policy.
+  `quantbox.decision.final_targets` scales every decided row whose net
+  exposure is above 1 (+1e-6) down to net 1, proportionally, after the short
+  clip, the `risk.max_leverage` gross cap and the group limits. The backtest,
+  live trading (`trade.full_pipeline.v1`), `backtest()`, `optimize()` and the
+  sweep call it, so the target weights are the same in a backtest and live.
+  Recorded in `data_validation.json` `decision` (minor 7) and the
+  `leverage_normalised_rows` / `leverage_normalise_scale_*` metrics, and warned.
+
+  The seam no longer normalises: it MEASURES `leverage` on the held book
+  (`rebalances_above_net_1`, `max_net_exposure_decided` / `_unscaled` /
+  `_held`), and execution never borrows silently. Without `borrow`, the buys
+  of every placed rebalance are capped at the cash plus the sell proceeds of
+  the drifted held book (`quantbox.engine.policy.place_bar`), always, not only
+  under `min_trade`. With final targets and every cell ordered the cap cannot
+  bind; it binds where a final target can still need cash the account does
+  not have: a deferred cell (an instrument that did not print) still holds its
+  old weight (`leverage.cash_capped_rebalances`, warned). Superseded text: until
+  TOM-1520 `normalize` bounded the book HELD after each bar's orders, bar by
+  bar, scaling the ORDERED cells of a bar whose held net (deferred cells
+  included) was above 1 and zeroing every buy when the deferred cells alone
+  filled it (review round 2). That was a decision step hidden in execution;
+  `scaled_rebalances`, `scaled_after_deferral`, `buys_zeroed_*` and `scale_*`
+  stay in `leverage` at 0 / 1.0.
 - **`borrow`**: the decision is held as decided, financed by `venue.financing`
   (section 2). Without a financing block the rate is ASSUMED to be 0:
   `venue.financing` in run@1 / explain@1 is then `{rate: {annual: 0.0}, ...,
@@ -316,13 +332,12 @@ so it can hold the book.
 too, on the bars the engine traded (it skips the others by design). On each
 rebalance bar they compare the book the engine HELD against `traded_weights`,
 on the cells that were ordered. The tolerance is 1e-6 plus twice the cost times
-turnover. Any underfill is logged as a warning. It is the backstop. Leverage
-applied to the held book removes the deferral case by construction, but the
-held book is a TARGET path: under `normalize` with no financing legs, a
-deferred position that DRIFTS above its old target can still leave too little
-cash for a funding buy (review round 3: 5 of 250 bars, max gap 0.15%, at 1%
-daily vol with 13 deferrals). Small, and loud when it happens — not
-guaranteed 0.
+turnover. Any underfill is logged as a warning. It is the backstop. Until
+TOM-1520 a deferred position that DRIFTED above its old target could still
+leave too little cash for a funding buy (review round 3: 5 of 250 bars, max
+gap 0.15%): the held-book normalisation read the TARGET path. The cash cap
+reads the drifted book, so without fees that case no longer underfills
+(`tests/test_decision_layer.py`).
 
 ### 4. The rebalance schedule is bars
 

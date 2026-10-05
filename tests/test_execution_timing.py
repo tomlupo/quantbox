@@ -405,8 +405,8 @@ def _long_short_weights() -> pd.DataFrame:
 
 
 def test_allow_shorts_false_clips_before_transforms_and_does_not_relever_longs():
-    pipe = BacktestPipeline()
-    out = pipe._apply_venue_and_risk(_long_short_weights(), {"tranches": 3, "max_leverage": 1.0}, False, True)
+    plan = {"venue": {"leverage": "normalize"}}
+    out, _ = BacktestPipeline._decide(_long_short_weights(), {"tranches": 3, "max_leverage": 1.0}, False, None, plan)
     assert (out["USD"] == 0.0).all()
     # Long side untouched: 0.5 stays 0.5 — NOT scaled up to 1.0 to refill the gross.
     assert out["A"].tolist() == pytest.approx([0.5] * N)
@@ -418,15 +418,15 @@ def test_clip_happens_before_tranching_on_both_venue_paths():
     ``risk.tranches`` is the seam's tranche cadence since TOM-1513: the risk
     transforms no longer average, so the clip (venue or legacy) always comes
     first and the seam's tranches average the CLIPPED targets. The legacy path
-    used to clip the mean ([0, 0, 1]); that number moved by design.
+    used to clip the mean ([0, 0, 1]); that number moved by design. Since TOM-1520 the venue and the legacy
+    switch resolve to one ``allow_shorts`` before the decision (:meth:`BacktestPipeline._decide`).
     """
     from quantbox.engine.policy import blend_tranches
 
     w = pd.DataFrame({"A": [-1.0, 1.0, 1.0]}, index=pd.date_range("2024-01-01", periods=3))
-    pipe = BacktestPipeline()
-    declared = pipe._apply_venue_and_risk(w, {"tranches": 2}, False, True)
-    legacy = pipe._apply_venue_and_risk(w, {"tranches": 2}, False, False)
-    assert declared["A"].tolist() == legacy["A"].tolist() == [0.0, 1.0, 1.0]  # clipped, not averaged
+    plan = {"venue": {"leverage": "normalize"}}
+    declared, _ = BacktestPipeline._decide(w, {"tranches": 2}, False, None, plan)
+    assert declared["A"].tolist() == [0.0, 1.0, 1.0]  # clipped, not averaged
     assert blend_tranches(declared.to_numpy(), 2)[:, 0].tolist() == pytest.approx([0.0, 0.5, 1.0])
 
 

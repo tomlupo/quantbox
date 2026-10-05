@@ -1,7 +1,10 @@
 """Full trading pipeline plugin.
 
-Orchestrates: strategy execution -> aggregation -> risk transforms ->
-order generation -> execution -> artifact storage.
+Orchestrates: strategy execution -> aggregation -> the decision (final
+target weights: short clip, gross cap, group limits, ``venue.leverage``
+normalisation; :mod:`quantbox.decision`, the backtest's own transform,
+TOM-1520) -> the rebalancing policy -> order generation -> execution ->
+artifact storage.
 
 Ported from the quantlab ``trading.py`` workflow, ``orders.py``, and
 ``portfolio.py`` into a single PipelinePlugin that the quantbox runner
@@ -33,6 +36,8 @@ from quantbox.contracts import (
     RunResult,
     StrategyPlugin,
 )
+from quantbox.decision import DecisionRules, final_targets, log_normalisation, risk_caps_row
+from quantbox.engine.groups import GROUP_LIMITS_SCHEMA, GroupLimits, resolve_group_limits
 from quantbox.engine.policy import (
     POLICY_SCHEMA,
     LiveDecision,
@@ -43,6 +48,7 @@ from quantbox.engine.policy import (
     trades_every_bar,
     tranches_alias,
 )
+from quantbox.financing import resolve_leverage
 from quantbox.frequency import _parse_bar_size
 from quantbox.portfolio_value import (
     BASIS_MARK,
@@ -57,6 +63,13 @@ from quantbox.reconciliation.working_orders import DEFAULT_MAX_AGE_DAYS
 from quantbox.strategy_runner import build_strategy_context, run_strategies
 
 logger = logging.getLogger(__name__)
+
+
+def _target_dict(weights: dict[str, float]) -> dict[str, float]:
+    """Target weights as the order generators take them: ``{symbol: weight}``, zeros dropped, largest first."""
+    s = pd.Series(weights, dtype=float)
+    s = s[s != 0].sort_values(ascending=False)
+    return {str(k): float(v) for k, v in s.items()}
 
 
 def _valuation_metrics(valuation: PortfolioValuation | None) -> dict[str, float | None]:
@@ -577,9 +590,10 @@ class TradingPipeline:
                 "risk": {
                     "type": "object",
                     "description": (
-                        "Risk transforms applied to the policy's targets; also handed to risk plugins. "
-                        "tranches: N is DEPRECATED (TOM-1513, TOM-1518): it is rebalancing_policy "
-                        "{cadence: tranche, tranches: N}, and warns."
+                        "The decision's short clip (allow_short) and gross cap (max_leverage) when no rebalancer "
+                        "plugin is injected (an injected rebalancer's own params are the rules then); also "
+                        "handed to risk plugins. tranches: N is DEPRECATED (TOM-1513, TOM-1518): it is "
+                        "rebalancing_policy {cadence: tranche, tranches: N}, and warns."
                     ),
                     "properties": {
                         "tranches": {"type": "integer", "minimum": 1, "default": 1},
@@ -602,18 +616,27 @@ class TradingPipeline:
                 },
                 "venue": {
                     "type": "object",
-                    "description": "The venue, as the rebalancing policy reads it.",
+                    "description": "The venue, as the decision and the rebalancing policy read it.",
                     "properties": {
                         "leverage": {
                             "type": "string",
                             "enum": ["normalize", "borrow"],
                             "default": "normalize",
                             "description": (
-                                "borrow lifts the rebalancing_policy min_trade cap of buys at the cash (a margined "
-                                "or perps book); normalize (the default) keeps it, as in the backtest."
+                                "How the decision is normalised (TOM-1520, the backtest's own transform, "
+                                "quantbox.decision): normalize (the default) scales a target row whose NET exposure "
+                                "is above 1 down to net 1, and caps the rebalancing_policy's buys at the cash; "
+                                "borrow keeps the levered row (a margined or perps book declares it)."
                             ),
                         },
                     },
+                },
+                "group_limits": {
+                    **GROUP_LIMITS_SCHEMA,
+                    "description": (
+                        "The backtest's group limits, in the same decision (TOM-1520): "
+                        + GROUP_LIMITS_SCHEMA["description"]
+                    ),
                 },
                 "min_trade_size": {
                     "type": "number",
@@ -877,14 +900,30 @@ class TradingPipeline:
                         broker.set_position_limits(limits)
                         logger.info("Injected %d position limits into broker", len(limits))
 
-        # --- Stage 4: Rebalancing policy + Risk Transforms + Stage 5: Order Generation ---
-        # The backtest's rebalancing policy, decided by the same code (TOM-1518):
-        # cadence x trigger + min_trade, on the decided history and the broker's
-        # held book. A policy that trades every bar to the last decided row (the
-        # default, and every config without `rebalancing_policy` or tranches)
-        # takes the path below unchanged.
+        # --- Stage 4: the decision + the rebalancing policy + Stage 5: Order Generation ---
+        # The decision is the backtest's own transform (quantbox.decision, TOM-1520): the
+        # short clip, the gross cap, the group limits, then venue.leverage normalisation —
+        # the target weights are FINAL before the policy reads them. The policy is the
+        # backtest's too (TOM-1518): cadence x trigger + min_trade, on the final history
+        # and the broker's held book. A policy that trades every bar to the last decided
+        # row (the default, and every config without `rebalancing_policy` or tranches)
+        # decides on that row alone.
         policy = self._live_policy(params, rebalancer_cfg)
+        leverage = resolve_leverage((params.get("venue") or {}).get("leverage"))
+        rebal_params = (
+            self._rebalancer_params(
+                rebalancer_cfg=rebalancer_cfg,
+                params=params,
+                strategy_results=strategy_results,
+                mode=mode,
+                policy=policy,
+            )
+            if rebalancer is not None
+            else {}
+        )
+        rules = self._decision_rules(params, rebalancer, rebal_params, leverage, universe)
         policy_decision: LiveDecision | None = None
+        decision_report: dict[str, Any] | None = None
         live_book = mode not in ("backtest",) and broker is not None
         order_result: dict[str, Any] | None = None
         if not trades_every_bar(policy):
@@ -894,30 +933,19 @@ class TradingPipeline:
                     f"rebalancing_policy {policy.policy!r} reads the decided weights HISTORY, and the aggregation "
                     "returned none (an injected aggregator must return a `weights` frame)"
                 )
+            history, decision_report = final_targets(history.sort_index(), rules)
+            log_normalisation(decision_report)
             next_bar = next_execution_bar(
                 pd.Timestamp(history.index[-1]),
                 _parse_bar_size(context.frequency),
                 policy.calendar or context.calendar,
             )
-            leverage = str((params.get("venue") or {}).get("leverage", "normalize"))
             if live_book and rebalancer is not None:
-                rebal_params = self._rebalancer_params(
-                    rebalancer_cfg=rebalancer_cfg,
-                    params=params,
-                    strategy_results=strategy_results,
-                    mode=mode,
-                    policy=policy,
-                )
 
                 def generate(weights: dict[str, float]) -> dict[str, Any]:
                     return rebalancer.generate_orders(weights=weights, broker=broker, params=rebal_params)
 
                 book_capital = float(rebal_params.get("capital_at_risk", DEFAULT_CAPITAL_AT_RISK))
-                own_transforms = getattr(rebalancer, "_apply_risk_transforms", None)
-                if callable(own_transforms):
-                    history = self._transform_history(
-                        history, lambda w: own_transforms(w, rebal_params), (type(rebalancer).__module__,)
-                    )
             elif live_book:
                 internal_params = {**params, "min_trade_size": 0.0} if policy.declared else params
 
@@ -934,8 +962,6 @@ class TradingPipeline:
                     return out
 
                 book_capital = float(params.get("capital_at_risk", DEFAULT_CAPITAL_AT_RISK))
-            if not (live_book and rebalancer is not None):
-                history = self._transform_history(history, lambda w: self._apply_risk_transforms(w, params))
             if live_book:
                 try:
                     policy_decision, order_result = self._policy_orders(
@@ -959,18 +985,12 @@ class TradingPipeline:
                 # No broker: no held book. The cadence and the frequency still decide the targets.
                 policy_decision = decide_rebalance(policy, history, None, next_bar=next_bar, leverage=leverage)
                 held_or_targets = policy_decision.targets if policy_decision.targets is not None else pd.Series()
-                final_weights = self._apply_risk_transforms(
-                    {str(k): float(v) for k, v in held_or_targets.items()}, params
-                )
-        elif rebalancer is not None and live_book:
-            # Use injected rebalancer for risk transforms + order generation
-            rebal_params = self._rebalancer_params(
-                rebalancer_cfg=rebalancer_cfg,
-                params=params,
-                strategy_results=strategy_results,
-                mode=mode,
-                policy=policy,
-            )
+                final_weights = _target_dict({str(k): float(v) for k, v in held_or_targets.items()})
+        else:
+            # Every bar trades to the last decided row: the decision on that row alone.
+            final_weights, decision_report = self._final_row(final_weights, rules)
+        if trades_every_bar(policy) and rebalancer is not None and live_book:
+            # The injected rebalancer turns the final targets into orders (its own caps re-applied: a no-op).
             try:
                 order_result = rebalancer.generate_orders(
                     weights=final_weights,
@@ -997,10 +1017,12 @@ class TradingPipeline:
                     exc,
                 )
                 order_result = _empty_order_result()
-        else:
-            # Fallback: use internal risk transforms
-            final_weights = self._apply_risk_transforms(final_weights, params)
-        policy_notes = {"rebalancing_policy": policy_decision.record()} if policy_decision is not None else {}
+        policy_notes: dict[str, Any] = (
+            {"rebalancing_policy": policy_decision.record()} if policy_decision is not None else {}
+        )
+        if decision_report is not None:
+            # What the decision did to the target weights (TOM-1520): the rules and the rows it scaled.
+            policy_notes["decision"] = decision_report
 
         if mode == "backtest" or broker is None:
             # In backtest mode, just save targets with no execution
@@ -1629,35 +1651,54 @@ class TradingPipeline:
         return policy
 
     @staticmethod
-    def _transform_history(
-        history: pd.DataFrame,
-        transform: Callable[[dict[str, float]], dict[str, float]],
-        quiet_loggers: tuple[str, ...] = (),
-    ) -> pd.DataFrame:
-        """The risk transforms the order generator applies, on EVERY decided row, before the policy.
+    def _risk_rules(params: dict[str, Any]) -> dict[str, Any]:
+        """The decision's short clip and gross cap from the pipeline's own ``risk`` block (defaults 1 / no shorts)."""
+        risk_cfg = params.get("risk") or {}
+        return {
+            "allow_short": bool(risk_cfg.get("allow_short", False)),
+            "max_leverage": float(risk_cfg.get("max_leverage", 1)),
+        }
 
-        As in the backtest (venue / risk transforms per row, then the seam), the
-        trigger and ``min_trade`` compare the held book with the targets the
-        orders will actually size: a leverage cap or a short clip that binds
-        cannot fire a rebalance the order generator then clamps away. The
-        transforms are idempotent on their own output (a capped row is under
-        the cap, a clipped row has no short), so sizing the decided targets
-        again changes nothing. NaN cells hold the last target first (the
-        seam's NaN policy). The transform's per-row leverage warnings are held
-        back here (the sizing pass of the last row logs them once).
+    def _decision_rules(
+        self,
+        params: dict[str, Any],
+        rebalancer: RebalancingPlugin | None,
+        rebal_params: dict[str, Any],
+        leverage: str,
+        universe: pd.DataFrame,
+    ) -> DecisionRules:
+        """The run's decision rules (:class:`quantbox.decision.DecisionRules`, TOM-1520).
+
+        The short clip and the gross cap are the ORDER GENERATOR's: an injected
+        rebalancer's own (``risk_rules``, the caps it re-applies when it sizes,
+        so re-applying them changes nothing), else the pipeline's ``risk``
+        block. A third-party rebalancer that declares no ``risk_rules`` gets no
+        clip and no cap here (it owns them, as before). ``group_limits`` and
+        ``venue.leverage`` are the pipeline's, as in the backtest.
         """
-        filled = history.sort_index().ffill().fillna(0.0)
-        quiet = [logger, *(logging.getLogger(n) for n in quiet_loggers)]
-        levels = [lg.level for lg in quiet]
-        try:
-            for lg in quiet:
-                lg.setLevel(logging.ERROR)
-            rows = [transform({str(k): float(v) for k, v in row.items()}) for _, row in filled.iterrows()]
-        finally:
-            for lg, level in zip(quiet, levels, strict=True):
-                lg.setLevel(level)
-        out = pd.DataFrame(rows, index=filled.index)
-        return out.reindex(columns=[str(c) for c in filled.columns]).fillna(0.0)
+        spec = params.get("group_limits")
+        groups: GroupLimits | None = resolve_group_limits(spec).bind(universe) if spec is not None else None
+        if rebalancer is None:
+            caps = self._risk_rules(params)
+        else:
+            own = getattr(rebalancer, "risk_rules", None)
+            caps = own(rebal_params) if callable(own) else {"allow_short": True, "max_leverage": None}
+        return DecisionRules(
+            allow_short=bool(caps["allow_short"]),
+            max_leverage=caps["max_leverage"],
+            groups=groups,
+            leverage=leverage,
+        )
+
+    @staticmethod
+    def _final_row(weights: dict[str, float], rules: DecisionRules) -> tuple[dict[str, float], dict[str, Any]]:
+        """The decision on ONE decided row (the last), as ``{symbol: weight}`` without zeros, largest first."""
+        if not weights:
+            return {}, final_targets(pd.DataFrame(), rules)[1]
+        row = pd.DataFrame([{str(k): float(v) for k, v in weights.items()}])
+        final, report = final_targets(row, rules)
+        log_normalisation(report)
+        return _target_dict({str(k): float(v) for k, v in final.iloc[0].items()}), report
 
     @staticmethod
     def _held_weights(rebalancing_df: Any, capital_at_risk: float) -> pd.Series:
@@ -1749,32 +1790,14 @@ class TradingPipeline:
         weights: dict[str, float],
         params: dict[str, Any],
     ) -> dict[str, float]:
-        """Apply the leverage cap and negative-weight clamping.
+        """The short clip, then the gross cap (:func:`quantbox.decision.risk_caps_row`), on the targets the
+        internal order generator sizes; zeros dropped, largest first.
 
-        Ported from quantlab trading.py risk management section. Tranching is
-        not here any more: ``risk.tranches`` is the rebalancing policy's
-        tranche cadence (:meth:`_live_policy`, TOM-1518).
+        The decision (:func:`quantbox.decision.final_targets`) already applied
+        both, in the same order, so this re-application changes nothing. Tranching
+        is the rebalancing policy's tranche cadence (:meth:`_live_policy`, TOM-1518).
         """
-        risk_cfg = params.get("risk", {})
-        max_leverage = float(risk_cfg.get("max_leverage", 1))
-        allow_short = bool(risk_cfg.get("allow_short", False))
-
-        s = pd.Series(weights, dtype=float)
-
-        # Max leverage
-        gross = s.abs().sum()
-        if gross > max_leverage:
-            logger.warning("Leverage %.4f exceeds max_leverage %.1f, scaling down", gross, max_leverage)
-            s = s / gross * max_leverage
-
-        # Clamp negatives
-        if not allow_short:
-            s = s.clip(lower=0)
-
-        # Drop zeros and sort
-        s = s[s != 0].sort_values(ascending=False)
-
-        return {str(k): float(v) for k, v in s.items()}
+        return _target_dict(risk_caps_row(weights, **self._risk_rules(params)))
 
     # ==================================================================
     # Stage 5: Order generation

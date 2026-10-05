@@ -132,9 +132,10 @@ def _backtest(
     universe: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     """``backtest()`` with an already-resolved timing (``optimize()`` resolves it once per call)."""
+    from quantbox.decision import DecisionRules, decision_metrics, final_book, with_decision
     from quantbox.engine import Costs, get_engine, simulate
     from quantbox.engine.groups import resolve_group_limits
-    from quantbox.financing import resolve_leverage
+    from quantbox.financing import DEFAULT_LEVERAGE, resolve_leverage
 
     engine = get_engine(engine)  # first: a missing [vectorbt] extra is named before anything else runs
     groups = None
@@ -142,20 +143,29 @@ def _backtest(
         if universe is None:
             raise ValueError("group_limits needs universe=: a frame with `symbol` and the group column it names")
         groups = resolve_group_limits(group_limits).bind(universe)
+    lev = None if leverage is None else resolve_leverage(leverage)
+    # The decision (TOM-1520): group limits, then venue.leverage normalisation, on the decided rows —
+    # the seam executes final targets. schedule: bars measures leverage only (simulate refuses one declared).
+    final, reports = final_book(
+        _on_price_bars(prices, weights),
+        DecisionRules(groups=groups, leverage="none" if timing.schedule == "bars" else (lev or DEFAULT_LEVERAGE)),
+    )
     book = simulate(
         prices,
-        _on_price_bars(prices, weights),
+        final,
         engine=engine,
         timing=timing,
         costs=Costs(fees=fees, fixed_fees=fixed_fees, slippage=slippage),
         rebalancing_freq=rebalancing_freq,
         threshold=threshold,
         policy=policy,
-        groups=groups,
-        leverage=None if leverage is None else resolve_leverage(leverage),
+        leverage=lev,
         engine_params=engine_params,
         trading_days=trading_days,
     )
+    if book.data_validation is not None:  # one slice: record the decision as the pipeline does
+        book.data_validation = with_decision(book.data_validation, reports[0])
+        book.book_metrics = {**book.book_metrics, **decision_metrics(reports[0])}
     return {
         "engine": book.engine,
         "book": book,

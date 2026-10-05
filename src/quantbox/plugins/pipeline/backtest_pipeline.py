@@ -11,12 +11,15 @@ Workflow
 2. Run strategies → full weights time series
 3. Aggregate across strategies (same logic), then the overlay chain
    (``plugins.overlays``, ADR-0004) modifies the decided book in config order
-4. Apply venue constraint (``venue.allow_shorts``) then risk transforms
-   (leverage cap; ``risk.tranches`` is the seam's tranche cadence, TOM-1513)
-5-6. Hand the decided book to the engine seam
+4. The decision (:func:`quantbox.decision.final_targets`, the transform live
+   trading calls too, TOM-1520): the short clip (``venue.allow_shorts``), the
+   gross cap (``risk.max_leverage``), the group limits, then ``venue.leverage``
+   normalisation — the FINAL target weights (``risk.tranches`` is the seam's
+   tranche cadence, TOM-1513)
+5-6. Hand the target weights to the engine seam
    (:func:`quantbox.engine.simulate`): calendars, the rebalancing schedule,
-   the execution lag (``execution.lag_bars``, default 1 = next-bar), leverage,
-   financing legs, then the engine adapter — the ONE place decided weights
+   the execution lag (``execution.lag_bars``, default 1 = next-bar), the cash
+   cap, financing legs, then the engine adapter — the ONE place target weights
    become traded weights
 7. Compute performance + traded-book metrics
 8. Save artifacts (weights_history = decided targets, traded_weights = what
@@ -63,6 +66,7 @@ from quantbox.contracts import (
     RunResult,
     StrategyPlugin,
 )
+from quantbox.decision import DecisionRules, decision_metrics, final_targets, log_normalisation, with_decision
 from quantbox.engine import (
     DEFAULT_ENGINE,
     NAN_POLICY,
@@ -86,7 +90,6 @@ from quantbox.execution import (
     EXECUTION_SCHEMA,
     VENUE_SCHEMA,
     check_schedule_venue,
-    clip_shorts,
     exposure_metrics,
     resolve_allow_shorts,
     resolve_execution,
@@ -747,17 +750,18 @@ class BacktestPipeline:
         wh_save.index.name = "date"
         a_wh = store.put_parquet("weights_history", wh_save.reset_index())
 
-        # --- Stage 4: Venue constraint + risk transforms on the full time series ---
+        # --- Stage 4: the decision — the final target weights (short clip, gross cap, group limits,
+        # normalisation; quantbox.decision, the same transform live trading calls, TOM-1520) ---
         risk_cfg = params.get("risk", {})
         target_stats = exposure_metrics(weights_history, "target")
-        weights_history = self._apply_venue_and_risk(weights_history, risk_cfg, allow_shorts, venue_declared)
+        weights_history, decision = self._decide(weights_history, risk_cfg, allow_shorts, groups, plan)
 
-        # --- Stage 5-6: the engine seam — calendars, the lag, leverage, financing legs, the engine ---
-        book = self._simulate(prices_wide, weights_history, market_data, plan, costs, plan["policy"], groups)
+        # --- Stage 5-6: the engine seam — calendars, the lag, the policy, the cash cap, financing legs, the engine ---
+        book = self._simulate(prices_wide, weights_history, market_data, plan, costs, plan["policy"])
         bt_prices, bt_weights = book.prices, book.weights
         common_cols = [c for c in weights_history.columns if c in prices_wide.columns]
         a_traded = store.put_parquet("traded_weights", bt_weights.rename_axis("date").reset_index())
-        a_validation = store.put_json("data_validation", book.data_validation)
+        a_validation = store.put_json("data_validation", with_decision(book.data_validation, decision))
         a_schedule = store.put_parquet("rebalance_schedule", book.schedule)
 
         logger.info(
@@ -773,6 +777,7 @@ class BacktestPipeline:
             **book.metrics,
             **self._book_metrics(target_stats, bt_weights, lag_bars, allow_shorts, venue_declared, "single run"),
             **book.book_metrics,
+            **decision_metrics(decision),
         }
         portfolio_daily = book.portfolio_daily
 
@@ -995,7 +1000,7 @@ class BacktestPipeline:
         Each variant has: name, strategy (registry name), optional strategy.params,
         optional overrides (fees, threshold, rebalancing_freq, rebalancing_policy, risk: {...}).
         Reuses the one strategy runner, _aggregate_weights_history,
-        _apply_risk_transforms_ts and the engine seam (:meth:`_simulate`) for
+        the decision (:meth:`_decide`) and the engine seam (:meth:`_simulate`) for
         parity with the single-variant path — on either engine.
         """
         prices_wide = market_data["prices"]
@@ -1036,15 +1041,15 @@ class BacktestPipeline:
             # Stage 3b: the overlay chain is run-level — every variant gets the same one.
             wh, overlays_applied = self._apply_overlay_stage(wh, market_data, overlay_chain)
 
-            # Stage 4: venue constraint + risk transforms
+            # Stage 4: the decision (final target weights), exactly as the single run
             v_allow_shorts = allow_shorts if venue_declared else bool(v_risk_cfg.get("allow_short", False))
             v_target_stats = exposure_metrics(wh, "target")
-            wh = self._apply_venue_and_risk(wh, v_risk_cfg, v_allow_shorts, venue_declared)
+            where = f"Variant {vname!r}: "
+            wh, v_decision = self._decide(wh, v_risk_cfg, v_allow_shorts, groups, plan, where=where)
 
             # Stage 5-6: the engine seam, exactly as the single run
-            where = f"Variant {vname!r}: "
             try:
-                res = self._simulate(prices_wide, wh, market_data, plan, v_costs, v_policy, groups, where=where)
+                res = self._simulate(prices_wide, wh, market_data, plan, v_costs, v_policy, where=where)
             except ValueError as exc:
                 msg = str(exc)
                 raise ValueError(msg if msg.startswith("Variant") else f"Variant {vname!r}: {msg}") from exc
@@ -1064,8 +1069,9 @@ class BacktestPipeline:
                         v_target_stats, bt_w, lag_bars, v_allow_shorts, venue_declared, f"variant {vname!r}"
                     ),
                     **res.book_metrics,
+                    **decision_metrics(v_decision),
                 },
-                "data_validation": res.data_validation,
+                "data_validation": with_decision(res.data_validation, v_decision),
                 "schedule": res.schedule,
                 "financing": res.financing,
                 "funding_modelled": res.funding_modelled,
@@ -1118,6 +1124,7 @@ class BacktestPipeline:
                     "weight_age": r["data_validation"]["weight_age"],
                     "index_alignment": r["data_validation"]["index_alignment"],
                     "leverage": r["data_validation"]["leverage"],
+                    "decision": r["data_validation"]["decision"],
                 }
                 for n, r in variant_results.items()
             },
@@ -1289,10 +1296,11 @@ class BacktestPipeline:
         the seam later builds the same book from it.
         No lag is applied here — the engine seam schedules and lags the overlaid book once.
 
-        The filled value must not LEAK past the chain, though: the risk
-        transforms run on the decided book BEFORE the engine resolves its NaNs,
-        and the leverage cap's row gross skips a NaN but counts a filled value. So
-        a cell that came in NaN and that the chain left at exactly its
+        The filled value must not LEAK past the chain, though: the seam
+        reindexes the book onto the price bars BEFORE it resolves its NaNs, so a
+        filled cell is not the same book as a NaN one (the decision,
+        :func:`quantbox.decision.final_targets`, keeps an untouched NaN for the
+        same reason). So a cell that came in NaN and that the chain left at exactly its
         materialised value goes back to NaN — no overlay touched it, and the
         book downstream is the one the run without overlays builds. A cell the
         chain CHANGED keeps the overlay's number.
@@ -1313,29 +1321,37 @@ class BacktestPipeline:
         return out.mask(untouched), record
 
     # ==================================================================
-    # Stage 4: Risk transforms on full time series
+    # Stage 4: the decision — final target weights on the full time series
     # ==================================================================
-    def _apply_venue_and_risk(
-        self,
+    @staticmethod
+    def _decide(
         weights: pd.DataFrame,
         risk_cfg: dict[str, Any],
         allow_shorts: bool,
-        venue_declared: bool,
-    ) -> pd.DataFrame:
-        """Venue constraint FIRST, then the risk transforms.
+        groups: GroupLimits | None,
+        plan: dict[str, Any],
+        *,
+        where: str = "",
+    ) -> tuple[pd.DataFrame, dict[str, Any]]:
+        """The decided book -> the FINAL target weights (:func:`quantbox.decision.final_targets`, TOM-1520).
 
-        With a declared ``venue.allow_shorts: false``, negative TARGET weights
-        are clipped to 0 before the leverage cap, so no transform ever scales a
-        position the venue cannot hold. The long side is not re-normalised: the
-        leverage cap only ever scales DOWN, so a clipped book carries less
-        gross rather than re-levered longs. Tranching happens later, in the
-        seam (the tranche cadence), so it always averages clipped targets: the
-        legacy order (``risk.allow_short`` clipped the tranche MEAN) is gone
-        with ``risk.tranches`` (TOM-1513).
+        One ordered transform, the one live trading calls: the short clip
+        (``venue.allow_shorts`` / ``risk.allow_short``), the gross cap
+        (``risk.max_leverage``), the group limits, then ``venue.leverage``
+        (``normalize`` scales a row above net 1 to net 1; ``borrow`` keeps it;
+        ``none`` on ``execution.schedule: bars`` only measures). The seam and
+        its rebalancing policy read these targets; tranching (the tranche
+        cadence) therefore averages final rows.
         """
-        if venue_declared and not allow_shorts:
-            weights = clip_shorts(weights)
-        return self._apply_risk_transforms_ts(weights, risk_cfg, allow_short=allow_shorts)
+        rules = DecisionRules(
+            allow_short=allow_shorts,
+            max_leverage=_max_leverage(risk_cfg),
+            groups=groups,
+            leverage=plan["venue"]["leverage"],
+        )
+        final, report = final_targets(weights, rules)
+        log_normalisation(report, where=where)
+        return final, report
 
     @staticmethod
     def _simulate(
@@ -1345,17 +1361,17 @@ class BacktestPipeline:
         plan: dict[str, Any],
         costs: dict[str, float],
         policy: RebalancePolicy,
-        groups: GroupLimits | None = None,
         *,
         where: str = "",
     ) -> TradedBook:
-        """The decided book through the engine seam (:func:`quantbox.engine.simulate`).
+        """The final targets through the engine seam (:func:`quantbox.engine.simulate`).
 
-        The ONLY place decided weights become traded weights, shared by the
+        The ONLY place target weights become traded weights, shared by the
         single-run and variants flows and by every engine: calendars, the
-        group limits, the rebalancing policy, the execution lag,
-        ``venue.leverage``, financing legs and the adapter (docs/adr/0007,
-        0008). The engine reads the funding series only when it charges funding.
+        rebalancing policy, the execution lag, the cash cap, financing legs
+        and the adapter (docs/adr/0007, 0008). The group limits and the
+        normalisation already ran in :meth:`_decide`. The engine reads the
+        funding series only when it charges funding.
         """
         leverage = plan["venue"]["leverage"]
         return simulate(
@@ -1365,7 +1381,6 @@ class BacktestPipeline:
             timing=plan["timing"],
             costs=Costs(fees=costs["fees"], fixed_fees=costs["fixed_fees"], slippage=costs["slippage"]),
             policy=policy,
-            groups=groups,
             leverage=None if leverage == "none" else leverage,
             financing=plan.get("financing"),
             funding=market_data.get("funding_rates"),
@@ -1429,34 +1444,6 @@ class BacktestPipeline:
             "target_short_gross_share": target_stats["target_short_gross_share"],
             "target_mean_net_exposure": target_stats["target_mean_net_exposure"],
         }
-
-    def _apply_risk_transforms_ts(
-        self,
-        weights: pd.DataFrame,
-        risk_cfg: dict[str, Any],
-        *,
-        allow_short: bool | None = None,
-    ) -> pd.DataFrame:
-        """Apply short clamping and the leverage cap to the full weights time
-        series. ``allow_short`` (resolved venue) overrides ``risk.allow_short``
-        when given. ``risk.tranches`` is not applied here: it is the seam's
-        tranche cadence (:func:`_risk_tranches`, TOM-1513)."""
-        max_leverage = _max_leverage(risk_cfg)
-        if allow_short is None:
-            allow_short = bool(risk_cfg.get("allow_short", False))
-
-        w = weights.copy()
-
-        # Clamp negatives
-        if not allow_short:
-            w = w.clip(lower=0)
-
-        # Leverage cap per row
-        gross = w.abs().sum(axis=1)
-        scale = (max_leverage / gross).clip(upper=1.0)
-        w = w.mul(scale, axis=0)
-
-        return w
 
     # ==================================================================
     # Frequency resolution (issue #20)
