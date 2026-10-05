@@ -9,6 +9,7 @@ amends: "ADR-0001 § the adapter rule (a re-export, never an opaque wrapper): bo
 status_changes:
   - 2026-10-04: proposed with TOM-1447 (P3a of the quantbox 1.0 spec, TOM-1325)
   - 2026-10-05: amended and accepted with TOM-1450 (3d-1) — Tom, 2026-10-05: one book builder for every door (alternative B), the seam owns the rebalancing schedule, the engines stay separate under it
+  - 2026-10-05: decision 11 added with TOM-1450 (3d-2) — the rebalancing policies and group limits are seam semantics
 ---
 
 # ADR-0008: Book simulation sits behind one engine seam, with vectorbt and rsims as adapters
@@ -103,6 +104,25 @@ the same strategy gave a different book through `backtest()` than through
     `rebalancing_freq` and `threshold`). Book simulation is the one capability
     that sits behind a seam, because it has two implementations. We do not
     build one combined backtester.
+11. **Rebalancing policies and group limits are seam semantics (TOM-1450 3d-2).**
+    `rebalancing_policy` declares one of four policies
+    (`quantbox.engine.policy`), each an orders mask in the seam:
+    `periodic` (today's `rebalancing_freq`), `tranche` (the targets are the
+    mean of N staggered tranches, one refreshed per decision), `band` (today's
+    `threshold`: the whole book trades when a held weight drifted past the
+    band) and `corridor` (only the instruments outside their own
+    `[target - below, target + above]` corridor trade; an exit always trades).
+    Every policy takes a `frequency` (`weekly` / `monthly` / ... = the last
+    execution bar of the period, or any `rebalancing_freq` form) and an
+    optional market `calendar` (pandas-market-calendars): the execution bars
+    are narrowed to that market's sessions, so decisions and the lag use
+    sessions only. `rebalancing_freq` / `threshold` stay as the legacy
+    spelling of `periodic` / `band` and write the same files; declaring both
+    spellings is refused. `group_limits` (`quantbox.engine.groups`) keeps each
+    group's gross weight inside `[min, max]` on every decided row, before the
+    schedule; the groups come from universe metadata (`by:` a column of
+    `load_universe()`), and an infeasible limit refuses the run. No adapter
+    changed: `execute(...)` still receives targets and an orders mask.
 
 ### The threshold caveat
 
@@ -159,7 +179,10 @@ book was not.
 - `quantbox sweep` takes `backtest.engine` and records `engine` in `sweep@1`.
 - A new engine is one adapter class (`execute`, `stats`) plus one registry row.
 - The policies of TOM-1450 3d (periodic on a market calendar, tranche, band,
-  corridor) are orders masks in the seam; no adapter changes for them.
+  corridor) are orders masks in the seam; no adapter changed for them
+  (decision 11). `tests/test_rebalancing_policies.py` holds a known answer per
+  policy, the same orders and trades on both adapters, and a seeded
+  randomized check that a group limit holds on every rebalance date.
 
 ### Unintended (and accepted)
 
@@ -167,7 +190,14 @@ book was not.
   (`total_return`, `sharpe_ratio`, `sortino_ratio`, `annualized_return`,
   `annualized_volatility`, `max_drawdown`, `calmar_ratio`). Any other name is
   warned and left out.
-- The threshold caveat above.
+- The threshold caveat above. It applies to `band` and `corridor` too.
+- A corridor's held book mixes targets and drifted weights by design, so a
+  group limit binds its TARGETS, not the held book between rebalances.
+  `venue.leverage: normalize` scales a row above net 1 down proportionally:
+  a group maximum still holds, a group minimum can fall below its bound by
+  that scale.
+- A tranche holds its target weights between refreshes (the book is the mean
+  of the tranche targets), not a separately drifting sub-account.
 - A `backtest()` weights frame stamped only on rebalance dates is carried onto
   the price bars from its first row (`_on_price_bars`), and a row stamped on a
   date with no price bar is decided on the next price bar.
