@@ -12,7 +12,7 @@ Workflow
 3. Aggregate across strategies (same logic), then the overlay chain
    (``plugins.overlays``, ADR-0004) modifies the decided book in config order
 4. Apply venue constraint (``venue.allow_shorts``) then risk transforms
-   (tranching, leverage cap)
+   (leverage cap; ``risk.tranches`` is the seam's tranche cadence, TOM-1513)
 5-6. Hand the decided book to the engine seam
    (:func:`quantbox.engine.simulate`): calendars, the rebalancing schedule,
    the execution lag (``execution.lag_bars``, default 1 = next-bar), leverage,
@@ -1299,7 +1299,7 @@ class BacktestPipeline:
 
         The filled value must not LEAK past the chain, though: the risk
         transforms run on the decided book BEFORE the engine resolves its NaNs,
-        and tranching's rolling mean skips a NaN but averages a filled value. So
+        and the leverage cap's row gross skips a NaN but counts a filled value. So
         a cell that came in NaN and that the chain left at exactly its
         materialised value goes back to NaN — no overlay touched it, and the
         book downstream is the one the run without overlays builds. A cell the
