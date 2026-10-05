@@ -132,7 +132,7 @@ def _backtest(
     universe: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     """``backtest()`` with an already-resolved timing (``optimize()`` resolves it once per call)."""
-    from quantbox.decision import DecisionRules, final_book
+    from quantbox.decision import DecisionRules, decision_metrics, final_book, with_decision
     from quantbox.engine import Costs, get_engine, simulate
     from quantbox.engine.groups import resolve_group_limits
     from quantbox.financing import DEFAULT_LEVERAGE, resolve_leverage
@@ -146,7 +146,7 @@ def _backtest(
     lev = None if leverage is None else resolve_leverage(leverage)
     # The decision (TOM-1520): group limits, then venue.leverage normalisation, on the decided rows —
     # the seam executes final targets. schedule: bars measures leverage only (simulate refuses one declared).
-    final, _ = final_book(
+    final, reports = final_book(
         _on_price_bars(prices, weights),
         DecisionRules(groups=groups, leverage="none" if timing.schedule == "bars" else (lev or DEFAULT_LEVERAGE)),
     )
@@ -163,6 +163,9 @@ def _backtest(
         engine_params=engine_params,
         trading_days=trading_days,
     )
+    if book.data_validation is not None:  # one slice: record the decision as the pipeline does
+        book.data_validation = with_decision(book.data_validation, reports[0])
+        book.book_metrics = {**book.book_metrics, **decision_metrics(reports[0])}
     return {
         "engine": book.engine,
         "book": book,

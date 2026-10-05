@@ -66,7 +66,7 @@ from quantbox.contracts import (
     RunResult,
     StrategyPlugin,
 )
-from quantbox.decision import DecisionRules, final_targets, log_normalisation
+from quantbox.decision import DecisionRules, decision_metrics, final_targets, log_normalisation, with_decision
 from quantbox.engine import (
     DEFAULT_ENGINE,
     NAN_POLICY,
@@ -109,26 +109,6 @@ logger = logging.getLogger(__name__)
 def _max_leverage(risk_cfg: dict[str, Any]) -> float:
     """The gross cap the leverage transform applies — 99 (effectively none) when unset."""
     return float(risk_cfg.get("max_leverage", 99))
-
-
-def _with_decision(validation: dict[str, Any], decision: dict[str, Any]) -> dict[str, Any]:
-    """``data_validation.json`` with the decision's record (minor 7, TOM-1520) and its group-limit report."""
-    out = {**validation, "decision": {k: v for k, v in decision.items() if k != "groups"}}
-    if "groups" in decision:
-        out["groups"] = decision["groups"]
-    return out
-
-
-def _decision_metrics(decision: dict[str, Any]) -> dict[str, float]:
-    """The decision's ``metrics.json`` counters: rows normalised to net 1, and the group-limit rows."""
-    out = {
-        "leverage_normalised_rows": float(decision["rows_normalised"]),
-        "leverage_normalise_scale_mean": float(decision["scale_mean"]),
-        "leverage_normalise_scale_min": float(decision["scale_min"]),
-    }
-    if "groups" in decision:
-        out["group_limit_rows_adjusted"] = float(decision["groups"]["rows_adjusted"])
-    return out
 
 
 def _variant_risk_cfg(base_risk_cfg: dict[str, Any], variant: dict[str, Any]) -> dict[str, Any]:
@@ -781,7 +761,7 @@ class BacktestPipeline:
         bt_prices, bt_weights = book.prices, book.weights
         common_cols = [c for c in weights_history.columns if c in prices_wide.columns]
         a_traded = store.put_parquet("traded_weights", bt_weights.rename_axis("date").reset_index())
-        a_validation = store.put_json("data_validation", _with_decision(book.data_validation, decision))
+        a_validation = store.put_json("data_validation", with_decision(book.data_validation, decision))
         a_schedule = store.put_parquet("rebalance_schedule", book.schedule)
 
         logger.info(
@@ -797,7 +777,7 @@ class BacktestPipeline:
             **book.metrics,
             **self._book_metrics(target_stats, bt_weights, lag_bars, allow_shorts, venue_declared, "single run"),
             **book.book_metrics,
-            **_decision_metrics(decision),
+            **decision_metrics(decision),
         }
         portfolio_daily = book.portfolio_daily
 
@@ -1089,9 +1069,9 @@ class BacktestPipeline:
                         v_target_stats, bt_w, lag_bars, v_allow_shorts, venue_declared, f"variant {vname!r}"
                     ),
                     **res.book_metrics,
-                    **_decision_metrics(v_decision),
+                    **decision_metrics(v_decision),
                 },
-                "data_validation": _with_decision(res.data_validation, v_decision),
+                "data_validation": with_decision(res.data_validation, v_decision),
                 "schedule": res.schedule,
                 "financing": res.financing,
                 "funding_modelled": res.funding_modelled,

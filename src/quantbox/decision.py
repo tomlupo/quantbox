@@ -214,6 +214,26 @@ def final_book(
     return pd.concat(parts, axis=1).reindex(columns=decided.columns), reports
 
 
+def with_decision(validation: Mapping[str, Any], report: Mapping[str, Any]) -> dict[str, Any]:
+    """``data_validation.json`` with the decision's record (minor 7, TOM-1520) and its group-limit report."""
+    out = {**validation, "decision": {k: v for k, v in report.items() if k != "groups"}}
+    if "groups" in report:
+        out["groups"] = report["groups"]
+    return out
+
+
+def decision_metrics(report: Mapping[str, Any]) -> dict[str, float]:
+    """The decision's ``metrics.json`` counters: rows normalised to net 1, and the group-limit rows."""
+    out = {
+        "leverage_normalised_rows": float(report["rows_normalised"]),
+        "leverage_normalise_scale_mean": float(report["scale_mean"]),
+        "leverage_normalise_scale_min": float(report["scale_min"]),
+    }
+    if "groups" in report:
+        out["group_limit_rows_adjusted"] = float(report["groups"]["rows_adjusted"])
+    return out
+
+
 def log_normalisation(report: Mapping[str, Any], *, where: str = "") -> None:
     """The loud lines for rows the gross cap and ``normalize`` scaled (one each per run, not per row)."""
     if report.get("rows_gross_capped"):
