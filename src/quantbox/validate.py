@@ -238,7 +238,7 @@ def check_plugin_params(plugins: dict[str, Any], registry: Any = None) -> list[V
 
 def _check_backtest_execution(plugins: dict[str, Any]) -> list[ValidationFinding]:
     """Validate ``execution:`` / ``venue:`` for backtest pipelines with the pipeline's own resolver."""
-    from .execution import resolve_allow_shorts, resolve_lag_bars
+    from .execution import check_schedule_venue, resolve_allow_shorts, resolve_execution
     from .financing import resolve_financing, resolve_leverage
 
     pipeline = plugins.get("pipeline")
@@ -247,11 +247,12 @@ def _check_backtest_execution(plugins: dict[str, Any]) -> list[ValidationFinding
     params = pipeline.get("params") or {}
     findings: list[ValidationFinding] = []
     try:
-        resolve_lag_bars(params.get("execution"))
+        timing = resolve_execution(params.get("execution"))
         resolve_allow_shorts(params.get("venue"), params.get("risk"))
         venue = params.get("venue") if isinstance(params.get("venue"), dict) else {}
         resolve_financing(venue.get("financing"))
-        resolve_leverage(venue.get("leverage"), params.get("engine"))  # None: the default engine
+        resolve_leverage(venue.get("leverage"))
+        check_schedule_venue(timing, params.get("venue"))
     except ValueError as exc:
         findings.append(ValidationFinding("error", str(exc)))
     return findings

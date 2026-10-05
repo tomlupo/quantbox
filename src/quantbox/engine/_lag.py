@@ -3,17 +3,14 @@
 Both engines are same-bar primitives: the row handed to them for bar ``t``
 fills at ``close[t]``. A weight DECIDED on bar ``t`` (with data through
 ``close[t]``) therefore has to be moved ``lag_bars`` bars later before any
-engine sees it. Every book the seam builds moves it here, through
-:func:`lag_positions`:
+engine sees it. The one book function (:func:`quantbox.engine.simulate`)
+moves it here, through :func:`lag_positions`, counted in execution-calendar
+bars (:mod:`quantbox.engine.schedule`; on ``schedule: bars`` every price bar
+is one). A buy-and-hold book's one decision moves with it.
 
-- the scheduled book (``quantbox run``, variants) counts the lag in
-  execution-calendar bars (:mod:`quantbox.engine.schedule`);
-- the bar-grid book (``backtest()``, ``optimize()``, the sweep) shifts the
-  weights by the same number of rows (:func:`lag_frame`), and moves a
-  buy-and-hold book's one trade to the first bar a decision exists
-  (:func:`lag_buy_and_hold`).
-
-``quantbox.execution.apply_execution_lag`` delegates to :func:`lag_frame`.
+:func:`lag_frame` shifts a frame by the same number of rows, for a caller
+outside the seam: ``quantbox.execution.apply_execution_lag`` delegates to it
+(the L0 signal helpers).
 """
 
 from __future__ import annotations
@@ -60,18 +57,3 @@ def lag_frame(
     if fill_leading is not None:
         lagged.iloc[:shift] = fill_leading
     return lagged
-
-
-def lag_buy_and_hold(index: pd.Index, rebalancing_freq: Any, lag_bars: int, same_bar: SameBarOverride | None = None):
-    """Move a buy-and-hold book's ONE trade to the first bar a decision exists.
-
-    ``rebalancing_freq=None`` (buy-and-hold) trades on the engine's first bar
-    only. After :func:`lag_frame` that bar is flat — no decision is behind it
-    yet — so a lagged buy-and-hold would never enter. Its one trade belongs at
-    the bar the bar-0 decision fills at. Every other schedule is returned
-    unchanged. A window no longer than the lag has no fill bar: an empty schedule.
-    """
-    if rebalancing_freq is not None:
-        return rebalancing_freq
-    fill = lag_bars_of(lag_bars, same_bar)
-    return [index[fill]] if len(index) > fill else []

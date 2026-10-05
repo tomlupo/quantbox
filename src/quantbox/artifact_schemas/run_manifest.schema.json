@@ -3,7 +3,7 @@
   "$id": "quantbox/run@1",
   "title": "quantbox run manifest (run@1)",
   "description": "The machine-readable record of one run: <run_dir>/run_manifest.json, also what `quantbox run --json` prints. VERSIONING: `schema` names the MAJOR version and readers check it. Adding a field is a MINOR change: it keeps `quantbox/run@1`, bumps `x-schema-minor` here and is safe for every run@1 reader (unknown keys are allowed). Renaming a field, removing one, or changing what one MEANS is a MAJOR change: it ships as `quantbox/run@2`. Paths under `files` are relative to the run directory.",
-  "x-schema-minor": 4,
+  "x-schema-minor": 5,
   "type": "object",
   "required": [
     "schema",
@@ -85,6 +85,7 @@
         "same_bar": {"type": "boolean"},
         "same_bar_reason": {"type": "string", "minLength": 1, "description": "Why the config granted the same-bar override (execution.same_bar.reason, ADR-0006). Present exactly when the run was same-bar under the override (minor 2)."},
         "calendar": {"type": "string", "minLength": 1, "description": "The execution calendar the backtest pipeline scheduled decisions on and counted lag_bars in: majority | union | intersection | a ticker (minor 3, ADR-0007). Absent from other writers and from manifests written before minor 3."},
+        "schedule": {"enum": ["bars"], "description": "execution.schedule when it is not the default calendar: bars = every price bar an execution bar, no deferral, no venue.leverage (ADR-0008). Absent on the calendar schedule (minor 5)."},
         "description": {"type": "string"}
       }
     },
@@ -103,7 +104,7 @@
         "declared": {"type": "boolean"},
         "allow_shorts": {"type": "boolean"},
         "max_leverage": {"type": "number", "description": "The gross cap applied to the traded book (the default when the config sets none)."},
-        "leverage": {"enum": ["normalize", "borrow"], "description": "venue.leverage as resolved (minor 3, ADR-0007): normalize scales a decision with net exposure above 1 to net 1; borrow holds it, financed by venue.financing."},
+        "leverage": {"enum": ["normalize", "borrow", "none"], "description": "venue.leverage as resolved (minor 3, ADR-0007): normalize scales a decision with net exposure above 1 to net 1; borrow holds it, financed by venue.financing; none: execution.schedule bars, which applies no venue.leverage (minor 5, ADR-0008)."},
         "financing": {
           "description": "What borrowed and idle cash cost (minor 3, ADR-0007): venue.financing as resolved; null when the config declares none. Absent from manifests written before minor 3.",
           "oneOf": [
@@ -204,7 +205,7 @@
           "type": "object",
           "required": ["mode", "scaled_rebalances"],
           "properties": {
-            "mode": {"enum": ["normalize", "borrow"]},
+            "mode": {"enum": ["normalize", "borrow", "none"]},
             "rebalances": {"type": "integer", "minimum": 0},
             "rebalances_above_net_1": {"type": "integer", "minimum": 0},
             "max_net_exposure_decided": {"type": "number"},

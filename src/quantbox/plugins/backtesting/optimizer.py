@@ -51,6 +51,8 @@ def optimize(
     lag_bars: int | None = None,
     allow_same_bar: bool = False,
     same_bar_reason: str | None = None,
+    schedule: str = "calendar",
+    leverage: str | None = None,
 ) -> dict[str, Any]:
     """Optimize strategy parameters via grid search or walk-forward.
 
@@ -74,6 +76,8 @@ def optimize(
         allow_same_bar, same_bar_reason: The explicit same-bar override, as in
             ``backtest()`` (docs/adr/0006): only with ``lag_bars=0`` and a
             non-empty reason; the result is then RESEARCH, not a backtest.
+        schedule, leverage: As in ``backtest()``: the calendar schedule (default)
+            or ``"bars"``, and ``venue.leverage`` on the calendar.
 
     Returns:
         ``{"best_params", "best_metric", "all_results", "execution"}`` for grid
@@ -81,7 +85,7 @@ def optimize(
         "oos_results", "execution"}`` for walk-forward. ``"execution"`` is the
         timing used (as ``run_manifest.json``).
     """
-    timing = helper_execution(lag_bars, allow_same_bar, same_bar_reason)
+    timing = helper_execution(lag_bars, allow_same_bar, same_bar_reason, schedule)
     # Refused here, once: inside the search a failing combination is skipped, not raised.
     get_engine(engine).check_params(engine_params)
     bt_kwargs = dict(
@@ -94,6 +98,7 @@ def optimize(
         threshold=None,
         engine_params=engine_params,
         trading_days=trading_days,
+        leverage=leverage,
     )
 
     if method == "walk_forward":

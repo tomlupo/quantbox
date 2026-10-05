@@ -363,8 +363,9 @@ def run(
         Tickers traded without fees, fixed fees or slippage — the synthetic
         cash legs of ``venue.financing`` (:mod:`quantbox.financing`).
     orders : DataFrame of bool | None
-        Per-cell order mask on the weights' index and tickers (single
-        strategy): an order is placed only where it is True, so an instrument
+        Per-cell order mask on the weights' index and tickers (or, for
+        MultiIndex weights, on the weights' own columns, one mask per strategy
+        slice): an order is placed only where it is True, so an instrument
         can be left untouched on a bar the rest of the book trades (it did not
         print — :mod:`quantbox.engine.schedule`). The rebalance bars are
         then the rows with any order, and *rebalancing_freq* is ignored. It
@@ -467,7 +468,11 @@ def run(
     # ------------------------------------------------------------------
     no_order = np.zeros(weights_df.shape, dtype=np.bool_)
     if orders is not None:
-        mask = orders.reindex(index=index, columns=weights_df.columns.get_level_values(-1), fill_value=False)
+        if isinstance(weights, pd.DataFrame) and orders.columns.nlevels > 1:
+            # One mask per strategy slice: the columns are the weights' own, in their order.
+            mask = orders.reindex(index=index, columns=weights.columns, fill_value=False)
+        else:
+            mask = orders.reindex(index=index, columns=weights_df.columns.get_level_values(-1), fill_value=False)
         no_order = ~mask.to_numpy(dtype=bool)
         rebalancing_dates = index[mask.to_numpy(dtype=bool).any(axis=1)]
     else:

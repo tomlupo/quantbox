@@ -1,10 +1,12 @@
 """
 Quantbox backtesting engines.
 
-Two engines are provided, behind one seam (:mod:`quantbox.engine`, docs/adr/0008):
+Two engines are provided, behind one seam (:mod:`quantbox.engine`, docs/adr/0008).
+The seam owns the rebalancing schedule (periodic + threshold); both engines
+execute it:
 
-* **vectorbt** — Numba-accelerated, supports periodic + threshold rebalancing,
-  multi-strategy grouping.  Best for fast iteration on spot/equity strategies.
+* **vectorbt** — Numba-accelerated, multi-strategy grouping.  Best for fast
+  iteration on spot/equity strategies.
 * **rsims** — Pure numpy/pandas daily simulator with perp funding rates, margin,
   leverage caps, no-trade buffers, and forced liquidation.  Best for futures /
   perp strategy research.
@@ -17,9 +19,14 @@ Quick start::
     print(result["metrics"])
     result = backtest(prices, weights, engine="rsims")  # the same call, the other engine
 
-``backtest()`` and ``optimize()`` follow the one execution-timing convention
-(:mod:`quantbox.execution`): weights decided on bar ``t`` fill at the close of
-bar ``t + lag_bars``, default 1 (next-bar), exactly as ``quantbox run -c``.
+``backtest()`` and ``optimize()`` build the book with the one book function,
+:func:`quantbox.engine.simulate` — the same schedule as ``quantbox run -c``:
+the instrument and execution calendars (``schedule="calendar"``, the default;
+``schedule="bars"`` makes every price bar an execution bar), the rebalancing
+schedule and threshold on every engine, ``venue.leverage`` (``leverage=``,
+default normalize), and the execution timing (:mod:`quantbox.execution`):
+weights decided on bar ``t`` fill at the close of bar ``t + lag_bars``,
+default 1 (next-bar).
 ``lag_bars=0`` (same-bar) is refused (docs/adr/0005) unless the call also
 passes ``allow_same_bar=True, same_bar_reason="..."`` — the explicit override
 (docs/adr/0006); the result then says ``run: {kind: research}``.
@@ -81,16 +88,29 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def _lag_for_engine(
-    prices: pd.DataFrame,
-    weights: dict[str, pd.DataFrame] | pd.DataFrame,
-    lag_bars: int | ExecutionTiming,
+def _on_price_bars(
+    prices: pd.DataFrame, weights: dict[str, pd.DataFrame] | pd.DataFrame
 ) -> dict[str, pd.DataFrame] | pd.DataFrame:
-    """The seam's lag on the engine's own bar grid (:func:`quantbox.engine.book._lag_on_grid`)."""
-    from quantbox.engine.book import _lag_on_grid
+    """Put a SPARSE weights frame (rebalance dates only) on the price bars, from its first row on.
 
-    timing = lag_bars if isinstance(lag_bars, ExecutionTiming) else ExecutionTiming(lag_bars)
-    return _lag_on_grid(prices, weights, timing)
+    The helpers take weights stamped only on rebalance dates; the book function
+    runs on the bars that carry both a price and a weight row. Each row
+    is carried forward (the seam's HOLD policy) onto every price bar after it,
+    so a sparse frame is the book it describes, and a row stamped on a date
+    with no price bar is decided on the next price bar. A dense frame is
+    unchanged.
+    """
+
+    def one(w: pd.DataFrame) -> pd.DataFrame:
+        if w.index.isin(prices.index).all() and prices.index[prices.index >= w.index.min()].isin(w.index).all():
+            return w
+        grid = prices.index.union(w.index)
+        bars = prices.index[prices.index >= w.index.min()] if len(w.index) else prices.index[:0]
+        return w.reindex(grid).ffill().reindex(bars)
+
+    if isinstance(weights, dict):
+        return {name: one(w) for name, w in weights.items()}
+    return one(weights)
 
 
 def _backtest(
@@ -106,18 +126,22 @@ def _backtest(
     threshold: float | None,
     engine_params: dict[str, Any] | None,
     trading_days: int,
+    leverage: str | None = None,
 ) -> dict[str, Any]:
     """``backtest()`` with an already-resolved timing (``optimize()`` resolves it once per call)."""
-    from quantbox.engine import Costs, simulate_weights
+    from quantbox.engine import Costs, get_engine, simulate
+    from quantbox.financing import resolve_leverage
 
-    book = simulate_weights(
+    engine = get_engine(engine)  # first: a missing [vectorbt] extra is named before anything else runs
+    book = simulate(
         prices,
-        weights,
+        _on_price_bars(prices, weights),
         engine=engine,
         timing=timing,
         costs=Costs(fees=fees, fixed_fees=fixed_fees, slippage=slippage),
         rebalancing_freq=rebalancing_freq,
         threshold=threshold,
+        leverage=None if leverage is None else resolve_leverage(leverage),
         engine_params=engine_params,
         trading_days=trading_days,
     )
@@ -149,8 +173,10 @@ def backtest(
     lag_bars: int | None = None,
     allow_same_bar: bool = False,
     same_bar_reason: str | None = None,
+    schedule: str = "calendar",
+    leverage: str | None = None,
 ) -> dict[str, Any]:
-    """High-level backtest through the engine seam (:mod:`quantbox.engine`, docs/adr/0008).
+    """High-level backtest through the engine seam (:func:`quantbox.engine.simulate`, docs/adr/0008).
 
     Parameters
     ----------
@@ -158,21 +184,27 @@ def backtest(
         Asset prices (index=dates, columns=tickers).
     weights : dict | pd.DataFrame
         Target weights, as DECIDED: row ``t`` uses data through ``close[t]``.
+        A sparse frame (rebalance dates only) is carried onto the price bars
+        after its first row; a NaN cell holds the last target (every engine).
+        A dict is one strategy each.
     engine : str
         The engine adapter: ``"vectorbt"`` (default, the ``[vectorbt]`` extra)
         or ``"rsims"``. The rest of the call does not change with it.
     fees : float
         Proportional fee rate.
     fixed_fees : float
-        Fixed fee per order (vectorbt).
+        Fixed fee per order (vectorbt; rsims charges ``fees`` only).
     slippage : float
-        Slippage rate (vectorbt).
+        Slippage rate (vectorbt; rsims charges ``fees`` only).
     rebalancing_freq : None | int | str | list
-        Rebalancing schedule (vectorbt; rsims trades every bar). ``None`` =
-        buy-and-hold: one trade, at ``close[lag_bars]``
-        (:func:`quantbox.engine.lag_buy_and_hold`).
+        Rebalancing schedule on the execution calendar, the same on every
+        engine (:func:`quantbox.frequency.rebalancing_dates`). ``None`` =
+        buy-and-hold: one decision, on the first bar, filled ``lag_bars`` later.
     threshold : float | None
-        Deviation threshold for rebalancing bands (vectorbt).
+        Rebalancing band (absolute weight), on every engine: a scheduled
+        rebalance is placed only when a held weight drifted more than this
+        from its target. The seam measures the drift cost-free, so with costs
+        it can differ slightly from an in-engine band (docs/adr/0008).
     use_numba : bool | None
         Numba JIT (vectorbt); shorthand for ``engine_params={"use_numba": ...}``.
     engine_params : dict | None
@@ -190,6 +222,15 @@ def backtest(
         The explicit same-bar override (docs/adr/0006), the keywords of
         ``execution.same_bar: {allow, reason}``: only with ``lag_bars=0`` and a
         non-empty reason. The result is then RESEARCH, not a backtest.
+    schedule : str
+        ``"calendar"`` (default): the scheduled book of ``quantbox run``
+        (instrument and execution calendars, deferral, ``venue.leverage``).
+        ``"bars"``: every price bar is an execution bar; no deferral, no
+        ``venue.leverage``.
+    leverage : str | None
+        ``venue.leverage`` on the calendar schedule: ``"normalize"`` (the
+        default, every engine) or ``"borrow"`` (held as decided, free
+        financing). Refused with ``schedule="bars"``.
 
     Returns
     -------
@@ -208,7 +249,7 @@ def backtest(
     return _backtest(
         prices,
         weights,
-        timing=helper_execution(lag_bars, allow_same_bar, same_bar_reason),
+        timing=helper_execution(lag_bars, allow_same_bar, same_bar_reason, schedule),
         engine=engine,
         fees=fees,
         fixed_fees=fixed_fees,
@@ -217,4 +258,5 @@ def backtest(
         threshold=threshold,
         engine_params=params,
         trading_days=trading_days,
+        leverage=leverage,
     )
