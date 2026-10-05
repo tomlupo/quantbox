@@ -204,7 +204,7 @@ Reading a dataset without it raises an ImportError naming both.
 | `execution.schedule` | `calendar` | `calendar`: the scheduled book; `bars`: every price bar executes, no deferral, no `venue.leverage` ([ADR-0008](../adr/0008-engine-seam.md)) |
 | `risk.max_leverage` | `99` | Gross cap per bar; only ever scales DOWN (both engines) |
 | `risk.allow_short` | `false` | Legacy short switch (both engines); prefer `venue.allow_shorts` |
-| `risk.tranches` | `1` | Rolling-mean tranching of target weights (both engines) |
+| `risk.tranches` | `1` | DEPRECATED (TOM-1513): the tranche cadence, `rebalancing_policy: {cadence: tranche, tranches: N}`; warns |
 
 ### Execution timing and venue constraints
 

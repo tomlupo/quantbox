@@ -43,8 +43,8 @@ The cadences and the triggers (named here by their single-key spellings):
     them for N decisions; the book is their mean, traded on every considered
     bar. Every tranche starts at the first decision. A tranche holds its
     TARGET weights between refreshes — it is not a separate sub-account that
-    drifts. (``risk.tranches`` is a different thing: a rolling mean of the
-    decided weights over N BARS, before the seam.)
+    drifts. ``risk.tranches: N`` of ``backtest.pipeline.v1`` is a deprecated
+    alias of this cadence (TOM-1513: one tranche concept).
 ``band``
     A considered rebalance is placed only when the held book has drifted more
     than ``band`` (absolute weight) from its target on some ordered

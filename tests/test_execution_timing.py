@@ -412,14 +412,22 @@ def test_allow_shorts_false_clips_before_transforms_and_does_not_relever_longs()
     assert out["A"].tolist() == pytest.approx([0.5] * N)
 
 
-def test_clip_happens_before_tranching_when_venue_is_declared():
-    """A short that flips long must not be averaged in as a negative by the tranche mean."""
+def test_clip_happens_before_tranching_on_both_venue_paths():
+    """A short that flips long is never averaged in as a negative by the tranche mean.
+
+    ``risk.tranches`` is the seam's tranche cadence since TOM-1513: the risk
+    transforms no longer average, so the clip (venue or legacy) always comes
+    first and the seam's tranches average the CLIPPED targets. The legacy path
+    used to clip the mean ([0, 0, 1]); that number moved by design.
+    """
+    from quantbox.engine.policy import blend_tranches
+
     w = pd.DataFrame({"A": [-1.0, 1.0, 1.0]}, index=pd.date_range("2024-01-01", periods=3))
     pipe = BacktestPipeline()
     declared = pipe._apply_venue_and_risk(w, {"tranches": 2}, False, True)
     legacy = pipe._apply_venue_and_risk(w, {"tranches": 2}, False, False)
-    assert declared["A"].tolist() == pytest.approx([0.0, 0.5, 1.0])  # mean of CLIPPED targets
-    assert legacy["A"].tolist() == pytest.approx([0.0, 0.0, 1.0])  # legacy: clip of the mean, kept bit-for-bit
+    assert declared["A"].tolist() == legacy["A"].tolist() == [0.0, 1.0, 1.0]  # clipped, not averaged
+    assert blend_tranches(declared.to_numpy(), 2)[:, 0].tolist() == pytest.approx([0.0, 0.5, 1.0])
 
 
 def test_shorts_traded_without_a_venue_block_warn_and_are_measured(tmp_path, caplog):

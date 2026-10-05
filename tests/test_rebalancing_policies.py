@@ -726,3 +726,132 @@ def test_plan_resolves_the_policy_and_refuses_what_the_run_would_refuse():
 
 # The end-to-end run of a policy and group limits through the pipeline is a
 # pipeline smoke test: tests/pipeline/test_rebalancing_policies_e2e.py (TOM-1500).
+
+
+# ----------------------------------------------------------------------
+# E. One tranche concept: risk.tranches is the tranche cadence (TOM-1513)
+# ----------------------------------------------------------------------
+
+
+def _long_only_book(n_tickers: int = 3, seed: int = 7) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """A 24/7 daily panel and a long-only decided book that moves EVERY bar (gross 0.9: no leverage scaling)."""
+    prices = _daily_247("2024-01-01", "2024-04-30", tickers=tuple("ABCDEFG"[:n_tickers]), seed=seed)
+    raw = np.random.default_rng(seed).dirichlet(np.ones(n_tickers), len(prices)) * 0.9
+    return prices, pd.DataFrame(raw, index=prices.index, columns=prices.columns)
+
+
+@pytest.mark.parametrize("n", [2, 5])
+def test_the_old_risk_tranches_rolling_mean_is_the_tranche_cadence_after_its_warmup(n):
+    """THE PROOF of the alias: risk.tranches (a rolling mean of N bars before the seam, as it was) and the tranche
+    cadence (N staggered tranches in the seam) give the SAME book on a daily schedule, from bar N on.
+
+    They differ only in the first N-1 decisions (the warmup): the rolling mean takes the mean of the rows it has
+    (min_periods=1), the cadence starts every tranche at the first decision, as a book of N tranches does.
+    """
+    prices, decided = _long_only_book()
+    old = _simulate("rsims", prices, decided.rolling(window=n, min_periods=1).mean())  # the old risk transform
+    new = _simulate("rsims", prices, decided, policy={"cadence": "tranche", "tranches": n, "frequency": "daily"})
+    held_old, held_new = old.weights.to_numpy(), new.weights.to_numpy()
+    assert np.abs(held_old[n:] - held_new[n:]).max() <= 1e-12  # held from bar N = decided from row N-1
+    assert np.abs(old.returns.to_numpy()[n + 1 :] - new.returns.to_numpy()[n + 1 :]).max() <= 1e-12
+    # The warmup by hand, decided row 1 (held on bar 2): the rolling mean (r0 + r1) / 2; the tranches (N-1) r0 + r1 / N.
+    r0, r1 = decided.iloc[0].to_numpy(), decided.iloc[1].to_numpy()
+    assert held_old[2] == pytest.approx((r0 + r1) / 2)
+    assert held_new[2] == pytest.approx(((n - 1) * r0 + r1) / n)
+
+
+class _Fixed:
+    meta = type("M", (), {"name": "strategy.fixed.v1"})()
+
+    def __init__(self, frame: pd.DataFrame):
+        self.frame = frame
+
+    def run(self, data: Any, params: Any = None, context: Any = None) -> dict[str, Any]:
+        return {"weights": self.frame}
+
+
+class _Data:
+    def __init__(self, prices: pd.DataFrame):
+        self.prices = prices
+
+    def load_universe(self, params: dict[str, Any]) -> pd.DataFrame:
+        return pd.DataFrame({"symbol": list(self.prices.columns)})
+
+    def load_market_data(self, universe: Any, asof: str, params: dict[str, Any]) -> dict[str, pd.DataFrame]:
+        return {"prices": self.prices}
+
+
+def _run_pipeline(tmp_path, name: str, prices: pd.DataFrame, decided: pd.DataFrame, **params: Any):
+    from quantbox.plugins.pipeline.backtest_pipeline import BacktestPipeline
+    from quantbox.store import FileArtifactStore
+
+    store = FileArtifactStore(str(tmp_path / name), "run")
+    BacktestPipeline().run(
+        mode="backtest",
+        asof=str(prices.index[-1].date()),
+        params={
+            "engine": "rsims",
+            "fees": 0.001,
+            "strategies": [{"name": "strategy.fixed.v1", "weight": 1.0}],
+            **params,
+        },
+        data=_Data(prices),
+        store=store,
+        broker=None,
+        risk=[],
+        strategies=[_Fixed(decided)],
+    )
+    traded = store.read_parquet("traded_weights").set_index("date")
+    returns = store.read_parquet("returns")
+    return traded, returns, json.loads((store.root / "data_validation.json").read_text())
+
+
+@pytest.mark.parametrize(
+    ("legacy", "declared"),
+    [
+        ({}, {"cadence": "tranche", "tranches": 3}),
+        (
+            {"rebalancing_freq": 2, "threshold": 0.02},
+            {"cadence": "tranche", "tranches": 3, "frequency": 2, "trigger": "band", "band": 0.02},
+        ),
+    ],
+)
+def test_risk_tranches_is_a_deprecated_alias_of_the_tranche_cadence(tmp_path, legacy, declared):
+    """risk.tranches: 3 warns (DeprecationWarning) and books exactly what the declared tranche cadence books."""
+    prices, decided = _long_only_book()
+    with pytest.warns(DeprecationWarning, match="risk.tranches"):
+        alias = _run_pipeline(tmp_path, "alias", prices, decided, risk={"tranches": 3}, **legacy)
+    explicit = _run_pipeline(tmp_path, "explicit", prices, decided, rebalancing_policy=declared)
+    assert alias[0].equals(explicit[0])
+    assert alias[1].equals(explicit[1])
+    assert alias[2]["timing"] == explicit[2]["timing"]
+
+
+def test_risk_tranches_with_a_declared_tranche_cadence_is_refused():
+    from quantbox.plugins.pipeline.backtest_pipeline import BacktestPipeline
+
+    with pytest.raises(ValueError, match="risk.tranches"):
+        BacktestPipeline().plan(
+            {"engine": "rsims", "risk": {"tranches": 3}, "rebalancing_policy": {"cadence": "tranche", "tranches": 4}}
+        )
+    # On a periodic cadence the alias sets the cadence and keeps the trigger.
+    with pytest.warns(DeprecationWarning):
+        plan = BacktestPipeline().plan(
+            {"engine": "rsims", "risk": {"tranches": 3}, "rebalancing_policy": {"policy": "corridor", "width": 0.02}}
+        )
+    assert (plan["rebalancing"]["cadence"], plan["rebalancing"]["tranches"]) == ("tranche", 3)
+    assert plan["rebalancing"]["trigger"] == "corridor"
+    # A variant's own risk.tranches is that variant's cadence; risk.tranches 1 is no tranching.
+    with pytest.warns(DeprecationWarning):
+        plan = BacktestPipeline().plan(
+            {
+                "engine": "rsims",
+                "risk": {"tranches": 1},
+                "variants": [
+                    {"name": "a", "strategy": "s"},
+                    {"name": "b", "strategy": "s", "overrides": {"risk": {"tranches": 4}}},
+                ],
+            }
+        )
+    assert plan["variant_policies"]["a"].cadence == "periodic"
+    assert (plan["variant_policies"]["b"].cadence, plan["variant_policies"]["b"].tranches) == ("tranche", 4)

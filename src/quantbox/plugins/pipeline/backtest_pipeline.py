@@ -46,7 +46,8 @@ the same::
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import warnings
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -151,6 +152,34 @@ def _variant_policy(
             overrides.get("threshold", run_params.get("threshold")),
         )
     return run
+
+
+def _risk_tranches(policy: RebalancePolicy, risk_cfg: dict[str, Any], where: str = "") -> RebalancePolicy:
+    """``risk.tranches: N`` (N > 1): the DEPRECATED spelling of the seam's tranche cadence (TOM-1513).
+
+    One tranche concept: the alias sets the policy's cadence to ``tranche``
+    with N tranches and keeps its frequency and trigger, so it books exactly
+    what ``rebalancing_policy: {cadence: tranche, tranches: N}`` books. It is
+    no longer a rolling mean of N bars before the seam; the two agree on a
+    daily schedule after the first N-1 decisions (tests/test_rebalancing_policies.py
+    proves it). Declaring tranches twice is refused.
+    """
+    n = int(risk_cfg.get("tranches", 1))
+    if n <= 1:
+        return policy
+    if policy.cadence == "tranche":
+        raise ValueError(
+            f"{where}risk.tranches ({n}) and rebalancing_policy cadence tranche ({policy.tranches}) both declare "
+            "tranches; declare rebalancing_policy.tranches only (risk.tranches is deprecated, TOM-1513)"
+        )
+    msg = (
+        f"{where}risk.tranches: {n} is deprecated (TOM-1513). It is the seam's tranche cadence: declare "
+        f"rebalancing_policy {{cadence: tranche, tranches: {n}}} instead (same book). It no longer averages "
+        "N bars before the seam: the first N-1 decisions and a non-daily schedule book differently than before."
+    )
+    warnings.warn(msg, DeprecationWarning, stacklevel=2)
+    logger.warning("DEPRECATED: %s", msg)
+    return replace(policy, cadence="tranche", tranches=n)
 
 
 def _number(key: str, value: Any, *, cast: type = float, where: str = "") -> Any:
@@ -364,7 +393,8 @@ class BacktestPipeline:
                     "default": {},
                     "description": (
                         "Risk transforms applied to the weights time series and handed to risk plugins "
-                        "(allow_short, max_leverage, tranches, ...)."
+                        "(allow_short, max_leverage, ...). tranches: N is DEPRECATED (TOM-1513): it is the "
+                        "seam's tranche cadence, rebalancing_policy {cadence: tranche, tranches: N}, and warns."
                     ),
                 },
                 "strategy_weights": {
@@ -474,9 +504,15 @@ class BacktestPipeline:
         variants = params.get("variants") or []
         variant_costs = _plan_variants(variants, venue_declared, costs)
         # The rebalancing policy (the seam's schedule) and the group limits, refused here when malformed.
-        policy = _run_policy(params)
+        # risk.tranches (deprecated) is the tranche cadence: the run's, and each variant's own (TOM-1513).
+        declared_policy = _run_policy(params)
+        policy = _risk_tranches(declared_policy, params.get("risk") or {})
         variant_policies = {
-            str(v.get("name")): _variant_policy(str(v.get("name")), dict(v.get("overrides") or {}), params, policy)
+            str(v.get("name")): _risk_tranches(
+                _variant_policy(str(v.get("name")), dict(v.get("overrides") or {}), params, declared_policy),
+                _variant_risk_cfg(params.get("risk") or {}, v),
+                where=f"Variant {str(v.get('name'))!r}: ",
+            )
             for v in variants
         }
         group_spec = params.get("group_limits")
@@ -1297,13 +1333,13 @@ class BacktestPipeline:
         """Venue constraint FIRST, then the risk transforms.
 
         With a declared ``venue.allow_shorts: false``, negative TARGET weights
-        are clipped to 0 before tranching and the leverage cap, so no transform
-        ever averages or scales a position the venue cannot hold. The long side
-        is not re-normalised: the leverage cap only ever scales DOWN, so a
-        clipped book carries less gross rather than re-levered longs.
-
-        Without a ``venue`` block the legacy order is kept bit-for-bit
-        (``risk.allow_short`` clips AFTER tranching) so old numbers reproduce.
+        are clipped to 0 before the leverage cap, so no transform ever scales a
+        position the venue cannot hold. The long side is not re-normalised: the
+        leverage cap only ever scales DOWN, so a clipped book carries less
+        gross rather than re-levered longs. Tranching happens later, in the
+        seam (the tranche cadence), so it always averages clipped targets: the
+        legacy order (``risk.allow_short`` clipped the tranche MEAN) is gone
+        with ``risk.tranches`` (TOM-1513).
         """
         if venue_declared and not allow_shorts:
             weights = clip_shorts(weights)
@@ -1409,19 +1445,15 @@ class BacktestPipeline:
         *,
         allow_short: bool | None = None,
     ) -> pd.DataFrame:
-        """Apply tranching, leverage cap, and short clamping to the full
-        weights time series. ``allow_short`` (resolved venue) overrides
-        ``risk.allow_short`` when given."""
-        tranches = int(risk_cfg.get("tranches", 1))
+        """Apply short clamping and the leverage cap to the full weights time
+        series. ``allow_short`` (resolved venue) overrides ``risk.allow_short``
+        when given. ``risk.tranches`` is not applied here: it is the seam's
+        tranche cadence (:func:`_risk_tranches`, TOM-1513)."""
         max_leverage = _max_leverage(risk_cfg)
         if allow_short is None:
             allow_short = bool(risk_cfg.get("allow_short", False))
 
         w = weights.copy()
-
-        # Tranching (rolling mean)
-        if tranches > 1:
-            w = w.rolling(window=tranches, min_periods=1).mean()
 
         # Clamp negatives
         if not allow_short:
