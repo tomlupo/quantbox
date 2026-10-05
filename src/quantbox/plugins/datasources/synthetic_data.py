@@ -68,7 +68,7 @@ class SyntheticDataPlugin:
     meta = PluginMeta(
         name="data.synthetic.v1",
         kind="data",
-        version="0.1.0",
+        version="0.2.0",  # 0.2.0: load_universe returns the contract's DataFrame, not a list (TOM-1526)
         core_compat=">=0.1,<0.2",
         description=(
             "Synthetic market data generator using stochastic models "
@@ -155,24 +155,29 @@ class SyntheticDataPlugin:
     random_state: int | None = 42
     symbols: list[str] | None = None
 
-    def load_universe(self, params: dict[str, Any]) -> list[str]:
-        """Return list of synthetic symbol names."""
+    def load_universe(self, params: dict[str, Any]) -> pd.DataFrame:
+        """The synthetic universe as the DataPlugin contract has it: a ``symbol`` column.
+
+        It returned a bare list until TOM-1526, which the backtest pipeline cannot
+        store (``store.put_parquet("universe", ...)``): run_synthetic_backtest.yaml never ran.
+        """
         symbols = params.get("symbols", self.symbols)
-        if symbols:
-            return list(symbols)
-        n_assets = int(params.get("n_assets", self.n_assets))
-        return [f"SYN_{i + 1:03d}" for i in range(n_assets)]
+        if not symbols:
+            n_assets = int(params.get("n_assets", self.n_assets))
+            symbols = [f"SYN_{i + 1:03d}" for i in range(n_assets)]
+        return pd.DataFrame({"symbol": [str(s) for s in symbols]})
 
     def load_market_data(
         self,
-        universe: list[str],
+        universe: pd.DataFrame | list[str],
         asof: str,
         params: dict[str, Any],
     ) -> dict[str, pd.DataFrame]:
-        """Generate synthetic price/volume data.
+        """Generate synthetic price/volume data for *universe* (``load_universe``'s frame, or a symbol list).
 
         Returns wide-format DataFrames backdated from *asof*.
         """
+        universe = [str(s) for s in universe["symbol"]] if isinstance(universe, pd.DataFrame) else list(universe)
         n_assets = len(universe)
         n_steps = int(params.get("n_steps", self.n_steps))
         model_name = params.get("model", self.model)
