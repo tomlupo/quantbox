@@ -30,6 +30,21 @@ except ImportError:
     logger.warning("duckdb not installed — LocalFileDataPlugin will use pandas fallback")
 
 
+def _universe_with_metadata(df: pd.DataFrame) -> pd.DataFrame:
+    """One row per symbol: ``symbol`` plus every column constant per symbol (``asset_class``, ``category``, ...).
+
+    That metadata is what ``group_limits.by`` reads (quantbox.engine.groups). A column
+    that varies within a symbol (a date, a market cap) is not metadata and is dropped,
+    as every column but ``symbol`` was before.
+    """
+    df = df.dropna(subset=["symbol"])
+    others = [c for c in df.columns if c != "symbol"]
+    if others:
+        per_symbol = df.groupby("symbol", sort=False)[others].nunique(dropna=False)
+        others = [c for c in others if (per_symbol[c] <= 1).all()]
+    return df[["symbol", *others]].drop_duplicates(subset=["symbol"]).reset_index(drop=True)
+
+
 def _read_file(path: str, asof: str | None = None, symbols: list[str] | None = None) -> pd.DataFrame:
     """Read a Parquet or CSV file, optionally filtering by date and symbols.
 
@@ -315,14 +330,14 @@ class LocalFileDataPlugin:
         if self.dataset:
             df = self._pinned().universe
             if "symbol" in df.columns:
-                return df[["symbol"]].drop_duplicates().reset_index(drop=True)
+                return _universe_with_metadata(df)
             return pd.DataFrame({"symbol": list(self._pinned().prices.columns)})
 
         path = params.get("path") or self.universe_path
         if path and Path(path).exists():
             df = _read_file(path)
             if "symbol" in df.columns:
-                return df[["symbol"]].drop_duplicates().reset_index(drop=True)
+                return _universe_with_metadata(df)
             # Wide format: column names are symbols
             return pd.DataFrame({"symbol": list(df.columns)})
 

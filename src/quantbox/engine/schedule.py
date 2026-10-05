@@ -25,13 +25,18 @@ engine — the seam owns the schedule, an adapter only executes it (docs/adr/000
    whose held net exposure would exceed 1 down to net 1, proportionally — a
    deferred cell keeps its weight; ``borrow`` keeps it and the financing legs
    (:mod:`quantbox.financing`) carry the borrowing.
-5. **Threshold** (``threshold``, optional): a scheduled rebalance is placed
-   only when the held book has DRIFTED more than ``threshold`` (absolute
-   weight) from its target on some ordered instrument (:func:`_apply_threshold`).
-   The drift is the cost-free price drift of the weights held after the last
-   rebalance the trigger placed. An engine charging costs holds a slightly
-   different book, so a run with costs can trigger on slightly different bars
-   than vectorbt's in-engine threshold did (the declared caveat).
+5. **The rebalancing policy** (:mod:`quantbox.engine.policy`): ``periodic``
+   (today's ``rebalancing_freq``), ``tranche`` (the targets are the mean of
+   the last N decided rows), ``band`` (today's ``threshold``: a considered
+   rebalance is placed only when the held book has DRIFTED more than the band
+   from its target) or ``corridor`` (only the instruments outside their own
+   corridor trade). An optional market ``calendar`` narrows the execution bars
+   to that market's sessions before step 1. The drift is the cost-free price
+   drift of the weights held after the last placed order
+   (:func:`quantbox.engine.policy.apply_drift_trigger`). An engine charging
+   costs holds a slightly different book, so a run with costs can trigger on
+   slightly different bars than vectorbt's in-engine threshold did (the
+   declared caveat).
 6. **Input staleness**: for each instrument on each decision bar, the bars
    since its last real print — the age of the forward-filled price the signal
    saw. Recorded, never blocking (TOM-1430 gates on it).
@@ -62,6 +67,13 @@ from quantbox.frequency import _period_end, parse_rebalance_offset, rebalancing_
 from quantbox.instrument_calendar import InstrumentCalendar
 
 from ._lag import lag_positions
+from .policy import (
+    RebalancePolicy,
+    apply_drift_trigger,
+    blend_tranches,
+    policy_execution_bars,
+    schedule_policy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -267,58 +279,6 @@ def _apply_leverage(
     }
 
 
-def _apply_threshold(
-    target_cells: np.ndarray, orders: np.ndarray, prices: np.ndarray, threshold: float, index: pd.Index
-) -> dict[str, Any]:
-    """Drop the scheduled rebalances whose held book has not drifted past *threshold* (in place on *orders*).
-
-    The held book is tracked cost-free: after a placed rebalance, each
-    ordered cell holds its target and each untouched cell its drifted weight;
-    between rebalances every weight drifts with its price, against a cash
-    remainder of ``1 - sum(weights)``. On a scheduled bar the rebalance is
-    placed when ``max |drifted - target|`` over the ORDERED cells exceeds
-    *threshold* (a cell with no order keeps its weight, so it cannot trigger),
-    and then trades every ordered cell to its target — vectorbt's band rule.
-    A bar that does not trigger has all its orders removed. It runs after
-    ``venue.leverage``, on the targets the engine would trade.
-
-    The caveat (docs/adr/0008): an engine that charges costs holds slightly
-    less than this cost-free book, so its in-engine drift differs by roughly
-    the costs paid, and a bar near the band edge can fall the other way. Both
-    engines trade on the bars this function keeps.
-    """
-    n_inst = orders.shape[1]
-    held = np.zeros(n_inst)
-    last: int | None = None
-    order_rows = np.flatnonzero(orders.any(axis=1))
-    skipped: list[int] = []
-    for r in order_rows:
-        o = orders[r]
-        if last is None:
-            drifted = held.copy()
-        else:
-            growth = prices[r] / prices[last]
-            value = held * np.where(np.isfinite(growth), growth, 1.0)
-            total = (1.0 - held.sum()) + value.sum()
-            drifted = value / total if total != 0 else value
-        if np.abs(drifted[o] - target_cells[r, o]).max() > threshold:
-            held = drifted
-            held[o] = target_cells[r, o]
-            last = int(r)
-        else:
-            orders[r] = False
-            skipped.append(int(r))
-    return {
-        "threshold": float(threshold),
-        "rule": "cost-free price drift of the held weights; a scheduled rebalance is placed when an ordered "
-        "instrument drifted more than the threshold from its target",
-        "scheduled_rebalances": int(len(order_rows)),
-        "placed_rebalances": int(len(order_rows) - len(skipped)),
-        "skipped_rebalances": len(skipped),
-        "first_skipped": [pd.Timestamp(index[r]).isoformat() for r in skipped[:5]],
-    }
-
-
 def schedule_book(
     decided: pd.DataFrame,
     cal: InstrumentCalendar,
@@ -330,6 +290,7 @@ def schedule_book(
     threshold: float | None = None,
     weight_rows: pd.DataFrame | None = None,
     same_bar: SameBarOverride | None = None,
+    policy: RebalancePolicy | None = None,
 ) -> ScheduledBook:
     """Decided weights -> the traded book on *cal*'s bars (see the module docstring).
 
@@ -338,15 +299,16 @@ def schedule_book(
     read by :func:`materialise_nan`. Every engine gets this one schedule.
     ``lag_bars`` 0 runs only with the *same_bar* override the resolver
     granted; the lag itself is :func:`quantbox.engine._lag.lag_positions`.
-    *threshold* (absolute weight, optional) drops a scheduled rebalance whose
-    held book has not drifted that far (:func:`_apply_threshold`).
+    The rebalancing policy (:mod:`quantbox.engine.policy`) is *policy*, or the
+    legacy *rebalancing_freq* + *threshold* (periodic, or a band of
+    *threshold* absolute weight) — not both.
     *weight_rows* is the strategy's book on ITS OWN rows (weekend rows of a
     wider panel included), for the decision weight age; default *decided*.
     """
     if leverage not in SCHEDULE_LEVERAGE:
         raise ValueError(f"venue.leverage must be one of {list(LEVERAGE_MODES)}, got {leverage!r}")
-    if threshold is not None and (isinstance(threshold, bool) or not float(threshold) >= 0):
-        raise ValueError(f"threshold must be a number >= 0 (absolute weight drift), got {threshold!r}")
+    pol = schedule_policy(policy, rebalancing_freq, threshold)
+    rebalancing_freq = pol.rebalancing_freq
     index, columns = cal.observed.index, cal.observed.columns
     raw_decided = decided if weight_rows is None else weight_rows  # the strategy's own rows
     decided = materialise_nan(decided.reindex(index=index, columns=columns))
@@ -354,7 +316,8 @@ def schedule_book(
     inside = cal.inside.to_numpy()
     n_bars, n_inst = observed.shape
 
-    exec_idx = index[exec_bars.reindex(index, fill_value=False).to_numpy()]
+    exec_bars = policy_execution_bars(exec_bars.reindex(index, fill_value=False), pol)
+    exec_idx = index[exec_bars.to_numpy()]
     decisions = rebalancing_dates(exec_idx, rebalancing_freq)
     k = exec_idx.get_indexer(decisions)
     e = lag_positions(k, lag_bars, same_bar)  # the execution bar, counted in execution-calendar bars
@@ -364,8 +327,11 @@ def schedule_book(
     dec_rows = index.get_indexer(dec_dates)
     exe_rows = index.get_indexer(exe_dates)
 
-    # Targets: the decided row, 0 outside the instrument's window at the execution bar.
+    # Targets: the decided row (tranche: the mean of the last N decided rows), 0 outside the
+    # instrument's window at the execution bar.
     targets = decided.to_numpy(dtype=float)[dec_rows] if len(dec_rows) else np.zeros((0, n_inst))
+    if pol.policy == "tranche":
+        targets = blend_tranches(targets, pol.tranches)
     inside_exe = inside[exe_rows] if len(exe_rows) else np.zeros((0, n_inst), dtype=bool)
     outside_targeted = (targets != 0) & ~inside_exe
     max_outside = np.where(outside_targeted, np.abs(targets), 0.0).max(axis=0) if len(targets) else np.zeros(n_inst)
@@ -397,11 +363,40 @@ def schedule_book(
             target_cells[p, j] = targets[i, j]  # later deferrals to the same bar overwrite: the newest wins
 
     leverage_report = _apply_leverage(target_cells, orders, leverage, decided_net, index)
-    threshold_report = (
-        _apply_threshold(target_cells, orders, cal.prices.to_numpy(dtype=float), float(threshold), index)
-        if threshold is not None
+    scheduled_rows = int(orders.any(axis=1).sum())
+    trigger = (
+        apply_drift_trigger(pol, target_cells, orders, cal.prices.to_numpy(dtype=float), columns)
+        if pol.policy in ("band", "corridor")
         else None
     )
+    first_skipped = [pd.Timestamp(index[r]).isoformat() for r in (trigger or {}).get("first_skipped_rows", [])]
+    threshold_report = None
+    rebalancing_report = None
+    if trigger is not None and not pol.declared:  # the legacy `threshold`: its section, as before
+        threshold_report = {
+            "threshold": float(pol.band or 0.0),
+            "rule": "cost-free price drift of the held weights; a scheduled rebalance is placed when an ordered "
+            "instrument drifted more than the threshold from its target",
+            "scheduled_rebalances": trigger["scheduled_rebalances"],
+            "placed_rebalances": trigger["placed_rebalances"],
+            "skipped_rebalances": trigger["skipped_rebalances"],
+            "first_skipped": first_skipped,
+        }
+    if pol.declared:
+        placed = int(orders.any(axis=1).sum())
+        rebalancing_report = {
+            "policy": pol.record(),
+            "execution_bars_outside_market_sessions": int(
+                (~policy_execution_bars(pd.Series(True, index=index), pol)).sum()
+            ),
+            "scheduled_rebalances": scheduled_rows,
+            "placed_rebalances": placed,
+            "skipped_rebalances": scheduled_rows - placed,
+            "partial_rebalances": int((trigger or {}).get("partial_rebalances", 0)),
+            "first_skipped": first_skipped,
+        }
+        if pol.policy == "tranche":
+            rebalancing_report["tranches"] = int(pol.tranches)
     held = pd.DataFrame(np.where(orders, target_cells, np.nan), index=index, columns=columns).ffill().fillna(0.0)
     orders_df = pd.DataFrame(orders, index=index, columns=columns)
 
@@ -464,6 +459,8 @@ def schedule_book(
     }
     if threshold_report is not None:  # absent without a threshold: the run's files stay as they were
         report["threshold"] = threshold_report
+    if rebalancing_report is not None:  # absent without a declared rebalancing_policy, likewise
+        report["rebalancing"] = rebalancing_report
     if weight_age.get("stale_decisions"):
         logger.warning(
             "TIMING: %d of %d decision(s) MISSED their period's weights, stamped on a non-execution bar after the "

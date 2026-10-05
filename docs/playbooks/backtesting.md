@@ -32,6 +32,41 @@ plugins:
   5% from its target. The seam measures the drift cost-free; with costs a rebalance near the band
   edge can fall on a slightly different bar than an in-engine band would.
 
+**Rebalancing policies** (`rebalancing_policy`, TOM-1450; replaces the two keys above — declare
+one spelling, not both). Every policy is an orders mask in the seam, the same on both engines
+(`quantbox.engine.policy` has the full rules):
+
+```yaml
+      rebalancing_policy: {policy: periodic, frequency: monthly, calendar: NYSE}
+      # rebalancing_policy: {policy: tranche, tranches: 4, frequency: weekly}
+      # rebalancing_policy: {policy: band, band: 0.05}
+      # rebalancing_policy: {policy: corridor, width: [0.02, 0.05], bounds: {SPY: [0.01, 0.03]}}
+```
+
+- `frequency` — the bars a rebalance is considered on: `daily`, `weekly`, `monthly`, `quarterly`,
+  `yearly` (the last execution bar of the period), or any `rebalancing_freq` form.
+- `calendar` — a pandas-market-calendars name. Decisions and the execution lag use that
+  market's sessions only: March 2024 ends on Thursday the 28th (Good Friday), not Sunday the 31st.
+- `tranche` — the book is the mean of N tranches; one tranche is refreshed on each decision.
+- `band` — the whole book trades when a held weight drifted past the band (= `threshold`).
+- `corridor` — only the instruments outside their own `[target - below, target + above]`
+  corridor trade, back to target. An exit to 0 always trades.
+
+**Group limits** (`group_limits`) keep each group's gross weight inside `[min, max]` on every
+decided row, before execution. The groups come from a universe metadata column (a
+`local_file_data` universe file keeps its per-symbol columns, such as `asset_class`):
+
+```yaml
+      group_limits:
+        by: asset_class
+        limits: {equity: {max: 0.6}, bond: {min: 0.2, max: 0.5}}
+        excess: redistribute     # or cash: weight cut from a capped group stays in cash
+```
+
+An infeasible limit refuses the run with the first dates (the minimums need more weight than
+the row holds, or a group with a minimum holds nothing). `data_validation.json` records the
+policy (`rebalancing`) and the limits (`groups`); `quantbox config explain` shows both.
+
 ### rsims (futures)
 
 Daily step simulator with funding rates, margin, leverage, and no-trade buffer. Best for futures strategies.

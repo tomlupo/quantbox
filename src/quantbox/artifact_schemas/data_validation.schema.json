@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "quantbox/data-validation@1",
   "title": "quantbox data validation (data-validation@1)",
-  "description": "<run_dir>/data_validation.json, written by backtest.pipeline.v1 (ADR-0007): what each missing price meant, the execution calendar, decision vs execution timing, input staleness, decision weight age, index alignment and leverage. Minors: 1 adds weight_age; 2 makes leverage.max_net_exposure_unscaled, scaled_after_deferral and buys_zeroed_dates (always written since minor 0) required; 3 adds index_alignment; 4 adds threshold and leverage.mode none (execution.schedule bars, ADR-0008). The stable shape the data-validation step (TOM-1430) reads. VERSIONING as run@1: adding a field is MINOR (x-schema-minor), renaming, removing or changing a meaning is MAJOR (data-validation@2).",
-  "x-schema-minor": 4,
+  "description": "<run_dir>/data_validation.json, written by backtest.pipeline.v1 (ADR-0007): what each missing price meant, the execution calendar, decision vs execution timing, input staleness, decision weight age, index alignment and leverage. Minors: 1 adds weight_age; 2 makes leverage.max_net_exposure_unscaled, scaled_after_deferral and buys_zeroed_dates (always written since minor 0) required; 3 adds index_alignment; 4 adds threshold and leverage.mode none (execution.schedule bars, ADR-0008); 5 adds rebalancing and groups (TOM-1450). The stable shape the data-validation step (TOM-1430) reads. VERSIONING as run@1: adding a field is MINOR (x-schema-minor), renaming, removing or changing a meaning is MAJOR (data-validation@2).",
+  "x-schema-minor": 5,
   "type": "object",
   "required": ["schema", "calendar", "execution_calendar", "timing", "staleness", "leverage"],
   "properties": {
@@ -149,6 +149,47 @@
         "placed_rebalances": {"type": "integer", "minimum": 0},
         "skipped_rebalances": {"type": "integer", "minimum": 0},
         "first_skipped": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "rebalancing": {
+      "type": "object",
+      "description": "Present only when the run declares rebalancing_policy (minor 5, TOM-1450): the policy (periodic, tranche, band, corridor; quantbox.engine.policy) and what it did. scheduled = bars with orders before the drift trigger, placed = after it, partial = bars on which a corridor traded only some instruments.",
+      "required": ["policy", "scheduled_rebalances", "placed_rebalances", "skipped_rebalances", "partial_rebalances"],
+      "properties": {
+        "policy": {
+          "type": "object",
+          "required": ["policy", "frequency", "calendar"],
+          "properties": {
+            "policy": {"enum": ["periodic", "tranche", "band", "corridor"]},
+            "calendar": {"type": ["string", "null"]},
+            "tranches": {"type": "integer", "minimum": 2},
+            "band": {"type": "number", "exclusiveMinimum": 0},
+            "width": {"type": "array", "items": {"type": "number", "minimum": 0}},
+            "bounds": {"type": "object"}
+          }
+        },
+        "execution_bars_outside_market_sessions": {"type": "integer", "minimum": 0},
+        "scheduled_rebalances": {"type": "integer", "minimum": 0},
+        "placed_rebalances": {"type": "integer", "minimum": 0},
+        "skipped_rebalances": {"type": "integer", "minimum": 0},
+        "partial_rebalances": {"type": "integer", "minimum": 0},
+        "first_skipped": {"type": "array", "items": {"type": "string"}},
+        "tranches": {"type": "integer", "minimum": 2}
+      }
+    },
+    "groups": {
+      "type": "object",
+      "description": "Present only when the run declares group_limits (minor 5, TOM-1450): the limits on each group's gross weight in the decided book (quantbox.engine.groups) and how many rows they changed.",
+      "required": ["by", "excess", "limits", "rows", "rows_adjusted", "flat_rows"],
+      "properties": {
+        "by": {"type": "string"},
+        "excess": {"enum": ["redistribute", "cash"]},
+        "limits": {"type": "object"},
+        "rows": {"type": "integer", "minimum": 0},
+        "rows_adjusted": {"type": "integer", "minimum": 0},
+        "flat_rows": {"type": "integer", "minimum": 0},
+        "max_gross_cut_to_cash": {"type": "number", "minimum": 0},
+        "groups": {"type": "object"}
       }
     },
     "variants": {

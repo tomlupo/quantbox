@@ -73,6 +73,8 @@ from quantbox.engine import (
     materialise_nan,
     simulate,
 )
+from quantbox.engine.groups import GROUP_LIMITS_SCHEMA, GroupLimits, resolve_group_limits
+from quantbox.engine.policy import POLICY_SCHEMA, RebalancePolicy, legacy_policy, resolve_policy
 from quantbox.exceptions import DataLoadError
 from quantbox.execution import (
     EXECUTION_SCHEMA,
@@ -103,6 +105,52 @@ def _max_leverage(risk_cfg: dict[str, Any]) -> float:
 def _variant_risk_cfg(base_risk_cfg: dict[str, Any], variant: dict[str, Any]) -> dict[str, Any]:
     """A variant's risk config: the run's ``risk`` with ``overrides.risk`` on top."""
     return {**base_risk_cfg, **((variant.get("overrides") or {}).get("risk") or {})}
+
+
+_LEGACY_SCHEDULE_KEYS = ("rebalancing_freq", "threshold")
+
+
+def _run_policy(params: dict[str, Any]) -> RebalancePolicy:
+    """The run's rebalancing policy: ``rebalancing_policy``, or the legacy ``rebalancing_freq`` / ``threshold``.
+
+    Declaring both is refused: one schedule, stated once (docs/adr/0008).
+    """
+    declared = params.get("rebalancing_policy")
+    legacy = [k for k in _LEGACY_SCHEDULE_KEYS if k in params]
+    if declared is not None and legacy:
+        raise ValueError(
+            f"declare the schedule ONCE: rebalancing_policy or {legacy}, not both "
+            "(rebalancing_policy.frequency and band replace rebalancing_freq and threshold)"
+        )
+    if declared is not None:
+        return resolve_policy(declared)
+    return legacy_policy(params.get("rebalancing_freq", 1), params.get("threshold"))
+
+
+def _variant_policy(
+    vname: str, overrides: dict[str, Any], run_params: dict[str, Any], run: RebalancePolicy
+) -> RebalancePolicy:
+    """A variant's policy: ``overrides.rebalancing_policy``, the legacy override keys, or the run's."""
+    declared = overrides.get("rebalancing_policy")
+    legacy = [k for k in _LEGACY_SCHEDULE_KEYS if k in overrides]
+    if declared is not None and legacy:
+        raise ValueError(f"Variant {vname!r}: overrides declare rebalancing_policy and {legacy}; declare one")
+    if declared is not None:
+        try:
+            return resolve_policy(declared)
+        except ValueError as exc:
+            raise ValueError(f"Variant {vname!r}: overrides.{exc}") from exc
+    if legacy:
+        if run.declared:
+            raise ValueError(
+                f"Variant {vname!r}: the run declares rebalancing_policy; override it with "
+                f"overrides.rebalancing_policy, not {legacy}"
+            )
+        return legacy_policy(
+            overrides.get("rebalancing_freq", run_params.get("rebalancing_freq", 1)),
+            overrides.get("threshold", run_params.get("threshold")),
+        )
+    return run
 
 
 def _number(key: str, value: Any, *, cast: type = float, where: str = "") -> Any:
@@ -224,9 +272,12 @@ class BacktestPipeline:
                         "Rebalancing band (absolute weight), on every engine: a scheduled rebalance is placed "
                         "only when an instrument's held weight has drifted more than this from its target. The "
                         "seam computes the drift cost-free (docs/adr/0008); a run with costs can trigger on "
-                        "slightly different bars than an in-engine band would."
+                        "slightly different bars than an in-engine band would. The legacy spelling of "
+                        "rebalancing_policy {policy: band}; refused together with rebalancing_policy."
                     ),
                 },
+                "rebalancing_policy": POLICY_SCHEMA,
+                "group_limits": GROUP_LIMITS_SCHEMA,
                 "initial_cash": {
                     "type": "number",
                     "minimum": 0,
@@ -323,7 +374,7 @@ class BacktestPipeline:
                     "description": (
                         "Independent variants overlaid in one report; each has name, strategy {name, params, "
                         "params_init} and optional overrides (fees, fixed_fees, slippage, rebalancing_freq, "
-                        "threshold, risk)."
+                        "threshold, rebalancing_policy, risk)."
                     ),
                 },
                 "narrative": {
@@ -417,6 +468,14 @@ class BacktestPipeline:
             raise ValueError(f"'full_report' must be true or false, got {full_report!r}")
         variants = params.get("variants") or []
         variant_costs = _plan_variants(variants, venue_declared, costs)
+        # The rebalancing policy (the seam's schedule) and the group limits, refused here when malformed.
+        policy = _run_policy(params)
+        variant_policies = {
+            str(v.get("name")): _variant_policy(str(v.get("name")), dict(v.get("overrides") or {}), params, policy)
+            for v in variants
+        }
+        group_spec = params.get("group_limits")
+        groups = resolve_group_limits(group_spec) if group_spec is not None else None
         # The run's files are the PRIMARY (first) variant's book, so its cap is the one recorded.
         risk_cfg = _variant_risk_cfg(params.get("risk") or {}, variants[0]) if variants else params.get("risk", {})
         return {
@@ -446,6 +505,13 @@ class BacktestPipeline:
             "load_params": load_params,
             # Also write the heavy report.html + report_data.json (TOM-1365); off by default.
             "full_report": full_report,
+            # The rebalancing policy every engine follows (docs/adr/0008), and per variant.
+            "policy": policy,
+            "variant_policies": variant_policies,
+            "rebalancing": policy.record(),
+            # Group limits, unbound: run() binds them to the loaded universe.
+            "groups": groups,
+            "group_limits": groups.record() if groups is not None else None,
         }
 
     def check_planned_data(self, data: Any, paths: dict[str, str | None]) -> None:
@@ -487,8 +553,6 @@ class BacktestPipeline:
         plan = self.plan(params)
         engine = plan["engine"]
         costs = plan["costs"]
-        rebalancing_freq = params.get("rebalancing_freq", 1)
-        threshold = params.get("threshold")
 
         lag_bars, same_bar = plan["timing"].lag_bars, plan["timing"].same_bar
         allow_shorts, venue_declared = plan["venue"]["allow_shorts"], plan["venue"]["declared"]
@@ -550,6 +614,8 @@ class BacktestPipeline:
                 )
 
         universe = data.load_universe(universe_params)
+        # Group limits read each symbol's group from the universe metadata (refused when it is missing).
+        groups: GroupLimits | None = plan["groups"].bind(universe) if plan["groups"] is not None else None
         # Wire the run mode to the data plugin so mode-aware sources (e.g. the
         # universe-screen market_cap / screen_volume) pick the point-in-time
         # backtest path vs the live snapshot. Run mode is authoritative.
@@ -591,8 +657,7 @@ class BacktestPipeline:
                 variant_plugins=variant_plugins,
                 risk=risk,
                 engine=engine,
-                rebalancing_freq=rebalancing_freq,
-                threshold=threshold,
+                groups=groups,
                 trading_days=trading_days,
                 bars_per_year=bars_per_year,
                 lag_bars=lag_bars,
@@ -655,7 +720,7 @@ class BacktestPipeline:
         weights_history = self._apply_venue_and_risk(weights_history, risk_cfg, allow_shorts, venue_declared)
 
         # --- Stage 5-6: the engine seam — calendars, the lag, leverage, financing legs, the engine ---
-        book = self._simulate(prices_wide, weights_history, market_data, plan, costs, rebalancing_freq, threshold)
+        book = self._simulate(prices_wide, weights_history, market_data, plan, costs, plan["policy"], groups)
         bt_prices, bt_weights = book.prices, book.weights
         common_cols = [c for c in weights_history.columns if c in prices_wide.columns]
         a_traded = store.put_parquet("traded_weights", bt_weights.rename_axis("date").reset_index())
@@ -796,6 +861,9 @@ class BacktestPipeline:
                 "engine": engine,
                 "execution": plan["execution"],
                 "venue": plan["venue"],
+                # The rebalancing policy and the group limits the seam applied (docs/adr/0008).
+                "rebalancing": plan["rebalancing"],
+                "group_limits": plan["group_limits"],
                 "funding": {"modelled": book.funding_modelled},
                 "financing": book.financing,
                 "data_validation": self._validation_note(book.data_validation),
@@ -880,8 +948,7 @@ class BacktestPipeline:
         variant_plugins: dict[str, StrategyPlugin],
         risk: list[RiskPlugin],
         engine: str,
-        rebalancing_freq: Any,
-        threshold: Any,
+        groups: GroupLimits | None,
         trading_days: int,
         bars_per_year: float,
         lag_bars: int,
@@ -893,7 +960,7 @@ class BacktestPipeline:
         """Run N independent variants and emit a combined report.
 
         Each variant has: name, strategy (registry name), optional strategy.params,
-        optional overrides (fees, threshold, rebalancing_freq, risk: {...}).
+        optional overrides (fees, threshold, rebalancing_freq, rebalancing_policy, risk: {...}).
         Reuses the one strategy runner, _aggregate_weights_history,
         _apply_risk_transforms_ts and the engine seam (:meth:`_simulate`) for
         parity with the single-variant path — on either engine.
@@ -920,12 +987,10 @@ class BacktestPipeline:
                 raise ValueError(f"Variant {vname!r}: no resolved plugin for strategy {sname!r}")
             strat_params = (strat_cfg.get("params") or {}) if isinstance(strat_cfg, dict) else {}
 
-            # Per-variant overrides; plan() already refused run-level keys and
-            # non-numeric costs, before any data was loaded (TOM-1362).
-            ov = dict(v.get("overrides", {}) or {})
+            # Per-variant overrides; plan() already refused run-level keys, non-numeric
+            # costs and a malformed policy, before any data was loaded (TOM-1362).
             v_costs = plan["variant_costs"][vname]
-            v_freq = ov.get("rebalancing_freq", rebalancing_freq)
-            v_thresh = ov.get("threshold", threshold)
+            v_policy = plan["variant_policies"][vname]
             v_risk_cfg = _variant_risk_cfg(base_risk_cfg, v)
 
             v_strategies_cfg = [{"name": sname, "weight": 1.0, "params": strat_params}]
@@ -946,7 +1011,7 @@ class BacktestPipeline:
             # Stage 5-6: the engine seam, exactly as the single run
             where = f"Variant {vname!r}: "
             try:
-                res = self._simulate(prices_wide, wh, market_data, plan, v_costs, v_freq, v_thresh, where=where)
+                res = self._simulate(prices_wide, wh, market_data, plan, v_costs, v_policy, groups, where=where)
             except ValueError as exc:
                 msg = str(exc)
                 raise ValueError(msg if msg.startswith("Variant") else f"Variant {vname!r}: {msg}") from exc
@@ -980,8 +1045,9 @@ class BacktestPipeline:
                 "config": {
                     "strategy_params": strat_params,
                     "fees": v_costs["fees"],
-                    "rebalancing_freq": v_freq,
-                    "threshold": v_thresh,
+                    "rebalancing_freq": v_policy.frequency,
+                    "threshold": v_policy.band if v_policy.policy == "band" else None,
+                    "rebalancing_policy": v_policy.record(),
                     "risk": v_risk_cfg,
                     # Optional explicit flag — when set, this variant becomes
                     # the source of the shared § 03 diagnostics in the report.
@@ -1160,6 +1226,9 @@ class BacktestPipeline:
                 "execution": plan["execution"],
                 # The run's files are the PRIMARY (first) variant's book; plan() records its cap.
                 "venue": plan["venue"],
+                # The PRIMARY variant's policy (a variant may override it); the group limits are run-level.
+                "rebalancing": primary["config"]["rebalancing_policy"],
+                "group_limits": plan["group_limits"],
                 # The primary variant's book, as every other file of the run.
                 "funding": {"modelled": primary["funding_modelled"]},
                 "financing": primary["financing"],
@@ -1242,8 +1311,8 @@ class BacktestPipeline:
         market_data: dict[str, Any],
         plan: dict[str, Any],
         costs: dict[str, float],
-        rebalancing_freq: Any,
-        threshold: Any,
+        policy: RebalancePolicy,
+        groups: GroupLimits | None = None,
         *,
         where: str = "",
     ) -> TradedBook:
@@ -1251,7 +1320,7 @@ class BacktestPipeline:
 
         The ONLY place decided weights become traded weights, shared by the
         single-run and variants flows and by every engine: calendars, the
-        rebalancing schedule and threshold, the execution lag,
+        group limits, the rebalancing policy, the execution lag,
         ``venue.leverage``, financing legs and the adapter (docs/adr/0007,
         0008). The engine reads the funding series only when it charges funding.
         """
@@ -1262,8 +1331,8 @@ class BacktestPipeline:
             engine=plan["engine"],
             timing=plan["timing"],
             costs=Costs(fees=costs["fees"], fixed_fees=costs["fixed_fees"], slippage=costs["slippage"]),
-            rebalancing_freq=rebalancing_freq,
-            threshold=threshold,
+            policy=policy,
+            groups=groups,
             leverage=None if leverage == "none" else leverage,
             financing=plan.get("financing"),
             funding=market_data.get("funding_rates"),

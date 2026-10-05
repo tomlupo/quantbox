@@ -127,12 +127,21 @@ def _backtest(
     engine_params: dict[str, Any] | None,
     trading_days: int,
     leverage: str | None = None,
+    policy: dict[str, Any] | None = None,
+    group_limits: dict[str, Any] | None = None,
+    universe: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     """``backtest()`` with an already-resolved timing (``optimize()`` resolves it once per call)."""
     from quantbox.engine import Costs, get_engine, simulate
+    from quantbox.engine.groups import resolve_group_limits
     from quantbox.financing import resolve_leverage
 
     engine = get_engine(engine)  # first: a missing [vectorbt] extra is named before anything else runs
+    groups = None
+    if group_limits is not None:
+        if universe is None:
+            raise ValueError("group_limits needs universe=: a frame with `symbol` and the group column it names")
+        groups = resolve_group_limits(group_limits).bind(universe)
     book = simulate(
         prices,
         _on_price_bars(prices, weights),
@@ -141,6 +150,8 @@ def _backtest(
         costs=Costs(fees=fees, fixed_fees=fixed_fees, slippage=slippage),
         rebalancing_freq=rebalancing_freq,
         threshold=threshold,
+        policy=policy,
+        groups=groups,
         leverage=None if leverage is None else resolve_leverage(leverage),
         engine_params=engine_params,
         trading_days=trading_days,
@@ -175,6 +186,9 @@ def backtest(
     same_bar_reason: str | None = None,
     schedule: str = "calendar",
     leverage: str | None = None,
+    policy: dict[str, Any] | None = None,
+    group_limits: dict[str, Any] | None = None,
+    universe: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     """High-level backtest through the engine seam (:func:`quantbox.engine.simulate`, docs/adr/0008).
 
@@ -231,6 +245,18 @@ def backtest(
         ``venue.leverage`` on the calendar schedule: ``"normalize"`` (the
         default, every engine) or ``"borrow"`` (held as decided, free
         financing). Refused with ``schedule="bars"``.
+    policy : dict | None
+        The rebalancing policy (:mod:`quantbox.engine.policy`), e.g.
+        ``{"policy": "periodic", "frequency": "monthly", "calendar": "NYSE"}``,
+        ``{"policy": "tranche", "tranches": 4, "frequency": "weekly"}``,
+        ``{"policy": "band", "band": 0.05}`` or
+        ``{"policy": "corridor", "width": [0.02, 0.05], "bounds": {"SPY": 0.03}}``.
+        Replaces ``rebalancing_freq`` + ``threshold``; passing both is refused.
+    group_limits, universe : dict | None, pd.DataFrame | None
+        Group limits on the decided weights (:mod:`quantbox.engine.groups`):
+        ``{"by": "asset_class", "limits": {"equity": {"max": 0.6}}}``, the groups
+        read from *universe* (``symbol`` + the ``by`` column). An infeasible
+        limit raises ``ValueError``.
 
     Returns
     -------
@@ -259,4 +285,7 @@ def backtest(
         engine_params=params,
         trading_days=trading_days,
         leverage=leverage,
+        policy=policy,
+        group_limits=group_limits,
+        universe=universe,
     )

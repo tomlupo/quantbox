@@ -221,6 +221,9 @@ def explain_config(
         doc["execution"] = plan["execution"]
         doc["run"] = run_record(plan["execution"])
         doc["venue"] = plan["venue"]
+        if "rebalancing" in plan:  # the seam's schedule and group limits, as the run will apply them
+            doc["rebalancing"] = plan["rebalancing"]
+            doc["group_limits"] = plan.get("group_limits")
     if getattr(pipeline, "accepts_overlays", False):
         # A pipeline that applies overlays records the chain, empty or not (run@1 minor 1).
         doc["overlays"] = overlay_record(resolved.overlay_chain)

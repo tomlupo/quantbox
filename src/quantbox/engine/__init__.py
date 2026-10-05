@@ -18,7 +18,10 @@ Every backtest door goes through it: ``quantbox run`` and its variants,
 The seam owns everything that decides what is traded and when, the same for
 every engine: the execution lag (docs/adr/0005, 0006), applied in ONE place,
 :func:`quantbox.engine._lag.lag_positions`; the rebalancing schedule and its
-threshold (:mod:`quantbox.engine.schedule`), as a per-cell orders mask; the
+threshold (:mod:`quantbox.engine.schedule`) and the rebalancing policies
+(:mod:`quantbox.engine.policy`: periodic, tranche, band, corridor), as a
+per-cell orders mask; group limits on the decided book
+(:mod:`quantbox.engine.groups`); the
 NaN policy (:func:`materialise_nan`); the default ``venue.leverage``. An
 adapter only executes the orders (:meth:`EngineAdapter.execute`) and declares
 two real capability differences, ``charges_funding`` and ``models_margin``.
@@ -30,19 +33,27 @@ from __future__ import annotations
 from ._lag import lag_frame, lag_positions
 from .base import Costs, EngineAdapter, TradedBook
 from .book import NAN_POLICY, materialise_nan, simulate
+from .groups import GroupLimits, apply_group_limits, resolve_group_limits
+from .policy import POLICIES, RebalancePolicy, resolve_policy
 from .registry import DEFAULT_ENGINE, engine_distribution, engine_names, get_engine
 
 __all__ = [
     "DEFAULT_ENGINE",
     "NAN_POLICY",
+    "POLICIES",
     "Costs",
     "EngineAdapter",
+    "GroupLimits",
+    "RebalancePolicy",
     "TradedBook",
     "engine_distribution",
     "engine_names",
     "get_engine",
     "lag_frame",
     "lag_positions",
+    "apply_group_limits",
     "materialise_nan",
+    "resolve_group_limits",
+    "resolve_policy",
     "simulate",
 ]

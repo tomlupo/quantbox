@@ -41,6 +41,8 @@ from quantbox.instrument_calendar import (
 )
 
 from .base import Costs, EngineAdapter, TradedBook
+from .groups import GroupLimits, apply_group_limits
+from .policy import RebalancePolicy, policy_execution_bars, schedule_policy
 from .registry import get_engine
 from .schedule import NAN_POLICY, ScheduledBook, materialise_nan, schedule_book
 
@@ -58,6 +60,8 @@ def simulate(
     costs: Costs = Costs(),
     rebalancing_freq: Any = 1,
     threshold: float | None = None,
+    policy: Mapping[str, Any] | RebalancePolicy | None = None,
+    groups: GroupLimits | None = None,
     leverage: str | None = None,
     financing: Financing | None = None,
     funding: pd.DataFrame | None = None,
@@ -70,8 +74,14 @@ def simulate(
     *decided* is the strategy's book after overlays and risk transforms, NOT
     lagged: row ``t`` was decided with data through ``close[t]``. A dict of
     frames, or MultiIndex columns (the ticker last), is one strategy slice each.
-    ``timing.schedule`` is ``calendar`` or ``bars``. *rebalancing_freq* and
-    *threshold* are the rebalancing schedule, the same on every engine.
+    ``timing.schedule`` is ``calendar`` or ``bars``. *policy* is the
+    rebalancing policy (:mod:`quantbox.engine.policy`: periodic, tranche, band,
+    corridor; a mapping or a resolved :class:`RebalancePolicy`); without it
+    *rebalancing_freq* and *threshold* are the schedule (periodic, or a band).
+    Declaring both is refused. Every engine gets the same schedule.
+    *groups* (bound to a universe, :class:`quantbox.engine.groups.GroupLimits`)
+    keeps each group's gross weight inside its limits on every decided row,
+    before the schedule.
     *leverage* is ``venue.leverage``; None = :data:`quantbox.financing.DEFAULT_LEVERAGE`
     on the calendar, and nothing is applied on ``bars``. *financing* (one slice
     only) appends the LEND/BORROW cash legs. The result's ``weights`` /
@@ -88,6 +98,9 @@ def simulate(
             "execution.schedule: bars applies no venue.leverage and no venue.financing; drop them or use "
             "execution.schedule: calendar"
         )
+    pol = schedule_policy(policy, rebalancing_freq, threshold)
+    if groups is not None and groups.membership is None:
+        raise ValueError("group_limits are not bound to a universe: pass GroupLimits.bind(universe)")
     slices, level_names = _slices(decided)
     if financing is not None and len(slices) > 1:
         raise ValueError("venue.financing takes a book with one strategy slice")
@@ -95,8 +108,8 @@ def simulate(
         prices,
         slices,
         timing,
-        rebalancing_freq,
-        threshold,
+        pol,
+        groups,
         "none" if bars else (leverage or DEFAULT_LEVERAGE),
         financing,
         adapter,
@@ -201,8 +214,8 @@ def _stage(
     prices_wide: pd.DataFrame,
     slices: list[tuple[Any, pd.DataFrame]],
     timing: ExecutionTiming,
-    rebalancing_freq: Any,
-    threshold: float | None,
+    policy: RebalancePolicy,
+    groups: GroupLimits | None,
     leverage: str,
     financing: Financing | None,
     adapter: EngineAdapter,
@@ -214,9 +227,11 @@ def _stage(
        and the EXECUTION calendar (``execution.calendar``,
        :func:`~quantbox.instrument_calendar.execution_bars`) — on ``schedule: bars``
        the degenerate one (:func:`_bar_grid`);
-    2. per strategy slice: the NaN policy, decision bars, the execution lag counted
-       in execution bars, per-instrument deferral of unprinted orders,
-       ``venue.leverage``, the threshold, input staleness
+    2. per strategy slice: the NaN policy, the group limits (when declared,
+       :func:`quantbox.engine.groups.apply_group_limits`), decision bars (narrowed
+       to the policy's market sessions), the execution lag counted in execution
+       bars, per-instrument deferral of unprinted orders, ``venue.leverage``,
+       the rebalancing policy, input staleness
        (:func:`quantbox.engine.schedule.schedule_book`);
     3. financing: with ``venue.financing`` (or ``venue.leverage: borrow`` on an
        engine that does not model margin, at an assumed rate of 0) the
@@ -240,18 +255,24 @@ def _stage(
     else:
         reference = prices_wide[timing.calendar] if timing.calendar in prices_wide.columns else None
         exec_bars = execution_bars(cal, timing.calendar, reference)
+    exec_bars = policy_execution_bars(exec_bars, policy)
     books: list[tuple[Any, ScheduledBook]] = []
+    group_reports: list[dict[str, Any]] = []
     for key, w in slices:
+        on_bars = w.reindex(index=common_idx, columns=common_cols)
+        if groups is not None:
+            on_bars, group_report = apply_group_limits(materialise_nan(on_bars), groups)
+            group_reports.append(group_report)
         sb = schedule_book(
-            w.reindex(index=common_idx, columns=common_cols),
+            on_bars,
             cal,
             exec_bars,
-            rebalancing_freq,
+            1,  # the legacy rebalancing_freq default: the schedule is *policy*
             timing.lag_bars,
             leverage=leverage,
-            threshold=threshold,
             weight_rows=w.reindex(columns=common_cols),
             same_bar=timing.same_bar,
+            policy=policy,
         )
         if timing.schedule == "bars":
             _refuse_held_without_price(prices_wide.loc[common_idx, common_cols].ffill(), sb.weights)
@@ -299,6 +320,13 @@ def _stage(
             metrics["decision_stale_weights_held_bars_max"] = float(age["stale_held_bars_max"])
         if "threshold" in one.report:
             metrics["threshold_skipped_rebalances"] = float(one.report["threshold"]["skipped_rebalances"])
+        if "rebalancing" in one.report:
+            reb = one.report["rebalancing"]
+            metrics["rebalance_placed"] = float(reb["placed_rebalances"])
+            metrics["rebalance_skipped"] = float(reb["skipped_rebalances"])
+            metrics["rebalance_partial"] = float(reb["partial_rebalances"])
+        if group_reports:
+            metrics["group_limit_rows_adjusted"] = float(group_reports[0]["rows_adjusted"])
         if legs:
             p, w, fin = add_cash_legs(bt_prices, one.weights, financing, prices_wide)
             fin_record = {"modelled": True, **fin}
@@ -335,6 +363,10 @@ def _stage(
         }
         if "threshold" in one.report:
             data_validation["threshold"] = one.report["threshold"]
+        if "rebalancing" in one.report:
+            data_validation["rebalancing"] = one.report["rebalancing"]
+        if group_reports:
+            data_validation["groups"] = group_reports[0]
     return {
         "prices": bt_prices,
         "weights": weights,
