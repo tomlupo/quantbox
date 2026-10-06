@@ -7,11 +7,17 @@ from typing import Any
 
 from .plugin_manifest import load_manifest, resolve_profile
 
+#: Finding code of a block naming a plugin this environment does not register. ``validate``
+#: and the runner refuse it alike (TOM-1528, TOM-1529).
+UNKNOWN_PLUGIN = "unknown_plugin"
+
 
 @dataclass
 class ValidationFinding:
     level: str  # "error" or "warning"
     message: str
+    #: Machine-readable kind, set where a consumer acts on it (``UNKNOWN_PLUGIN``); None otherwise.
+    code: str | None = None
 
 
 def _check_legacy_dataset_params(cfg: dict) -> None:
@@ -183,8 +189,8 @@ def _strategy_module_exists(name: str) -> bool:
 def _unknown_plugin(registry: Any, where: str, group: str, name: str) -> ValidationFinding:
     """The error for a block that names a plugin this environment does not register (TOM-1528).
 
-    A run refuses the same block at resolve (``PluginNotFoundError``); validate used to
-    pass it with a ``params_not_checked`` warning and exit 0.
+    ``run_from_config`` raises this same finding before any work (TOM-1529); validate used
+    to pass it with a ``params_not_checked`` warning and exit 0.
     """
     import difflib
 
@@ -194,8 +200,9 @@ def _unknown_plugin(registry: Any, where: str, group: str, name: str) -> Validat
     if group == _STRATEGY_MODULE:
         return ValidationFinding(
             "error",
-            f"unknown_plugin: '{name}' ({where}) is not a module under {_STRATEGY_PKG}; "
+            f"{UNKNOWN_PLUGIN}: '{name}' ({where}) is not a module under {_STRATEGY_PKG}; "
             "the pipeline imports it by that name",
+            UNKNOWN_PLUGIN,
         )
     registered = sorted(getattr(registry, PLUGIN_GROUPS[group], None) or {})
     close = difflib.get_close_matches(name, registered, n=3, cutoff=0.6)
@@ -204,9 +211,10 @@ def _unknown_plugin(registry: Any, where: str, group: str, name: str) -> Validat
     )
     return ValidationFinding(
         "error",
-        f"unknown_plugin: '{name}' ({where}) is not a registered {group} plugin; {closest}. "
+        f"{UNKNOWN_PLUGIN}: '{name}' ({where}) is not a registered {group} plugin; {closest}. "
         f"A plugin from another package registers under the '{ENTRYPOINT_GROUPS[group]}' entry point: "
         "install that package in this environment (`uv add <package>`).",
+        UNKNOWN_PLUGIN,
     )
 
 
