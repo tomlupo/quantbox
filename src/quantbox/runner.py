@@ -423,8 +423,9 @@ class ResolvedRun:
 def plugin_refs(cfg: dict[str, Any]) -> list[tuple[str, str, str, dict[str, Any]]]:
     """``(role, group, registry attribute, spec)`` for every plugin a prepared config names.
 
-    Includes the plugins a run resolves only AFTER the pipeline (publishers,
-    validation, monitors), so a pre-flight can check every id up front.
+    Includes the publishers, which a run resolves only AFTER the pipeline, and the
+    validation and monitor plugins, which run after it, so a pre-flight can check
+    every id up front.
     """
     plugins = cfg.get("plugins") or {}
     refs: list[tuple[str, str, str, dict[str, Any]]] = []
