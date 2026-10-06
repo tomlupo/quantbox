@@ -33,7 +33,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from quantbox.contracts import PluginMeta
+from quantbox.contracts import PluginMeta, StrategyContext
+from quantbox.strategy_runner import resolve_annualize
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +44,25 @@ logger = logging.getLogger(__name__)
 
 _AssetClass = namedtuple("_AssetClass", ["name", "category", "etf_ticker"])
 
+#: The money_market sleeve's default ticker (TOM-1528). It was SHV, which the pinned
+#: etf-daily does not carry, and no BIL/SGOV/SHV is there either: SHY (1-3y Treasury)
+#: is the shortest-duration fund it has. A dataset with a true money-market ETF sets
+#: ``money_market_ticker``. SHY is also us_treasury_short's ticker: the two sleeves
+#: then share one column, and money_market has no momentum series of its own.
+DEFAULT_MONEY_MARKET_TICKER = "SHY"
+
+#: The commodities sleeve's default ticker (TOM-1529). It was DJP, which etf-daily does not
+#: carry; PDBC (a broad commodity futures ETF) is there, from 2014-11-07, where DJP dates
+#: from 2006: a window before late 2014 has no commodities prices on etf-daily. A dataset
+#: with another fund sets ``commodities_ticker``. Only profit_plus holds the sleeve.
+DEFAULT_COMMODITIES_TICKER = "PDBC"
+
+#: Sleeves whose prices column is a strategy param, not a fixed ticker: sleeve -> param.
+_TICKER_PARAMS: dict[str, str] = {"money_market": "money_market_ticker", "commodities": "commodities_ticker"}
+
 ASSET_CLASSES: dict[str, _AssetClass] = {
     # Fixed Income
-    "money_market": _AssetClass("Money Market", "fixed_income", "SHV"),
+    "money_market": _AssetClass("Money Market", "fixed_income", DEFAULT_MONEY_MARKET_TICKER),
     "us_treasury_short": _AssetClass("US Treasury Short", "fixed_income", "SHY"),
     "us_treasury_medium": _AssetClass("US Treasury Medium", "fixed_income", "IEF"),
     "us_treasury_long": _AssetClass("US Treasury Long", "fixed_income", "TLT"),
@@ -59,12 +76,9 @@ ASSET_CLASSES: dict[str, _AssetClass] = {
     "em_stocks": _AssetClass("Emerging Market Stocks", "equity", "EEM"),
     # Alternatives
     "real_estate": _AssetClass("Real Estate", "alternative", "VNQ"),
-    "commodities": _AssetClass("Commodities", "alternative", "DJP"),
+    "commodities": _AssetClass("Commodities", "alternative", DEFAULT_COMMODITIES_TICKER),
     "gold": _AssetClass("Gold", "alternative", "GLD"),
 }
-
-# Reverse lookup: ETF ticker -> asset class key
-_TICKER_TO_ASSET: dict[str, str] = {ac.etf_ticker: key for key, ac in ASSET_CLASSES.items()}
 
 RISK_PROFILE_ALLOCATIONS: dict[str, dict[str, float]] = {
     "safe": {
@@ -117,20 +131,36 @@ _SAFE_ASSETS = frozenset({"money_market", "us_treasury_short"})
 # ---------------------------------------------------------------------------
 
 
+def _ticker_to_asset(
+    money_market_ticker: str | None,
+    commodities_ticker: str | None = DEFAULT_COMMODITIES_TICKER,
+) -> dict[str, str]:
+    """ETF ticker -> asset class key. money_market and commodities take their tickers from
+    the params; when such a ticker is another class's, the other class owns the column."""
+    out = {ac.etf_ticker: key for key, ac in ASSET_CLASSES.items() if key not in _TICKER_PARAMS}
+    for key, ticker in (("commodities", commodities_ticker), ("money_market", money_market_ticker)):
+        if ticker is not None:
+            out.setdefault(ticker, key)
+    return out
+
+
 def _resolve_columns(
     prices: pd.DataFrame,
+    money_market_ticker: str | None = DEFAULT_MONEY_MARKET_TICKER,
+    commodities_ticker: str | None = DEFAULT_COMMODITIES_TICKER,
 ) -> dict[str, str]:
     """Build mapping from DataFrame column -> internal asset class key.
 
     Accepts either ETF ticker columns (SPY, TLT, ...) or asset class name
     columns (us_stocks, us_treasury_long, ...).
     """
+    ticker_to_asset = _ticker_to_asset(money_market_ticker, commodities_ticker)
     col_to_asset: dict[str, str] = {}
     for col in prices.columns:
         if col in ASSET_CLASSES:
             col_to_asset[col] = col
-        elif col in _TICKER_TO_ASSET:
-            col_to_asset[col] = _TICKER_TO_ASSET[col]
+        elif col in ticker_to_asset:
+            col_to_asset[col] = ticker_to_asset[col]
     return col_to_asset
 
 
@@ -268,7 +298,7 @@ def _volatility_scalar(
         lookback: Number of bars for vol estimation.
         annualize: Bars per year for vol annualization. Default 252 (equity
             convention). Strategy callers should derive this from the
-            pipeline-injected ``_pipeline_annualize`` per issue #20 / #23.
+            run's ``StrategyContext.bars_per_year`` (TOM-1448).
     """
     if len(returns) < lookback:
         return 1.0
@@ -323,6 +353,18 @@ class BeGlobalStrategy:
                     "enum": ["safe", "bond_plus", "mixed", "profit", "profit_plus"],
                     "description": "Base allocation profile of the core portfolio.",
                 },
+                "money_market_ticker": {
+                    "description": (
+                        "Prices column of the money_market sleeve (default SHY, the shortest Treasury fund in "
+                        "etf-daily); null holds the sleeve as cash."
+                    )
+                },
+                "commodities_ticker": {
+                    "description": (
+                        "Prices column of the commodities sleeve, held by profit_plus (default PDBC, in etf-daily "
+                        "from 2014-11-07); null holds the sleeve as cash."
+                    )
+                },
                 "core_weight": {
                     "description": "Share of the book held in the risk-profile core; the rest is the momentum satellite."
                 },
@@ -348,6 +390,12 @@ class BeGlobalStrategy:
     # Risk profile
     risk_profile: str = "mixed"
 
+    # Money-market sleeve: its prices column; None = held as cash (weights then sum below 1)
+    money_market_ticker: str | None = DEFAULT_MONEY_MARKET_TICKER
+
+    # Commodities sleeve (profit_plus): its prices column; None = held as cash
+    commodities_ticker: str | None = DEFAULT_COMMODITIES_TICKER
+
     # Core-satellite split
     core_weight: float = 0.70
 
@@ -368,7 +416,7 @@ class BeGlobalStrategy:
     # Volatility targeting
     target_volatility: float = 0.10
     vol_lookback: int = 20
-    annualize: float | None = None  # None = pipeline-injected via _pipeline_annualize; falls back to 252.0
+    annualize: float | None = None  # None = the run's StrategyContext.bars_per_year; 252.0 without one
 
     # Corridor rebalancing
     rebalance_threshold: float = 0.025
@@ -380,6 +428,7 @@ class BeGlobalStrategy:
         self,
         data: dict[str, Any],
         params: dict[str, Any] | None = None,
+        context: StrategyContext | None = None,
     ) -> dict[str, Any]:
         """Run BeGlobal strategy.
 
@@ -395,19 +444,8 @@ class BeGlobalStrategy:
                 if hasattr(self, key):
                     setattr(self, key, value)
 
-        # Resolve annualize: explicit (self/params) wins, else pipeline-injected, else 252.0.
-        pipeline_annualize = (params or {}).get("_pipeline_annualize")
-        if self.annualize is None:
-            effective_annualize = float(pipeline_annualize) if pipeline_annualize is not None else 252.0
-        else:
-            effective_annualize = float(self.annualize)
-            if pipeline_annualize is not None and abs(effective_annualize - pipeline_annualize) > 1:
-                logger.warning(
-                    "BeGlobalStrategy.annualize=%s overrides pipeline-derived %.1f. "
-                    "If intentional, ignore; otherwise drop the explicit value.",
-                    effective_annualize,
-                    pipeline_annualize,
-                )
+        # Annualisation: the strategy's explicit field wins, else the run's StrategyContext (TOM-1448).
+        effective_annualize = resolve_annualize(self.annualize, params, context, owner="BeGlobalStrategy.annualize")
 
         prices: pd.DataFrame = data["prices"]
 
@@ -431,7 +469,8 @@ class BeGlobalStrategy:
         )
 
         # Resolve columns to internal asset names
-        col_to_asset = _resolve_columns(prices)
+        tickers = {"money_market": self.money_market_ticker, "commodities": self.commodities_ticker}
+        col_to_asset = _resolve_columns(prices, tickers["money_market"], tickers["commodities"])
         if not col_to_asset:
             raise ValueError(
                 "No matching asset columns found in prices DataFrame. "
@@ -439,8 +478,24 @@ class BeGlobalStrategy:
                 "(us_stocks, us_treasury_long, ...)."
             )
 
-        # asset_key -> column name (for output mapping)
-        asset_to_col: dict[str, str] = {v: k for k, v in col_to_asset.items()}
+        # asset_key -> column name (for output mapping); None = held as cash, not output
+        asset_to_col: dict[str, str | None] = {v: k for k, v in col_to_asset.items()}
+        for sleeve, param in _TICKER_PARAMS.items():
+            ticker = tickers[sleeve]
+            if sleeve in asset_to_col:
+                continue
+            if ticker is None:
+                asset_to_col[sleeve] = None
+            elif ticker in prices.columns:
+                # The ticker is another sleeve's column (SHY): this sleeve's weight lands there.
+                asset_to_col[sleeve] = ticker
+            elif sleeve == "money_market" or sleeve in base_allocation:
+                # money_market is every profile's and the satellite's fallback; commodities only
+                # profit_plus's: a profile that never holds the sleeve does not need its column.
+                raise ValueError(
+                    f"BeGlobalStrategy: {param} {ticker!r} is not a prices column; "
+                    f"set {param} to a ticker the dataset carries, or null to hold the sleeve as cash."
+                )
 
         # Build per-asset price series (keyed by internal asset name)
         asset_prices: dict[str, pd.Series] = {}
@@ -544,16 +599,21 @@ class BeGlobalStrategy:
             row_dates.append(date)
 
         # Build output weights DataFrame using original column names (ETF tickers
-        # or asset class names, matching the input prices columns).
+        # or asset class names, matching the input prices columns). Sleeves that
+        # share a column (money_market on SHY) are summed into it; a sleeve held
+        # as cash (column None) is left out, so its weight stays unallocated.
         all_asset_keys = sorted(
             {k for row in rows for k in row},
         )
-        output_cols = [asset_to_col.get(k, k) for k in all_asset_keys]
+        output_cols = list(dict.fromkeys(c for k in all_asset_keys if (c := asset_to_col.get(k, k)) is not None))
+        col_pos = {c: j for j, c in enumerate(output_cols)}
 
-        weights_data = np.zeros((len(rows), len(all_asset_keys)))
+        weights_data = np.zeros((len(rows), len(output_cols)))
         for i, row in enumerate(rows):
-            for j, asset_key in enumerate(all_asset_keys):
-                weights_data[i, j] = row.get(asset_key, 0.0)
+            for asset_key, w in row.items():
+                col = asset_to_col.get(asset_key, asset_key)
+                if col is not None:
+                    weights_data[i, col_pos[col]] += w
 
         weights_df = pd.DataFrame(
             weights_data,
@@ -570,6 +630,8 @@ class BeGlobalStrategy:
             "simple_weights": simple_weights,
             "details": {
                 "risk_profile": self.risk_profile,
+                "money_market_column": asset_to_col["money_market"],
+                "commodities_column": asset_to_col.get("commodities"),
                 "base_allocation": base_allocation,
                 "core_weight": self.core_weight,
                 "satellite_weight": satellite_weight,

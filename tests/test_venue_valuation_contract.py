@@ -1363,13 +1363,13 @@ class TestPipelineModeThreading:
         assert self._params({}, "live")["mode"] == "live"
         assert self._params({}, "paper")["mode"] == "paper"
 
-    @pytest.mark.parametrize("key", ["capital_at_risk", "stable_coin_symbol", "exclusions", "strategy_weights"])
+    # strategy_weights left this list with TOM-1518: it fed the rebalancers' own tranching only.
+    @pytest.mark.parametrize("key", ["capital_at_risk", "stable_coin_symbol", "exclusions"])
     def test_everything_else_remains_a_config_overridable_default(self, key):
         sentinel = {
             "capital_at_risk": 0.123,
             "stable_coin_symbol": "ZZZ",
             "exclusions": ["Q"],
-            "strategy_weights": {"a": 1.0},
         }[key]
         assert self._params({key: sentinel}, "live")[key] == sentinel
 

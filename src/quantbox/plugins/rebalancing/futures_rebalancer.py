@@ -31,6 +31,8 @@ import numpy as np
 import pandas as pd
 
 from quantbox.contracts import BrokerPlugin, PluginMeta
+from quantbox.decision import gross_cap, risk_caps_row
+from quantbox.engine.policy import TRANCHES_MOVED
 from quantbox.portfolio_value import (
     BASIS_MARGIN,
     DEFAULT_RECONCILIATION_TOLERANCE,
@@ -54,9 +56,9 @@ class FuturesRebalancer:
     """Futures rebalancer: margin-based with signed positions.
 
     ``generate_orders()`` params keys:
-      - tranches, max_leverage  (risk transforms — no allow_short, always allowed)
+      - max_leverage  (risk transforms — no allow_short, always allowed)
       - min_trade_size, capital_at_risk, stable_coin_symbol
-      - strategy_results  (for tranching time-series)
+      - tranches: deprecated, N > 1 refused (the policy's tranche cadence, TOM-1518)
     """
 
     meta = PluginMeta(
@@ -77,7 +79,10 @@ class FuturesRebalancer:
                 "tranches": {
                     "type": "integer",
                     "default": 1,
-                    "description": "Average targets over N tranches (rolling mean).",
+                    "description": (
+                        "DEPRECATED (TOM-1518): trade.full_pipeline.v1 reads N > 1 as rebalancing_policy "
+                        "{cadence: tranche, tranches: N}; this plugin refuses N > 1 itself (no tranching here)."
+                    ),
                 },
                 "max_leverage": {
                     "type": "number",
@@ -93,11 +98,6 @@ class FuturesRebalancer:
                     "type": "array",
                     "default": [],
                     "description": "Assets never traded (pipeline value if unset).",
-                },
-                "strategy_weights": {
-                    "type": "object",
-                    "default": {},
-                    "description": "Per-strategy weight overrides used with tranches (pipeline value if unset).",
                 },
                 "equity_reconciliation_tolerance": {
                     "type": "number",
@@ -152,67 +152,25 @@ class FuturesRebalancer:
         weights: dict[str, float],
         params: dict[str, Any],
     ) -> dict[str, float]:
-        """Apply tranching and leverage cap. No short clamping."""
-        tranches = int(params.get("tranches", 1))
-        max_leverage = float(params.get("max_leverage", 1))
+        """The gross cap (:func:`quantbox.decision.risk_caps_row` with :meth:`risk_rules`). No short clamping.
 
-        s = pd.Series(weights, dtype=float)
-
-        # Tranching: rolling mean over N days (requires historical weights)
-        if tranches > 1:
-            strategy_results = params.get("strategy_results", {})
-            if strategy_results:
-                try:
-                    names = list(strategy_results.keys())
-                    weight_overrides = params.get("strategy_weights", {})
-                    weight_dfs = []
-                    account_weights = []
-                    for sname in names:
-                        sinfo = strategy_results[sname]
-                        w_df = sinfo["result"].get("weights", pd.DataFrame())
-                        if w_df is not None and not w_df.empty:
-                            weight_dfs.append(w_df)
-                            account_weights.append(float(weight_overrides.get(sname, sinfo["weight"])))
-
-                    if len(weight_dfs) == 1:
-                        full_ts = weight_dfs[0] * account_weights[0]
-                    else:
-                        combined = pd.concat(
-                            weight_dfs,
-                            axis=1,
-                            keys=names[: len(weight_dfs)],
-                            names=["strategy"],
-                        )
-                        acct_w = pd.Series(
-                            account_weights,
-                            index=pd.Index(names[: len(weight_dfs)], name="strategy"),
-                        )
-                        weighted = combined.mul(acct_w, level="strategy")
-                        full_ts = weighted.droplevel(0, axis=1)
-                        if isinstance(full_ts.columns, pd.MultiIndex) or full_ts.columns.duplicated().any():
-                            full_ts = full_ts.T.groupby(level=0).sum().T
-
-                    smoothed = full_ts.rolling(window=tranches).mean().iloc[-1]
-                    s = smoothed
-                except Exception:
-                    logger.warning("Tranching failed, using un-smoothed weights")
-
-        # Leverage cap on gross exposure
-        gross = s.abs().sum()
-        if gross > max_leverage:
-            logger.warning(
-                "Leverage %.4f exceeds max_leverage %.1f, scaling down",
-                gross,
-                max_leverage,
-            )
-            s = s / gross * max_leverage
-
-        # NO short clamping — negative weights are valid for futures
-
+        The decision's own step 2 (TOM-1520): trade.full_pipeline.v1 already
+        applied it to the targets it hands in, so this changes nothing there.
+        No tranching: the rebalancing policy owns WHEN and to WHICH targets
+        (``quantbox.engine.policy``, TOM-1518). This plugin turns target
+        weights into orders.
+        """
+        s = pd.Series(risk_caps_row(weights, **self.risk_rules(params)), dtype=float)
         # Drop zeros and sort by absolute value descending
         s = s[s != 0].reindex(s[s != 0].abs().sort_values(ascending=False).index)
-
         return {str(k): float(v) for k, v in s.items()}
+
+    def risk_rules(self, params: dict[str, Any]) -> dict[str, Any]:
+        """This order generator's caps, as the decision reads them (TOM-1520): no short clip, a gross cap."""
+        if int(params.get("tranches", 1) or 1) > 1:
+            raise ValueError(TRANCHES_MOVED)
+        # NO short clamping — negative weights are valid for futures
+        return {"allow_short": True, "max_leverage": gross_cap(params)}
 
     # ==================================================================
     # Order generation

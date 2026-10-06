@@ -22,30 +22,28 @@ from quantbox.plugins.strategies.beglobal_strategy import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
-_ALL_ETF_TICKERS = [ac.etf_ticker for ac in ASSET_CLASSES.values()]
+# 13 distinct tickers: SHY, IEF, TLT, BWX, LQD, HYG, EMB, SPY, EFA, EEM, VNQ, PDBC, GLD.
+# money_market and us_treasury_short share SHY by default (TOM-1528).
+_ALL_ETF_TICKERS = list(dict.fromkeys(ac.etf_ticker for ac in ASSET_CLASSES.values()))
 
-# 14 tickers used in BeGlobal: SHV, SHY, IEF, TLT, BWX, LQD, HYG, EMB,
-# SPY, EFA, EEM, VNQ, DJP, GLD
 
-
-@pytest.fixture()
-def prices_etf() -> pd.DataFrame:
-    """600-day random walk prices with all 14 ETF tickers as columns."""
+def _random_walk(columns: list[str], n_days: int = 600) -> pd.DataFrame:
     rng = np.random.RandomState(42)
-    n_days = 600
     dates = pd.bdate_range("2024-01-01", periods=n_days)
-    data = {}
-    for ticker in _ALL_ETF_TICKERS:
-        cumret = np.exp(np.cumsum(rng.normal(0.0003, 0.01, n_days)))
-        data[ticker] = cumret * 100
+    data = {c: np.exp(np.cumsum(rng.normal(0.0003, 0.01, n_days))) * 100 for c in columns}
     return pd.DataFrame(data, index=dates)
 
 
 @pytest.fixture()
-def prices_asset_names(prices_etf: pd.DataFrame) -> pd.DataFrame:
-    """Same data as prices_etf but columns are asset class names."""
-    ticker_to_name = {ac.etf_ticker: key for key, ac in ASSET_CLASSES.items()}
-    return prices_etf.rename(columns=ticker_to_name)
+def prices_etf() -> pd.DataFrame:
+    """600-day random walk prices with every ETF ticker as a column."""
+    return _random_walk(_ALL_ETF_TICKERS)
+
+
+@pytest.fixture()
+def prices_asset_names() -> pd.DataFrame:
+    """600-day random walk prices with all 14 asset class names as columns."""
+    return _random_walk(list(ASSET_CLASSES))
 
 
 @pytest.fixture()
@@ -314,7 +312,7 @@ class TestBeGlobalRun:
         """Prices shorter than warmup should return empty weights."""
         dates = pd.bdate_range("2024-01-01", periods=50)
         prices = pd.DataFrame(
-            {"SPY": np.linspace(100, 110, 50), "SHV": np.linspace(100, 101, 50)},
+            {"SPY": np.linspace(100, 110, 50), "SHY": np.linspace(100, 101, 50)},
             index=dates,
         )
         strategy = BeGlobalStrategy()
@@ -384,6 +382,124 @@ class TestBeGlobalRun:
         result = strategy.run({"prices": prices})
         assert "weights" in result
         assert result["weights"].shape[0] > 0
+
+
+# ---------------------------------------------------------------------------
+# Money-market sleeve (TOM-1528)
+# ---------------------------------------------------------------------------
+#
+# The sleeve sat on SHV, which the pinned etf-daily does not carry. The pipeline
+# dropped the unpriced column (the sleeve was cash) until TOM-1500 made the engine
+# refuse it; run_backtest_beglobal.yaml then failed. Default now: SHY.
+
+_ETF_DAILY_BEGLOBAL = ["SHY", "IEF", "TLT", "LQD", "HYG", "EMB", "SPY", "EFA", "EEM", "VNQ", "GLD"]
+
+
+class TestMoneyMarketSleeve:
+    def test_default_sleeve_is_on_shy_and_every_weight_is_priced(self) -> None:
+        """etf-daily's BeGlobal tickers: no SHV, BWX or DJP. Every output column is a prices column."""
+        prices = _random_walk(_ETF_DAILY_BEGLOBAL)
+        result = BeGlobalStrategy(risk_profile="safe").run({"prices": prices})
+        weights = result["weights"]
+        assert set(weights.columns) <= set(prices.columns), sorted(set(weights.columns) - set(prices.columns))
+        assert result["details"]["money_market_column"] == "SHY"
+        np.testing.assert_allclose(weights.sum(axis=1).values, 1.0, atol=1e-6)
+
+    def test_money_market_and_treasury_short_share_the_shy_column(self) -> None:
+        """safe = 60% money_market + 30% us_treasury_short + 10% IEF: SHY carries the first two."""
+        prices = _random_walk(["SHY", "IEF"])
+        strategy = BeGlobalStrategy(risk_profile="safe", core_weight=1.0, vol_lookback=10_000)
+        latest = strategy.run({"prices": prices})["simple_weights"]
+        assert latest == pytest.approx({"SHY": 0.90, "IEF": 0.10})
+
+    def test_ticker_is_a_param_a_true_money_market_etf_gets_its_own_column(self) -> None:
+        prices = _random_walk(["BIL", "SHY", "IEF"])
+        strategy = BeGlobalStrategy(risk_profile="safe", core_weight=1.0, vol_lookback=10_000)
+        latest = strategy.run({"prices": prices}, params={"money_market_ticker": "BIL"})["simple_weights"]
+        assert latest == pytest.approx({"BIL": 0.60, "SHY": 0.30, "IEF": 0.10})
+
+    def test_null_ticker_holds_the_sleeve_as_cash(self) -> None:
+        """The pre-TOM-1500 behaviour, now declared: the sleeve's weight stays unallocated."""
+        prices = _random_walk(["SHY", "IEF"])
+        strategy = BeGlobalStrategy(risk_profile="safe", core_weight=1.0, vol_lookback=10_000)
+        result = strategy.run({"prices": prices}, params={"money_market_ticker": None})
+        assert result["simple_weights"] == pytest.approx({"SHY": 0.30, "IEF": 0.10})
+        assert result["details"]["money_market_column"] is None
+
+    def test_ticker_missing_from_prices_is_refused_by_name(self) -> None:
+        prices = _random_walk(["SHY", "IEF"])
+        with pytest.raises(ValueError, match=r"money_market_ticker 'SHV' is not a prices column"):
+            BeGlobalStrategy(money_market_ticker="SHV").run({"prices": prices})
+
+    def test_resolve_columns_gives_shy_to_treasury_short(self) -> None:
+        mapping = _resolve_columns(_random_walk(["SHY", "BIL"]))
+        assert mapping == {"SHY": "us_treasury_short"}
+        assert _resolve_columns(_random_walk(["SHY", "BIL"]), "BIL") == {
+            "SHY": "us_treasury_short",
+            "BIL": "money_market",
+        }
+
+
+# ---------------------------------------------------------------------------
+# Commodities sleeve (TOM-1529)
+# ---------------------------------------------------------------------------
+#
+# profit_plus holds 5% commodities on DJP, which etf-daily does not carry: the weight
+# landed on an unpriced "commodities" column and the engine refused the run. The same
+# problem as SHV (TOM-1528). Default now: PDBC, which etf-daily carries, as a param.
+
+_ETF_DAILY_PROFIT_PLUS = [*_ETF_DAILY_BEGLOBAL, "PDBC"]
+#: One column per profit_plus sleeve (money_market and us_treasury_short share SHY).
+_PROFIT_PLUS_TICKERS = ["SHY", "SPY", "EFA", "EEM", "VNQ", "PDBC", "GLD"]
+
+
+class TestCommoditiesSleeve:
+    def test_profit_plus_on_etf_daily_tickers_puts_commodities_on_pdbc(self) -> None:
+        prices = _random_walk(_ETF_DAILY_PROFIT_PLUS)
+        result = BeGlobalStrategy(risk_profile="profit_plus").run({"prices": prices})
+        weights = result["weights"]
+        assert set(weights.columns) <= set(prices.columns), sorted(set(weights.columns) - set(prices.columns))
+        assert result["details"]["commodities_column"] == "PDBC"
+        assert (weights["PDBC"] > 0).all()
+        np.testing.assert_allclose(weights.sum(axis=1).values, 1.0, atol=1e-6)
+
+    def test_core_commodities_weight_lands_on_pdbc(self) -> None:
+        """profit_plus core: money_market + us_treasury_short share SHY, commodities on PDBC."""
+        prices = _random_walk(_PROFIT_PLUS_TICKERS)
+        strategy = BeGlobalStrategy(risk_profile="profit_plus", core_weight=1.0, vol_lookback=10_000)
+        latest = strategy.run({"prices": prices})["simple_weights"]
+        assert latest == pytest.approx(
+            {"SHY": 0.15, "SPY": 0.45, "EFA": 0.15, "EEM": 0.10, "VNQ": 0.05, "PDBC": 0.05, "GLD": 0.05}
+        )
+
+    def test_ticker_is_a_param(self) -> None:
+        prices = _random_walk([*_ETF_DAILY_BEGLOBAL, "DJP"])
+        result = BeGlobalStrategy(risk_profile="profit_plus").run(
+            {"prices": prices}, params={"commodities_ticker": "DJP"}
+        )
+        assert result["details"]["commodities_column"] == "DJP"
+        assert set(result["weights"].columns) <= set(prices.columns)
+        assert "DJP" in result["weights"].columns
+
+    def test_null_ticker_holds_the_sleeve_as_cash(self) -> None:
+        """As money_market_ticker: null, the sleeve's weight stays unallocated."""
+        prices = _random_walk([t for t in _PROFIT_PLUS_TICKERS if t != "PDBC"])
+        strategy = BeGlobalStrategy(risk_profile="profit_plus", core_weight=1.0, vol_lookback=10_000)
+        result = strategy.run({"prices": prices}, params={"commodities_ticker": None})
+        assert result["details"]["commodities_column"] is None
+        assert set(result["simple_weights"]) == set(prices.columns)
+        assert sum(result["simple_weights"].values()) == pytest.approx(0.95)
+
+    def test_ticker_missing_from_prices_is_refused_by_name(self) -> None:
+        prices = _random_walk(_ETF_DAILY_BEGLOBAL)
+        with pytest.raises(ValueError, match=r"commodities_ticker 'PDBC' is not a prices column"):
+            BeGlobalStrategy(risk_profile="profit_plus").run({"prices": prices})
+
+    @pytest.mark.parametrize("profile", ["safe", "bond_plus", "mixed", "profit"])
+    def test_a_profile_without_commodities_does_not_need_the_column(self, profile: str) -> None:
+        prices = _random_walk(_ETF_DAILY_BEGLOBAL)
+        result = BeGlobalStrategy(risk_profile=profile).run({"prices": prices})
+        assert set(result["weights"].columns) <= set(prices.columns)
 
 
 # ---------------------------------------------------------------------------

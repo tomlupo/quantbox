@@ -8,14 +8,15 @@ via `pandas-market-calendars`.
 Used internally by `backtest.pipeline.v1` and `trade.full_pipeline.v1` (both via
 `resolve_pipeline_frequency`) to:
   - derive default `trading_days` from `frequency.bars_per_year()` (backtest)
-  - inject `_pipeline_annualize` into each strategy's params so strategies don't
-    need their own (potentially drifting) defaults — identically in backtest and
-    paper/live (TOM-1338)
+  - build the StrategyContext (`quantbox.strategy_runner.build_strategy_context`)
+    whose `bars_per_year` every strategy reads, so strategies don't need their own
+    (potentially drifting) defaults — identically in backtest and paper/live
+    (TOM-1338, TOM-1448)
 
 Strategies that need annualization should declare `annualize: float | None = None`
-and consume it via `params.get("_pipeline_annualize", 252.0)` as a fallback —
-explicit per-strategy values still win, and a drift warning fires in the pipeline
-when they disagree with the derived value.
+and resolve it with `quantbox.strategy_runner.resolve_annualize(self.annualize,
+params, context, owner=...)` — explicit per-strategy values still win, and a drift
+warning fires when they disagree with the derived value.
 
 Example
 -------
@@ -39,6 +40,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import pandas_market_calendars as mcal
 
@@ -148,10 +150,10 @@ class Frequency:
 def resolve_pipeline_frequency(params: dict[str, Any], prices_params: dict[str, Any]) -> Frequency:
     """Resolve a pipeline run's `Frequency` from its params — the ONE resolver.
 
-    Both ``backtest.pipeline.v1`` and ``trade.full_pipeline.v1`` call this, and
-    inject its ``bars_per_year()`` into every strategy's params as
-    ``_pipeline_annualize``, so a strategy is annualised identically in its
-    backtest and in paper/live (TOM-1338).
+    Both ``backtest.pipeline.v1`` and ``trade.full_pipeline.v1`` call this (via
+    ``quantbox.strategy_runner.build_strategy_context``), and hand its
+    ``bars_per_year()`` to every strategy in the StrategyContext, so a strategy
+    is annualised identically in its backtest and in paper/live (TOM-1338, TOM-1448).
 
     Accepts (in priority order):
       1. ``params['frequency']`` — full spec, str or dict
@@ -218,6 +220,71 @@ def parse_rebalance_offset(spec: str | pd.DateOffset) -> pd.DateOffset:
         )
 
     return pd.tseries.frequencies.to_offset(spec)
+
+
+def _period_end(offset: pd.DateOffset) -> bool:
+    """True for an offset that marks the END of a period (``ME``, ``BME``, ``QE``, ``YE``, ``W-FRI``, ``1W``)."""
+    if isinstance(offset, pd.offsets.Week):
+        return offset.weekday is not None
+    return type(offset).__name__.endswith("End")
+
+
+def rebalancing_dates(dates: pd.Index, rebalancing_freq: Any) -> pd.DatetimeIndex:
+    """The DECISION bars of a rebalancing schedule — every date is a member of *dates*.
+
+    *dates* are the bars a decision can be taken on: the backtest pipeline
+    passes its EXECUTION calendar (:func:`quantbox.instrument_calendar.execution_bars`),
+    so a raw holiday row is never a decision bar.
+
+    ``None`` → buy-and-hold (the first bar); ``int`` n → every n-th bar; ``str``
+    / ``pd.DateOffset`` → calendar dates from :func:`parse_rebalance_offset`;
+    ``list`` → explicit dates. A calendar date that is not a bar is snapped:
+
+    - a period-END offset (``ME``, ``BME``, ``QE``, ``YE``, ``W-FRI``, ``1W``)
+      BACKWARD, to the last bar of that period — "monthly" is the last bar of
+      the month, never the first of the next one; a period with no bar has no
+      decision;
+    - every other offset and an explicit date FORWARD, to the first bar on or
+      after it; dates past the last bar are dropped.
+
+    Until TOM-1429 such a date was simply missing from the engine's mask, so
+    that period was never rebalanced (``"1W"`` = Sundays never traded on
+    weekday data at all). Engine-free, so every engine reads the same schedule.
+    """
+    dates = pd.DatetimeIndex(dates)
+    if rebalancing_freq is None:
+        return pd.DatetimeIndex(dates[:1])
+    if isinstance(rebalancing_freq, bool):
+        raise ValueError("rebalancing_freq: a bool is not a schedule")
+    if isinstance(rebalancing_freq, int):
+        return dates[::rebalancing_freq]
+    backward = False
+    if isinstance(rebalancing_freq, (str, pd.DateOffset)):
+        offset = parse_rebalance_offset(rebalancing_freq)
+        backward = _period_end(offset)
+        if not len(dates):
+            return dates
+        # a period-end offset also covers the period the last bar falls in (its end may be a holiday)
+        end = dates[-1] + offset if backward else dates[-1]
+        wanted = pd.date_range(start=dates[0], end=end, freq=offset)
+    elif isinstance(rebalancing_freq, (list, tuple, pd.Index)):
+        wanted = pd.DatetimeIndex(rebalancing_freq)
+    else:
+        raise ValueError(
+            f"rebalancing_dates: unsupported rebalancing_freq type "
+            f"{type(rebalancing_freq).__name__!r}; expected int|str|list|DateOffset|None"
+        )
+    if dates.tz is not None and wanted.tz is None:
+        wanted = wanted.tz_localize(dates.tz)
+    if backward:
+        pos = dates.searchsorted(wanted, side="right") - 1
+        # the bar must lie inside the period that ends at `wanted` (after the previous period end)
+        previous = np.concatenate([[-1], dates.searchsorted(wanted[:-1], side="right") - 1])
+        keep = (pos >= 0) & (pos > previous)
+        return dates[np.unique(pos[keep])]
+    pos = dates.searchsorted(wanted, side="left")
+    pos = np.unique(pos[pos < len(dates)])
+    return dates[pos]
 
 
 def _parse_bar_size(s: str | pd.Timedelta) -> pd.Timedelta:

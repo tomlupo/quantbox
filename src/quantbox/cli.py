@@ -380,6 +380,13 @@ def run(
         execution = (result.notes or {}).get("execution")
         if execution:
             print("EXECUTION:", execution["description"])
+        # Part of the summary, never only a log line above it (TOM-1529).
+        report = ((result.notes or {}).get("reports") or {}).get("finding_report")
+        if report:
+            print(
+                "FINDING REPORT:",
+                report["file"] if report["produced"] else f"NOT PRODUCED — {report['error']}",
+            )
 
     # Dead-man detection (quantbox#120): a rebalancer freeze (every intended
     # order suppressed, book stuck on stale positions) previously exited 0 --
@@ -433,6 +440,7 @@ def sweep(
           columns: [vol_target, tranches]
           metrics: [sharpe_ratio, ...]
         backtest:
+          engine: vectorbt   # or rsims — the engine seam (docs/adr/0008)
           fees: 0.005
           rebalancing_freq: 1D
         execution:
@@ -461,6 +469,11 @@ def sweep(
         raise ValueError(
             "quantbox sweep does not take execution.same_bar: a grid of same-bar numbers is the "
             "multiple-testing search the override must never feed (docs/adr/0006). Sweep next-bar."
+        )
+    if isinstance(cfg.get("execution"), dict) and "calendar" in cfg["execution"]:
+        raise ValueError(
+            "quantbox sweep does not take execution.calendar: the sweep engine trades the bars it is given; "
+            "the execution calendar is a `quantbox run` (backtest pipeline) setting (docs/adr/0007)."
         )
     sweep_lag_bars = resolve_lag_bars(cfg["execution"]) if "execution" in cfg else None
 
@@ -501,15 +514,18 @@ def sweep(
         rebalancing_freq=backtest.get("rebalancing_freq", "1D"),
         lag_bars=sweep_lag_bars,
         shift_signal=backtest.get("shift_signal"),  # deprecated alias of execution.lag_bars
+        engine=backtest.get("engine"),
     )
     # The sweep's own manifest: the timing every row was simulated with, and the
     # honest trial count (one per grid row), so a gate never counts by hand.
+    from .engine.registry import get_engine
     from .execution import execution_record, resolve_sweep_lag_bars
 
     sweep_manifest = {
         "schema": "quantbox/sweep@1",
         "config": str(config_path),
         "strategy": strategy_spec,
+        "engine": get_engine(backtest.get("engine"), require_installed=False).name,
         "execution": execution_record(resolve_sweep_lag_bars(sweep_lag_bars, backtest.get("shift_signal"))),
         "n_trials": len(grid),
         "grid": "grid.parquet",

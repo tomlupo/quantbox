@@ -33,6 +33,10 @@ plugins:
       weight: 1.0
       params:
         risk_profile: mixed
+        # Sleeve tickers, defaults shown; etf-daily has no SHV and no DJP (TOM-1528, TOM-1529).
+        # profit_plus holds commodities; PDBC prices start 2014-11-07.
+        money_market_ticker: SHY
+        commodities_ticker: PDBC
         core_weight: 0.70
         momentum_lookback: 252
         strength_top_n: 3

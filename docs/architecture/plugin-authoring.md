@@ -23,7 +23,7 @@ If you can do the work at L1, do it at L1. Reach for plugins only when the contr
 | Type | Protocol | Key method | Returns |
 |---|---|---|---|
 | **Pipeline** | `PipelinePlugin` | `run(mode, asof, params, data, store, broker, risk)` | `RunResult` |
-| **Strategy** | `StrategyPlugin` | `run(data, params)` | `dict` with `"weights"` DataFrame (date × symbol) plus optional details |
+| **Strategy** | `StrategyPlugin` | `run(data, params, context=None)` | `dict` with `"weights"` DataFrame (date × symbol) plus optional details. `context` is a `StrategyContext`; read annualisation with `quantbox.strategy_runner.resolve_annualize`, never a default of your own |
 | **Data** | `DataPlugin` | `load_universe`, `load_market_data`, `load_fx` | `DataFrame` / `dict[str, DataFrame]` |
 | **Broker** | `BrokerPlugin` | `get_positions`, `place_orders`, `fetch_fills` | `DataFrame` |
 | **Rebalancing** | `RebalancingPlugin` | `generate_orders(weights, broker, params)` | `dict[str, DataFrame]` |

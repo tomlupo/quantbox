@@ -31,7 +31,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from quantbox.contracts import PluginMeta
+from quantbox.contracts import PluginMeta, StrategyContext
 
 
 @dataclass
@@ -76,7 +76,9 @@ class TrendCatcherStrategy:
     def min_lookback_periods(self) -> int:
         return max(self.regime_window, self.trend_window, self.atr_window) + 1
 
-    def run(self, data: dict[str, Any], params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def run(
+        self, data: dict[str, Any], params: dict[str, Any] | None = None, context: StrategyContext | None = None
+    ) -> dict[str, Any]:
         if params:
             for k, v in params.items():
                 if hasattr(self, k):

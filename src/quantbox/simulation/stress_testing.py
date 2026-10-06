@@ -14,6 +14,8 @@ from enum import Enum
 import numpy as np
 import pandas as pd
 
+from quantbox.metrics import compute_drawdown_series
+
 
 class HistoricalScenario(Enum):
     """Pre-defined historical stress scenarios."""
@@ -473,8 +475,7 @@ class StressTestEngine:
 
     def _calculate_max_drawdown(self, cumulative_returns: np.ndarray) -> np.ndarray:
         wealth = 1 + cumulative_returns
-        running_max = np.maximum.accumulate(wealth, axis=1)
-        drawdowns = (wealth - running_max) / running_max
+        drawdowns = compute_drawdown_series(np.asarray(wealth, dtype=float))
         return np.min(drawdowns, axis=1)
 
 

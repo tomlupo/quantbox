@@ -1,7 +1,8 @@
 """Parameter-grid sweep + heatmap rendering.
 
 Enumerate a Cartesian grid of strategy parameter values, run each combination
-through the vectorbt backtest engine, and return a tidy DataFrame of per-cell
+through the engine seam (:mod:`quantbox.engine`; vectorbt by default, ``engine: rsims``
+in ``backtest_kwargs`` for the other adapter), and return a tidy DataFrame of per-cell
 metrics. Strategies that natively produce multi-slice weights (e.g.
 ``CryptoRegimeTrendStrategy`` returning ``(vol_target, tranches, ticker)``
 MultiIndex columns) get those slices auto-expanded into rows of the result —
@@ -42,7 +43,7 @@ from typing import Any
 
 import pandas as pd
 
-from quantbox.execution import apply_execution_lag, resolve_sweep_lag_bars
+from quantbox.execution import resolve_execution, resolve_sweep_lag_bars
 from quantbox.parquet_io import read_parquet
 
 logger = logging.getLogger(__name__)
@@ -109,9 +110,14 @@ def sweep(
     data
         Market data dict passed to strategy.run() (must contain ``"prices"``).
     backtest_kwargs
-        Forwarded to ``vectorbt_engine.run`` (fees, threshold, etc.).
+        ``engine`` (default vectorbt), costs (``fees``, ``fixed_fees``, ``slippage``),
+        ``rebalancing_freq``, ``threshold`` (the seam's schedule, every engine), ``schedule``
+        (``calendar``, the default, or ``bars``) and ``max_leverage`` (the decision's gross cap,
+        default 1, TOM-1525); any other key is the engine adapter's
+        own parameter (vectorbt: ``use_numba``, ...), refused when it does not own it.
     metrics
-        vbt stats column names to collect.
+        Metric names, answered by the engine adapter (vectorbt: ``pf`` attribute names;
+        rsims: the same names, from ``compute_backtest_metrics``).
     lag_bars
         Execution lag in bars — the SAME convention as ``execution.lag_bars``
         in ``quantbox run`` (:mod:`quantbox.execution`). Default 1: weights
@@ -127,13 +133,26 @@ def sweep(
         Columns: sweep keys, slice-decoded keys (e.g. ``vol_target``,
         ``tranches``), then the requested ``metrics``.
     """
-    # Lazy: the engine is the [vectorbt] extra; asking for a sweep without it
-    # raises MissingExtraError naming the extra, before any strategy runs.
-    from quantbox.plugins.backtesting.vectorbt_engine import run as _run_backtest
+    from quantbox.decision import DecisionRules, final_book, gross_cap
+    from quantbox.engine import Costs, get_engine, simulate
+    from quantbox.financing import DEFAULT_LEVERAGE
 
-    prices = data["prices"]
     backtest_kwargs = dict(backtest_kwargs or {})
-    lag = resolve_sweep_lag_bars(lag_bars, shift_signal)
+    # The engine and the schedule are the seam's; costs are Costs; anything else is the adapter's own
+    # parameter, refused by it when it does not own it. Resolved before anything else, so a
+    # missing [vectorbt] extra raises MissingExtraError naming it first.
+    adapter = get_engine(backtest_kwargs.pop("engine", None))
+    prices = data["prices"]
+    costs = Costs(
+        **{k: float(backtest_kwargs.pop(k)) for k in ("fees", "fixed_fees", "slippage") if k in backtest_kwargs}
+    )
+    rebalancing_freq = backtest_kwargs.pop("rebalancing_freq", 1)
+    threshold = backtest_kwargs.pop("threshold", None)
+    schedule = backtest_kwargs.pop("schedule", "calendar")  # execution.schedule: calendar | bars
+    # The decision's gross cap, risk.max_leverage: default 1, as every door (TOM-1525).
+    max_leverage = gross_cap({"max_leverage": backtest_kwargs.pop("max_leverage", None)})
+    engine_params = adapter.check_params(backtest_kwargs)
+    timing = resolve_execution({"lag_bars": resolve_sweep_lag_bars(lag_bars, shift_signal), "schedule": schedule})
 
     # Defensive: strip index.freq so vbt's wrapper.freq lookup doesn't trip on
     # a `<Day>` offset (vbt + recent pandas can't convert it to a Timedelta).
@@ -159,72 +178,38 @@ def sweep(
         strat = strategy_cls(**params)
         out = strat.run(data)
         weights = out["weights"]
-        # Leading rows stay NaN (not 0) so the dropna below trims them, as the
-        # sweep always has.
-        weights = apply_execution_lag(weights, lag, fill_leading=None)
-
-        # Align to common date range
-        common_idx = weights.dropna(how="all").index.intersection(prices.index)
-        if len(common_idx) < 2:
+        # The warm-up (leading rows where no slice has decided anything) is not part of the book, as the
+        # sweep always had it; the slices are one batch through the one book function (docs/adr/0008).
+        decided_rows = weights.notna().any(axis=1).to_numpy()
+        weights = weights.iloc[int(decided_rows.argmax()) :] if decided_rows.any() else weights.iloc[:0]
+        if len(weights.index.intersection(prices.index)) < 2:
             logger.warning("parameter_grid.sweep: insufficient overlap for %s", sweep_labels)
             continue
-        w = weights.reindex(common_idx)
-        p = prices.reindex(common_idx)
+        # The decision (TOM-1520): each slice capped at max_leverage gross, then normalised to net 1 on
+        # its decided rows (the default venue.leverage; schedule: bars only measures it) — the seam
+        # executes final targets.
+        weights, _ = final_book(
+            weights,
+            DecisionRules(
+                max_leverage=max_leverage, leverage="none" if timing.schedule == "bars" else DEFAULT_LEVERAGE
+            ),
+        )
+        book = simulate(
+            prices,
+            weights,
+            engine=adapter,
+            timing=timing,
+            costs=costs,
+            rebalancing_freq=rebalancing_freq,
+            threshold=threshold,
+            engine_params=engine_params,
+        )
 
-        # Restrict prices to columns weights actually reference
-        ticker_level = -1
-        if isinstance(w.columns, pd.MultiIndex):
-            tickers = w.columns.get_level_values(ticker_level).unique()
-            slice_level_names = [n for i, n in enumerate(w.columns.names) if i != len(w.columns.names) + ticker_level]
-            slice_multi = w.columns.droplevel(ticker_level).unique()
-            # vbt's create_labels joins "name-value" pairs with "_". Reproduce
-            # that mapping here so we can recover original level values from
-            # the stats index without lossy string parsing.
-            label_map: dict[str, tuple] = {}
-            for tup in slice_multi:
-                tup_t = tup if isinstance(tup, tuple) else (tup,)
-                label = "_".join(f"{name}-{val}" for name, val in zip(slice_level_names, tup_t, strict=False))
-                label_map[label] = tup_t
-        else:
-            tickers = w.columns
-            slice_level_names = []
-            label_map = {}
-        p = p.reindex(columns=tickers)
+        # A strategy may return MultiIndex columns (strategy slices, the ticker last): one row per slice.
+        slice_level_names = list(weights.columns.names[:-1]) if isinstance(weights.columns, pd.MultiIndex) else []
 
-        pf = _run_backtest(p.ffill().bfill(), w, **backtest_kwargs)
-        # vbt's wrapper.freq accessor calls pd.Timedelta(<Day>) which raises on
-        # recent pandas. Pre-emptively force the wrapper to skip the broken
-        # auto-inference by handing it a string freq. ``stats_defaults`` is a
-        # property — patch the underlying ArrayWrapper.freq class-level
-        # attribute by stashing a known-good value before invocation.
-        if pf.wrapper.index.freq is not None:
-            # Strip the offending Day offset from the wrapper's index.
-            pf.wrapper.index.freq = None
-
-        # Fetch metrics via pf.deep_getattr(name) — matches the notebook's
-        # cell 121 idiom. Returns a scalar (single-slice) OR a Series indexed
-        # by ``(strategy_label, *original_level_values)`` MultiIndex when
-        # multi-slice. We key by the tuple of original level values, so the
-        # final grid rows carry the unaltered MultiIndex levels.
-        slice_metrics: dict[tuple, dict[str, Any]] = {}
-        for m in metrics:
-            try:
-                v = pf.deep_getattr(m)
-            except (AttributeError, KeyError) as e:
-                logger.warning("parameter_grid.sweep: metric %r unavailable: %s", m, e)
-                continue
-            if isinstance(v, pd.Series):
-                if isinstance(v.index, pd.MultiIndex):
-                    # First level is the vbt label string; remaining levels are
-                    # the original strategy MultiIndex levels.
-                    for idx_tuple, val in v.items():
-                        slice_key = tuple(idx_tuple[1:]) if len(idx_tuple) > 1 else (idx_tuple[0],)
-                        slice_metrics.setdefault(slice_key, {})[m] = _coerce(val)
-                else:
-                    for slice_id, val in v.items():
-                        slice_metrics.setdefault((slice_id,), {})[m] = _coerce(val)
-            else:
-                slice_metrics.setdefault(("_single_",), {})[m] = _coerce(v)
+        # The adapter answers the metric names, per slice keyed by the original level values.
+        slice_metrics = adapter.stats(book, metrics)
 
         for slice_key, mdict in slice_metrics.items():
             if slice_key == ("_single_",):
@@ -245,16 +230,6 @@ def _label_value(v: Any) -> Any:
     """Render a parameter value as a stable, hashable label for the grid."""
     if isinstance(v, (list, tuple)):
         return str(v)
-    return v
-
-
-def _coerce(v: Any) -> Any:
-    """Coerce numpy scalars to Python natives so the grid serialises cleanly."""
-    if hasattr(v, "item"):
-        try:
-            return v.item()
-        except (ValueError, TypeError):
-            pass
     return v
 
 
@@ -380,6 +355,7 @@ def run_grid(
     cmap: str = "RdYlGn",
     fmt: str = ".3f",
     lag_bars: int | None = None,
+    engine: str | None = None,
 ) -> pd.DataFrame:
     """Orchestrate a parameter-grid sweep across rebalancing bands.
 
@@ -391,6 +367,7 @@ def run_grid(
     This is the strategy-agnostic orchestrator used by per-research scripts —
     they supply ``strategy_cls``, base/sweep params and a market_data dict,
     and everything else (iteration, naming, saving) is centralised here.
+    ``engine`` picks the engine adapter (default vectorbt; :mod:`quantbox.engine`).
     """
     output = Path(output_dir) if output_dir is not None else None
     if output is not None:
@@ -405,7 +382,12 @@ def run_grid(
             base_params=base_params,
             sweep_params=sweep_params,
             data=market_data,
-            backtest_kwargs={"fees": fees, "threshold": band, "rebalancing_freq": rebalancing_freq},
+            backtest_kwargs={
+                "fees": fees,
+                "threshold": band,
+                "rebalancing_freq": rebalancing_freq,
+                **({"engine": engine} if engine is not None else {}),
+            },
             metrics=metrics,
             lag_bars=lag,
         )

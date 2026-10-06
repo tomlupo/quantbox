@@ -50,8 +50,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from quantbox.contracts import PluginMeta
+from quantbox.contracts import PluginMeta, StrategyContext
 from quantbox.plugins.strategies._universe import DEFAULT_STABLECOINS
+from quantbox.strategy_runner import resolve_annualize
 
 logger = logging.getLogger(__name__)
 
@@ -336,7 +337,7 @@ def calculate_instrument_risk(
         vol_lookback: EMA span for volatility
         annualize: Bars per year for vol annualization. Default 252 (equity
             convention). Strategy callers should derive this from the
-            pipeline-injected ``_pipeline_annualize`` per issue #20 / #23.
+            run's ``StrategyContext.bars_per_year`` (TOM-1448).
 
     Returns:
         Volatility DataFrame (annualized)
@@ -600,7 +601,7 @@ class CarverTrendStrategy:
     target_vol: float = 0.25
     vol_lookback: int = 36
     idm: float | None = None  # Auto-calculate if None
-    annualize: float | None = None  # None = pipeline-injected via _pipeline_annualize; falls back to 252.0
+    annualize: float | None = None  # None = the run's StrategyContext.bars_per_year; 252.0 without one
 
     # Risk limits
     max_position: float = 1.0
@@ -655,6 +656,7 @@ class CarverTrendStrategy:
         self,
         data: dict[str, pd.DataFrame],
         params: dict[str, Any] | None = None,
+        context: StrategyContext | None = None,
     ) -> dict[str, Any]:
         """
         Run Carver trend strategy.
@@ -671,19 +673,8 @@ class CarverTrendStrategy:
                 if hasattr(self, key):
                     setattr(self, key, value)
 
-        # Resolve annualize: explicit (self/params) wins, else pipeline-injected, else 252.0.
-        pipeline_annualize = (params or {}).get("_pipeline_annualize")
-        if self.annualize is None:
-            effective_annualize = float(pipeline_annualize) if pipeline_annualize is not None else 252.0
-        else:
-            effective_annualize = float(self.annualize)
-            if pipeline_annualize is not None and abs(effective_annualize - pipeline_annualize) > 1:
-                logger.warning(
-                    "CarverTrendStrategy.annualize=%s overrides pipeline-derived %.1f. "
-                    "If intentional, ignore; otherwise drop the explicit value.",
-                    effective_annualize,
-                    pipeline_annualize,
-                )
+        # Annualisation: the strategy's explicit field wins, else the run's StrategyContext (TOM-1448).
+        effective_annualize = resolve_annualize(self.annualize, params, context, owner="CarverTrendStrategy.annualize")
 
         prices = data["prices"]
 
@@ -832,7 +823,7 @@ class CarverTrendStrategy:
 # ============================================================================
 
 
-def run(data: dict, params: dict = None) -> dict:
+def run(data: dict, params: dict = None, context: StrategyContext | None = None) -> dict:
     """Standard strategy interface."""
     strategy = CarverTrendStrategy()
-    return strategy.run(data, params)
+    return strategy.run(data, params, context=context)

@@ -29,6 +29,64 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.10.0 (2026-10-06)
+
+### BREAKING CHANGE
+
+- a backtest whose decided rows have gross above 1 with shorts,
+venue.leverage: borrow or execution.schedule: bars, and no risk.max_leverage,
+is now capped at gross 1. Long-only books on normalize do not move.
+- deferral and tranche books move (normalise before blending; the
+cash cap replaces held-book scaling); levered live books without
+venue.leverage: borrow are now scaled to net 1.
+- rebalancing.standard.v1 / rebalancing.futures.v1 refuse
+tranches > 1 handed to them directly and no longer accept
+strategy_weights.
+- rsims numbers move for a run that relied on
+capitalise_profits false, or that set slippage or fixed_fees on rsims (they
+were dropped before). Set capitalise_profits: false to keep the old sizing.
+- a run whose strategy targets a ticker with no price column
+now fails on the calendar schedule instead of dropping that weight.
+- numbers move for backtest(), optimize(), sweep and rsims runs with a
+non-daily schedule, a threshold, NaN weight cells, or net exposure above 1 without a
+declared venue.leverage. Pipeline goldens on vectorbt do not move.
+- backtest results change for any panel with gaps or levered
+decisions. A target set on a holiday bar is now held (it used to be zeroed
+for the whole period); an order on a bar the instrument did not print waits
+for its next print; a decision with net exposure above 1 is normalized to
+net 1 on vectorbt unless venue.leverage: borrow is declared; columns under
+50% price coverage are no longer dropped; rebalance dates are decision bars
+on the execution calendar (period-end schedules snap back to the last
+execution bar of the period, others forward), and lag_bars counts execution
+bars; traded_weights is the held book after deferral. The canonical
+momentum golden moved from -0.1388 to +0.0992 total return: a pure phase
+shift of the monthly schedule, reproduced exactly with the old dates.
+
+### Feat
+
+- **decision**: one max_leverage default (1), read in one place, in every door (TOM-1525) (#246)
+- **decision**: normalisation is part of the decision; the seam caps buys at the cash (TOM-1520) (#245)
+- **trading**: live trading uses the backtest's rebalancing policy (TOM-1518) (#244)
+- **engine**: policy = cadence x trigger, a corridor hit rebalances the whole book, min_trade (TOM-1513) (#243)
+- **engine**: rebalancing policies and group limits in the seam (TOM-1450) (#239)
+- **engine**: one engine seam — every backtest door through vectorbt + rsims adapters (TOM-1447) (#235)
+- **strategy**: one metrics module + StrategyContext from one strategy runner (TOM-1448) (#236)
+- **engine**: decision weight-age guard and index-alignment counts (TOM-1429) (#234)
+- **backtest**: instrument and execution calendars, decision vs execution timing, venue.leverage normalize|borrow (TOM-1429) (#233)
+
+### Fix
+
+- runner refuses unknown validation/monitor plugins; finding_report export; BeGlobal profit_plus on PDBC (TOM-1529) (#249)
+- BeGlobal money-market sleeve on SHY; validate refuses an unregistered plugin (TOM-1528) (#248)
+- every cookbook config runs; a rebalancer without risk_rules gets the default gross cap (TOM-1526) (#247)
+- **hooks**: pre-push pytest unsets GIT_* before the suite (TOM-1497) (#242)
+- **engine**: P3 follow-ups — same engine defaults, no unpriced weights, golden_run, smoke location (TOM-1500) (#240)
+- **deps**: bump anyio 4.15.1 and urllib3 2.8.0 for 5 high advisories (#232)
+
+### Refactor
+
+- **engine**: one book function, the seam owns the schedule, thin adapters (TOM-1450) (#238)
+
 ## v0.9.0 (2026-10-02)
 
 ### BREAKING CHANGE

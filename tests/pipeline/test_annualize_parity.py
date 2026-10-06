@@ -9,6 +9,10 @@ sqrt(365/252) ~= 1.20x differently in paper/live than in its backtest.
 Both pipelines are run END TO END here with one recording strategy, and the
 value each one handed it is compared — so the test fails on the parity, not on
 an implementation detail of either pipeline.
+
+Since TOM-1448 the recording strategy here is a LEGACY one (its run() takes no
+`context`): it exercises the deprecated `_pipeline_annualize` shim of the one
+strategy runner. The StrategyContext parity is test_strategy_context.py.
 """
 
 from __future__ import annotations

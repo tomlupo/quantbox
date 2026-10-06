@@ -12,6 +12,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from quantbox import metrics
 from quantbox.contracts import PluginMeta
 
 
@@ -70,13 +71,8 @@ class BenchmarkValidation:
 
         alpha = float((np.mean(strategy) - beta * np.mean(bench)) * trading_days)
 
-        excess = strategy - bench
-        tracking_error = float(np.std(excess, ddof=1) * np.sqrt(trading_days))
-
-        if tracking_error > 0:
-            information_ratio = float(np.mean(excess) * trading_days / tracking_error)
-        else:
-            information_ratio = 0.0
+        tracking_error = metrics.tracking_error(strategy, bench, trading_days)
+        information_ratio = metrics.information_ratio(strategy, bench, trading_days)
 
         corr_matrix = np.corrcoef(strategy, bench)
         r_squared = float(corr_matrix[0, 1] ** 2)

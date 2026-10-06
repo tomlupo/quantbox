@@ -62,12 +62,16 @@ For step-by-step modifications, see [`docs/playbooks/`](docs/playbooks/). For hi
 src/quantbox/              ← installable library (uv add quantbox)
   contracts.py             Protocol definitions (start here)
   runner.py                Config → plugin instantiation → pipeline.run()
+  strategy_runner.py       The ONE strategy runner + StrategyContext builder (backtest and trading)
+  decision.py              The ONE decision: decided weights → final target weights (clip, cap, groups, normalise)
+  metrics.py               The ONE metrics module (Sharpe, IR, drawdowns, turnover, VaR)
   registry.py              Plugin discovery (builtins + entry points)
   cli.py                   CLI entry point (quantbox command)
   store.py                 Artifact storage (Parquet + JSON)
   parquet_io.py            Teardown-safe parquet reads (every pandas read routes here)
   schemas.py               Runtime schema validation
   exceptions.py            QuantboxError hierarchy (see "Error handling")
+  engine/                  The engine seam: decided weights → traded book; vectorbt + rsims adapters (ADR-0008)
   artifact_schemas/        JSON schemas for artifacts (bundled as package data)
   plugins/
     manifest.yaml          Builtin plugin list + profiles — THE catalogue (bundled as package data)
@@ -124,7 +128,7 @@ uv run pytest -q                            # run tests
 | Type | Protocol | Key method |
 |---|---|---|
 | Pipeline | `PipelinePlugin` | `run(mode, asof, params, data, store, broker, risk)` |
-| Strategy | `StrategyPlugin` | `run(data, params)` → dict with `"weights"` (date × symbol) |
+| Strategy | `StrategyPlugin` | `run(data, params, context)` → dict with `"weights"` (date × symbol); `context` is the run's `StrategyContext` (bars_per_year, mode, asof, calendar, frequency) from the one runner `quantbox.strategy_runner` |
 | Data | `DataPlugin` | `load_market_data(universe, asof, params) → Dict[str, DataFrame]` |
 | Broker | `BrokerPlugin` | `execute_rebalancing(weights)`, `describe()` |
 | Rebalancing | `RebalancingPlugin` | `rebalance(targets, positions, params)` |

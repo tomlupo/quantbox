@@ -23,9 +23,6 @@ SCHEMA_ID = "quantbox/run@1"
 #: The canonical files a run@1 manifest points at (``RunResult.artifacts`` keys).
 CANONICAL_FILES: tuple[str, ...] = ("returns", "traded_weights", "metrics")
 
-#: engine name -> the distribution whose version IS the engine's version (rsims lives in quantbox).
-_ENGINES = {"vectorbt": "vectorbt", "rsims": "quantbox"}
-
 
 @lru_cache(maxsize=1)
 def load_run_schema() -> dict[str, Any]:
@@ -96,7 +93,9 @@ def engine_block(notes: dict[str, Any]) -> dict[str, Any] | None:
     import importlib.metadata as md
 
     try:
-        version = md.version(_ENGINES.get(str(name), str(name)))
+        from quantbox.engine.registry import engine_distribution  # rsims lives in quantbox
+
+        version = md.version(engine_distribution(str(name)))
     except md.PackageNotFoundError:
         version = None
     return {"name": str(name), "version": version}

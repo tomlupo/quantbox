@@ -19,7 +19,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from quantbox.contracts import PluginMeta
+from quantbox.contracts import PluginMeta, StrategyContext
 
 logger = logging.getLogger(__name__)
 
@@ -284,6 +284,7 @@ class MLPredictionStrategy:
         self,
         data: dict[str, Any],
         params: dict[str, Any] | None = None,
+        context: StrategyContext | None = None,
     ) -> dict[str, Any]:
         if not HAS_SKLEARN:
             raise ImportError("scikit-learn is required for MLPredictionStrategy. Install with: uv add scikit-learn")

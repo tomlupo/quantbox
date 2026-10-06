@@ -13,16 +13,7 @@ import numpy as np
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
-
-
-def _annualized_sharpe(returns: np.ndarray, trading_days: int) -> float:
-    """Compute annualized Sharpe ratio from an array of returns."""
-    if len(returns) < 2:
-        return 0.0
-    std = float(np.std(returns, ddof=1))
-    if std == 0:
-        return 0.0
-    return float(np.mean(returns) / std * np.sqrt(trading_days))
+from quantbox.metrics import sharpe_ratio, turnover_series
 
 
 def _cost_adjusted_sharpe(
@@ -34,7 +25,7 @@ def _cost_adjusted_sharpe(
     """Compute Sharpe of returns after subtracting turnover-based costs."""
     cost_per_day = daily_turnover * cost_bps / 10_000
     adjusted = raw_returns - cost_per_day
-    return _annualized_sharpe(adjusted, trading_days)
+    return sharpe_ratio(adjusted, trading_days)
 
 
 @dataclass
@@ -76,9 +67,7 @@ class TurnoverValidation:
         rets = returns[rets_col].values
 
         # Compute daily turnover: sum(abs(weight_diff)) / 2 per day, averaged
-        weights_num = weights.select_dtypes("number")
-        weight_diffs = weights_num.diff().iloc[1:]
-        daily_to = weight_diffs.abs().sum(axis=1) / 2
+        daily_to = turnover_series(weights).iloc[1:] / 2  # one-sided
         daily_to_values = daily_to.values
 
         # Align lengths: daily_turnover has one fewer row than weights
@@ -90,7 +79,7 @@ class TurnoverValidation:
         avg_daily_turnover = float(np.mean(daily_to_values)) if len(daily_to_values) > 0 else 0.0
         annual_turnover = avg_daily_turnover * trading_days
 
-        raw_sharpe = _annualized_sharpe(rets, trading_days)
+        raw_sharpe = sharpe_ratio(rets, trading_days)
 
         ca_sharpe = _cost_adjusted_sharpe(aligned_rets, aligned_to, cost_bps, trading_days)
 
@@ -146,7 +135,7 @@ def _find_breakeven_cost(
         return 0.0
 
     # If raw Sharpe is already <= 0, breakeven is 0
-    if _annualized_sharpe(returns, trading_days) <= 0:
+    if sharpe_ratio(returns, trading_days) <= 0:
         return 0.0
 
     # If there is no turnover, breakeven is effectively infinite

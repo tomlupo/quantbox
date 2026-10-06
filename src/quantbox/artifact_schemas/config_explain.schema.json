@@ -3,14 +3,14 @@
   "$id": "quantbox/explain@1",
   "title": "quantbox config explain (explain@1)",
   "description": "What `quantbox config explain <config> --json` prints: how the runner will resolve a config, without running it. Fields shared with quantbox/run@1 (asof, mode, pipeline, config_hash, config.sha256, plugins, engine, dataset.{name,sha256,source,tier}, funding, execution, run, venue, overlays, n_trials) carry the SAME names and meanings as run@1, so a plan and the manifest of the run it plans compare key by key. One is a plan rather than a record: funding.modelled is true when the engine charges funding and a funding file exists. When ok is false, `errors` says why the run could not start and the plan fields may be absent. VERSIONING: as run@1 — adding a field bumps x-schema-minor; renaming, removing or re-meaning one ships as explain@2.",
-  "x-schema-minor": 1,
+  "x-schema-minor": 3,
   "type": "object",
   "required": ["schema", "ok", "errors"],
   "properties": {
     "schema": {"const": "quantbox/explain@1"},
     "ok": {"type": "boolean", "description": "true when every plugin id, the dataset and the pipeline params resolve; the CLI exits non-zero otherwise."},
     "errors": {"type": "array", "items": {"type": "string"}},
-    "plugins_resolved": {"type": "boolean", "description": "Every plugin id the config names resolves — including publishers, validation and monitors, which a run resolves only after the pipeline."},
+    "plugins_resolved": {"type": "boolean", "description": "Every plugin id the config names resolves — including publishers, which a run resolves only after the pipeline, and validation and monitors, which run after it."},
     "plugin_ids": {
       "type": "array",
       "items": {
@@ -41,6 +41,17 @@
     "run": {"$ref": "quantbox/run@1#/properties/run"},
     "venue": {"$ref": "quantbox/run@1#/properties/venue"},
     "overlays": {"$ref": "quantbox/run@1#/properties/overlays"},
+    "rebalancing": {
+      "type": "object",
+      "description": "Backtest pipelines (minor 2, TOM-1450): the rebalancing policy the engine seam will apply, as plan() resolved it (quantbox.engine.policy: policy, frequency, calendar, and tranches / band / width + bounds). Minor 3 (TOM-1513) adds cadence and trigger (a policy is a cadence x a trigger); policy is their single-key name, or cadence+trigger when there is none. Not a run@1 field: data_validation.json records it for the run.",
+      "required": ["policy", "frequency", "calendar"],
+      "properties": {
+        "policy": {"enum": ["periodic", "tranche", "band", "corridor", "tranche+band", "tranche+corridor"]},
+        "cadence": {"enum": ["periodic", "tranche"]},
+        "trigger": {"enum": ["none", "band", "corridor"]}
+      }
+    },
+    "group_limits": {"type": ["object", "null"], "description": "Backtest pipelines (minor 2, TOM-1450): the group limits on the decided weights (by, excess, limits); null when none are declared."},
     "n_trials": {"$ref": "quantbox/run@1#/properties/n_trials"},
     "strategies": {
       "type": "array",

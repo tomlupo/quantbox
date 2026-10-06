@@ -32,6 +32,8 @@ Venue constraints live here too, because they answer the same question
     venue:
       allow_shorts: false   # negative TARGET weights are clipped to 0 before
                             # any risk transform; longs are NOT re-levered.
+      financing: {...}      # what borrowed / idle cash costs (quantbox.financing,
+                            # docs/adr/0007); resolved by resolve_financing.
 """
 
 from __future__ import annotations
@@ -44,10 +46,15 @@ from typing import Any
 
 import pandas as pd
 
+from quantbox.financing import FINANCING_SCHEMA, LEVERAGE_SCHEMA
+from quantbox.instrument_calendar import DEFAULT_EXECUTION_CALENDAR, EXECUTION_CALENDARS, resolve_execution_calendar
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_LAG_BARS = 1
 MIN_LAG_BARS = 1
+#: ``execution.schedule``: the scheduled book (``calendar``) or the same book with every price bar executing.
+SCHEDULES = ("calendar", "bars")
 
 #: How the override is spelled in an error message — every refusal names it.
 SAME_BAR_OVERRIDE = 'execution.same_bar: {allow: true, reason: "<why same-bar is closer to reality here>"}'
@@ -82,6 +89,27 @@ EXECUTION_SCHEMA: dict[str, Any] = {
                 "is classified run.kind: research, not a backtest."
             ),
         },
+        "calendar": {
+            "type": "string",
+            "default": DEFAULT_EXECUTION_CALENDAR,
+            "description": (
+                f"The EXECUTION calendar (docs/adr/0007): one of {list(EXECUTION_CALENDARS)} or a ticker in the "
+                "loaded prices. A bar is an execution bar when at least half (majority) / any (union) / every "
+                "(intersection) instrument inside its life window prints on it, or when the ticker prints. "
+                "Rebalance decisions are scheduled on it and lag_bars counts its bars; PnL is marked on every bar."
+            ),
+        },
+        "schedule": {
+            "enum": list(SCHEDULES),
+            "default": "calendar",
+            "description": (
+                "How decided weights become a traded book (docs/adr/0008). calendar (default): the scheduled "
+                "book of ADR-0007 — instrument and execution calendars, deferral of unprinted orders, "
+                "venue.leverage. bars: the same book on a degenerate calendar — every price bar is an "
+                "execution bar, no deferral, no venue.leverage (declaring venue.leverage or venue.financing "
+                "with it is refused)."
+            ),
+        },
     },
 }
 
@@ -99,6 +127,8 @@ VENUE_SCHEMA: dict[str, Any] = {
                 "shorts are present either way. Must not contradict an explicit `risk.allow_short`."
             ),
         },
+        "financing": FINANCING_SCHEMA,
+        "leverage": LEVERAGE_SCHEMA,
     },
 }
 
@@ -124,6 +154,10 @@ class ExecutionTiming:
 
     lag_bars: int
     same_bar: SameBarOverride | None = None
+    #: ``execution.calendar`` (docs/adr/0007): decisions are scheduled on it and the lag counts its bars.
+    calendar: str = DEFAULT_EXECUTION_CALENDAR
+    #: ``execution.schedule``: ``calendar`` (the scheduled book) or ``bars`` (every price bar executes).
+    schedule: str = "calendar"
 
 
 def resolve_execution(execution_cfg: Any) -> ExecutionTiming:
@@ -138,9 +172,11 @@ def resolve_execution(execution_cfg: Any) -> ExecutionTiming:
         return ExecutionTiming(DEFAULT_LAG_BARS)
     if not isinstance(execution_cfg, Mapping):
         raise ValueError(f"execution must be a mapping like {{lag_bars: 1}}, got {execution_cfg!r}")
-    unknown = sorted(set(execution_cfg) - {"lag_bars", "same_bar"})
+    unknown = sorted(set(execution_cfg) - {"lag_bars", "same_bar", "calendar", "schedule"})
     if unknown:
-        raise ValueError(f"execution: unknown key(s) {unknown}; the keys are 'lag_bars' and 'same_bar'")
+        raise ValueError(
+            f"execution: unknown key(s) {unknown}; the keys are 'lag_bars', 'same_bar', 'calendar' and 'schedule'"
+        )
     lag = execution_cfg.get("lag_bars", DEFAULT_LAG_BARS)
     same_bar = _resolve_same_bar(execution_cfg.get("same_bar"))
     _check_lag(lag, same_bar)
@@ -149,7 +185,26 @@ def resolve_execution(execution_cfg: Any) -> ExecutionTiming:
             f"execution.same_bar is valid only with lag_bars 0, got lag_bars={lag!r}: the override "
             "would classify a next-bar run as research. Delete the same_bar block."
         )
-    return ExecutionTiming(int(lag), same_bar)
+    schedule = execution_cfg.get("schedule", "calendar")
+    if schedule not in SCHEDULES:
+        raise ValueError(f"execution.schedule must be one of {list(SCHEDULES)}, got {schedule!r}")
+    return ExecutionTiming(int(lag), same_bar, resolve_execution_calendar(execution_cfg.get("calendar")), schedule)
+
+
+def check_schedule_venue(timing: ExecutionTiming, venue_cfg: Any) -> None:
+    """Refuse ``venue.leverage`` / ``venue.financing`` under ``execution.schedule: bars``.
+
+    The bar grid applies no ``venue.leverage`` and appends no financing legs
+    (docs/adr/0008): a block that asks for either would be silently ignored.
+    """
+    if timing.schedule != "bars" or not isinstance(venue_cfg, Mapping):
+        return
+    declared = sorted(k for k in ("leverage", "financing") if venue_cfg.get(k) is not None)
+    if declared:
+        raise ValueError(
+            f"execution.schedule: bars applies no venue.leverage and no venue.financing, but the config declares "
+            f"venue.{' and venue.'.join(declared)}. Drop it, or use execution.schedule: calendar (the default)."
+        )
 
 
 def resolve_lag_bars(execution_cfg: Any) -> int:
@@ -196,9 +251,11 @@ def _check_lag(lag: Any, same_bar: SameBarOverride | None = None) -> None:
         )
 
 
-def helper_execution(lag_bars: int | None, allow_same_bar: bool, same_bar_reason: str | None) -> ExecutionTiming:
+def helper_execution(
+    lag_bars: int | None, allow_same_bar: bool, same_bar_reason: str | None, schedule: str = "calendar"
+) -> ExecutionTiming:
     """The ``backtest()`` / ``optimize()`` keywords as an ``execution:`` block, through the same resolver."""
-    cfg: dict[str, Any] = {}
+    cfg: dict[str, Any] = {"schedule": schedule}
     if lag_bars is not None:
         cfg["lag_bars"] = lag_bars
     if allow_same_bar or same_bar_reason is not None:
@@ -231,68 +288,36 @@ def apply_execution_lag(
     same_bar: SameBarOverride | None = None,
     fill_leading: float | None = 0.0,
 ) -> pd.DataFrame:
-    """Shift decided weights forward by ``lag_bars`` rows — THE execution lag.
+    """Shift decided weights forward by ``lag_bars`` rows — the engine seam's lag, for a caller outside it.
 
-    Row ``t`` of the result is what the engine trades at ``close[t]``: the
+    Row ``t`` of the result is what an engine trades at ``close[t]``: the
     weights decided at ``t - lag_bars``. The first ``lag_bars`` rows have no
     decision behind them; they are set to ``fill_leading`` (0.0 = flat, the
     default) or left NaN with ``fill_leading=None``.
 
-    A lag below 1 is refused here too, so a caller that skips
-    :func:`resolve_execution` cannot hand the engine a same-bar book; ``0``
-    passes only with the :class:`SameBarOverride` that resolver granted.
+    A lag below 1 is refused, so a caller that skips :func:`resolve_execution`
+    cannot hand an engine a same-bar book; ``0`` passes only with the
+    :class:`SameBarOverride` that resolver granted. The lag itself is applied by
+    :func:`quantbox.engine.lag_frame` (docs/adr/0008).
     """
-    _check_lag(lag_bars, same_bar)
-    lagged = weights.shift(lag_bars)
-    if fill_leading is not None:
-        lagged.iloc[:lag_bars] = fill_leading
-    return lagged
+    from quantbox.engine._lag import lag_frame
+
+    return lag_frame(weights, lag_bars, same_bar=same_bar, fill_leading=fill_leading)
 
 
-def lag_buy_and_hold(
-    index: pd.Index,
-    rebalancing_freq: Any,
-    lag_bars: int,
-) -> Any:
-    """Move a buy-and-hold book's ONE trade to the first bar a decision exists.
+def materialise_nan_policy(weights: pd.DataFrame, engine: str | None = None) -> pd.DataFrame:
+    """Make the seam's NaN policy explicit in a weights frame: a NaN cell HOLDS the last target (leading NaN -> 0).
 
-    ``rebalancing_freq=None`` (buy-and-hold) trades on the engine's first bar
-    only. After :func:`apply_execution_lag` that bar is flat — no decision is
-    behind it yet — so a lagged buy-and-hold would never enter and return 0%.
-    Its one trade belongs at ``index[lag_bars]``, the close the bar-0 decision
-    fills at. Every other schedule is returned unchanged (with an integer or
-    dated schedule the first scheduled bar may be flat, which is the documented
-    "lost first period"). A window no longer than
-    ``lag_bars`` has no fill bar and gets an empty schedule.
-    """
-    if rebalancing_freq is not None:
-        return rebalancing_freq
-    return [index[lag_bars]] if len(index) > lag_bars else []
-
-
-def materialise_nan_policy(weights: pd.DataFrame, engine: str | None) -> pd.DataFrame:
-    """Make the NaN policy an engine ALREADY applies explicit in the frame it is handed.
-
-    A NaN weight cell means "the strategy said nothing for this bar". The two
-    engines answer that differently, and did before this module existed:
-
-    - ``vectorbt``: forward-fills (HOLDS the last target), leading NaN -> 0
-      (``vectorbt_engine.run``: ``weights_df.reindex(index).ffill().fillna(0)``).
-    - ``rsims``: NaN -> 0 (goes FLAT) (``rsims_engine``: ``target_weights.fillna(0)``).
-
-    Both operations are idempotent, so handing the engine the materialised frame
-    changes no engine number; it only makes the saved ``traded_weights`` and the
-    ``traded_*`` metrics describe the book that engine actually traded. The
-    disagreement between the engines is a known, pre-existing issue and is NOT
-    resolved here. ``engine=None`` returns the frame untouched.
+    A NaN weight cell means "the strategy said nothing for this bar". The
+    policy is decided ONCE, in the engine seam (:func:`quantbox.engine.materialise_nan`),
+    for every engine (docs/adr/0008); *engine* is accepted for old callers and
+    does not change the answer. ``engine=None`` returns the frame untouched.
     """
     if engine is None:
         return weights
-    if engine == "vectorbt":
-        return weights.ffill().fillna(0.0)
-    if engine == "rsims":
-        return weights.fillna(0.0)
-    raise ValueError(f"Unknown engine: {engine!r}. Use 'vectorbt' or 'rsims'.")
+    from quantbox.engine.book import materialise_nan
+
+    return materialise_nan(weights)
 
 
 def describe_execution(lag_bars: int, same_bar: SameBarOverride | None = None) -> str:
@@ -324,8 +349,11 @@ def execution_record(lag_bars: int, same_bar: SameBarOverride | None = None) -> 
 
 
 def timing_record(timing: ExecutionTiming) -> dict[str, Any]:
-    """:func:`execution_record` of a resolved timing."""
-    return execution_record(timing.lag_bars, timing.same_bar)
+    """:func:`execution_record` of a resolved timing; ``schedule`` is recorded only when it is ``bars``."""
+    record = execution_record(timing.lag_bars, timing.same_bar)
+    if timing.schedule != "calendar":
+        record["schedule"] = timing.schedule
+    return record
 
 
 def run_record(execution: Mapping[str, Any]) -> dict[str, str]:
@@ -358,9 +386,9 @@ def resolve_allow_shorts(venue_cfg: Any, risk_cfg: Mapping[str, Any] | None) -> 
         return legacy, False
     if not isinstance(venue_cfg, Mapping):
         raise ValueError(f"venue must be a mapping like {{allow_shorts: false}}, got {venue_cfg!r}")
-    unknown = sorted(set(venue_cfg) - {"allow_shorts"})
+    unknown = sorted(set(venue_cfg) - {"allow_shorts", "financing", "leverage"})
     if unknown:
-        raise ValueError(f"venue: unknown key(s) {unknown}; the only key is 'allow_shorts'")
+        raise ValueError(f"venue: unknown key(s) {unknown}; the keys are 'allow_shorts', 'financing' and 'leverage'")
     if "allow_shorts" not in venue_cfg:
         raise ValueError("venue: 'allow_shorts' is required when a venue block is declared")
     allow = venue_cfg["allow_shorts"]
@@ -400,7 +428,9 @@ def exposure_metrics(weights: pd.DataFrame, prefix: str) -> dict[str, float]:
     gross = w.abs().sum(axis=1)
     total_gross = float(gross.sum())
     short_gross = float(w.clip(upper=0).abs().sum().sum())
-    turnover = w.diff().fillna(w).abs().sum(axis=1)
+    from quantbox.metrics import turnover_series
+
+    turnover = turnover_series(w, from_flat=True)
     return {
         f"{prefix}_mean_gross_exposure": float(gross.mean()),
         f"{prefix}_mean_net_exposure": float(w.sum(axis=1).mean()),

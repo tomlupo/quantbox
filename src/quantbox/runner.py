@@ -5,7 +5,7 @@ import importlib.util
 import json
 import logging
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -29,12 +29,13 @@ from .contracts import (
 from .exceptions import ConfigValidationError, PluginNotFoundError
 from .execution import run_record
 from .llm_utils import event_line, load_schema, validate_table
+from .params_schema import PLUGIN_GROUPS
 from .plugin_manifest import load_manifest, resolve_profile
 from .run_history import RUN_TS_FORMAT
 from .run_manifest import _sha256_file
 from .store import FileArtifactStore
 from .strict import get_capability
-from .validate import check_plugin_params, validate_config
+from .validate import UNKNOWN_PLUGIN, check_plugin_params, validate_config
 
 logger = logging.getLogger(__name__)
 
@@ -412,13 +413,19 @@ class ResolvedRun:
     variant_plugins: dict[str, Any]
     #: ``(overlay plugin, params)`` per ``plugins.overlays`` entry, in config order (ADR-0004).
     overlay_chain: list[tuple[Any, dict[str, Any]]]
+    #: ``(block, plugin class)`` per ``plugins.validation`` / ``plugins.monitors`` entry. Resolved
+    #: here, before any work, though they run after the pipeline (TOM-1529): a block the run
+    #: cannot load fails the run up front, never after the book has traded.
+    validations: list[tuple[dict[str, Any], type]] = field(default_factory=list)
+    monitors: list[tuple[dict[str, Any], type]] = field(default_factory=list)
 
 
 def plugin_refs(cfg: dict[str, Any]) -> list[tuple[str, str, str, dict[str, Any]]]:
     """``(role, group, registry attribute, spec)`` for every plugin a prepared config names.
 
-    Includes the plugins a run resolves only AFTER the pipeline (publishers,
-    validation, monitors), so a pre-flight can check every id up front.
+    Includes the publishers, which a run resolves only AFTER the pipeline, and the
+    validation and monitor plugins, which run after it, so a pre-flight can check
+    every id up front.
     """
     plugins = cfg.get("plugins") or {}
     refs: list[tuple[str, str, str, dict[str, Any]]] = []
@@ -557,10 +564,20 @@ def resolve_run(
         params_init = strat_cfg.get("params_init", {}) if isinstance(strat_cfg, dict) else {}
         variant_plugins[vname] = cls(**params_init)
 
+    # Registered or local-source; local source is refused in paper/live (the safety rail).
+    validations = [
+        (v, _resolve_plugin_cls(v, registry.validations, "validation", mode=mode))
+        for v in plugins.get("validation") or []
+    ]
+    monitors = [
+        (m, _resolve_plugin_cls(m, registry.monitors, "monitor", mode=mode)) for m in plugins.get("monitors") or []
+    ]
+
     return ResolvedRun(
         mode=mode,
         asof=run_cfg["asof"],
-        pipeline_key=run_cfg["pipeline"],
+        # Optional: validate never required it and `run --dry-run` names plugins.pipeline.name (TOM-1526).
+        pipeline_key=run_cfg.get("pipeline") or pipe_name,
         pipe_name=pipe_name,
         data_name=data_name,
         pipeline=pipeline,
@@ -574,6 +591,8 @@ def resolve_run(
         pipeline_params=pipeline_params,
         variant_plugins=variant_plugins,
         overlay_chain=overlay_chain,
+        validations=validations,
+        monitors=monitors,
     )
 
 
@@ -641,10 +660,26 @@ def run_from_config(
     # always ignored silently, and turning that into a refusal here would halt a
     # live book on its next pin bump rather than at a deliberate migration.
     try:
-        for f in check_plugin_params(cfg["plugins"], registry):
-            logger.warning("config params: %s", f.message)
+        param_findings = check_plugin_params(cfg["plugins"], registry)
     except Exception as exc:  # a params check must never be what breaks a run
         logger.warning("config params: not checked (%s)", exc)
+        param_findings = []
+    # An unknown PLUGIN is refused, as validate refuses it (TOM-1529): validate's finding,
+    # verbatim, before any work. A validation or monitor block used to be skipped with a
+    # warning, so a typo silently dropped a check. Still a PluginNotFoundError, as before.
+    unknown = [f for f in param_findings if f.code == UNKNOWN_PLUGIN]
+    if unknown:
+        first = unknown[0].subject or {}
+        group = first.get("group", "")
+        attr = PLUGIN_GROUPS.get(group)  # none for a pipeline.params.strategies module
+        raise PluginNotFoundError(
+            first.get("plugin_name", ""),
+            group,
+            sorted(getattr(registry, attr, None) or {}) if attr else [],
+            message="; ".join(f.message for f in unknown),
+        )
+    for f in param_findings:
+        logger.warning("config params: %s", f.message)
     n_trials = _run_manifest.n_trials(cfg)  # refuses a malformed value before any work
     resolved = resolve_run(cfg, registry, config_path=config_path)
     mode, asof, pipeline_key = resolved.mode, resolved.asof, resolved.pipeline_key
@@ -692,15 +727,10 @@ def run_from_config(
     )
 
     # --- Validation plugins (post-backtest) ---
-    validation_cfg = cfg["plugins"].get("validation", []) or []
-    if validation_cfg and mode == "backtest":
+    if resolved.validations and mode == "backtest":
         validation_results = []
-        for v_cfg in validation_cfg:
-            v_name = v_cfg["name"]
-            if v_name not in registry.validations:
-                logger.warning("Validation plugin '%s' not found, skipping", v_name)
-                continue
-            v_cls = registry.validations[v_name]
+        for v_cfg, v_cls in resolved.validations:
+            v_name = v_cfg.get("name") or v_cls.meta.name
             v_plugin = v_cls(**v_cfg.get("params_init", {}))
             # Load returns and weights from artifacts
             returns_path = result.artifacts.get("returns", "")
@@ -716,15 +746,9 @@ def run_from_config(
             result.notes["validation"] = validation_results
 
     # --- Monitor plugins (paper/live) ---
-    monitor_cfg = cfg["plugins"].get("monitors", []) or []
-    if monitor_cfg and mode in ("paper", "live"):
+    if resolved.monitors and mode in ("paper", "live"):
         all_alerts = []
-        for m_cfg in monitor_cfg:
-            m_name = m_cfg["name"]
-            if m_name not in registry.monitors:
-                logger.warning("Monitor plugin '%s' not found, skipping", m_name)
-                continue
-            m_cls = registry.monitors[m_name]
+        for m_cfg, m_cls in resolved.monitors:
             m_plugin = m_cls(**m_cfg.get("params_init", {}))
             alerts = m_plugin.check(result, None, m_cfg.get("params", {}))
             all_alerts.extend(alerts)
@@ -796,7 +820,8 @@ def run_from_config(
     # the manifest must never have to infer either (quantbox.execution).
     # ``overlays`` is the chain the pipeline APPLIED (name, version, params, in order),
     # reported by the pipeline itself — the traded_weights file is its output.
-    for block in ("execution", "venue", "overlays"):
+    # ``data_validation`` is the instrument-calendar summary; the full report is data_validation.json.
+    for block in ("execution", "venue", "overlays", "data_validation"):
         if block in notes:
             manifest[block] = notes[block]
     if "execution" in manifest:
@@ -831,15 +856,22 @@ def run_from_config(
     store.put_json("run_manifest", _run_manifest.json_safe(manifest))
     if manifest.get("engine"):
         # The slim default report (TOM-1365): the run's qute-research/finding-report@1
-        # data, read back through the manifest just written.
-        from .finding_export import write_finding_report
+        # data, read back through the manifest just written. A failed export does not fail
+        # the run (its results are written; `quantbox report export` re-derives the report),
+        # but it is never only a log line (TOM-1529): the manifest records that the report
+        # was not produced and why, and `quantbox run` prints it in its summary.
+        from .finding_export import FILENAME, write_finding_report
 
         try:
             write_finding_report(store.root)
+            record: dict[str, Any] = {"produced": True, "file": FILENAME}
         except Exception as exc:
-            import logging
-
-            logging.getLogger(__name__).warning("finding_report.json export failed: %s", exc)
+            logger.warning("finding_report.json export failed: %s", exc)
+            record = {"produced": False, "error": f"{type(exc).__name__}: {exc}"}
+            manifest["warnings"].append(f"finding_report:not_produced:{record['error']}")
+        manifest["reports"] = {"finding_report": record}
+        result.notes["reports"] = manifest["reports"]
+        store.put_json("run_manifest", _run_manifest.json_safe(manifest))
     store.append_event(event_line("RUN_END", run_id=run_id, metrics=result.metrics, warnings=len(manifest["warnings"])))
 
     # Optional: ingest artifacts into warehouse

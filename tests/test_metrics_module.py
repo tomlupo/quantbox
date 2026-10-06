@@ -1,0 +1,186 @@
+"""One metrics module computes the run statistics (TOM-1448).
+
+`quantbox.metrics` holds Sharpe (and excess Sharpe vs a benchmark), IR,
+tracking error, CAGR, max drawdown, top-N drawdowns and turnover. The old path
+`quantbox.plugins.backtesting.metrics` re-exports the same objects (robo-lab
+imports it), and `quantbox.performance.compute_performance` keeps working for
+quantbox-live.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+
+import quantbox
+from quantbox import metrics
+
+
+@pytest.fixture
+def returns() -> pd.Series:
+    rng = np.random.default_rng(7)
+    idx = pd.date_range("2022-01-01", periods=400, freq="D")
+    return pd.Series(rng.normal(0.0005, 0.015, 400), index=idx)
+
+
+@pytest.fixture
+def bench() -> pd.Series:
+    rng = np.random.default_rng(8)
+    idx = pd.date_range("2022-01-01", periods=400, freq="D")
+    return pd.Series(rng.normal(0.0003, 0.012, 400), index=idx)
+
+
+def test_old_import_path_is_the_same_module_objects():
+    from quantbox.plugins.backtesting import metrics as old
+
+    for name in (
+        "compute_backtest_metrics",
+        "compute_drawdown_series",
+        "compute_rolling_sharpe",
+        "compute_var",
+        "compute_cvar",
+        "compute_portfolio_var",
+        "compute_portfolio_cvar",
+    ):
+        assert getattr(old, name) is getattr(metrics, name), name
+
+
+def test_sharpe_ratio_is_the_one_in_compute_backtest_metrics(returns):
+    m = metrics.compute_backtest_metrics(returns, trading_days=252, risk_free_rate=0.02)
+    assert m["sharpe"] == metrics.sharpe_ratio(returns, 252, risk_free=0.02)
+
+
+def test_sharpe_ratio_degenerate_inputs_are_zero():
+    assert metrics.sharpe_ratio(np.array([0.01]), 365) == 0.0
+    assert metrics.sharpe_ratio(np.array([0.01, 0.01, 0.01]), 365) == 0.0
+
+
+def test_excess_sharpe_and_ir_vs_a_benchmark(returns, bench):
+    excess = returns - bench
+    expected = excess.mean() / excess.std() * np.sqrt(252)
+    assert metrics.sharpe_ratio(returns, 252, risk_free=bench) == pytest.approx(expected, rel=1e-12)
+    assert metrics.information_ratio(returns, bench, 252) == pytest.approx(expected, rel=1e-12)
+    assert metrics.tracking_error(returns, bench, 252) == pytest.approx(excess.std() * np.sqrt(252), rel=1e-12)
+
+
+def test_compute_backtest_metrics_adds_benchmark_and_turnover_keys_only_when_asked(returns, bench):
+    base = metrics.compute_backtest_metrics(returns, trading_days=365)
+    assert "information_ratio" not in base and "annual_turnover" not in base
+    w = pd.DataFrame({"A": [0.5, 0.5, 1.0, 0.0]}, index=returns.index[:4])
+    full = metrics.compute_backtest_metrics(returns, trading_days=365, benchmark=bench, weights=w)
+    for k, v in base.items():  # the historical keys are untouched
+        assert full[k] == v
+    assert full["information_ratio"] == metrics.information_ratio(returns, bench, 365)
+    assert full["excess_sharpe"] == full["information_ratio"]
+    assert full["tracking_error"] == metrics.tracking_error(returns, bench, 365)
+    # bars 2..4 move 0, 0.5, 1.0 → mean 0.5 per bar, x365
+    assert full["annual_turnover"] == pytest.approx(0.5 * 365)
+
+
+def test_max_drawdown_conventions():
+    r = np.array([-0.1, 0.05, -0.2, 0.5])
+    # From the first return's equity: the first-row loss is not a drawdown.
+    eq = np.cumprod(1 + r)
+    assert metrics.max_drawdown(r) == pytest.approx((eq[2] - eq[1]) / eq[1])
+    # Starting equity 1.0 is a peak: the first-row loss opens the episode.
+    assert metrics.max_drawdown(r, start_is_peak=True) == pytest.approx(eq[2] - 1.0)
+
+
+def test_top_drawdowns_are_non_overlapping_and_deepest_first():
+    idx = pd.date_range("2024-01-01", periods=8, freq="D")
+    r = pd.Series([0.0, -0.1, 0.2, 0.0, -0.3, 0.1, 0.5, -0.05], index=idx)
+    top = metrics.top_drawdowns(r, n=5)
+    assert list(top.columns) == ["peak", "trough", "recovery", "depth"]
+    assert len(top) == 3
+    assert list(top["depth"]) == sorted(top["depth"])  # deepest (most negative) first
+    first = top.iloc[0]
+    assert first["peak"] == idx[3] and first["trough"] == idx[4] and first["recovery"] == idx[6]
+    assert first["depth"] == pytest.approx(-0.3)
+    assert pd.isna(top.iloc[-1]["recovery"]) or top.iloc[-1]["trough"] == idx[1]
+    assert len(metrics.top_drawdowns(r, n=1)) == 1
+
+
+def test_turnover_series_conventions():
+    w = pd.DataFrame({"A": [0.5, 0.5, 1.0], "B": [0.5, 0.0, 0.0]})
+    assert metrics.turnover_series(w, from_flat=True).tolist() == [1.0, 0.5, 0.5]
+    assert metrics.turnover_series(w).tolist() == [0.0, 0.5, 0.5]
+
+
+def test_drawdown_series_on_ndarray_paths():
+    paths = np.array([[1.0, 2.0, 1.0, 3.0], [1.0, 0.5, 0.25, 1.0]])
+    dd = metrics.compute_drawdown_series(paths)
+    assert dd.tolist() == [[0.0, 0.0, -0.5, 0.0], [0.0, -0.5, -0.75, 0.0]]
+
+
+def test_total_return_compounds_every_return_the_first_included():
+    """TOM-262: ``cum[-1] / cum[0] - 1`` dropped the first bar (an entry fee, a first day's loss)."""
+    r = pd.Series([0.10, 0.10, -0.50], index=pd.date_range("2024-01-01", periods=3, freq="D"))
+    m = metrics.compute_backtest_metrics(r)
+    assert m["total_return"] == pytest.approx(1.1 * 1.1 * 0.5 - 1, abs=1e-15)
+
+
+def test_compute_performance_still_works_for_quantbox_live(returns):
+    """quantbox-live's scripts/compute_performance.py imports this name; numbers pinned pre-TOM-1448.
+
+    calmar moved -0.8428 -> -0.8368 with TOM-262: total_return (and so cagr) dropped the first
+    return of the series. Every other number is unchanged.
+    """
+    from quantbox.performance import compute_performance
+
+    idx = returns.index
+    equity = 100 * (1 + returns).cumprod()
+    flows = pd.DataFrame({"date": [idx[50], idx[200]], "amount_usdc": [10.0, -5.0]})
+    out = compute_performance(equity, flows, 100.0, "2022-01-01", trading_days=365)
+    assert out["risk_metrics"] == {
+        "sharpe": -1.5496,
+        "sortino": -2.0778,
+        "max_drawdown": -0.4635,
+        "max_drawdown_duration_days": 397,
+        "annual_volatility": 0.2884,
+        "calmar": -0.8368,
+        "win_rate": 0.4687,
+        "profit_factor": 0.803,
+        "var_95": -0.024824,
+        "cvar_95": -0.034251,
+    }
+    assert out["periods"]["ITD"] == {"return_pct": -41.4215, "pnl_usdc": -42.7447, "days": 399}
+
+
+# ---------------------------------------------------------------------------
+# Guard: no run metric is computed outside quantbox.metrics
+# ---------------------------------------------------------------------------
+
+_SRC = Path(quantbox.__file__).parent
+_HOME = _SRC / "metrics.py"
+# An annualised Sharpe / vol computed by hand, a hand-rolled drawdown, or a private Sharpe helper.
+_DUPLICATE_RE = re.compile(
+    "|".join(
+        (
+            r"def _annualized_sharpe",  # the four private Sharpe copies in validation/
+            r"\.cummax\(\)",  # a hand-rolled drawdown
+            r"np\.maximum\.accumulate\((eq|prices|wealth|equity|value)\b",  # the same, in numpy
+            r"\.mean\(\)\s*/\s*[\w.()]*\.std\(\)",  # a hand-rolled (rolling) Sharpe
+            r"\.mean\(\)\)?\s*/\s*std\b",  # a per-period Sharpe after a std guard
+            r"np\.std\(\w+,\s*ddof=1\)\s*\*\s*np\.sqrt",  # a hand-rolled annualised tracking error
+            r"\.diff\(\)(\.fillna\(\w+\))?\.abs\(\)\.sum\(axis=1\)",  # a hand-rolled turnover
+        )
+    )
+)
+# Non-metric uses of the same idioms: a boolean "observed so far" mask, and a
+# signal-block latch inside a strategy's entry logic.
+_ALLOWED = {"instrument_calendar.py"}
+
+
+def test_no_run_metric_is_hand_rolled_outside_the_metrics_module():
+    offenders = []
+    for path in sorted(_SRC.rglob("*.py")):
+        if path == _HOME or path.name in _ALLOWED or "strategies" in path.parts or "features" in path.parts:
+            continue  # strategies/features compute SIZING inputs (realised vol), not run metrics
+        for i, line in enumerate(path.read_text().splitlines(), 1):
+            if _DUPLICATE_RE.search(line):
+                offenders.append(f"{path.relative_to(_SRC)}:{i}: {line.strip()}")
+    assert not offenders, "run metric computed outside quantbox.metrics:\n" + "\n".join(offenders)

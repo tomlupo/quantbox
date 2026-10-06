@@ -80,8 +80,13 @@ _INIT_ONLY_GROUPS = {"data", "broker"}
 _PIPELINE_INJECTED = {"rebalancing": {"mode", "strategy_results"}}
 # Plugins whose module hands ``params`` to a reader elsewhere.
 _READ_ELSEWHERE = {
-    "backtest.pipeline.v1": ("quantbox.frequency",),
+    # The rsims adapter reads its own params (docs/adr/0008).
+    "backtest.pipeline.v1": ("quantbox.frequency", "quantbox.engine.rsims"),
     "trade.full_pipeline.v1": ("quantbox.frequency",),
+    # max_leverage is read by the one reader of the gross cap (TOM-1525).
+    "rebalancing.futures.v1": ("quantbox.decision",),
+    "rebalancing.standard.v1": ("quantbox.decision",),
+    "risk.trading_basic.v1": ("quantbox.decision",),
 }
 
 
@@ -382,12 +387,68 @@ def test_synthetic_params_init_validates_and_reaches_the_generator():
     assert plugin.load_market_data(universe, "2026-01-31", {"n_steps": 10})["prices"].shape == (10 + 1, 3)
 
 
-def test_validate_unregistered_plugin_is_a_warning_not_an_error():
+# --- an unregistered plugin is refused (TOM-1528) ---------------------------------
+#
+# It was a ``params_not_checked`` WARNING, and validate exited 0: that is how
+# cookbook/configs/example_minimal.yaml named a plugin nothing registers and
+# still "validated" (TOM-1526). A run refuses the same config at resolve.
+
+
+def test_validate_unregistered_plugin_is_an_error_naming_it_and_the_closest_names():
+    cfg = _config({})
+    cfg["plugins"]["strategies"] = [{"name": "strategy.cary.v1", "params": {}}]
+    errors = [f.message for f in validate_config(cfg, REG) if f.level == "error"]
+    assert any(
+        "unknown_plugin" in m
+        and "'strategy.cary.v1'" in m
+        and "plugins.strategies[0]" in m
+        and "strategy.carry.v1" in m
+        for m in errors
+    ), errors
+
+
+def test_validate_plugin_from_an_uninstalled_package_is_an_error_with_an_install_hint():
+    """A lab plugin is registered by its package's entry point: not installed here, not registered."""
     cfg = _config({})
     cfg["plugins"]["strategies"] = [{"name": "lab.strategy.elsewhere.v1", "params": {"x": 1}}]
+    errors = [f.message for f in validate_config(cfg, REG) if f.level == "error"]
+    assert any("'lab.strategy.elsewhere.v1'" in m and "quantbox.strategies" in m and "install" in m for m in errors), (
+        errors
+    )
+
+
+@pytest.mark.parametrize("slot", ["strategies", "overlays"])
+def test_validate_local_source_plugin_is_not_refused(slot):
+    """``source: path:Class`` is loaded from that file by the runner, never from the registry:
+    its unregistered name is not an error (quantbox-lab runs 30+ such configs)."""
+    cfg = _config({})
+    cfg["plugins"][slot] = [
+        {"name": "lab.strategy.h110_bollinger_mr.v1", "source": "research/x/strategy.py:Strat", "params": {"x": 1}}
+    ]
     findings = validate_config(cfg, REG)
-    assert not [f for f in findings if f.level == "error"]
-    assert any("params_not_checked:lab.strategy.elsewhere.v1" in f.message for f in findings)
+    assert not [f for f in findings if f.level == "error"], findings
+    assert any("params_not_checked:lab.strategy.h110_bollinger_mr.v1: local-source" in f.message for f in findings)
+
+
+def test_validate_cli_exits_nonzero_on_an_unregistered_plugin(tmp_path):
+    cfg = _config({})
+    cfg["plugins"]["data"] = {"name": "local_file_dta", "params_init": {}}
+    result = _invoke_validate(tmp_path, cfg)
+    assert result.exit_code != 0, result.output
+    assert "ERROR: unknown_plugin" in result.output and "'local_file_dta'" in result.output
+    assert "local_file_data" in result.output  # the closest registered name
+    assert "INVALID:" in result.output
+
+
+def test_validate_registry_that_fails_to_load_is_an_error(monkeypatch):
+    """Nothing can be checked, and a run's discover() fails the same way: not a pass."""
+
+    def boom():
+        raise ImportError("No module named 'labpkg'")
+
+    monkeypatch.setattr(PluginRegistry, "discover", staticmethod(boom))
+    errors = [f.message for f in validate_config(_config({})) if f.level == "error"]
+    assert any("plugin registry failed to load" in m and "labpkg" in m for m in errors), errors
 
 
 # --- the repo's own examples validate clean (review of #218) --------------------
@@ -433,10 +494,11 @@ def test_pipeline_params_strategies_valid_params_pass():
     assert not [f for f in findings if "params_not_checked" in f.message], findings
 
 
-def test_pipeline_params_strategies_unknown_module_is_a_warning():
+def test_pipeline_params_strategies_unknown_module_is_an_error():
+    """The pipeline imports ``quantbox.plugins.strategies.<name>``: no such module, no run (TOM-1528)."""
     findings = validate_config(_legacy_strategies_config({"x": 1}, name="no_such_module"), REG)
-    assert not [f for f in findings if f.level == "error"], findings
-    assert any("params_not_checked:no_such_module" in f.message for f in findings), findings
+    errors = [f.message for f in findings if f.level == "error"]
+    assert any("unknown_plugin" in m and "no_such_module" in m for m in errors), findings
 
 
 def test_run_warns_on_unknown_param_but_does_not_refuse(caplog):
@@ -498,8 +560,8 @@ def test_synthetic_cookbook_knobs_reach_the_data_plugin(tmp_path, monkeypatch):
         seen["prices"] = dict(params)
         out = orig_m(self, universe, asof, params)
         seen["shape"] = out["prices"].shape
-        # Stop here: what is under test is the routing of the knobs. (The synthetic plugin's
-        # load_universe returns a list, which the backtest pipeline cannot store as parquet.)
+        # Stop here: what is under test is the routing of the knobs. The full run is
+        # tests/pipeline/test_cookbook_configs.py (TOM-1526).
         raise _Reached
 
     monkeypatch.setattr(SyntheticDataPlugin, "load_universe", spy_u)

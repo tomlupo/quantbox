@@ -26,9 +26,61 @@ plugins:
       trading_days: 365
 ```
 
-**Rebalancing modes:**
-- `rebalancing_freq: N` — periodic rebalancing every N days
-- `threshold: 0.05` — rebalance when any weight drifts more than 5% from target
+**Rebalancing modes** (the seam's schedule — both engines follow it, docs/adr/0008):
+- `rebalancing_freq: N` — periodic rebalancing every N execution bars (or `"W-FRI"`, `"ME"`, ...)
+- `threshold: 0.05` — a scheduled rebalance is placed only when a held weight drifted more than
+  5% from its target. The seam measures the drift cost-free; with costs a rebalance near the band
+  edge can fall on a slightly different bar than an in-engine band would.
+
+**Rebalancing policies** (`rebalancing_policy`, TOM-1450; replaces the two keys above — declare
+one spelling, not both). Every policy is an orders mask in the seam, the same on both engines
+(`quantbox.engine.policy` has the full rules). A policy is a **cadence** (`periodic` or `tranche`)
+times a **trigger** (`none`, `band` or `corridor`; TOM-1513):
+
+```yaml
+      rebalancing_policy: {cadence: tranche, tranches: 5, frequency: daily, trigger: corridor, width: 0.02}
+      # rebalancing_policy: {cadence: periodic, frequency: monthly, calendar: NYSE}
+      # the single-key spelling still works and means the same thing:
+      # rebalancing_policy: {policy: periodic, frequency: monthly, calendar: NYSE}
+      # rebalancing_policy: {policy: tranche, tranches: 4, frequency: weekly}
+      # rebalancing_policy: {policy: band, band: 0.05}
+      # rebalancing_policy: {policy: corridor, width: [0.02, 0.05], bounds: {SPY: [0.01, 0.03]}}
+```
+
+- `frequency` — the bars a rebalance is considered on: `daily`, `weekly`, `monthly`, `quarterly`,
+  `yearly` (the last execution bar of the period), or any `rebalancing_freq` form.
+- `calendar` — a pandas-market-calendars name. Decisions and the execution lag use that
+  market's sessions only: March 2024 ends on Thursday the 28th (Good Friday), not Sunday the 31st.
+- `tranche` — the book is the mean of N tranches; one tranche is refreshed on each decision.
+- `band` — the whole book trades when a held weight drifted past the band (= `threshold`).
+- `corridor` — when one instrument is outside its own `[target - below, target + above]`
+  corridor, the whole book trades back to target. An exit to 0 is always a hit.
+- `min_trade` (every policy, default 0 = off) — on a rebalance, a trade smaller than
+  `min_trade` (absolute weight) is dropped; sells always execute; buys above the cash plus
+  the sell proceeds are scaled down proportionally, so without `venue.leverage: borrow` the
+  held net never goes above 1. A trade under `min_trade` cannot trigger a band or corridor.
+
+The same `rebalancing_policy` block works on `trade.full_pipeline.v1` (TOM-1518): each live
+run asks the same code whether a rebalance is due on its last decided bar and to which
+targets, given the broker's held book (`quantbox.engine.policy.decide_rebalance`; what it
+decided is in `notes["rebalancing_policy"]`). Live refuses an int `frequency` above 1 and
+null (the live history window moves), and a declared policy's `min_trade` replaces
+`min_trade_size`.
+
+**Group limits** (`group_limits`) keep each group's gross weight inside `[min, max]` on every
+decided row, before execution. The groups come from a universe metadata column (a
+`local_file_data` universe file keeps its per-symbol columns, such as `asset_class`):
+
+```yaml
+      group_limits:
+        by: asset_class
+        limits: {equity: {max: 0.6}, bond: {min: 0.2, max: 0.5}}
+        excess: redistribute     # or cash: weight cut from a capped group stays in cash
+```
+
+An infeasible limit refuses the run with the first dates (the minimums need more weight than
+the row holds, or a group with a minimum holds nothing). `data_validation.json` records the
+policy (`rebalancing`) and the limits (`groups`); `quantbox config explain` shows both.
 
 ### rsims (futures)
 
@@ -49,6 +101,10 @@ plugins:
         max_leverage: 2
         allow_short: true
 ```
+
+rsims has the same defaults as vectorbt (TOM-1500): it compounds, starts from the
+same `initial_cash` and charges `fees`, `slippage` and `fixed_fees` the same way. A
+cost an engine cannot model is refused, never dropped.
 
 **Additional rsims features:**
 - Funding rate simulation (long/short asymmetry)
@@ -141,28 +197,37 @@ Reading a dataset without it raises an ImportError naming both.
 | Parameter | Default | Description |
 |---|---|---|
 | `engine` | `vectorbt` | `"vectorbt"` or `"rsims"` |
-| `fees` | `0.001` | Trading fee per side (0.001 = 10 bps) |
-| `rebalancing_freq` | `1` | Rebalance every N days, or `"1W"`, `"1M"` |
-| `threshold` | (none) | Drift threshold for rebalancing-bands mode |
+| `fees` | `0.001` | Trading fee per side (0.001 = 10 bps), every engine |
+| `slippage` | `0` | Proportional slippage on the fill price (0.0005 = 5 bps), every engine |
+| `fixed_fees` | `0` | Fixed fee per order, in quote currency, every engine |
+| `initial_cash` | `10000` | Starting cash, every engine (a fixed fee is a share of it) |
+| `capitalise_profits` | `true` | rsims: size off current equity (compound), as vectorbt does; `false` sizes off `min(initial_cash, equity)` |
+| `rebalancing_freq` | `1` | The DECISION schedule on the execution calendar: every N execution bars, or `"1W"`, `"ME"`, `"BMS"`; period-end offsets decide on the period's last execution bar, others on the next one; the trade follows `lag_bars` execution bars later ([ADR-0007](../adr/0007-instrument-calendar-and-financing.md)) |
+| `threshold` | (none) | Drift band: a scheduled rebalance is placed only when a held weight drifted more than this (seam-computed, cost-free, every engine) |
 | `trading_days` | `365` | Days per year for annualization |
 | `universe.top_n` | — | Universe size (top N by volume/mcap) |
 | `prices.lookback_days` | — | Price history window |
 | `execution.lag_bars` | `1` | Bars between deciding a weight and filling it — see [Execution timing and venue constraints](#execution-timing-and-venue-constraints) |
 | `venue.allow_shorts` | (unset) | Whether the venue can hold shorts — same section |
-| `risk.max_leverage` | `99` | Gross cap per bar; only ever scales DOWN (both engines) |
+| `venue.financing` | (unset) | What borrowed / idle cash costs — [Missing prices and financing](#missing-prices-and-financing) |
+| `venue.leverage` | `normalize` (every engine) | How the decision is normalised: a target row above net 1 is scaled to 1, or borrowed — [Missing prices and financing](#missing-prices-and-financing) |
+| `execution.calendar` | `majority` | The execution calendar: `majority` \| `union` \| `intersection` \| a ticker — [Missing prices and financing](#missing-prices-and-financing) |
+| `execution.schedule` | `calendar` | `calendar`: the scheduled book; `bars`: every price bar executes, no deferral, no `venue.leverage` ([ADR-0008](../adr/0008-engine-seam.md)) |
+| `risk.max_leverage` | `1` | Gross cap per bar (`sum \|w\|`); only ever scales DOWN (both engines). The same default in trading, `backtest()`, `optimize()` and the sweep (`quantbox.decision.DEFAULT_MAX_LEVERAGE`, TOM-1525): a levered book declares it |
 | `risk.allow_short` | `false` | Legacy short switch (both engines); prefer `venue.allow_shorts` |
-| `risk.tranches` | `1` | Rolling-mean tranching of target weights (both engines) |
+| `risk.tranches` | `1` | DEPRECATED (TOM-1513): the tranche cadence, `rebalancing_policy: {cadence: tranche, tranches: N}`; warns |
 
 ### Execution timing and venue constraints
 
 Both engines are **same-bar primitives**: the weight row they are handed for bar
 `t` is filled at `close[t]`. Strategies decide `weights[t]` with data through
 `close[t]`, so the pipeline — not the strategy, not the engine — owns the delay
-between deciding and filling. It is applied in exactly one place
-(`BacktestPipeline._align_for_engine`, after aggregation, venue clipping and
-risk transforms, before the engine), so it holds for the vectorbt `from_orders`
-branch, the vectorbt order-func (`threshold`) branch, rsims and the variants
-flow alike. `quantbox sweep` (`analysis.parameter_grid`) uses the same setting,
+between deciding and filling. It is applied in exactly one place, inside
+the engine seam (`quantbox.engine._lag.lag_positions`, docs/adr/0008: after
+aggregation, venue clipping and risk transforms, before any engine adapter),
+so it holds for both engines, the variants flow, the sweep, `backtest()` and
+`optimize()` alike — they all build the book with the one function
+`quantbox.engine.simulate`. `quantbox sweep` (`analysis.parameter_grid`) uses the same setting,
 and so do the Python helpers `backtest()` and `optimize()`
 (`quantbox.plugins.backtesting`): keyword `lag_bars=`, same default, same
 refusal of `0`, and the result carries the same `execution` record. The L1
@@ -185,7 +250,7 @@ plugins:
 |---|---|---|---|
 | `execution.lag_bars` | int ≥ 1 | `1` | Weights decided with data through bar `t` fill at the **close of bar `t + lag_bars`**. `0` (same-bar — the signal filled at the very close it was computed from, which no order could have achieved) is **refused** by every entry point and is an error in `quantbox validate` ([ADR-0005](../adr/0005-next-bar-is-mandatory.md)), unless `execution.same_bar` grants it (below). |
 | `execution.same_bar` | `{allow: true, reason: str}` | — | The explicit same-bar override ([ADR-0006](../adr/0006-same-bar-explicit-override.md)): valid only next to `lag_bars: 0`, `reason` non-empty. The run is then **research, not a backtest** — see [Same-bar research runs](#same-bar-research-runs-the-explicit-override). |
-| `venue.allow_shorts` | bool | — | `false`: negative **target** weights are clipped to `0` *before* tranching and the leverage cap. **The long side is not re-normalised** — the book carries less gross; it is never re-levered to refill it. `true`: shorts pass through. Must not contradict an explicit `risk.allow_short` (the run refuses). |
+| `venue.allow_shorts` | bool | — | `false`: negative **target** weights are clipped to `0` *before* the leverage cap, the group limits, the normalisation and tranching (the decision's first step, `quantbox.decision`). **The long side is not re-levered** — the book carries less gross. `true`: shorts pass through. Must not contradict an explicit `risk.allow_short` (the run refuses). |
 
 Unknown keys, non-integers, booleans, `0` (without the override) and negative lags are **refused**
 (`ConfigValidationError` from the runner, `ValueError` from the pipeline, before
@@ -202,10 +267,80 @@ same-bar override is not one either: it is for data, not for strategies).
 **Where it is recorded.** `run_manifest.json` carries
 `execution: {lag_bars, fill: "close", same_bar, description}` (`same_bar` is
 `true`, with `same_bar_reason`, only under the override), `run: {kind}`
-(`backtest` or `research`) and `venue: {declared, allow_shorts, max_leverage}`; `metrics.json` carries `execution_lag_bars`;
+(`backtest` or `research`) and `venue: {declared, allow_shorts, max_leverage, leverage, financing}`; `metrics.json` carries `execution_lag_bars`;
 `summary.md` has an **Execution timing** line, the HTML report states it in the
 masthead and the reproducibility appendix, and the CLI prints `EXECUTION: …`
 under `METRICS:`. Sweep grids carry a `lag_bars` column.
+
+#### Missing prices and financing
+
+[ADR-0007](../adr/0007-instrument-calendar-and-financing.md) (TOM-1429). Each instrument gets a
+**life window**, from its first valid price to its last:
+
+- **Inside** the window, a bar with no price (a holiday, a gap) is forward-filled to MARK the
+  position, which is held. No order fills at a price the instrument did not print: an order
+  falling on such a bar is **deferred** to the instrument's own next printed bar, and counted.
+- **Outside** it (before listing, after delisting), the target is forced to 0, and that
+  override is counted and logged. A feed that stops early looks exactly like a delisting.
+
+On top sits ONE **execution calendar**, the bars decisions are taken and orders placed on:
+
+```yaml
+      execution:
+        lag_bars: 1
+        calendar: majority   # majority (default) | union | intersection | "<ticker in the prices>"
+```
+
+`majority`: half of the live instruments print; `union`: any; `intersection`: all; a ticker:
+that series prints. **Decision vs execution:** `rebalancing_freq` picks DECISION bars on that
+calendar (`"ME"` = the last execution bar of the month), and the trade happens `lag_bars`
+**execution** bars later. `rebalance_schedule.parquet` records `decision_date`,
+`execution_date` and `deferred_instruments` for every rebalance. Before ADR-0007 the schedule
+named the TRADE bar: a config that meant "decide at month-end, trade on the 1st" with `BMS`
+now says `ME`.
+
+```yaml
+      venue:
+        allow_shorts: true
+        leverage: borrow           # normalize (the default, every engine) | borrow
+        financing:
+          rate: "LT12TRUU Index"   # ticker in the prices (cash TR index) | annual number (0.0 = free)
+          borrow_spread_bps: 0     # borrowed cash: rate + spread
+          lend_spread_bps: 0       # idle cash:     rate - spread
+```
+
+`venue.leverage` is part of the DECISION (TOM-1520, `quantbox.decision`): the target weights
+are final before any rebalancing policy reads them, and live trading computes the same ones.
+`leverage: normalize` scales every decided row whose net exposure is above 1 down to net 1
+(after the short clip, the `risk.max_leverage` gross cap and the group limits; counted in
+`data_validation.json` `decision`, warned). Execution then never borrows: on every placed
+rebalance the buys are capped at the cash plus the sell proceeds, which binds only when a
+deferred instrument still holds its old weight (`leverage.cash_capped_rebalances`, warned).
+`leverage: borrow` holds it; with `financing` the residual `1 - sum(w)` is held as two
+synthetic cash legs (idle cash earns `rate - lend_spread`, borrowed cash pays `rate +
+borrow_spread`, both trade without fees). `borrow` without `financing` runs at an ASSUMED rate
+of 0, recorded as `venue.financing.assumed: true` and warned about.
+
+Everything is counted in `data_validation.json` (`quantbox/data-validation@1`, schema in
+`artifact_schemas/`): `calendar` (per instrument: forward-filled bars, deferred trades,
+targets outside the window, stale decisions; `legacy_coverage_drop` = columns the old
+50%-coverage rule would have dropped), `execution_calendar` (execution vs total bars,
+non-execution bars per year), `timing`, `staleness` (age of the inputs at each decision:
+count, max, p95 — visible, not blocking), `weight_age` (on a calendar schedule — one period-end
+offset such as `ME`, `BME`, `QE`, `W-FRI` — the decisions that MISSED their period's weights
+because the strategy stamped them on a non-execution bar after the decision bar: stamp
+weights on the decision bars, the EXECUTION calendar, never on calendar period-ends from a
+wider panel; a `TIMING:` warning names them. Any other schedule reports `measured: false`
+— the check does not cover it), `index_alignment` (what the price/weight index intersection
+dropped; an `INDEX:` warning names price bars with no weight row), `leverage` (measured on the
+held book, and the cash cap) and `decision` (the rules, and the rows the decision clipped,
+capped and normalised). Summaries go to
+`run_manifest.json` `data_validation` and `metrics.json`.
+
+Every vectorbt run records `engine_underfilled_rebalances` and `engine_max_fill_gap` (on
+the bars the seam ordered). A `threshold` run also records `threshold_skipped_rebalances`
+and a `threshold` section in `data_validation.json`. They compare the book the engine held after each
+rebalance with `traded_weights`.
 
 #### Same-bar research runs: the explicit override
 
@@ -242,19 +377,13 @@ ogólny research"*.
 Refused: `lag_bars: 0` alone, `allow: false`, an empty or missing `reason`,
 and an override next to `lag_bars >= 1`.
 
-**NaN weight rows — one saved book per engine, and the engines disagree.** A
-NaN weight cell mid-series means "the strategy said nothing for this bar". The
-engines have always answered that differently: **vectorbt forward-fills** (holds
-the last target; leading NaN → 0) while **rsims treats NaN as 0** (goes flat).
-This pipeline does not change either engine's numbers; it materialises the
-policy the chosen engine already applies into the frame it hands over
-(`quantbox.execution.materialise_nan_policy`), so `traded_weights` and the
-`traded_*` metrics describe the book that engine actually traded — and never
-contain NaN. The disagreement itself is a **known issue**: the same config with
-mid-series NaN weights gives different books on the two engines. Emit explicit
-weights for every bar to avoid depending on it. (The sweep path hands vectorbt
-the raw frame, so it holds through NaN rows like any vectorbt run; it saves no
-weights.)
+**NaN weight rows — one policy, every engine.** A NaN weight cell mid-series
+means "the strategy said nothing for this bar". The seam answers it once
+(`quantbox.engine.materialise_nan`, docs/adr/0008): the cell HOLDS the last
+decided target; a leading NaN is 0. Every engine receives the materialised
+book, so `traded_weights` never contains NaN and the same config gives the same
+book on both engines. (Until TOM-1450 rsims treated NaN as 0 — went flat — so an
+rsims run with mid-series NaN weights moves.)
 
 **Shorts are never silent.** Whatever the config says, every run measures
 `target_short_gross_share` (the strategy's targets) and
@@ -292,9 +421,8 @@ reach the `DatasetManifest`, so the venue has to be declared in the config.
 > On the reviewer's toy the split was: same-bar −0.1792, next-bar −0.1589,
 > same-bar with only the first rebalance zeroed −0.1553 — there the lost first
 > period ALONE moves the number by more than the whole same-bar → next-bar delta.
-> Buy-and-hold (`rebalancing_freq: null`) is the exception: its one trade moves
-> to bar `lag_bars` (`quantbox.execution.lag_buy_and_hold`) — on bar 0 it would
-> trade the flat row and never enter.
+> Buy-and-hold (`rebalancing_freq: null`) is the exception: its one decision is
+> the first bar, and it fills `lag_bars` execution bars later.
 
 ### Arms: one base config, many runs
 
@@ -350,8 +478,8 @@ The `metrics` artifact includes:
   `traded_short_gross_share` (short gross / total gross over the run),
   `traded_mean_turnover` (mean per-bar `sum(|w[t] - w[t-1]|)`),
   `traded_flat_bar_share` (share of bars with zero gross). They describe the
-  target book handed to the engine; with `rebalancing_freq` ≠ 1 or a `threshold`
-  the engine trades a subset of those bars and positions drift in between.
+  book held after the seam's orders; with `rebalancing_freq` ≠ 1 or a `threshold`
+  the engine trades a subset of the bars and positions drift in between.
 - **`target_short_gross_share`, `target_mean_net_exposure`** — the same
   statistics of the strategy's targets, so a clipped short book is visible.
 

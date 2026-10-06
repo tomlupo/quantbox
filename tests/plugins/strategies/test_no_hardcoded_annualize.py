@@ -1,9 +1,9 @@
 """CI guard: registered strategies must not hardcode their own annualize/trading_days default.
 
-The pipeline (`backtest.pipeline.v1`) injects `_pipeline_annualize` into every
-strategy's params, derived from the resolved `Frequency`. Any strategy that
+Both pipelines hand every strategy a `StrategyContext` whose `bars_per_year` is
+derived from the resolved `Frequency` (TOM-1448; `_pipeline_annualize` before it). Any strategy that
 hardcodes its own default (e.g. `annualize: float = 252.0`) will silently use
-that value instead of the pipeline-injected one — which is the exact drift
+that value instead of the context's one — which is the exact drift
 this PR series is built to prevent.
 
 This test enumerates every registered strategy class and asserts that any
@@ -13,9 +13,9 @@ need annualization don't have these fields and are unaffected.
 
 If this test fails, the failing strategy needs to:
   1. Flip its annualization field default to `None`
-  2. In `run()`, resolve via:
-       pipeline_annualize = (params or {}).get("_pipeline_annualize")
-       effective = self.<field> if self.<field> is not None else (pipeline_annualize or 252.0)
+  2. In `run(data, params, context=None)`, resolve via:
+       effective = resolve_annualize(self.<field>, params, context, owner="<Class>.<field>")
+     (`quantbox.strategy_runner.resolve_annualize`)
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ import pytest
 
 from quantbox.plugins import strategies as _strategies_pkg
 
-# Names of fields that the pipeline now injects via `_pipeline_annualize`.
+# Names of fields the pipeline now supplies via `StrategyContext.bars_per_year`.
 # Any dataclass field with one of these names MUST default to None on a
 # registered strategy plugin.
 _INJECTED_FIELD_NAMES = frozenset(
@@ -63,7 +63,7 @@ def test_strategy_annualization_field_defaults_to_none(strategy_cls):
         if f.name in _INJECTED_FIELD_NAMES:
             assert f.default is None, (
                 f"{strategy_cls.__name__}.{f.name} hardcodes default={f.default!r}; "
-                f"set it to None and consume `_pipeline_annualize` from params in run(). "
+                f"set it to None and resolve it with quantbox.strategy_runner.resolve_annualize in run(). "
                 f"See cross_asset_momentum.py / vol_matched_buy_hold.py for the pattern."
             )
 
@@ -108,8 +108,8 @@ def test_no_hardcoded_sqrt_252_or_365_in_strategies(strategy_file: Path):
     """Catch hardcoded ``np.sqrt(252)`` / ``np.sqrt(365)`` calls anywhere
     inside a strategy module — including helper functions outside the class.
 
-    The pipeline-injection scheme requires ALL annualization (not just the
-    dataclass-field-declared kind) to flow from `_pipeline_annualize`.
+    The StrategyContext scheme requires ALL annualization (not just the
+    dataclass-field-declared kind) to flow from `context.bars_per_year`.
     Hardcoded sqrt calls bypass the injection silently.
 
     If this test fails, the offending helper should accept an `annualize`
@@ -123,7 +123,7 @@ def test_no_hardcoded_sqrt_252_or_365_in_strategies(strategy_file: Path):
     assert not matches, (
         f"{strategy_file.name} contains hardcoded np.sqrt({matches[0]}) — "
         f"strategies must accept the annualization factor via the "
-        f"pipeline-injected `_pipeline_annualize` (see beglobal_strategy.py / "
+        f"run's StrategyContext (resolve_annualize; see beglobal_strategy.py / "
         f"carver_trend.py / momentum_long_short.py for the helper-param pattern "
         f"introduced by issue #23)."
     )

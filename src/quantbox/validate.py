@@ -1,16 +1,26 @@
 from __future__ import annotations
 
+import importlib.util
 import warnings
 from dataclasses import dataclass
 from typing import Any
 
 from .plugin_manifest import load_manifest, resolve_profile
 
+#: Finding code of a block naming a plugin this environment does not register. ``validate``
+#: and the runner refuse it alike (TOM-1528, TOM-1529).
+UNKNOWN_PLUGIN = "unknown_plugin"
+
 
 @dataclass
 class ValidationFinding:
     level: str  # "error" or "warning"
     message: str
+    #: Machine-readable kind, set where a consumer acts on it (``UNKNOWN_PLUGIN``); None otherwise.
+    code: str | None = None
+    #: What the finding is about, for a consumer that acts on it: for ``UNKNOWN_PLUGIN``,
+    #: ``{"plugin_name", "group", "where"}``.
+    subject: dict[str, str] | None = None
 
 
 def _check_legacy_dataset_params(cfg: dict) -> None:
@@ -172,6 +182,48 @@ def _resolve_block_plugin(registry: Any, group: str, name: str) -> tuple[Any, st
     return None, name, f"no registered strategy plugin in module {module}"
 
 
+def _strategy_module_exists(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(f"{_STRATEGY_PKG}.{name}") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _unknown_plugin(registry: Any, where: str, group: str, name: str) -> ValidationFinding:
+    """The error for a block that names a plugin this environment does not register (TOM-1528).
+
+    ``run_from_config`` raises this same finding before any work (TOM-1529); validate used
+    to pass it with a ``params_not_checked`` warning and exit 0.
+    """
+    import difflib
+
+    from .params_schema import PLUGIN_GROUPS
+    from .registry import ENTRYPOINT_GROUPS
+
+    subject = {"plugin_name": name, "group": group, "where": where}
+    if group == _STRATEGY_MODULE:
+        return ValidationFinding(
+            "error",
+            f"{UNKNOWN_PLUGIN}: '{name}' ({where}) is not a module under {_STRATEGY_PKG}; "
+            "the pipeline imports it by that name",
+            UNKNOWN_PLUGIN,
+            subject,
+        )
+    registered = sorted(getattr(registry, PLUGIN_GROUPS[group], None) or {})
+    close = difflib.get_close_matches(name, registered, n=3, cutoff=0.6)
+    closest = (
+        f"closest registered: {', '.join(close)}" if close else "`quantbox plugins list` shows the registered names"
+    )
+    return ValidationFinding(
+        "error",
+        f"{UNKNOWN_PLUGIN}: '{name}' ({where}) is not a registered {group} plugin; {closest}. "
+        f"A plugin from another package registers under the '{ENTRYPOINT_GROUPS[group]}' entry point: "
+        "install that package in this environment (`uv add <package>`).",
+        UNKNOWN_PLUGIN,
+        subject,
+    )
+
+
 def check_plugin_params(plugins: dict[str, Any], registry: Any = None) -> list[ValidationFinding]:
     """Every key a config sets on a plugin must be a property of that plugin's params schema."""
     import difflib
@@ -187,13 +239,30 @@ def check_plugin_params(plugins: dict[str, Any], registry: Any = None) -> list[V
         try:
             registry = PluginRegistry.discover()
         except Exception as exc:
-            return [ValidationFinding("warning", f"params_not_checked: plugin registry failed to load ({exc})")]
+            # A run's discover() fails the same way, and nothing below can be checked (TOM-1528).
+            return [
+                ValidationFinding(
+                    "error",
+                    f"plugin registry failed to load ({exc}); no plugin was checked. An installed plugin "
+                    "package fails to import: install its dependencies or remove it",
+                )
+            ]
 
     findings: list[ValidationFinding] = []
     for where, group, block in blocks:
         cls, name, unresolved = _resolve_block_plugin(registry, group, block["name"])
         if cls is None:
-            findings.append(ValidationFinding("warning", f"params_not_checked:{name}: {unresolved}"))
+            if block.get("source"):
+                # Local source: the runner loads the class from this file, not the registry,
+                # and validate does not execute it. Its params go unchecked; the name is free.
+                findings.append(
+                    ValidationFinding("warning", f"params_not_checked:{name}: local-source plugin ({block['source']})")
+                )
+            elif group == _STRATEGY_MODULE and _strategy_module_exists(name):
+                # The module exists and the pipeline can call its run(); only its params go unchecked.
+                findings.append(ValidationFinding("warning", f"params_not_checked:{name}: {unresolved}"))
+            else:
+                findings.append(_unknown_plugin(registry, where, group, name))
             continue
         schema = resolve_params_schema(cls)
         if schema is None:
@@ -238,7 +307,8 @@ def check_plugin_params(plugins: dict[str, Any], registry: Any = None) -> list[V
 
 def _check_backtest_execution(plugins: dict[str, Any]) -> list[ValidationFinding]:
     """Validate ``execution:`` / ``venue:`` for backtest pipelines with the pipeline's own resolver."""
-    from .execution import resolve_allow_shorts, resolve_lag_bars
+    from .execution import check_schedule_venue, resolve_allow_shorts, resolve_execution
+    from .financing import resolve_financing, resolve_leverage
 
     pipeline = plugins.get("pipeline")
     if not isinstance(pipeline, dict) or not str(pipeline.get("name", "")).startswith("backtest.pipeline."):
@@ -246,8 +316,12 @@ def _check_backtest_execution(plugins: dict[str, Any]) -> list[ValidationFinding
     params = pipeline.get("params") or {}
     findings: list[ValidationFinding] = []
     try:
-        resolve_lag_bars(params.get("execution"))
+        timing = resolve_execution(params.get("execution"))
         resolve_allow_shorts(params.get("venue"), params.get("risk"))
+        venue = params.get("venue") if isinstance(params.get("venue"), dict) else {}
+        resolve_financing(venue.get("financing"))
+        resolve_leverage(venue.get("leverage"))
+        check_schedule_venue(timing, params.get("venue"))
     except ValueError as exc:
         findings.append(ValidationFinding("error", str(exc)))
     return findings

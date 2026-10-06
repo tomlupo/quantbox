@@ -36,6 +36,7 @@ from typing import Any
 
 import pandas as pd
 
+from .metrics import compute_drawdown_series
 from .parquet_io import read_parquet
 from .run_history import run_started_at
 from .run_manifest import SCHEMA_ID as RUN_SCHEMA_ID
@@ -82,7 +83,10 @@ def _manifest(run_dir: Path) -> dict[str, Any]:
 
 
 def _series(frame: pd.DataFrame, column: str) -> pd.Series:
-    s = frame.set_index("date")[column].astype(float)
+    # A run written before TOM-1529 on a prices index with no name has its date column
+    # as reset_index() named it, "index"; never a variant or a metric.
+    date = "date" if "date" in frame.columns or "index" not in frame.columns else "index"
+    s = frame.set_index(date)[column].astype(float)
     s.index = pd.to_datetime(s.index)
     return s.sort_index()
 
@@ -197,7 +201,7 @@ def _series_block(arms: list[Arm]) -> dict[str, Any]:
         equity = (1 + r.fillna(0)).cumprod().where(live)
         # drawdown is given explicitly: the renderer cannot derive one from an
         # equity that ever touches zero (a liquidated book)
-        drawdown = (equity / equity.cummax() - 1).where(live)
+        drawdown = compute_drawdown_series(equity).where(live)
         lines.append(
             {
                 "name": arm.name,

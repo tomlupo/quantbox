@@ -30,10 +30,13 @@ import pandas as pd
 import pytest
 
 from quantbox.analysis.parameter_grid import sweep
+from quantbox.engine import simulate
 from quantbox.execution import (
     apply_execution_lag,
     exposure_metrics,
+    materialise_nan_policy,
     resolve_allow_shorts,
+    resolve_execution,
     resolve_lag_bars,
     resolve_sweep_lag_bars,
 )
@@ -170,12 +173,13 @@ def test_the_sweep_path_refuses_same_bar():
 
 
 def test_a_lagged_weight_never_lands_on_a_bar_without_a_price():
-    """The lag is applied BEFORE the missing-price mask: a position decided on the
+    """The lag is applied BEFORE the life window: a position decided on the
     last priced bar of a delisted asset must not be carried onto unpriced bars."""
     prices = _prices()
     prices.iloc[35:, 0] = np.nan  # `A` stops trading after bar 34
     weights = _weights_decided_on(0)
-    _, traded = BacktestPipeline._align_for_engine(prices, weights, 1)
+    book = simulate(prices, weights, engine="vectorbt", timing=resolve_execution(None), leverage="normalize")
+    traded = book.weights
     assert traded["A"].iloc[34] == 1.0
     assert (traded["A"].iloc[35:] == 0.0).all()
 
@@ -275,6 +279,14 @@ def test_validate_config_reports_execution_and_venue_problems():
     assert [f.level for f in check({"execution": {"lag_bars": 0}})] == ["error"]
     assert [f.level for f in check({"execution": {"lag_bars": -1}})] == ["error"]
     assert [f.level for f in check({"venue": {"allow_short": False}})] == ["error"]
+    # TOM-1429: venue.leverage, venue.financing and execution.calendar are checked by their resolvers.
+    assert check({"venue": {"allow_shorts": True, "leverage": "borrow", "financing": {"rate": 0.02}}}) == []
+    assert check({"execution": {"calendar": "union"}}) == []
+    assert [f.level for f in check({"venue": {"allow_shorts": True, "leverage": "lots"}})] == ["error"]
+    assert [f.level for f in check({"venue": {"allow_shorts": True, "financing": {"rate": 0.02, "spread": 5}}})] == [
+        "error"
+    ]
+    assert [f.level for f in check({"execution": {"calendar": ""}})] == ["error"]
 
 
 def test_shift_signal_is_a_deprecated_alias_of_lag_bars():
@@ -316,6 +328,7 @@ def test_default_run_records_and_states_its_timing(tmp_path, caplog):
         "fill": "close",
         "same_bar": False,
         "description": result.notes["execution"]["description"],
+        "calendar": "majority",
     }
     assert "next-bar (lag_bars=1)" in result.notes["execution"]["description"]
     assert "**Execution timing:** next-bar (lag_bars=1)" in (store.root / "summary.md").read_text()
@@ -357,7 +370,13 @@ plugins:
     manifest = json.loads((tmp_path / "artifacts" / result.run_id / "run_manifest.json").read_text())
     assert manifest["execution"]["lag_bars"] == 1
     assert manifest["execution"]["same_bar"] is False
-    assert manifest["venue"] == {"declared": True, "allow_shorts": False, "max_leverage": 99.0}
+    assert manifest["venue"] == {
+        "declared": True,
+        "allow_shorts": False,
+        "max_leverage": 1.0,  # TOM-1525: the one default
+        "leverage": "normalize",
+        "financing": None,
+    }
     assert manifest["metrics"]["execution_lag_bars"] == 1.0
 
 
@@ -386,21 +405,29 @@ def _long_short_weights() -> pd.DataFrame:
 
 
 def test_allow_shorts_false_clips_before_transforms_and_does_not_relever_longs():
-    pipe = BacktestPipeline()
-    out = pipe._apply_venue_and_risk(_long_short_weights(), {"tranches": 3, "max_leverage": 1.0}, False, True)
+    plan = {"venue": {"leverage": "normalize"}}
+    out, _ = BacktestPipeline._decide(_long_short_weights(), {"tranches": 3, "max_leverage": 1.0}, False, None, plan)
     assert (out["USD"] == 0.0).all()
     # Long side untouched: 0.5 stays 0.5 — NOT scaled up to 1.0 to refill the gross.
     assert out["A"].tolist() == pytest.approx([0.5] * N)
 
 
-def test_clip_happens_before_tranching_when_venue_is_declared():
-    """A short that flips long must not be averaged in as a negative by the tranche mean."""
+def test_clip_happens_before_tranching_on_both_venue_paths():
+    """A short that flips long is never averaged in as a negative by the tranche mean.
+
+    ``risk.tranches`` is the seam's tranche cadence since TOM-1513: the risk
+    transforms no longer average, so the clip (venue or legacy) always comes
+    first and the seam's tranches average the CLIPPED targets. The legacy path
+    used to clip the mean ([0, 0, 1]); that number moved by design. Since TOM-1520 the venue and the legacy
+    switch resolve to one ``allow_shorts`` before the decision (:meth:`BacktestPipeline._decide`).
+    """
+    from quantbox.engine.policy import blend_tranches
+
     w = pd.DataFrame({"A": [-1.0, 1.0, 1.0]}, index=pd.date_range("2024-01-01", periods=3))
-    pipe = BacktestPipeline()
-    declared = pipe._apply_venue_and_risk(w, {"tranches": 2}, False, True)
-    legacy = pipe._apply_venue_and_risk(w, {"tranches": 2}, False, False)
-    assert declared["A"].tolist() == pytest.approx([0.0, 0.5, 1.0])  # mean of CLIPPED targets
-    assert legacy["A"].tolist() == pytest.approx([0.0, 0.0, 1.0])  # legacy: clip of the mean, kept bit-for-bit
+    plan = {"venue": {"leverage": "normalize"}}
+    declared, _ = BacktestPipeline._decide(w, {"tranches": 2}, False, None, plan)
+    assert declared["A"].tolist() == [0.0, 1.0, 1.0]  # clipped, not averaged
+    assert blend_tranches(declared.to_numpy(), 2)[:, 0].tolist() == pytest.approx([0.0, 0.5, 1.0])
 
 
 def test_shorts_traded_without_a_venue_block_warn_and_are_measured(tmp_path, caplog):
@@ -409,7 +436,13 @@ def test_shorts_traded_without_a_venue_block_warn_and_are_measured(tmp_path, cap
     assert "no `venue:` block is declared" in caplog.text
     assert result.metrics["traded_short_gross_share"] == pytest.approx(1.0)
     assert result.metrics["traded_mean_net_exposure"] < 0
-    assert result.notes["venue"] == {"declared": False, "allow_shorts": True, "max_leverage": 99.0}
+    assert result.notes["venue"] == {
+        "declared": False,
+        "allow_shorts": True,
+        "max_leverage": 1.0,  # TOM-1525: the one default
+        "leverage": "normalize",
+        "financing": None,
+    }
 
 
 def test_declared_short_venue_is_quiet(tmp_path, caplog):
@@ -483,11 +516,11 @@ def test_live_trading_path_never_touches_the_backtest_execution_lag(module):
         for a in n.names
     }
     assert len(imported) > 3, "AST walk saw no imports — the control is blind"
-    assert not {m for m in imported if m.endswith("execution") or "backtest_pipeline" in m}
+    assert not {m for m in imported if m.endswith("execution") or "backtest_pipeline" in m or "execution_schedule" in m}
     names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | {
         n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)
     }
-    assert not names & {"apply_execution_lag", "resolve_lag_bars", "lag_bars", "_align_for_engine"}
+    assert not names & {"apply_execution_lag", "resolve_lag_bars", "lag_bars", "_engine_book", "schedule_book"}
 
 
 # ----------------------------------------------------------------------
@@ -519,10 +552,12 @@ def _run_nan_gap(tmp_path, engine: str):
     return result, store.read_parquet("traded_weights").set_index("date")
 
 
-def test_mid_series_nan_rows_vectorbt_saved_book_is_the_held_book(tmp_path):
-    """vectorbt forward-fills a NaN weight row (holds the last target). The saved
-    and measured book must say the same: NOT flat on those bars."""
-    result, traded = _run_nan_gap(tmp_path, "vectorbt")
+@pytest.mark.parametrize("engine", ["vectorbt", "rsims"])
+def test_mid_series_nan_rows_saved_book_is_the_held_book(tmp_path, engine):
+    """A NaN weight row holds the last target, on every engine: the seam decides the NaN
+    policy once (docs/adr/0008; rsims went flat until TOM-1450). The saved and measured
+    book must say the same: NOT flat on those bars."""
+    result, traded = _run_nan_gap(tmp_path, engine)
     assert not traded.isna().any().any()
     assert (traded["A"].iloc[16:22] == 1.0).all()  # gap rows 15..20, lagged one bar: held, not flat
     # Only the lag's leading bar is flat; one entry trade in N bars.
@@ -532,18 +567,6 @@ def test_mid_series_nan_rows_vectorbt_saved_book_is_the_held_book(tmp_path):
     assert result.metrics["total_return"] == pytest.approx(JUMP, abs=1e-9)
 
 
-def test_mid_series_nan_rows_rsims_saved_book_is_the_flat_book(tmp_path):
-    """rsims treats a NaN weight as 0 (goes flat). Known engine disagreement,
-    pre-existing; the saved book materialises what THIS engine did."""
-    result, traded = _run_nan_gap(tmp_path, "rsims")
-    assert not traded.isna().any().any()
-    assert (traded["A"].iloc[16:22] == 0.0).all()
-    assert result.metrics["traded_flat_bar_share"] == pytest.approx(7 / N)
-    assert result.metrics["traded_mean_turnover"] == pytest.approx(3 / N)  # in, out, back in
-    # The engine agrees: flat across the jump.
-    assert result.metrics["total_return"] == pytest.approx(0.0, abs=1e-9)
-
-
 def test_materialising_the_nan_policy_does_not_change_vectorbt_numbers():
     """The engine receives the materialised frame; its result must equal the raw-NaN frame's."""
     from quantbox.plugins.backtesting.vectorbt_engine import run as run_vectorbt
@@ -551,8 +574,8 @@ def test_materialising_the_nan_policy_does_not_change_vectorbt_numbers():
     w = _weights_decided_on(0)
     w.iloc[15:21] = np.nan
     prices = _prices()
-    raw_prices, raw = BacktestPipeline._align_for_engine(prices, w, 1, engine=None)
-    _, materialised = BacktestPipeline._align_for_engine(prices, w, 1, engine="vectorbt")
+    raw_prices, raw = prices, apply_execution_lag(w, 1)
+    materialised = materialise_nan_policy(raw, "vectorbt")
     assert raw.isna().any().any() and not materialised.isna().any().any()
     a = run_vectorbt(raw_prices, raw, fees=0.001).value()
     b = run_vectorbt(raw_prices, materialised, fees=0.001).value()

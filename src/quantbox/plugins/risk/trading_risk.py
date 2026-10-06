@@ -13,6 +13,7 @@ from typing import Any
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+from quantbox.decision import gross_cap
 
 
 @dataclass
@@ -84,7 +85,7 @@ class TradingRiskManager:
         if targets is None or targets.empty:
             return findings
 
-        max_leverage = float(params.get("max_leverage", 1.0))
+        max_leverage = gross_cap(params)
         max_conc = float(params.get("max_concentration", 0.30))
         allow_neg = bool(params.get("allow_negative_weights", False))
 

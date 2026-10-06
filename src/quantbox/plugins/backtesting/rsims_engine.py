@@ -7,10 +7,11 @@ Features
 --------
 - Daily mark-to-market P&L from price changes.
 - Per-asset funding rates (perpetual futures).
-- Linear % commissions on traded notional.
+- Linear % commissions on traded notional, a fixed fee per order and
+  proportional slippage on the fill price (the three ``quantbox.engine.Costs``).
 - Margin requirements with optional maintenance buffer.
 - No-trade buffer to reduce turnover.
-- Optional compounding control (``capitalise_profits``).
+- Compounding control (``capitalise_profits``; on by default, as vectorbt).
 - Two equity modes: ``"rsims"`` (legacy) and ``"mtm"`` (mark-to-market).
 - Max gross leverage cap.
 - Forced pro-rata liquidation on margin calls.
@@ -19,6 +20,7 @@ Features
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 
 import numpy as np
 import pandas as pd
@@ -89,11 +91,15 @@ def fixed_commission_backtest_with_funding(
     initial_cash: float = 10_000,
     margin: float = 0.0,
     commission_pct: float = 0.0,
-    capitalise_profits: bool = False,
+    capitalise_profits: bool = True,
     *,
+    slippage: float = 0.0,
+    fixed_fees: float = 0.0,
     equity_basis: str = "rsims",
     maintenance_buffer: float = 0.0,
     max_gross_leverage: float | None = None,
+    fee_free: Sequence[str] = (),
+    orders: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Daily fixed-commission backtest with funding rates and margin.
 
@@ -114,10 +120,21 @@ def fixed_commission_backtest_with_funding(
     margin : float
         Maintenance margin rate applied to gross exposure.
     commission_pct : float
-        Linear commission as fraction of traded notional.
+        Linear commission as fraction of traded notional (at the fill price).
     capitalise_profits : bool
-        If True, size off current equity (compound). Otherwise cap at
-        ``min(initial_cash, equity)``.
+        If True (the default, as vectorbt), size off current equity
+        (compound). Otherwise cap at ``min(initial_cash, equity)``.
+    slippage : float
+        Proportional slippage: a buy fills at ``close * (1 + slippage)``, a sell
+        at ``close * (1 - slippage)``; the position is still marked at the close,
+        so the slippage is a cost paid from cash on the trade bar (vectorbt's
+        convention).
+    fixed_fees : float
+        A fixed fee per order, in quote currency: charged once per asset on a
+        bar where that asset's position changes by more than dust (vectorbt's
+        ``is_close`` rule, 1e-9 relative). A dust change is not traded at all,
+        and a sell whose proceeds do not cover its fees is not placed
+        (vectorbt rejects it the same way).
     equity_basis : ``"rsims"`` | ``"mtm"``
         ``"rsims"``: equity = cash + maintenance_margin (legacy).
         ``"mtm"``: equity = cash + sum(position_value).
@@ -125,16 +142,28 @@ def fixed_commission_backtest_with_funding(
         Require equity >= (1 + buffer) * maintenance_margin.
     max_gross_leverage : float | None
         Cap gross exposure / equity.
+    fee_free : sequence of str
+        Tickers traded without commission, fixed fee or slippage — the synthetic cash legs of
+        ``venue.financing`` (:mod:`quantbox.financing`).
+    orders : DataFrame of bool | None
+        Per-cell order mask (same index and tickers as *prices*): where it is
+        False the position is left as it is — no trade on a bar the instrument
+        did not print, or off the execution calendar
+        (:mod:`quantbox.engine.schedule`). None trades every cell, every bar.
 
     Returns
     -------
     pd.DataFrame
         Long-format DataFrame (date x ticker + Cash row per date) with
         columns: Close, Position, Value, Margin, Funding, PeriodPnL,
-        Trades, TradeValue, Commission, MarginCall, ReducedTargetPos.
+        Trades, TradeValue (signed, at the fill price), Commission (the
+        proportional and fixed fees), Slippage (its cost), MarginCall,
+        ReducedTargetPos.
     """
     if trade_buffer < 0:
         raise ValueError("trade_buffer must be >= 0")
+    if slippage < 0 or fixed_fees < 0:
+        raise ValueError(f"slippage and fixed_fees must be >= 0, got slippage={slippage}, fixed_fees={fixed_fees}")
 
     # Ensure DatetimeIndex
     for df in (prices, target_weights, funding_rates):
@@ -162,6 +191,25 @@ def fixed_commission_backtest_with_funding(
     tickers = prices.columns.tolist()
     dates = prices.index
     num_assets = len(tickers)
+    # Per-asset costs: the financing cash legs trade free.
+    free = np.isin(tickers, list(fee_free))
+    commission_pct = np.where(free, 0.0, float(commission_pct))
+    slippage_pct = np.where(free, 0.0, float(slippage))
+    fixed_fee = np.where(free, 0.0, float(fixed_fees))
+
+    def _costs(trades: np.ndarray, px: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Per asset: the signed traded value at the fill price, the fees (proportional + fixed), the slippage."""
+        fill = px * (1.0 + slippage_pct * np.sign(trades))
+        value = trades * fill
+        slip = np.abs(trades * px) * slippage_pct
+        fees = np.abs(value) * commission_pct + np.where(np.abs(trades) > 0, fixed_fee, 0.0)
+        return value, fees, slip
+
+    order_mask = (
+        np.ones(prices.shape, dtype=bool)
+        if orders is None
+        else orders.reindex(index=dates, columns=tickers, fill_value=False).to_numpy(dtype=bool)
+    )
 
     current_positions = np.zeros(num_assets)
     previous_prices = np.full(num_assets, np.nan)
@@ -200,6 +248,7 @@ def fixed_commission_backtest_with_funding(
         margin_call = False
         liq_contracts = np.zeros(num_assets)
         liq_commissions = np.zeros(num_assets)
+        liq_slippage = np.zeros(num_assets)
         liq_trade_value = np.zeros(num_assets)
 
         if equity_mtm < equity_required:
@@ -212,15 +261,15 @@ def fixed_commission_backtest_with_funding(
                 liquidate_factor = 0.0
 
             liq_contracts = liquidate_factor * current_positions
-            liq_trade_value = liq_contracts * current_prices
-            liq_commissions = np.abs(liq_trade_value) * commission_pct
+            sold_value, liq_commissions, liq_slippage = _costs(-liq_contracts, current_prices)
+            liq_trade_value = -sold_value
 
             current_positions = current_positions - liq_contracts
             position_value = current_positions * current_prices
             position_value = np.where(np.isnan(position_value), 0.0, position_value)
 
             maint_margin = margin * np.nansum(np.abs(position_value))
-            cash -= np.nansum(liq_commissions)
+            cash -= np.nansum(liq_commissions) + np.nansum(liq_slippage)
             equity_mtm = cash + np.nansum(position_value)
 
         # --- Equity for sizing ---
@@ -237,6 +286,17 @@ def fixed_commission_backtest_with_funding(
         target_positions = positions_from_no_trade_buffer(
             current_positions, current_prices, current_target_weights, cap_equity, trade_buffer
         )
+        target_positions = np.where(order_mask[i], target_positions, current_positions)
+        # A dust change is no order (vectorbt's is_close: 1e-9 relative, 1e-12 absolute).
+        dust = np.abs(target_positions - current_positions) <= np.maximum(
+            1e-9 * np.maximum(np.abs(target_positions), np.abs(current_positions)), 1e-12
+        )
+        target_positions = np.where(dust, current_positions, target_positions)
+        # A sell whose proceeds do not cover its fees is not placed (vectorbt: CantCoverFees).
+        sold = current_positions - target_positions
+        proceeds = sold * current_prices * (1.0 - slippage_pct) * (1.0 - commission_pct)
+        uneconomic = (sold > 0) & (proceeds < fixed_fee)
+        target_positions = np.where(uneconomic, current_positions, target_positions)
 
         # --- Leverage cap ---
         target_position_value = target_positions * current_prices
@@ -250,13 +310,13 @@ def fixed_commission_backtest_with_funding(
                 target_position_value = target_positions * current_prices
                 gross_exposure = np.nansum(np.abs(target_position_value))
 
-        # --- Trades & commissions ---
+        # --- Trades & costs ---
         trades = target_positions - current_positions
-        trade_value = trades * current_prices
-        commissions = np.abs(trade_value) * commission_pct
+        trade_value, commissions, slippage_cost = _costs(trades, current_prices)
+        costs = np.nansum(commissions) + np.nansum(slippage_cost)
 
         required_margin_target = margin * np.nansum(np.abs(target_position_value))
-        post_trade_cash = cash + maint_margin - required_margin_target - np.nansum(commissions)
+        post_trade_cash = cash + maint_margin - required_margin_target - costs
 
         reduced_target_pos = False
 
@@ -267,22 +327,22 @@ def fixed_commission_backtest_with_funding(
             if denom <= 0:
                 max_post_trade_contracts_value = 0.0
             else:
-                max_post_trade_contracts_value = 0.95 * max(0.0, cash + maint_margin - np.nansum(commissions)) / denom
+                max_post_trade_contracts_value = 0.95 * max(0.0, cash + maint_margin - costs) / denom
 
             if gross_exposure > 0:
                 reduce_by = np.clip(max_post_trade_contracts_value / gross_exposure, 0.0, 1.0)
                 target_positions = np.sign(target_positions) * reduce_by * np.abs(target_positions)
 
                 trades = target_positions - current_positions
-                trade_value = trades * current_prices
-                commissions = np.abs(trade_value) * commission_pct
+                trade_value, commissions, slippage_cost = _costs(trades, current_prices)
+                costs = np.nansum(commissions) + np.nansum(slippage_cost)
 
                 current_positions = target_positions
                 position_value = current_positions * current_prices
                 position_value = np.where(np.isnan(position_value), 0.0, position_value)
 
                 required_margin_target = margin * np.nansum(np.abs(position_value))
-                post_trade_cash = cash + maint_margin - required_margin_target - np.nansum(commissions)
+                post_trade_cash = cash + maint_margin - required_margin_target - costs
         else:
             current_positions = target_positions
             position_value = current_positions * current_prices
@@ -306,6 +366,7 @@ def fixed_commission_backtest_with_funding(
                     "Trades": trades[j] - liq_contracts[j],
                     "TradeValue": trade_value[j] - liq_trade_value[j],
                     "Commission": commissions[j] + liq_commissions[j],
+                    "Slippage": slippage_cost[j] + liq_slippage[j],
                     "MarginCall": margin_call,
                     "ReducedTargetPos": reduced_target_pos,
                 }
@@ -324,6 +385,7 @@ def fixed_commission_backtest_with_funding(
                 "Trades": 0.0,
                 "TradeValue": 0.0,
                 "Commission": 0.0,
+                "Slippage": 0.0,
                 "MarginCall": margin_call,
                 "ReducedTargetPos": reduced_target_pos,
             }

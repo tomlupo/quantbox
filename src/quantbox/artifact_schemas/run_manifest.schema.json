@@ -3,7 +3,7 @@
   "$id": "quantbox/run@1",
   "title": "quantbox run manifest (run@1)",
   "description": "The machine-readable record of one run: <run_dir>/run_manifest.json, also what `quantbox run --json` prints. VERSIONING: `schema` names the MAJOR version and readers check it. Adding a field is a MINOR change: it keeps `quantbox/run@1`, bumps `x-schema-minor` here and is safe for every run@1 reader (unknown keys are allowed). Renaming a field, removing one, or changing what one MEANS is a MAJOR change: it ships as `quantbox/run@2`. Paths under `files` are relative to the run directory.",
-  "x-schema-minor": 2,
+  "x-schema-minor": 6,
   "type": "object",
   "required": [
     "schema",
@@ -84,6 +84,8 @@
         "fill": {"type": "string"},
         "same_bar": {"type": "boolean"},
         "same_bar_reason": {"type": "string", "minLength": 1, "description": "Why the config granted the same-bar override (execution.same_bar.reason, ADR-0006). Present exactly when the run was same-bar under the override (minor 2)."},
+        "calendar": {"type": "string", "minLength": 1, "description": "The execution calendar the backtest pipeline scheduled decisions on and counted lag_bars in: majority | union | intersection | a ticker (minor 3, ADR-0007). Absent from other writers and from manifests written before minor 3."},
+        "schedule": {"enum": ["bars"], "description": "execution.schedule when it is not the default calendar: bars = every price bar an execution bar, no deferral, no venue.leverage (ADR-0008). Absent on the calendar schedule (minor 5)."},
         "description": {"type": "string"}
       }
     },
@@ -101,7 +103,123 @@
       "properties": {
         "declared": {"type": "boolean"},
         "allow_shorts": {"type": "boolean"},
-        "max_leverage": {"type": "number", "description": "The gross cap applied to the traded book (the default when the config sets none)."}
+        "max_leverage": {"type": "number", "description": "The gross cap applied to the traded book (the default when the config sets none)."},
+        "leverage": {"enum": ["normalize", "borrow", "none"], "description": "venue.leverage as resolved (minor 3, ADR-0007): normalize scales a decision with net exposure above 1 to net 1; borrow holds it, financed by venue.financing; none: execution.schedule bars, which applies no venue.leverage (minor 5, ADR-0008)."},
+        "financing": {
+          "description": "What borrowed and idle cash cost (minor 3, ADR-0007): venue.financing as resolved; null when the config declares none. Absent from manifests written before minor 3.",
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "required": ["rate", "borrow_spread_bps", "lend_spread_bps"],
+              "properties": {
+                "rate": {
+                  "type": "object",
+                  "description": "{ticker}: a cash total-return index in the prices, its bar return is the rate; {annual}: a constant annual rate.",
+                  "properties": {"ticker": {"type": "string"}, "annual": {"type": "number"}}
+                },
+                "borrow_spread_bps": {"type": "number", "minimum": 0},
+                "lend_spread_bps": {"type": "number", "minimum": 0},
+                "day_count": {"type": "string"},
+                "assumed": {"const": true, "description": "No venue.financing block was declared and venue.leverage is borrow: borrowing ran at an ASSUMED rate of 0."}
+              }
+            }
+          ]
+        }
+      }
+    },
+    "data_validation": {
+      "type": "object",
+      "required": ["schema", "file", "calendar"],
+      "description": "Data-validation summary (minor 3, ADR-0007). The full report, per instrument, is the run's data_validation.json (quantbox/data-validation@1). Absent from manifests written before minor 3.",
+      "properties": {
+        "schema": {"const": "quantbox/data-validation@1"},
+        "file": {"type": "string"},
+        "calendar": {
+          "type": "object",
+          "required": ["n_bars", "n_instruments", "ffilled_bars"],
+          "properties": {
+            "n_bars": {"type": "integer", "minimum": 0},
+            "n_instruments": {"type": "integer", "minimum": 0},
+            "rows_without_any_price": {"type": "integer", "minimum": 0},
+            "ffilled_bars": {"type": "integer", "minimum": 0, "description": "Bars inside an instrument's life window with no price: forward-filled to mark the position; no order fills there."},
+            "instruments_without_prices": {"type": "array", "items": {"type": "string"}},
+            "legacy_coverage_drop": {"type": "integer", "minimum": 0, "description": "Columns the pre-ADR-0007 rule (fewer than max(30, 50% of bars) prices) would have dropped; now traded inside their window."}
+          }
+        },
+        "execution_calendar": {
+          "type": "object",
+          "required": ["calendar", "execution_bars", "total_bars"],
+          "properties": {
+            "calendar": {"type": "string"},
+            "execution_bars": {"type": "integer", "minimum": 0},
+            "total_bars": {"type": "integer", "minimum": 0}
+          }
+        },
+        "timing": {
+          "type": "object",
+          "description": "Decision vs execution: decisions on the execution calendar, executed lag_bars execution bars later; deferred_trades = orders moved to the instrument's next printed bar.",
+          "properties": {
+            "lag_counted_in": {"type": "string"},
+            "decisions": {"type": "integer", "minimum": 0},
+            "executed_decisions": {"type": "integer", "minimum": 0},
+            "deferred_trades": {"type": "integer", "minimum": 0},
+            "targeted_outside_window_bars": {"type": "integer", "minimum": 0}
+          }
+        },
+        "staleness": {
+          "type": "object",
+          "description": "Bars since each instrument's last real print, on each decision bar inside its window.",
+          "properties": {
+            "instrument_decisions": {"type": "integer", "minimum": 0},
+            "stale_decisions": {"type": "integer", "minimum": 0},
+            "max_bars": {"type": "integer", "minimum": 0},
+            "p95_bars": {"type": "number", "minimum": 0}
+          }
+        },
+        "weight_age": {
+          "type": "object",
+          "description": "Calendar schedules: executed decisions that missed a weight step stamped late in their own period; measured=false otherwise (minor 4, ADR-0007 1c; data_validation.json weight_age).",
+          "properties": {
+            "measured": {"type": "boolean"},
+            "reason": {"type": "string"},
+            "decisions": {"type": "integer", "minimum": 0},
+            "stale_decisions": {"type": "integer", "minimum": 0},
+            "first_stale": {"type": "array", "items": {"type": "string"}},
+            "first_missed_stamps": {"type": "array", "items": {"type": "string"}},
+            "stale_held_bars_max": {"type": "integer", "minimum": 0},
+            "stale_held_bars_total": {"type": "integer", "minimum": 0}
+          }
+        },
+        "index_alignment": {
+          "type": "object",
+          "description": "What the price/weight index intersection dropped (minor 4; data_validation.json index_alignment).",
+          "properties": {
+            "bars_used": {"type": "integer", "minimum": 0},
+            "warmup_price_bars_dropped": {"type": "integer", "minimum": 0},
+            "price_bars_dropped": {"type": "integer", "minimum": 0},
+            "weight_rows_dropped": {"type": "integer", "minimum": 0}
+          }
+        },
+        "leverage": {
+          "type": "object",
+          "required": ["mode", "scaled_rebalances"],
+          "properties": {
+            "mode": {"enum": ["normalize", "borrow", "none"]},
+            "rebalances": {"type": "integer", "minimum": 0},
+            "rebalances_above_net_1": {"type": "integer", "minimum": 0},
+            "max_net_exposure_decided": {"type": "number"},
+            "max_net_exposure_unscaled": {"type": "number", "description": "The largest net exposure a rebalance would have HELD (ordered cells at target, deferred cells at their previous weight) before venue.leverage."},
+            "max_net_exposure_held": {"type": "number", "description": "The largest net exposure held after venue.leverage."},
+            "scaled_after_deferral": {"type": "integer", "minimum": 0, "description": "Scaled rebalances on which a deferred cell kept its weight."},
+            "buys_zeroed_rebalances": {"type": "integer", "minimum": 0, "description": "Rebalances where the deferred cells alone held net exposure at or above 1, so every ordered buy was set to 0."},
+            "buys_zeroed_dates": {"type": "array", "items": {"type": "string"}},
+            "scaled_rebalances": {"type": "integer", "minimum": 0},
+            "scale_mean": {"type": "number"},
+            "scale_min": {"type": "number"},
+            "scale_max": {"type": "number"}
+          }
+        }
       }
     },
     "overlays": {
@@ -126,6 +244,27 @@
         "returns": {"$ref": "#/$defs/relpath"},
         "traded_weights": {"$ref": "#/$defs/relpath"},
         "metrics": {"$ref": "#/$defs/relpath"}
+      }
+    },
+    "reports": {
+      "type": "object",
+      "description": "The derived reports the run wrote beside itself, and those it did NOT produce (minor 6, TOM-1529). Written by every run that records `engine`; absent from manifests written before minor 6, and from runs that simulate nothing.",
+      "properties": {
+        "finding_report": {
+          "description": "finding_report.json, the run's qute-research/finding-report@1 data (TOM-1365). produced false: the export failed, `error` says why, and the run's results stand; `quantbox report export <run_dir>` re-derives it.",
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["produced", "file"],
+              "properties": {"produced": {"const": true}, "file": {"$ref": "#/$defs/relpath"}}
+            },
+            {
+              "type": "object",
+              "required": ["produced", "error"],
+              "properties": {"produced": {"const": false}, "error": {"type": "string", "minLength": 1}}
+            }
+          ]
+        }
       }
     }
   },

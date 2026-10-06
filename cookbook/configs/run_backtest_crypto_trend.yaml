@@ -20,8 +20,9 @@ plugins:
     params:
       engine: vectorbt
       fees: 0.005               # paper assumption (50 bps per order)
-      rebalancing_freq: 1       # daily
-      threshold: 0.05           # 5% absolute weight-deviation bands
+      # Paper choice: 5 tranches (one refreshed a day), 5% absolute weight-deviation band.
+      # risk.tranches: 5 + rebalancing_freq: 1 + threshold: 0.05 said this before TOM-1513.
+      rebalancing_policy: {cadence: tranche, tranches: 5, frequency: daily, trigger: band, band: 0.05}
       trading_days: 365
 
       universe:
@@ -31,7 +32,6 @@ plugins:
         lookback_days: 730
 
       risk:
-        tranches: 5             # paper choice (5-day rolling mean smoother)
         max_leverage: 1
         allow_short: false
 

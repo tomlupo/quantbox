@@ -1,10 +1,12 @@
 """
 Quantbox backtesting engines.
 
-Two engines are provided:
+Two engines are provided, behind one seam (:mod:`quantbox.engine`, docs/adr/0008).
+The seam owns the rebalancing schedule (periodic + threshold); both engines
+execute it:
 
-* **vectorbt** — Numba-accelerated, supports periodic + threshold rebalancing,
-  multi-strategy grouping.  Best for fast iteration on spot/equity strategies.
+* **vectorbt** — Numba-accelerated, multi-strategy grouping.  Best for fast
+  iteration on spot/equity strategies.
 * **rsims** — Pure numpy/pandas daily simulator with perp funding rates, margin,
   leverage caps, no-trade buffers, and forced liquidation.  Best for futures /
   perp strategy research.
@@ -15,10 +17,16 @@ Quick start::
 
     result = backtest(prices, weights, fees=0.001, rebalancing_freq='1W')
     print(result["metrics"])
+    result = backtest(prices, weights, engine="rsims")  # the same call, the other engine
 
-``backtest()`` and ``optimize()`` follow the one execution-timing convention
-(:mod:`quantbox.execution`): weights decided on bar ``t`` fill at the close of
-bar ``t + lag_bars``, default 1 (next-bar), exactly as ``quantbox run -c``.
+``backtest()`` and ``optimize()`` build the book with the one book function,
+:func:`quantbox.engine.simulate` — the same schedule as ``quantbox run -c``:
+the instrument and execution calendars (``schedule="calendar"``, the default;
+``schedule="bars"`` makes every price bar an execution bar), the rebalancing
+schedule and threshold on every engine, the gross cap (``max_leverage=``,
+default 1), ``venue.leverage`` (``leverage=``, default normalize), and the execution timing (:mod:`quantbox.execution`):
+weights decided on bar ``t`` fill at the close of bar ``t + lag_bars``,
+default 1 (next-bar).
 ``lag_bars=0`` (same-bar) is refused (docs/adr/0005) unless the call also
 passes ``allow_same_bar=True, same_bar_reason="..."`` — the explicit override
 (docs/adr/0006); the result then says ``run: {kind: research}``.
@@ -30,16 +38,8 @@ from typing import Any
 
 import pandas as pd
 
-from quantbox.execution import (
-    ExecutionTiming,
-    apply_execution_lag,
-    helper_execution,
-    lag_buy_and_hold,
-    run_record,
-    timing_record,
-)
-
-from .metrics import (
+from quantbox.execution import ExecutionTiming, helper_execution, run_record
+from quantbox.metrics import (
     compute_backtest_metrics,
     compute_cvar,
     compute_drawdown_series,
@@ -48,6 +48,7 @@ from .metrics import (
     compute_rolling_sharpe,
     compute_var,
 )
+
 from .optimizer import optimize
 from .rsims_engine import positions_from_no_trade_buffer
 
@@ -87,24 +88,25 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def _lag_for_engine(
-    prices: pd.DataFrame,
-    weights: dict[str, pd.DataFrame] | pd.DataFrame,
-    lag_bars: int | ExecutionTiming,
+def _on_price_bars(
+    prices: pd.DataFrame, weights: dict[str, pd.DataFrame] | pd.DataFrame
 ) -> dict[str, pd.DataFrame] | pd.DataFrame:
-    """Apply the execution lag on the engine's own bar grid.
+    """Put a SPARSE weights frame (rebalance dates only) on the price bars, from its first row on.
 
-    The vectorbt engine trades on ``prices.index | weights.index`` and
-    forward-fills weights onto it, so a sparse weights frame (rebalance dates
-    only) is first put on that grid — otherwise ``shift(1)`` would lag by one
-    REBALANCE, not one bar. Cells stay NaN, so the engine's forward-fill is
-    unchanged; only the decision moves ``lag_bars`` bars later.
+    The helpers take weights stamped only on rebalance dates; the book function
+    runs on the bars that carry both a price and a weight row. Each row
+    is carried forward (the seam's HOLD policy) onto every price bar after it,
+    so a sparse frame is the book it describes, and a row stamped on a date
+    with no price bar is decided on the next price bar. A dense frame is
+    unchanged.
     """
 
-    timing = lag_bars if isinstance(lag_bars, ExecutionTiming) else ExecutionTiming(lag_bars)
-
     def one(w: pd.DataFrame) -> pd.DataFrame:
-        return apply_execution_lag(w.reindex(prices.index.union(w.index)), timing.lag_bars, same_bar=timing.same_bar)
+        if w.index.isin(prices.index).all() and prices.index[prices.index >= w.index.min()].isin(w.index).all():
+            return w
+        grid = prices.index.union(w.index)
+        bars = prices.index[prices.index >= w.index.min()] if len(w.index) else prices.index[:0]
+        return w.reindex(grid).ffill().reindex(bars)
 
     if isinstance(weights, dict):
         return {name: one(w) for name, w in weights.items()}
@@ -116,38 +118,69 @@ def _backtest(
     weights: dict[str, pd.DataFrame] | pd.DataFrame,
     *,
     timing: ExecutionTiming,
+    engine: str,
     fees: float,
     fixed_fees: float,
     slippage: float,
     rebalancing_freq: int | str | list | None,
     threshold: float | None,
-    use_numba: bool,
+    engine_params: dict[str, Any] | None,
     trading_days: int,
+    leverage: str | None = None,
+    policy: dict[str, Any] | None = None,
+    group_limits: dict[str, Any] | None = None,
+    universe: pd.DataFrame | None = None,
+    max_leverage: float | None = None,
 ) -> dict[str, Any]:
     """``backtest()`` with an already-resolved timing (``optimize()`` resolves it once per call)."""
-    from .vectorbt_engine import run as run_vectorbt
+    from quantbox.decision import DecisionRules, decision_metrics, final_book, gross_cap, with_decision
+    from quantbox.engine import Costs, get_engine, simulate
+    from quantbox.engine.groups import resolve_group_limits
+    from quantbox.financing import DEFAULT_LEVERAGE, resolve_leverage
 
-    grid = prices.index
-    for w in weights.values() if isinstance(weights, dict) else [weights]:
-        grid = grid.union(w.index)  # the engine's own bar grid
-    pf = run_vectorbt(
-        prices,
-        _lag_for_engine(prices, weights, timing),
-        rebalancing_freq=lag_buy_and_hold(pd.to_datetime(grid), rebalancing_freq, timing.lag_bars),
-        threshold=threshold,
-        fees=fees,
-        fixed_fees=fixed_fees,
-        slippage=slippage,
-        use_numba=use_numba,
+    engine = get_engine(engine)  # first: a missing [vectorbt] extra is named before anything else runs
+    groups = None
+    if group_limits is not None:
+        if universe is None:
+            raise ValueError("group_limits needs universe=: a frame with `symbol` and the group column it names")
+        groups = resolve_group_limits(group_limits).bind(universe)
+    lev = None if leverage is None else resolve_leverage(leverage)
+    # The decision (TOM-1520): the gross cap (TOM-1525: default 1, the pipelines' too), the group limits,
+    # then venue.leverage normalisation, on the decided rows — the seam executes final targets.
+    # schedule: bars measures leverage only (simulate refuses one declared).
+    final, reports = final_book(
+        _on_price_bars(prices, weights),
+        DecisionRules(
+            max_leverage=gross_cap({"max_leverage": max_leverage}),
+            groups=groups,
+            leverage="none" if timing.schedule == "bars" else (lev or DEFAULT_LEVERAGE),
+        ),
     )
-    metrics = compute_backtest_metrics(pf, trading_days=trading_days)
-    execution = timing_record(timing)
+    book = simulate(
+        prices,
+        final,
+        engine=engine,
+        timing=timing,
+        costs=Costs(fees=fees, fixed_fees=fixed_fees, slippage=slippage),
+        rebalancing_freq=rebalancing_freq,
+        threshold=threshold,
+        policy=policy,
+        leverage=lev,
+        engine_params=engine_params,
+        trading_days=trading_days,
+    )
+    if book.data_validation is not None:  # one slice: record the decision as the pipeline does
+        book.data_validation = with_decision(book.data_validation, reports[0])
+        book.book_metrics = {**book.book_metrics, **decision_metrics(reports[0])}
     return {
-        "vbt_portfolio": pf,
-        "metrics": metrics,
-        "returns": pf.returns(),
-        "execution": execution,
-        "run": run_record(execution),
+        "engine": book.engine,
+        "book": book,
+        "native": book.native,
+        book.native_key: book.native,  # the pre-seam name: vbt_portfolio (vectorbt), rsims_results (rsims)
+        "metrics": book.metrics,
+        "returns": book.returns,
+        "execution": book.execution,
+        "run": run_record(book.execution),
     }
 
 
@@ -155,18 +188,26 @@ def backtest(
     prices: pd.DataFrame,
     weights: dict[str, pd.DataFrame] | pd.DataFrame,
     *,
+    engine: str = "vectorbt",
     fees: float = 0.001,
     fixed_fees: float = 0.0,
     slippage: float = 0.0,
     rebalancing_freq: int | str | list | None = 1,
     threshold: float | None = None,
-    use_numba: bool = True,
+    use_numba: bool | None = None,
+    engine_params: dict[str, Any] | None = None,
     trading_days: int = 365,
     lag_bars: int | None = None,
     allow_same_bar: bool = False,
     same_bar_reason: str | None = None,
+    schedule: str = "calendar",
+    leverage: str | None = None,
+    policy: dict[str, Any] | None = None,
+    group_limits: dict[str, Any] | None = None,
+    universe: pd.DataFrame | None = None,
+    max_leverage: float | None = None,
 ) -> dict[str, Any]:
-    """High-level backtest using the vectorbt engine.
+    """High-level backtest through the engine seam (:func:`quantbox.engine.simulate`, docs/adr/0008).
 
     Parameters
     ----------
@@ -174,19 +215,35 @@ def backtest(
         Asset prices (index=dates, columns=tickers).
     weights : dict | pd.DataFrame
         Target weights, as DECIDED: row ``t`` uses data through ``close[t]``.
+        A sparse frame (rebalance dates only) is carried onto the price bars
+        after its first row; a NaN cell holds the last target (every engine).
+        A dict is one strategy each.
+    engine : str
+        The engine adapter: ``"vectorbt"`` (default, the ``[vectorbt]`` extra)
+        or ``"rsims"``. The rest of the call does not change with it.
     fees : float
         Proportional fee rate.
     fixed_fees : float
-        Fixed fee per order.
+        Fixed fee per order (every engine).
     slippage : float
-        Slippage rate.
+        Slippage rate (every engine).
     rebalancing_freq : None | int | str | list
-        Rebalancing schedule. ``None`` = buy-and-hold: one trade, at
-        ``close[lag_bars]`` (:func:`quantbox.execution.lag_buy_and_hold`).
+        Rebalancing schedule on the execution calendar, the same on every
+        engine (:func:`quantbox.frequency.rebalancing_dates`). ``None`` =
+        buy-and-hold: one decision, on the first bar, filled ``lag_bars`` later.
     threshold : float | None
-        Deviation threshold for rebalancing bands.
-    use_numba : bool
-        Enable Numba JIT.
+        Rebalancing band (absolute weight), on every engine: a scheduled
+        rebalance is placed only when a held weight drifted more than this
+        from its target. The seam measures the drift cost-free, so with costs
+        it can differ slightly from an in-engine band (docs/adr/0008).
+    use_numba : bool | None
+        Numba JIT (vectorbt); shorthand for ``engine_params={"use_numba": ...}``.
+    engine_params : dict | None
+        The adapter's own parameters (rsims: ``trade_buffer``, ``initial_cash``,
+        ``margin``, ``capitalise_profits``, ``equity_basis``; vectorbt:
+        ``use_numba``, ``use_order_func``, ``create_strategy_label``,
+        ``initial_cash``); a key the adapter does not own is refused. Both
+        start from 10,000 and compound by default.
     trading_days : int
         Annualization factor for metrics (365 for crypto).
     lag_bars : int | None
@@ -198,25 +255,65 @@ def backtest(
         The explicit same-bar override (docs/adr/0006), the keywords of
         ``execution.same_bar: {allow, reason}``: only with ``lag_bars=0`` and a
         non-empty reason. The result is then RESEARCH, not a backtest.
+    schedule : str
+        ``"calendar"`` (default): the scheduled book of ``quantbox run``
+        (instrument and execution calendars, deferral, ``venue.leverage``).
+        ``"bars"``: every price bar is an execution bar; no deferral, no
+        ``venue.leverage``.
+    leverage : str | None
+        ``venue.leverage`` on the calendar schedule: ``"normalize"`` (the
+        default, every engine) or ``"borrow"`` (held as decided, free
+        financing). Refused with ``schedule="bars"``.
+    policy : dict | None
+        The rebalancing policy (:mod:`quantbox.engine.policy`): a cadence x a
+        trigger, e.g. ``{"cadence": "tranche", "tranches": 5, "frequency":
+        "daily", "trigger": "corridor", "width": 0.02}``, or the single-key
+        spelling, e.g.
+        ``{"policy": "periodic", "frequency": "monthly", "calendar": "NYSE"}``,
+        ``{"policy": "tranche", "tranches": 4, "frequency": "weekly"}``,
+        ``{"policy": "band", "band": 0.05}`` or
+        ``{"policy": "corridor", "width": [0.02, 0.05], "bounds": {"SPY": 0.03}}``.
+        Replaces ``rebalancing_freq`` + ``threshold``; passing both is refused.
+    group_limits, universe : dict | None, pd.DataFrame | None
+        Group limits on the decided weights (:mod:`quantbox.engine.groups`):
+        ``{"by": "asset_class", "limits": {"equity": {"max": 0.6}}}``, the groups
+        read from *universe* (``symbol`` + the ``by`` column). An infeasible
+        limit raises ``ValueError``.
+    max_leverage : float | None
+        The decision's gross cap, ``risk.max_leverage`` of ``quantbox run``:
+        a row whose ``sum |w|`` is above it is scaled down to it. ``None`` =
+        the default, 1 (:data:`quantbox.decision.DEFAULT_MAX_LEVERAGE`), the
+        same as the pipelines (TOM-1525); a levered book declares it.
 
     Returns
     -------
     dict
-        ``"vbt_portfolio"`` — the vbt.Portfolio object,
-        ``"metrics"`` — dict of performance metrics,
-        ``"returns"`` — daily returns Series,
-        ``"execution"`` — the execution timing used (as ``run_manifest.json``);
-        ``"run"`` — ``{"kind": "backtest" | "research"}`` (as ``run_manifest.json``).
+        ``"engine"``; ``"book"`` — the :class:`~quantbox.engine.TradedBook`
+        (returns, value, turnover, trades, native); ``"native"`` — the engine's
+        own object (a ``vbt.Portfolio`` on vectorbt), also under its pre-seam
+        key (``"vbt_portfolio"`` on vectorbt, ``"rsims_results"`` on rsims);
+        ``"metrics"`` — dict of performance metrics; ``"returns"`` — per-bar
+        returns; ``"execution"`` — the execution timing used (as
+        ``run_manifest.json``); ``"run"`` — ``{"kind": "backtest" | "research"}``.
     """
+    params = dict(engine_params or {})
+    if use_numba is not None:
+        params["use_numba"] = use_numba
     return _backtest(
         prices,
         weights,
-        timing=helper_execution(lag_bars, allow_same_bar, same_bar_reason),
+        timing=helper_execution(lag_bars, allow_same_bar, same_bar_reason, schedule),
+        engine=engine,
         fees=fees,
         fixed_fees=fixed_fees,
         slippage=slippage,
         rebalancing_freq=rebalancing_freq,
         threshold=threshold,
-        use_numba=use_numba,
+        engine_params=params,
         trading_days=trading_days,
+        leverage=leverage,
+        policy=policy,
+        group_limits=group_limits,
+        universe=universe,
+        max_leverage=max_leverage,
     )

@@ -1,8 +1,8 @@
 """Parameter optimization for backtesting strategies.
 
 Provides grid search and walk-forward optimization over strategy parameters,
-wrapping the existing ``backtest()`` function (same execution timing,
-next-bar by default)::
+wrapping the existing ``backtest()`` function (same engine seam and execution
+timing, next-bar by default)::
 
     from quantbox.plugins.backtesting import optimize
 
@@ -21,6 +21,7 @@ from typing import Any
 
 import pandas as pd
 
+from quantbox.engine.registry import get_engine
 from quantbox.execution import helper_execution, run_record, timing_record
 
 
@@ -38,6 +39,8 @@ def optimize(
     *,
     method: str = "grid",
     metric: str = "sharpe",
+    engine: str = "vectorbt",
+    engine_params: dict[str, Any] | None = None,
     fees: float = 0.001,
     fixed_fees: float = 0.0,
     slippage: float = 0.0,
@@ -48,6 +51,9 @@ def optimize(
     lag_bars: int | None = None,
     allow_same_bar: bool = False,
     same_bar_reason: str | None = None,
+    schedule: str = "calendar",
+    leverage: str | None = None,
+    max_leverage: float | None = None,
 ) -> dict[str, Any]:
     """Optimize strategy parameters via grid search or walk-forward.
 
@@ -58,6 +64,8 @@ def optimize(
         param_grid: ``{param_name: [values_to_try]}``.
         method: ``"grid"`` or ``"walk_forward"``.
         metric: Key from backtest metrics dict to maximize (e.g. ``"sharpe"``).
+        engine, engine_params: The engine adapter and its own parameters, as in
+            ``backtest()`` (:mod:`quantbox.engine`); the search does not change with it.
         fees, fixed_fees, slippage, rebalancing_freq, trading_days:
             Forwarded to ``backtest()``.
         train_size: Training window in rows (walk-forward only).
@@ -69,6 +77,10 @@ def optimize(
         allow_same_bar, same_bar_reason: The explicit same-bar override, as in
             ``backtest()`` (docs/adr/0006): only with ``lag_bars=0`` and a
             non-empty reason; the result is then RESEARCH, not a backtest.
+        schedule, leverage: As in ``backtest()``: the calendar schedule (default)
+            or ``"bars"``, and ``venue.leverage`` on the calendar.
+        max_leverage: The gross cap, as in ``backtest()``: ``None`` = the
+            default, 1 (TOM-1525); a levered search declares it.
 
     Returns:
         ``{"best_params", "best_metric", "all_results", "execution"}`` for grid
@@ -76,16 +88,21 @@ def optimize(
         "oos_results", "execution"}`` for walk-forward. ``"execution"`` is the
         timing used (as ``run_manifest.json``).
     """
-    timing = helper_execution(lag_bars, allow_same_bar, same_bar_reason)
+    timing = helper_execution(lag_bars, allow_same_bar, same_bar_reason, schedule)
+    # Refused here, once: inside the search a failing combination is skipped, not raised.
+    get_engine(engine).check_params(engine_params)
     bt_kwargs = dict(
         timing=timing,
+        engine=engine,
         fees=fees,
         fixed_fees=fixed_fees,
         slippage=slippage,
         rebalancing_freq=rebalancing_freq,
         threshold=None,
-        use_numba=True,
+        engine_params=engine_params,
         trading_days=trading_days,
+        leverage=leverage,
+        max_leverage=max_leverage,
     )
 
     if method == "walk_forward":

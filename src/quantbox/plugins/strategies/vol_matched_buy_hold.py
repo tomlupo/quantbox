@@ -21,7 +21,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from quantbox.contracts import PluginMeta
+from quantbox.contracts import PluginMeta, StrategyContext
+from quantbox.strategy_runner import resolve_annualize
 
 
 @dataclass
@@ -48,24 +49,24 @@ class VolMatchedBuyHoldStrategy:
     ticker: str = "BTC"
     target_annual_vol: float = 0.25
     vol_lookback: int | None = None
-    trading_days: int | None = None  # None = pipeline-injected via _pipeline_annualize; falls back to 252
+    trading_days: int | None = None  # None = the run's StrategyContext.bars_per_year; 252 without one
 
     @property
     def min_lookback_periods(self) -> int:
         return self.vol_lookback if self.vol_lookback is not None else 2
 
-    def run(self, data: dict[str, Any], params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def run(
+        self, data: dict[str, Any], params: dict[str, Any] | None = None, context: StrategyContext | None = None
+    ) -> dict[str, Any]:
         if params:
             for k, v in params.items():
                 if hasattr(self, k):
                     setattr(self, k, v)
 
-        # Resolve trading_days: explicit (self/params) wins, else pipeline-injected, else 252.0.
-        pipeline_annualize = (params or {}).get("_pipeline_annualize")
-        if self.trading_days is None:
-            effective_td = float(pipeline_annualize) if pipeline_annualize is not None else 252.0
-        else:
-            effective_td = float(self.trading_days)
+        # Annualisation: the strategy's explicit field wins, else the run's StrategyContext (TOM-1448).
+        effective_td = resolve_annualize(
+            self.trading_days, params, context, owner="VolMatchedBuyHoldStrategy.trading_days"
+        )
 
         prices: pd.DataFrame = data["prices"]
         if self.ticker not in prices.columns:

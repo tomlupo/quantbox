@@ -21,16 +21,7 @@ import numpy as np
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
-
-
-def _annualized_sharpe(returns: np.ndarray, trading_days: int) -> float:
-    """Compute annualized Sharpe ratio from an array of returns."""
-    if len(returns) < 2:
-        return 0.0
-    std = float(np.std(returns, ddof=1))
-    if std == 0:
-        return 0.0
-    return float(np.mean(returns) / std * np.sqrt(trading_days))
+from quantbox.metrics import sharpe_ratio
 
 
 @dataclass
@@ -80,14 +71,14 @@ class StatisticalValidation:
         rets = returns[rets_col].values
         n = len(rets)
 
-        observed_sharpe = _annualized_sharpe(rets, trading_days)
+        observed_sharpe = sharpe_ratio(rets, trading_days)
 
         # Bootstrap null-distribution test: simulate n_trials zero-mean series at the
         # observed series' own volatility, and see how often their Sharpe reaches the
         # observed Sharpe by chance alone.
         rng = np.random.default_rng(42)
         null_sharpes = np.array(
-            [_annualized_sharpe(rng.normal(0, np.std(rets, ddof=1), size=n), trading_days) for _ in range(n_trials)]
+            [sharpe_ratio(rng.normal(0, np.std(rets, ddof=1), size=n), trading_days) for _ in range(n_trials)]
         )
         pct_exceeding = float(np.mean(null_sharpes >= observed_sharpe))
         # Sharpe adjusted for null-test significance: observed if it clears the
@@ -102,7 +93,7 @@ class StatisticalValidation:
         bootstrap_sharpes = np.empty(n_bootstrap)
         for i in range(n_bootstrap):
             sample = rng.choice(rets, size=n, replace=True)
-            bootstrap_sharpes[i] = _annualized_sharpe(sample, trading_days)
+            bootstrap_sharpes[i] = sharpe_ratio(sample, trading_days)
 
         alpha = 1 - confidence
         ci_lower = float(np.percentile(bootstrap_sharpes, alpha / 2 * 100))

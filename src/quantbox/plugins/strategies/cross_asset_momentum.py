@@ -37,7 +37,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from quantbox.contracts import PluginMeta
+from quantbox.contracts import PluginMeta, StrategyContext
+from quantbox.strategy_runner import resolve_annualize
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +241,7 @@ def apply_core_satellite(
     active: pd.DataFrame,
     passive: pd.DataFrame,
     core_weight: float = 0.6,
-    risk_off_ticker: str = "USDT",
+    risk_off_ticker: str | None = "USDT",
 ) -> pd.DataFrame:
     """
     Combine active and passive portfolios with core-satellite blend.
@@ -251,7 +252,8 @@ def apply_core_satellite(
         active: Active (momentum) weights — sums to <= 1
         passive: Passive weights (equal weight or market cap)
         core_weight: Weight allocated to passive (core), remainder to active (satellite)
-        risk_off_ticker: Ticker for unallocated weight
+        risk_off_ticker: Ticker for unallocated weight; None leaves it in cash
+            (no column is added — a ``None`` column has no price, TOM-1500)
 
     Returns:
         Combined weights DataFrame
@@ -263,6 +265,8 @@ def apply_core_satellite(
     active_scaled = active * satellite_weight
 
     combined = passive_scaled + active_scaled
+    if risk_off_ticker is None:
+        return combined
 
     # Unallocated active weight → risk-off
     active_sum = active_scaled.sum(axis=1)
@@ -345,7 +349,7 @@ class CrossAssetMomentumStrategy:
     # Volatility parameters
     ewma_lambda: float = 0.94
     ewma_min_periods: int = 200
-    annualize: float | None = None  # None = pipeline-injected via _pipeline_annualize; falls back to 252.0
+    annualize: float | None = None  # None = the run's StrategyContext.bars_per_year; 252.0 without one
 
     # Trend filter
     trend_filter_window: int = 100
@@ -392,6 +396,7 @@ class CrossAssetMomentumStrategy:
         self,
         data: dict[str, pd.DataFrame],
         params: dict[str, Any] | None = None,
+        context: StrategyContext | None = None,
     ) -> dict[str, Any]:
         """
         Run XSMOM strategy.
@@ -410,21 +415,10 @@ class CrossAssetMomentumStrategy:
                 if hasattr(self, attr):
                     setattr(self, attr, value)
 
-        # Resolve annualize: explicit (self/params) wins, else pipeline-injected,
-        # else 252.0 (equity default — see issue #20 for the Frequency-driven scheme).
-        pipeline_annualize = (params or {}).get("_pipeline_annualize")
-        if self.annualize is None:
-            effective_annualize = float(pipeline_annualize) if pipeline_annualize is not None else 252.0
-        else:
-            effective_annualize = float(self.annualize)
-            if pipeline_annualize is not None and abs(effective_annualize - pipeline_annualize) > 1:
-                logger.warning(
-                    "CrossAssetMomentumStrategy.annualize=%s overrides pipeline-derived %.1f. "
-                    "If intentional, ignore; otherwise drop the explicit value and let the pipeline "
-                    "derive it from frequency.",
-                    effective_annualize,
-                    pipeline_annualize,
-                )
+        # Annualisation: the strategy's explicit field wins, else the run's StrategyContext (TOM-1448).
+        effective_annualize = resolve_annualize(
+            self.annualize, params, context, owner="CrossAssetMomentumStrategy.annualize"
+        )
 
         prices = data["prices"]
 
@@ -481,12 +475,14 @@ class CrossAssetMomentumStrategy:
             )
 
         # 8. Core-satellite blend
-        # Expand to include risk-off ticker if not in valid_tickers
-        all_cols = (
-            list(prices.columns)
-            if self.risk_off_ticker in prices.columns
-            else (list(prices_filtered.columns) + [self.risk_off_ticker])
-        )
+        # Expand to include risk-off ticker if not in valid_tickers. Without one
+        # (None) the unallocated weight stays in cash: no column is added (TOM-1500).
+        if self.risk_off_ticker is None:
+            all_cols = list(prices_filtered.columns)
+        elif self.risk_off_ticker in prices.columns:
+            all_cols = list(prices.columns)
+        else:
+            all_cols = list(prices_filtered.columns) + [self.risk_off_ticker]
         active_expanded = active_weights.reindex(columns=all_cols, fill_value=0)
         passive_expanded = passive_weights.reindex(columns=all_cols, fill_value=0)
 
@@ -566,7 +562,7 @@ def cross_asset_momentum(
     return strategy.run(data)
 
 
-def run(data: dict, params: dict = None) -> dict:
+def run(data: dict, params: dict = None, context: StrategyContext | None = None) -> dict:
     """Standard strategy interface."""
     strategy = CrossAssetMomentumStrategy()
-    return strategy.run(data, params)
+    return strategy.run(data, params, context=context)

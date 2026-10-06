@@ -31,6 +31,8 @@ from dataclasses import dataclass, replace
 
 from scipy import stats
 
+from quantbox.metrics import sharpe_ratio
+
 EULER_MASCHERONI = 0.5772156649015329
 
 # Degeneracy is tested RELATIVELY -- never by exact float equality with zero.
@@ -295,7 +297,7 @@ def deflated_sharpe_ratio_from_returns(returns, n_trials: int, *, allow_nonfinit
             f"({std!r}) is negligible against the scale of the series itself "
             f"(mean |return| = {scale!r}), i.e. the series is constant to within floating-point noise"
         )
-    sr = r.mean() / std
+    sr = sharpe_ratio(r, 1)  # per-period: the DSR test annualises nothing itself
     skew = float(stats.skew(r))
     kurtosis = float(stats.kurtosis(r, fisher=False))
     result = deflated_sharpe_ratio(sr=sr, T=T, skew=skew, kurtosis=kurtosis, n_trials=n_trials)
