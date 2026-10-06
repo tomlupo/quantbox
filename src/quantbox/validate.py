@@ -18,6 +18,9 @@ class ValidationFinding:
     message: str
     #: Machine-readable kind, set where a consumer acts on it (``UNKNOWN_PLUGIN``); None otherwise.
     code: str | None = None
+    #: What the finding is about, for a consumer that acts on it: for ``UNKNOWN_PLUGIN``,
+    #: ``{"plugin_name", "group", "where"}``.
+    subject: dict[str, str] | None = None
 
 
 def _check_legacy_dataset_params(cfg: dict) -> None:
@@ -197,12 +200,14 @@ def _unknown_plugin(registry: Any, where: str, group: str, name: str) -> Validat
     from .params_schema import PLUGIN_GROUPS
     from .registry import ENTRYPOINT_GROUPS
 
+    subject = {"plugin_name": name, "group": group, "where": where}
     if group == _STRATEGY_MODULE:
         return ValidationFinding(
             "error",
             f"{UNKNOWN_PLUGIN}: '{name}' ({where}) is not a module under {_STRATEGY_PKG}; "
             "the pipeline imports it by that name",
             UNKNOWN_PLUGIN,
+            subject,
         )
     registered = sorted(getattr(registry, PLUGIN_GROUPS[group], None) or {})
     close = difflib.get_close_matches(name, registered, n=3, cutoff=0.6)
@@ -215,6 +220,7 @@ def _unknown_plugin(registry: Any, where: str, group: str, name: str) -> Validat
         f"A plugin from another package registers under the '{ENTRYPOINT_GROUPS[group]}' entry point: "
         "install that package in this environment (`uv add <package>`).",
         UNKNOWN_PLUGIN,
+        subject,
     )
 
 

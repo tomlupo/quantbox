@@ -4,7 +4,8 @@ Since TOM-1528 ``validate`` refuses a block that names a plugin this environment
 not register. The runner only logged "Validation plugin '...' not found, skipping"
 (and the same for monitors), so a typo silently dropped a check. The run now raises
 the SAME ``unknown_plugin`` finding, from the same code path (``check_plugin_params``),
-before any work: no run directory is created.
+as the ``PluginNotFoundError`` a run has always raised for an unknown name, before any
+work: no run directory is created.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from quantbox.exceptions import ConfigValidationError
+from quantbox.exceptions import PluginNotFoundError
 from quantbox.registry import PluginRegistry
 from quantbox.runner import run_from_config
 from quantbox.validate import validate_config
@@ -44,10 +45,13 @@ def test_an_unknown_validation_or_monitor_plugin_fails_the_run_with_validates_er
     (expected,) = [m for m in validate_errors if m.startswith("unknown_plugin:")]
     assert f"'{name}'" in expected
 
-    with pytest.raises(ConfigValidationError) as exc:
+    # Validate's finding, verbatim, as the PluginNotFoundError a run raises for an unknown name.
+    with pytest.raises(PluginNotFoundError) as exc:
         run_from_config(cfg, REG)
-    assert [f.message for f in exc.value.findings] == [expected]
-    assert expected in str(exc.value)
+    assert str(exc.value) == expected
+    assert exc.value.plugin_name == name
+    assert exc.value.group == slot.removesuffix("s")
+    assert exc.value.available and name not in exc.value.available
     # Refused before any work: no run directory, no artifact.
     assert not (tmp_path / "artifacts").exists() or not any((tmp_path / "artifacts").iterdir())
 
@@ -57,7 +61,7 @@ def test_a_monitor_is_refused_in_a_mode_that_would_not_run_it(tmp_path):
     cfg = _synthetic(tmp_path)
     assert cfg["run"]["mode"] == "backtest"
     cfg["plugins"]["monitors"] = [{"name": "monitor.no_such.v1"}]
-    with pytest.raises(ConfigValidationError, match=r"unknown_plugin: 'monitor\.no_such\.v1'"):
+    with pytest.raises(PluginNotFoundError, match=r"unknown_plugin: 'monitor\.no_such\.v1'"):
         run_from_config(cfg, REG)
 
 

@@ -29,6 +29,7 @@ from .contracts import (
 from .exceptions import ConfigValidationError, PluginNotFoundError
 from .execution import run_record
 from .llm_utils import event_line, load_schema, validate_table
+from .params_schema import PLUGIN_GROUPS
 from .plugin_manifest import load_manifest, resolve_profile
 from .run_history import RUN_TS_FORMAT
 from .run_manifest import _sha256_file
@@ -662,13 +663,19 @@ def run_from_config(
     except Exception as exc:  # a params check must never be what breaks a run
         logger.warning("config params: not checked (%s)", exc)
         param_findings = []
-    # An unknown PLUGIN is refused, as validate refuses it (TOM-1529): the same finding,
-    # before any work. A validation or monitor block used to be skipped with a warning,
-    # so a typo silently dropped a check.
+    # An unknown PLUGIN is refused, as validate refuses it (TOM-1529): validate's finding,
+    # verbatim, before any work. A validation or monitor block used to be skipped with a
+    # warning, so a typo silently dropped a check. Still a PluginNotFoundError, as before.
     unknown = [f for f in param_findings if f.code == UNKNOWN_PLUGIN]
     if unknown:
-        raise ConfigValidationError(
-            "config_validation_failed: " + "; ".join(f.message for f in unknown), findings=unknown
+        first = unknown[0].subject or {}
+        group = first.get("group", "")
+        attr = PLUGIN_GROUPS.get(group)  # none for a pipeline.params.strategies module
+        raise PluginNotFoundError(
+            first.get("plugin_name", ""),
+            group,
+            sorted(getattr(registry, attr, None) or {}) if attr else [],
+            message="; ".join(f.message for f in unknown),
         )
     for f in param_findings:
         logger.warning("config params: %s", f.message)
