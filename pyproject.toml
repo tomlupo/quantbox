@@ -53,6 +53,11 @@ dev = [
     "ruff>=0.16.8",
 ]
 
+[tool.uv]
+# CVE-2026-104874 (multidict HIGH, fixed in 6.9.1): ccxt pins multidict==6.7.1 exactly — remove when ccxt relaxes its multidict pin.
+# The <7 cap keeps aiohttp's own bound (multidict<7.0), which an override would otherwise erase.
+override-dependencies = ["multidict>=6.9.1,<7"]
+
 [tool.uv_build]
 package-data = { quantbox = ["artifact_schemas/*.schema.json", "line_template/*.tmpl"], "quantbox.plugins" = ["manifest.yaml", "manifest.schema.json"] }
 
