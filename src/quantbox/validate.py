@@ -238,7 +238,13 @@ def check_plugin_params(plugins: dict[str, Any], registry: Any = None) -> list[V
     for where, group, block in blocks:
         cls, name, unresolved = _resolve_block_plugin(registry, group, block["name"])
         if cls is None:
-            if group == _STRATEGY_MODULE and _strategy_module_exists(name):
+            if block.get("source"):
+                # Local source: the runner loads the class from this file, not the registry,
+                # and validate does not execute it. Its params go unchecked; the name is free.
+                findings.append(
+                    ValidationFinding("warning", f"params_not_checked:{name}: local-source plugin ({block['source']})")
+                )
+            elif group == _STRATEGY_MODULE and _strategy_module_exists(name):
                 # The module exists and the pipeline can call its run(); only its params go unchecked.
                 findings.append(ValidationFinding("warning", f"params_not_checked:{name}: {unresolved}"))
             else:

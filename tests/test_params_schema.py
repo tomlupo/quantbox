@@ -417,6 +417,19 @@ def test_validate_plugin_from_an_uninstalled_package_is_an_error_with_an_install
     )
 
 
+@pytest.mark.parametrize("slot", ["strategies", "overlays"])
+def test_validate_local_source_plugin_is_not_refused(slot):
+    """``source: path:Class`` is loaded from that file by the runner, never from the registry:
+    its unregistered name is not an error (quantbox-lab runs 30+ such configs)."""
+    cfg = _config({})
+    cfg["plugins"][slot] = [
+        {"name": "lab.strategy.h110_bollinger_mr.v1", "source": "research/x/strategy.py:Strat", "params": {"x": 1}}
+    ]
+    findings = validate_config(cfg, REG)
+    assert not [f for f in findings if f.level == "error"], findings
+    assert any("params_not_checked:lab.strategy.h110_bollinger_mr.v1: local-source" in f.message for f in findings)
+
+
 def test_validate_cli_exits_nonzero_on_an_unregistered_plugin(tmp_path):
     cfg = _config({})
     cfg["plugins"]["data"] = {"name": "local_file_dta", "params_init": {}}
