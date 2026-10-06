@@ -11,7 +11,9 @@ and a reproduction test. What makes a line survive dependency drift is the PIN:
   ``constraint-dependencies`` block. Its versions come first from the uv.lock
   quantbox itself was tested with at that ref, then from the line's own resolution
   for whatever quantbox's lock does not settle. H08 is why: ``import vectorbt``
-  crashed once a fresh resolve picked up pandas 3.
+  crashed once a fresh resolve picked up pandas 3. The same block carries
+  quantbox's own ``override-dependencies``: an override never reaches a consumer,
+  and an exact version it forced is unresolvable without it.
 
 ``repin`` is the one command that moves a line to another ref: it rewrites the
 SHA and the tag, re-derives the managed block from the new ref and re-locks.
@@ -26,6 +28,7 @@ import os
 import re
 import subprocess
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib.resources import files as _res_files
 from pathlib import Path
@@ -143,18 +146,50 @@ def lock_versions(lock_text: str, *, exclude: set[str] = frozenset()) -> dict[st
     return {n: next(iter(v)) for n, v in sorted(seen.items()) if len(v) == 1 and n not in exclude}
 
 
-def render_pins(pins: dict[str, str]) -> str:
+_OVERRIDES_RE = re.compile(r"^overrides = \[(.*?)\]$", re.M | re.S)
+_OVERRIDE_ITEM_RE = re.compile(r"\{([^{}]*)\}")
+
+
+def lock_overrides(lock_text: str) -> list[str]:
+    """The ``[tool.uv] override-dependencies`` a uv.lock was resolved under, as requirement strings.
+
+    An override binds only the project that declares it, never a consumer, so a line that
+    copies quantbox's exact versions must also copy quantbox's overrides: without them a
+    version quantbox forced past a dependency's own pin is unresolvable in the line.
+    """
+    manifest = lock_text.split("\n[manifest]\n", 1)
+    if len(manifest) < 2:
+        return []
+    section = manifest[1].split("\n[[package]]\n", 1)[0]
+    block = _OVERRIDES_RE.search(section)
+    if block is None:
+        return []
+    out = []
+    for item in _OVERRIDE_ITEM_RE.findall(block.group(1)):
+        fields = dict(re.findall(r'(\w+) = "([^"]*)"', item))
+        if "name" not in fields:
+            raise LineError(f"uv.lock [manifest] override without a name: {{{item}}}")
+        req = fields["name"] + (f" @ {fields['url']}" if "url" in fields else fields.get("specifier", ""))
+        out.append(req + (f" ; {fields['marker']}" if "marker" in fields else ""))
+    return out
+
+
+def render_pins(pins: dict[str, str], overrides: Sequence[str] = ()) -> str:
     lines = [PINS_BEGIN, "constraint-dependencies = ["]
     lines += [f'    "{name}=={version}",' for name, version in sorted(pins.items())]
-    lines += ["]", PINS_END]
+    lines += ["]"]
+    if overrides:
+        lines += ["# quantbox's own overrides at the pinned ref: an override does not reach a consumer."]
+        lines += ["override-dependencies = ["] + [f'    "{req}",' for req in overrides] + ["]"]
+    lines += [PINS_END]
     return "\n".join(lines)
 
 
-def replace_pins(pyproject: str, pins: dict[str, str]) -> str:
+def replace_pins(pyproject: str, pins: dict[str, str], overrides: Sequence[str] = ()) -> str:
     start, end = pyproject.find(PINS_BEGIN), pyproject.find(PINS_END)
     if start < 0 or end < start:
         raise LineError("pyproject.toml has no managed pins block; was this line made by `quantbox new line`?")
-    return pyproject[:start] + render_pins(pins) + pyproject[end + len(PINS_END) :]
+    return pyproject[:start] + render_pins(pins, overrides) + pyproject[end + len(PINS_END) :]
 
 
 # ── templates ────────────────────────────────────────────────────────────
@@ -235,16 +270,18 @@ def _derive_pins(line_dir: Path, engine_tree: Path, *, lock: bool) -> int:
     """
     exclude = {"quantbox", "quantbox-datasets"}
     engine_lock = engine_tree / "uv.lock"
-    pins = lock_versions(engine_lock.read_text(encoding="utf-8"), exclude=exclude) if engine_lock.is_file() else {}
+    engine_lock_text = engine_lock.read_text(encoding="utf-8") if engine_lock.is_file() else ""
+    pins = lock_versions(engine_lock_text, exclude=exclude)
+    overrides = lock_overrides(engine_lock_text)
     pyproject = line_dir / "pyproject.toml"
-    pyproject.write_text(replace_pins(pyproject.read_text(encoding="utf-8"), pins), encoding="utf-8")
+    pyproject.write_text(replace_pins(pyproject.read_text(encoding="utf-8"), pins, overrides), encoding="utf-8")
     if not lock:
         return len(pins)
     uv_lock(line_dir)
     resolved = lock_versions((line_dir / "uv.lock").read_text(encoding="utf-8"), exclude=exclude)
     # The line's resolution only ADDS: a package quantbox's lock settled keeps that version.
     merged = {**resolved, **{k: v for k, v in pins.items() if k in resolved}}
-    pyproject.write_text(replace_pins(pyproject.read_text(encoding="utf-8"), merged), encoding="utf-8")
+    pyproject.write_text(replace_pins(pyproject.read_text(encoding="utf-8"), merged, overrides), encoding="utf-8")
     uv_lock(line_dir)  # the lock records the constraints it was resolved under
     return len(merged)
 

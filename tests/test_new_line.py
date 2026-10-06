@@ -106,6 +106,27 @@ def test_replace_pins_rewrites_only_the_managed_block():
         line.replace_pins("[tool.uv]\n", {})
 
 
+def test_lock_overrides_are_carried_into_the_managed_block():
+    """An override binds only its own project: a line copying quantbox's exact pins must copy it too.
+
+    Without it, quantbox's multidict override (CVE-2026-104874, ccxt pins multidict==6.7.1)
+    makes every new line unresolvable: the constraint says 6.9.1, ccxt says 6.7.1.
+    """
+    own = line.lock_overrides((REPO / "uv.lock").read_text(encoding="utf-8"))
+    assert any(req.startswith("multidict>=") for req in own), own
+    one = 'version = 1\n\n[manifest]\noverrides = [{ name = "a", specifier = ">=2" }]\n\n[[package]]\nname = "a"\n'
+    assert line.lock_overrides(one) == ["a>=2"]
+    many = '[manifest]\noverrides = [\n    { name = "a", specifier = ">=2,<3" },\n'
+    many += '    { name = "b", marker = "sys_platform == \'linux\'" },\n]\n\n[[package]]\n'
+    assert line.lock_overrides("x\n" + many) == ["a>=2,<3", "b ; sys_platform == 'linux'"]
+    assert line.lock_overrides('version = 1\n\n[[package]]\nname = "a"\n') == []
+    block = line.render_pins({"a": "2.1"}, ["a>=2"])
+    assert 'override-dependencies = [\n    "a>=2",\n]' in block
+    assert "override-dependencies" not in line.render_pins({"a": "2.1"})
+    text = f"[tool.uv]\n{block}\n"
+    assert "override-dependencies" not in line.replace_pins(text, {"a": "2.2"})
+
+
 # ── new line (offline) ────────────────────────────────────────────────────
 
 

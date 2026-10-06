@@ -25,6 +25,7 @@ The values live in one place each; this table only says where.
 | quantbox (engine): the commit a tag names, the tag beside it | `pyproject.toml` (`[tool.quantbox-line]`) |
 | quantbox-datasets (the reader) | `pyproject.toml` |
 | every transitive dependency, exactly | `pyproject.toml` `[tool.uv] constraint-dependencies`, `uv.lock` |
+| quantbox's own dependency overrides, if any | `pyproject.toml` `[tool.uv] override-dependencies` |
 | the data: sha256 of each dataset's `prices.parquet` | `datasets.lock` |
 | the timing (`execution.lag_bars`) | `config.yaml`, `arms.yaml` |
 
