@@ -22,6 +22,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import pytest
 import yaml
 
@@ -144,3 +145,20 @@ def test_cookbook_config_runs(path: Path, registry: PluginRegistry, tmp_path, mo
         # the synthetic, portfolio_optimizer and beglobal runs with a warning only (TOM-1529).
         assert (run_dir / "finding_report.json").is_file(), manifest.get("reports")
         assert manifest["reports"]["finding_report"]["produced"] is True
+
+
+@pytest.mark.pipeline_smoke
+@pytest.mark.slow
+def test_beglobal_profit_plus_runs_on_etf_daily(registry: PluginRegistry, tmp_path, monkeypatch):
+    """profit_plus holds commodities; etf-daily has no DJP. The sleeve is on PDBC, a param (TOM-1529)."""
+    path = CONFIG_DIR / "run_backtest_beglobal.yaml"
+    cfg = _load(path)
+    _dataset_or_skip(path, cfg)
+    (strategy,) = cfg["plugins"]["strategies"]
+    strategy["params"].update(risk_profile="profit_plus", commodities_ticker="PDBC")
+    monkeypatch.chdir(REPO)
+    cfg["artifacts"]["root"] = str(tmp_path)
+    result = run_from_config(cfg, registry, config_path=path)
+    traded = pd.read_parquet(tmp_path / result.run_id / "traded_weights.parquet").set_index("date")
+    assert traded["PDBC"].abs().max() > 0, "the commodities sleeve was never held"
+    assert "commodities" not in traded.columns and "DJP" not in traded.columns

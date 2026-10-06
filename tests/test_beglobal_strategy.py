@@ -22,7 +22,7 @@ from quantbox.plugins.strategies.beglobal_strategy import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
-# 13 distinct tickers: SHY, IEF, TLT, BWX, LQD, HYG, EMB, SPY, EFA, EEM, VNQ, DJP, GLD.
+# 13 distinct tickers: SHY, IEF, TLT, BWX, LQD, HYG, EMB, SPY, EFA, EEM, VNQ, PDBC, GLD.
 # money_market and us_treasury_short share SHY by default (TOM-1528).
 _ALL_ETF_TICKERS = list(dict.fromkeys(ac.etf_ticker for ac in ASSET_CLASSES.values()))
 
@@ -438,6 +438,68 @@ class TestMoneyMarketSleeve:
             "SHY": "us_treasury_short",
             "BIL": "money_market",
         }
+
+
+# ---------------------------------------------------------------------------
+# Commodities sleeve (TOM-1529)
+# ---------------------------------------------------------------------------
+#
+# profit_plus holds 5% commodities on DJP, which etf-daily does not carry: the weight
+# landed on an unpriced "commodities" column and the engine refused the run. The same
+# problem as SHV (TOM-1528). Default now: PDBC, which etf-daily carries, as a param.
+
+_ETF_DAILY_PROFIT_PLUS = [*_ETF_DAILY_BEGLOBAL, "PDBC"]
+#: One column per profit_plus sleeve (money_market and us_treasury_short share SHY).
+_PROFIT_PLUS_TICKERS = ["SHY", "SPY", "EFA", "EEM", "VNQ", "PDBC", "GLD"]
+
+
+class TestCommoditiesSleeve:
+    def test_profit_plus_on_etf_daily_tickers_puts_commodities_on_pdbc(self) -> None:
+        prices = _random_walk(_ETF_DAILY_PROFIT_PLUS)
+        result = BeGlobalStrategy(risk_profile="profit_plus").run({"prices": prices})
+        weights = result["weights"]
+        assert set(weights.columns) <= set(prices.columns), sorted(set(weights.columns) - set(prices.columns))
+        assert result["details"]["commodities_column"] == "PDBC"
+        assert (weights["PDBC"] > 0).all()
+        np.testing.assert_allclose(weights.sum(axis=1).values, 1.0, atol=1e-6)
+
+    def test_core_commodities_weight_lands_on_pdbc(self) -> None:
+        """profit_plus core: money_market + us_treasury_short share SHY, commodities on PDBC."""
+        prices = _random_walk(_PROFIT_PLUS_TICKERS)
+        strategy = BeGlobalStrategy(risk_profile="profit_plus", core_weight=1.0, vol_lookback=10_000)
+        latest = strategy.run({"prices": prices})["simple_weights"]
+        assert latest == pytest.approx(
+            {"SHY": 0.15, "SPY": 0.45, "EFA": 0.15, "EEM": 0.10, "VNQ": 0.05, "PDBC": 0.05, "GLD": 0.05}
+        )
+
+    def test_ticker_is_a_param(self) -> None:
+        prices = _random_walk([*_ETF_DAILY_BEGLOBAL, "DJP"])
+        result = BeGlobalStrategy(risk_profile="profit_plus").run(
+            {"prices": prices}, params={"commodities_ticker": "DJP"}
+        )
+        assert result["details"]["commodities_column"] == "DJP"
+        assert set(result["weights"].columns) <= set(prices.columns)
+        assert "DJP" in result["weights"].columns
+
+    def test_null_ticker_holds_the_sleeve_as_cash(self) -> None:
+        """As money_market_ticker: null, the sleeve's weight stays unallocated."""
+        prices = _random_walk([t for t in _PROFIT_PLUS_TICKERS if t != "PDBC"])
+        strategy = BeGlobalStrategy(risk_profile="profit_plus", core_weight=1.0, vol_lookback=10_000)
+        result = strategy.run({"prices": prices}, params={"commodities_ticker": None})
+        assert result["details"]["commodities_column"] is None
+        assert set(result["simple_weights"]) == set(prices.columns)
+        assert sum(result["simple_weights"].values()) == pytest.approx(0.95)
+
+    def test_ticker_missing_from_prices_is_refused_by_name(self) -> None:
+        prices = _random_walk(_ETF_DAILY_BEGLOBAL)
+        with pytest.raises(ValueError, match=r"commodities_ticker 'PDBC' is not a prices column"):
+            BeGlobalStrategy(risk_profile="profit_plus").run({"prices": prices})
+
+    @pytest.mark.parametrize("profile", ["safe", "bond_plus", "mixed", "profit"])
+    def test_a_profile_without_commodities_does_not_need_the_column(self, profile: str) -> None:
+        prices = _random_walk(_ETF_DAILY_BEGLOBAL)
+        result = BeGlobalStrategy(risk_profile=profile).run({"prices": prices})
+        assert set(result["weights"].columns) <= set(prices.columns)
 
 
 # ---------------------------------------------------------------------------
