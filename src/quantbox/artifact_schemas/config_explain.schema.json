@@ -10,7 +10,7 @@
     "schema": {"const": "quantbox/explain@1"},
     "ok": {"type": "boolean", "description": "true when every plugin id, the dataset and the pipeline params resolve; the CLI exits non-zero otherwise."},
     "errors": {"type": "array", "items": {"type": "string"}},
-    "plugins_resolved": {"type": "boolean", "description": "Every plugin id the config names resolves — including publishers, validation and monitors, which a run resolves only after the pipeline."},
+    "plugins_resolved": {"type": "boolean", "description": "Every plugin id the config names resolves — including publishers, which a run resolves only after the pipeline, and validation and monitors, which run after it."},
     "plugin_ids": {
       "type": "array",
       "items": {

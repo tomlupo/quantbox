@@ -793,7 +793,8 @@ class BacktestPipeline:
         }
         portfolio_daily = book.portfolio_daily
 
-        a_returns = store.put_parquet("returns", returns_series.to_frame("returns").reset_index())
+        # run@1 returns: (date, returns). Named here: a data plugin's index may carry no name (TOM-1529).
+        a_returns = store.put_parquet("returns", returns_series.to_frame("returns").rename_axis("date").reset_index())
         a_port = store.put_parquet("portfolio_daily", portfolio_daily.reset_index())
         a_metrics = store.put_json("metrics", metrics)
 
@@ -1122,7 +1123,9 @@ class BacktestPipeline:
         primary_name = next(iter(variant_results))
         primary = variant_results[primary_name]
 
-        a_returns = store.put_parquet("returns", primary["returns"].to_frame("returns").reset_index())
+        a_returns = store.put_parquet(
+            "returns", primary["returns"].to_frame("returns").rename_axis("date").reset_index()
+        )
         a_port = store.put_parquet("portfolio_daily", primary["portfolio_daily"].reset_index())
         a_metrics = store.put_json("metrics", primary["metrics"])
         a_traded = store.put_parquet("traded_weights", primary["weights_history"].rename_axis("date").reset_index())

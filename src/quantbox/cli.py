@@ -380,6 +380,13 @@ def run(
         execution = (result.notes or {}).get("execution")
         if execution:
             print("EXECUTION:", execution["description"])
+        # Part of the summary, never only a log line above it (TOM-1529).
+        report = ((result.notes or {}).get("reports") or {}).get("finding_report")
+        if report:
+            print(
+                "FINDING REPORT:",
+                report["file"] if report["produced"] else f"NOT PRODUCED — {report['error']}",
+            )
 
     # Dead-man detection (quantbox#120): a rebalancer freeze (every intended
     # order suppressed, book stuck on stale positions) previously exited 0 --

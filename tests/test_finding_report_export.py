@@ -25,6 +25,7 @@ from typer.testing import CliRunner
 from quantbox.cli import app
 from quantbox.finding_export import SCHEMA_ID, export_finding_report
 from quantbox.registry import PluginRegistry
+from quantbox.run_manifest import validate_run_manifest
 from quantbox.runner import run_from_config
 
 GOLDEN = Path(__file__).resolve().parent / "fixtures" / "golden_run"
@@ -320,6 +321,101 @@ def test_full_report_true_also_writes_the_heavy_pair(tmp_path):
     assert (run_dir / "report.html").exists()
     assert (run_dir / "report_data.json").exists()
     assert (run_dir / "finding_report.json").exists()
+
+
+# ----------------------------------------------------------------------
+# a run whose prices index has no name (TOM-1529)
+# ----------------------------------------------------------------------
+#
+# The synthetic data plugin and a by-name dataset hand back a prices index with no
+# name. The pipeline wrote returns.parquet with reset_index(), so its date column was
+# "index", and every such run logged `finding_report.json export failed: "None of
+# ['date'] are in the columns"` from the commit that added the export (#221).
+
+SYNTHETIC = Path(__file__).resolve().parents[1] / "cookbook" / "configs" / "run_synthetic_backtest.yaml"
+
+
+def _synthetic_run(tmp_path: Path, variants: list | None = None) -> Path:
+    import yaml
+
+    cfg = yaml.safe_load(SYNTHETIC.read_text(encoding="utf-8"))
+    cfg["artifacts"]["root"] = str(tmp_path / "artifacts")
+    cfg["plugins"]["pipeline"]["params"]["prices"]["n_steps"] = 300
+    if variants is not None:
+        cfg["plugins"]["pipeline"]["params"]["variants"] = variants
+        cfg["plugins"]["strategies"] = []
+    result = run_from_config(cfg, PluginRegistry.discover())
+    return tmp_path / "artifacts" / result.run_id
+
+
+def _static(name: str, weights: dict) -> dict:
+    return {"name": name, "strategy": {"name": "strategy.static_weights.v1", "params_init": {"weights": weights}}}
+
+
+def test_a_run_on_an_unnamed_prices_index_writes_date_and_exports(tmp_path):
+    run_dir = _synthetic_run(tmp_path)
+    assert list(pd.read_parquet(run_dir / "returns.parquet").columns) == ["date", "returns"]
+    assert json.loads((run_dir / "finding_report.json").read_text()) == export_finding_report(run_dir)
+    manifest = json.loads((run_dir / "run_manifest.json").read_text())
+    assert manifest["reports"]["finding_report"] == {"produced": True, "file": "finding_report.json"}
+    assert validate_run_manifest(manifest) == []
+
+
+def test_a_variants_run_on_an_unnamed_prices_index_exports(tmp_path):
+    run_dir = _synthetic_run(tmp_path, [_static("a", {"SYN_001": 1.0}), _static("b", {"SYN_002": 1.0})])
+    assert list(pd.read_parquet(run_dir / "returns.parquet").columns) == ["date", "returns"]
+    payload = json.loads((run_dir / "finding_report.json").read_text())
+    assert [ln["name"] for ln in payload["series"]["lines"]] == ["a", "b"]
+
+
+def test_a_run_written_before_the_fix_still_exports(tmp_path):
+    """returns.parquet with the reset_index() column "index" (runs before TOM-1529) is read as the date."""
+    run_dir = tmp_path / "old_run"
+    shutil.copytree(GOLDEN, run_dir)
+    returns = pd.read_parquet(run_dir / "returns.parquet")
+    returns.rename(columns={"date": "index"}).to_parquet(run_dir / "returns.parquet", index=False)
+    assert export_finding_report(run_dir)["series"] == export_finding_report(GOLDEN)["series"]
+
+
+def test_a_failed_export_is_recorded_in_the_manifest_not_only_logged(tmp_path, monkeypatch):
+    """The run's results stand; the manifest says the report was NOT produced, and why."""
+    import quantbox.finding_export as fe
+
+    def boom(path, **kw):
+        raise KeyError("None of ['date'] are in the columns")
+
+    monkeypatch.setattr(fe, "export_finding_report", boom)
+    run_dir = _synthetic_run(tmp_path)
+    assert not (run_dir / "finding_report.json").exists()
+    manifest = json.loads((run_dir / "run_manifest.json").read_text())
+    record = manifest["reports"]["finding_report"]
+    assert record["produced"] is False
+    assert "None of ['date'] are in the columns" in record["error"]
+    assert any(w.startswith("finding_report:not_produced:") for w in manifest["warnings"])
+    assert validate_run_manifest(manifest) == []
+    record["produced"] = True  # a produced report names its file: the schema refuses the mix
+    assert validate_run_manifest(manifest) != []
+
+
+def test_cli_run_summary_says_when_the_finding_report_was_not_produced(tmp_path, monkeypatch):
+    import yaml
+
+    import quantbox.finding_export as fe
+
+    def boom(path, **kw):
+        raise ValueError("export broke")
+
+    monkeypatch.setattr(fe, "export_finding_report", boom)
+    cfg = yaml.safe_load(SYNTHETIC.read_text(encoding="utf-8"))
+    cfg["artifacts"]["root"] = str(tmp_path / "artifacts")
+    cfg["plugins"]["pipeline"]["params"]["prices"]["n_steps"] = 300
+    path = tmp_path / "cfg.yaml"
+    path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    res = CliRunner().invoke(app, ["run", "-c", str(path)])
+    assert res.exit_code == 0, res.output
+    assert "FINDING REPORT: NOT PRODUCED — ValueError: export broke" in res.stdout
+    # the line is part of the summary, after the success lines, not a log line above them
+    assert res.stdout.index("FINDING REPORT:") > res.stdout.index("RUN_ID:")
 
 
 # ----------------------------------------------------------------------

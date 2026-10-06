@@ -83,7 +83,10 @@ def _manifest(run_dir: Path) -> dict[str, Any]:
 
 
 def _series(frame: pd.DataFrame, column: str) -> pd.Series:
-    s = frame.set_index("date")[column].astype(float)
+    # A run written before TOM-1529 on a prices index with no name has its date column
+    # as reset_index() named it, "index"; never a variant or a metric.
+    date = "date" if "date" in frame.columns or "index" not in frame.columns else "index"
+    s = frame.set_index(date)[column].astype(float)
     s.index = pd.to_datetime(s.index)
     return s.sort_index()
 
