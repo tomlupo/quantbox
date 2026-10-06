@@ -44,9 +44,16 @@ logger = logging.getLogger(__name__)
 
 _AssetClass = namedtuple("_AssetClass", ["name", "category", "etf_ticker"])
 
+#: The money_market sleeve's default ticker (TOM-1528). It was SHV, which the pinned
+#: etf-daily does not carry, and no BIL/SGOV/SHV is there either: SHY (1-3y Treasury)
+#: is the shortest-duration fund it has. A dataset with a true money-market ETF sets
+#: ``money_market_ticker``. SHY is also us_treasury_short's ticker: the two sleeves
+#: then share one column, and money_market has no momentum series of its own.
+DEFAULT_MONEY_MARKET_TICKER = "SHY"
+
 ASSET_CLASSES: dict[str, _AssetClass] = {
     # Fixed Income
-    "money_market": _AssetClass("Money Market", "fixed_income", "SHV"),
+    "money_market": _AssetClass("Money Market", "fixed_income", DEFAULT_MONEY_MARKET_TICKER),
     "us_treasury_short": _AssetClass("US Treasury Short", "fixed_income", "SHY"),
     "us_treasury_medium": _AssetClass("US Treasury Medium", "fixed_income", "IEF"),
     "us_treasury_long": _AssetClass("US Treasury Long", "fixed_income", "TLT"),
@@ -63,9 +70,6 @@ ASSET_CLASSES: dict[str, _AssetClass] = {
     "commodities": _AssetClass("Commodities", "alternative", "DJP"),
     "gold": _AssetClass("Gold", "alternative", "GLD"),
 }
-
-# Reverse lookup: ETF ticker -> asset class key
-_TICKER_TO_ASSET: dict[str, str] = {ac.etf_ticker: key for key, ac in ASSET_CLASSES.items()}
 
 RISK_PROFILE_ALLOCATIONS: dict[str, dict[str, float]] = {
     "safe": {
@@ -118,20 +122,31 @@ _SAFE_ASSETS = frozenset({"money_market", "us_treasury_short"})
 # ---------------------------------------------------------------------------
 
 
+def _ticker_to_asset(money_market_ticker: str | None) -> dict[str, str]:
+    """ETF ticker -> asset class key. money_market takes its ticker from the param; when
+    that ticker is another class's, the other class owns the column."""
+    out = {ac.etf_ticker: key for key, ac in ASSET_CLASSES.items() if key != "money_market"}
+    if money_market_ticker is not None:
+        out.setdefault(money_market_ticker, "money_market")
+    return out
+
+
 def _resolve_columns(
     prices: pd.DataFrame,
+    money_market_ticker: str | None = DEFAULT_MONEY_MARKET_TICKER,
 ) -> dict[str, str]:
     """Build mapping from DataFrame column -> internal asset class key.
 
     Accepts either ETF ticker columns (SPY, TLT, ...) or asset class name
     columns (us_stocks, us_treasury_long, ...).
     """
+    ticker_to_asset = _ticker_to_asset(money_market_ticker)
     col_to_asset: dict[str, str] = {}
     for col in prices.columns:
         if col in ASSET_CLASSES:
             col_to_asset[col] = col
-        elif col in _TICKER_TO_ASSET:
-            col_to_asset[col] = _TICKER_TO_ASSET[col]
+        elif col in ticker_to_asset:
+            col_to_asset[col] = ticker_to_asset[col]
     return col_to_asset
 
 
@@ -324,6 +339,12 @@ class BeGlobalStrategy:
                     "enum": ["safe", "bond_plus", "mixed", "profit", "profit_plus"],
                     "description": "Base allocation profile of the core portfolio.",
                 },
+                "money_market_ticker": {
+                    "description": (
+                        "Prices column of the money_market sleeve (default SHY, the shortest Treasury fund in "
+                        "etf-daily); null holds the sleeve as cash."
+                    )
+                },
                 "core_weight": {
                     "description": "Share of the book held in the risk-profile core; the rest is the momentum satellite."
                 },
@@ -348,6 +369,9 @@ class BeGlobalStrategy:
 
     # Risk profile
     risk_profile: str = "mixed"
+
+    # Money-market sleeve: its prices column; None = held as cash (weights then sum below 1)
+    money_market_ticker: str | None = DEFAULT_MONEY_MARKET_TICKER
 
     # Core-satellite split
     core_weight: float = 0.70
@@ -422,7 +446,8 @@ class BeGlobalStrategy:
         )
 
         # Resolve columns to internal asset names
-        col_to_asset = _resolve_columns(prices)
+        mm_ticker = self.money_market_ticker
+        col_to_asset = _resolve_columns(prices, mm_ticker)
         if not col_to_asset:
             raise ValueError(
                 "No matching asset columns found in prices DataFrame. "
@@ -430,8 +455,19 @@ class BeGlobalStrategy:
                 "(us_stocks, us_treasury_long, ...)."
             )
 
-        # asset_key -> column name (for output mapping)
-        asset_to_col: dict[str, str] = {v: k for k, v in col_to_asset.items()}
+        # asset_key -> column name (for output mapping); None = held as cash, not output
+        asset_to_col: dict[str, str | None] = {v: k for k, v in col_to_asset.items()}
+        if "money_market" not in asset_to_col:
+            if mm_ticker is None:
+                asset_to_col["money_market"] = None
+            elif mm_ticker in prices.columns:
+                # The ticker is another sleeve's column (SHY): money_market's weight lands there.
+                asset_to_col["money_market"] = mm_ticker
+            else:
+                raise ValueError(
+                    f"BeGlobalStrategy: money_market_ticker {mm_ticker!r} is not a prices column; "
+                    "set money_market_ticker to a ticker the dataset carries, or null to hold the sleeve as cash."
+                )
 
         # Build per-asset price series (keyed by internal asset name)
         asset_prices: dict[str, pd.Series] = {}
@@ -535,16 +571,21 @@ class BeGlobalStrategy:
             row_dates.append(date)
 
         # Build output weights DataFrame using original column names (ETF tickers
-        # or asset class names, matching the input prices columns).
+        # or asset class names, matching the input prices columns). Sleeves that
+        # share a column (money_market on SHY) are summed into it; a sleeve held
+        # as cash (column None) is left out, so its weight stays unallocated.
         all_asset_keys = sorted(
             {k for row in rows for k in row},
         )
-        output_cols = [asset_to_col.get(k, k) for k in all_asset_keys]
+        output_cols = list(dict.fromkeys(c for k in all_asset_keys if (c := asset_to_col.get(k, k)) is not None))
+        col_pos = {c: j for j, c in enumerate(output_cols)}
 
-        weights_data = np.zeros((len(rows), len(all_asset_keys)))
+        weights_data = np.zeros((len(rows), len(output_cols)))
         for i, row in enumerate(rows):
-            for j, asset_key in enumerate(all_asset_keys):
-                weights_data[i, j] = row.get(asset_key, 0.0)
+            for asset_key, w in row.items():
+                col = asset_to_col.get(asset_key, asset_key)
+                if col is not None:
+                    weights_data[i, col_pos[col]] += w
 
         weights_df = pd.DataFrame(
             weights_data,
@@ -561,6 +602,7 @@ class BeGlobalStrategy:
             "simple_weights": simple_weights,
             "details": {
                 "risk_profile": self.risk_profile,
+                "money_market_column": asset_to_col["money_market"],
                 "base_allocation": base_allocation,
                 "core_weight": self.core_weight,
                 "satellite_weight": satellite_weight,

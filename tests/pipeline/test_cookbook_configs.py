@@ -56,12 +56,7 @@ TIERS: dict[str, tuple[str, str]] = {
     "run_synthetic_backtest.yaml": (FULL, "synthetic data, generated in process"),
     "run_backtest_overlay_reversal_derisk.yaml": (FULL, "the committed canonical fixture"),
     "run_stress_test.yaml": (DATASET, "pinned dataset"),
-    "run_backtest_beglobal.yaml": (
-        RESOLVE,
-        "KNOWN BROKEN on the pinned etf-daily: strategy.beglobal.v1 puts its money_market sleeve on SHV, "
-        "which etf-daily does not carry, and the engine seam refuses an unpriced weight (TOM-1500, #235). "
-        "Open: hold the sleeve as cash in the strategy, or add SHV to etf-daily",
-    ),
+    "run_backtest_beglobal.yaml": (DATASET, "pinned dataset; money_market sleeve on SHY (TOM-1528)"),
     "run_backtest_portfolio_optimizer.yaml": (DATASET, "pinned dataset"),
     "example_minimal.yaml": (DATASET, "pinned dataset"),
     "run_backtest_crypto_trend.yaml": (RESOLVE, _NETWORK.format("binance.live_data.v1")),
