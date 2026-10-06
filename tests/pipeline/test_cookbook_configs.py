@@ -135,6 +135,12 @@ def test_cookbook_config_runs(path: Path, registry: PluginRegistry, tmp_path, mo
     monkeypatch.chdir(REPO)  # configs name repo-relative paths (./cookbook/canonical/...)
     cfg["artifacts"]["root"] = str(tmp_path)
     result = run_from_config(cfg, registry, config_path=path)
-    manifest = json.loads((tmp_path / result.run_id / "run_manifest.json").read_text(encoding="utf-8"))
+    run_dir = tmp_path / result.run_id
+    manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["plugins"]["pipeline"] == cfg["plugins"]["pipeline"]["name"]
     assert result.metrics, f"{path.name}: the run reported no metrics"
+    if manifest.get("engine"):
+        # The slim default report (TOM-1365) is produced on every backtest config; it failed on
+        # the synthetic, portfolio_optimizer and beglobal runs with a warning only (TOM-1529).
+        assert (run_dir / "finding_report.json").is_file(), manifest.get("reports")
+        assert manifest["reports"]["finding_report"]["produced"] is True

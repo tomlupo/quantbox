@@ -112,6 +112,9 @@ Each run writes to `artifacts/<run_id>/`:
   owns the page and the contract). `quantbox report export` writes the same for a run or a
   directory of arms (each arm's newest run, by the timestamp that ends its run id); a variants
   run's arms come from `variant_returns.parquet` (long: `date, variant, returns`).
+  The manifest's `reports.finding_report` says whether the run produced it; when the export
+  fails, the run's results stand, `produced` is false with the `error`, and `quantbox run`
+  prints `FINDING REPORT: NOT PRODUCED` in its summary.
 - `report.html` + `report_data.json` — the heavy HTML research report (tens of MB on a typical
   line), written only with `plugins.pipeline.params.full_report: true`.
 - `events.jsonl` — structured event log

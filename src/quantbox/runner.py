@@ -848,15 +848,22 @@ def run_from_config(
     store.put_json("run_manifest", _run_manifest.json_safe(manifest))
     if manifest.get("engine"):
         # The slim default report (TOM-1365): the run's qute-research/finding-report@1
-        # data, read back through the manifest just written.
-        from .finding_export import write_finding_report
+        # data, read back through the manifest just written. A failed export does not fail
+        # the run (its results are written; `quantbox report export` re-derives the report),
+        # but it is never only a log line (TOM-1529): the manifest records that the report
+        # was not produced and why, and `quantbox run` prints it in its summary.
+        from .finding_export import FILENAME, write_finding_report
 
         try:
             write_finding_report(store.root)
+            record: dict[str, Any] = {"produced": True, "file": FILENAME}
         except Exception as exc:
-            import logging
-
-            logging.getLogger(__name__).warning("finding_report.json export failed: %s", exc)
+            logger.warning("finding_report.json export failed: %s", exc)
+            record = {"produced": False, "error": f"{type(exc).__name__}: {exc}"}
+            manifest["warnings"].append(f"finding_report:not_produced:{record['error']}")
+        manifest["reports"] = {"finding_report": record}
+        result.notes["reports"] = manifest["reports"]
+        store.put_json("run_manifest", _run_manifest.json_safe(manifest))
     store.append_event(event_line("RUN_END", run_id=run_id, metrics=result.metrics, warnings=len(manifest["warnings"])))
 
     # Optional: ingest artifacts into warehouse

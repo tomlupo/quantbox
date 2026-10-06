@@ -3,7 +3,7 @@
   "$id": "quantbox/run@1",
   "title": "quantbox run manifest (run@1)",
   "description": "The machine-readable record of one run: <run_dir>/run_manifest.json, also what `quantbox run --json` prints. VERSIONING: `schema` names the MAJOR version and readers check it. Adding a field is a MINOR change: it keeps `quantbox/run@1`, bumps `x-schema-minor` here and is safe for every run@1 reader (unknown keys are allowed). Renaming a field, removing one, or changing what one MEANS is a MAJOR change: it ships as `quantbox/run@2`. Paths under `files` are relative to the run directory.",
-  "x-schema-minor": 5,
+  "x-schema-minor": 6,
   "type": "object",
   "required": [
     "schema",
@@ -244,6 +244,27 @@
         "returns": {"$ref": "#/$defs/relpath"},
         "traded_weights": {"$ref": "#/$defs/relpath"},
         "metrics": {"$ref": "#/$defs/relpath"}
+      }
+    },
+    "reports": {
+      "type": "object",
+      "description": "The derived reports the run wrote beside itself, and those it did NOT produce (minor 6, TOM-1529). Written by every run that records `engine`; absent from manifests written before minor 6, and from runs that simulate nothing.",
+      "properties": {
+        "finding_report": {
+          "description": "finding_report.json, the run's qute-research/finding-report@1 data (TOM-1365). produced false: the export failed, `error` says why, and the run's results stand; `quantbox report export <run_dir>` re-derives it.",
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["produced", "file"],
+              "properties": {"produced": {"const": true}, "file": {"$ref": "#/$defs/relpath"}}
+            },
+            {
+              "type": "object",
+              "required": ["produced", "error"],
+              "properties": {"produced": {"const": false}, "error": {"type": "string", "minLength": 1}}
+            }
+          ]
+        }
       }
     }
   },
