@@ -147,6 +147,36 @@ def planned_market(data: Any) -> str | None:
     return str(market) if market else None
 
 
+def planned_funding(data: Any) -> bool | None:
+    """Whether *data* will serve a funding series — its optional ``planned_funding()``, read before any data.
+
+    For a data plugin that plans no files (no ``planned_paths``; quantbox-datasets'
+    ``dataset.curated.v1``): True when the dataset it serves carries a funding
+    series, False when it does not, None when it cannot say before loading (a live
+    source). A plugin without the method answers None. TOM-1627.
+    """
+    answer = getattr(data, "planned_funding", None)
+    if not callable(answer):
+        return None
+    planned = answer()
+    return None if planned is None else bool(planned)
+
+
+def planned_funding_source(data: Any, paths: Mapping[str, str | None] | None) -> tuple[str | None, bool]:
+    """The planned funding ``source`` and whether it is known, as :func:`check_funding` takes them.
+
+    *paths* is the plugin's ``planned_paths`` answer (the funding file), None for a
+    plugin that plans no files; then its :func:`planned_funding` answer decides.
+    """
+    if paths is not None:
+        return paths.get("funding_rates"), True
+    planned = planned_funding(data)
+    if planned is None:
+        return None, False
+    name = getattr(getattr(data, "meta", None), "name", type(data).__name__)
+    return (f"the funding series data plugin '{name}' plans" if planned else None), True
+
+
 #: Where a pipeline config declares the escape.
 IN_CONFIG = "in plugins.pipeline.params"
 #: Where a helper (backtest(), optimize(), the sweep, simulate) takes it.
