@@ -667,6 +667,11 @@ def multiple_testing(pvalues, *, alpha: float = 0.05, method: str = "bonferroni"
     adjusted p-value is the running maximum of ``(m - k + 1) * p_(k)``,
     capped at 1. Neither assumes the tests are independent.
 
+    The contract is ``reject == (adjusted <= alpha)``, for both methods. In
+    exact arithmetic that is the rule above; in floating point a p-value
+    within one rounding of its level (``p = 0.1/3`` at ``alpha=0.1``, ``m=3``)
+    can fall on either side, and the mask follows the adjusted p-value.
+
     ``m`` is the size of the family passed. Every test tried on the question
     belongs in it, the ones that failed included; leaving one out loosens
     every other test's level. For the same reason a NaN/Inf p-value is
