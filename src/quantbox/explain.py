@@ -12,8 +12,10 @@ Nothing here decides what a config MEANS — every fact comes from the code a ru
   variants guards and data-load params (:meth:`BacktestPipeline.plan`, which ``run()``
   itself reads, so every refusal on params alone happens there, for both);
 - ``data.planned_paths(load_params)`` — the files the data plugin will read, a by-name
-  dataset resolved against its lock (never loaded), then ``pipeline.check_planned_data``
-  (a backtest refuses a missing prices file, as its ``run()`` does);
+  dataset resolved against its lock (never loaded) — and ``data.planned_market()``, the
+  dataset's market (with ``data.planned_funding()`` for a plugin that plans no files); then ``pipeline.check_planned_data`` (a backtest refuses a missing
+  prices file, a funding file or a perp market its engine would not charge, and a perp
+  market with no funding file, as its ``run()`` does — :mod:`quantbox.funding_guard`);
 - :func:`quantbox.runner.strict_refusal` — the ``run.strict`` dataset-tier refusal;
 - :mod:`quantbox.run_manifest` — the same functions that fill run@1's ``engine``,
   ``dataset`` and ``funding``; :func:`quantbox.overlays.overlay_record` — its ``overlays``.
@@ -38,7 +40,9 @@ from pathlib import Path
 from typing import Any
 
 from . import run_manifest as _rm
+from .exceptions import ConfigValidationError
 from .execution import run_record
+from .funding_guard import ignored_record, planned_funding, planned_market
 from .overlays import overlay_record
 from .runner import (
     _config_block,
@@ -51,6 +55,7 @@ from .runner import (
     resolve_run,
     strict_refusal,
 )
+from .validate import ValidationFinding
 
 SCHEMA_ID = "quantbox/explain@1"
 
@@ -126,8 +131,13 @@ def explain_config(
     registry: Any,
     *,
     config_path: str | Path | None = None,
+    findings: list[ValidationFinding] | None = None,
 ) -> dict[str, Any]:
-    """The explain@1 document for *cfg*; ``ok`` false and ``errors`` say why a run could not start."""
+    """The explain@1 document for *cfg*; ``ok`` false and ``errors`` say why a run could not start.
+
+    *findings*, when given, receives the structured finding of a guard that refused the
+    plan (the funding guard), so ``quantbox validate`` reports it with its code.
+    """
     cfg = copy.deepcopy(cfg)
     doc: dict[str, Any] = {"schema": SCHEMA_ID, "ok": False, "errors": []}
     errors: list[str] = doc["errors"]
@@ -171,12 +181,18 @@ def explain_config(
         return doc
     try:
         planned_paths = getattr(data, "planned_paths", None)
+        paths = None
         if callable(planned_paths):
             # What load_market_data will record as loaded_paths; run@1's dataset/funding read it.
-            data.loaded_paths = planned_paths((plan or {}).get("load_params") or {})
-            check = getattr(pipeline, "check_planned_data", None)
-            if callable(check):  # the same refusal run() makes before it loads anything
-                check(data, data.loaded_paths)
+            paths = data.loaded_paths = planned_paths((plan or {}).get("load_params") or {})
+        check = getattr(pipeline, "check_planned_data", None)
+        if callable(check):  # the same refusal run() makes before it loads anything (None: no planned files)
+            check(data, paths, plan)
+    except ConfigValidationError as exc:  # the funding guard (TOM-1609); validate reports its findings
+        errors.append(f"funding: {exc}")
+        if findings is not None:
+            findings.extend(exc.findings)
+        return doc
     except Exception as exc:  # noqa: BLE001
         errors.append(f"dataset: {exc}")
         return doc
@@ -187,11 +203,12 @@ def explain_config(
         errors.append(f"strict: {refusal}")
         return doc
     dataset.update(_rm.dataset_fields(data, dataset))
-    resolution = getattr(data, "dataset_resolution", None)
-    dataset["market"] = resolution.get("market") if isinstance(resolution, dict) else None
+    dataset["market"] = planned_market(data)
 
     funding_path = _rm._effective_path(data, "funding_rates", "funding_rates_path")
-    modelled = bool(plan and plan.get("charges_funding") and funding_path and Path(funding_path).is_file())
+    # A plugin that plans no files says through planned_funding() whether a series will come (TOM-1627).
+    planned = (funding_path and Path(funding_path).is_file()) or (paths is None and planned_funding(data))
+    modelled = bool(plan and plan.get("charges_funding") and planned)
 
     doc.update(
         {
@@ -204,7 +221,7 @@ def explain_config(
             "plugins": _plugins_block(resolved),
             "engine": _rm.engine_block({"engine": plan["engine"]} if plan else {}),
             "dataset": dataset,
-            "funding": _rm.funding_block(data, {"funding": {"modelled": modelled}}),
+            "funding": _rm.funding_block(data, {"funding": {"modelled": modelled, **ignored_record(plan or {})}}),
             "n_trials": n_trials,
             "strategies": [
                 _strategy(p, s, weight=float(s.get("weight", 1.0)))

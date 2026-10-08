@@ -313,7 +313,7 @@ def validate(
     """Validate a run config file."""
     with open(config, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
-    findings = validate_config(cfg)
+    findings = validate_config(cfg, config_path=config)
     payload = [f.__dict__ for f in findings]
     if json:
         print(_as_json(payload))
@@ -413,6 +413,27 @@ def _dataset_frame(dataset: Any, name: str) -> Any:
         return dataset._read(name)
 
 
+def _check_sweep_funding(dataset: Any, name: str, market_data: dict[str, Any], backtest: dict[str, Any]) -> None:
+    """The funding guard on a CLI sweep: the dataset's market and the frames it loaded (TOM-1627).
+
+    The engine seam sees only the funding series it is handed, so a perp dataset whose
+    ``data.frames`` leave out ``funding_rates`` would run on vectorbt with no funding.
+    The market is the dataset manifest's ``market`` (``quantbox_datasets.Dataset.manifest``);
+    a dataset without a manifest declares no market. One check,
+    :func:`quantbox.funding_guard.check_funding`; the escape is ``backtest.funding``.
+    """
+    from .engine.registry import get_engine
+    from .funding_guard import check_funding, engine_plan
+
+    funding = market_data.get("funding_rates")
+    check_funding(
+        engine_plan(get_engine(backtest.get("engine"), require_installed=False), backtest.get("funding")),
+        None if funding is None or funding.empty else f"funding_rates of dataset '{name}' in data.frames",
+        market=(getattr(dataset, "manifest", None) or {}).get("market"),
+        declare="as backtest.funding in the sweep config",
+    )
+
+
 @app.command()
 def sweep(
     config: str = typer.Option(..., "-c", "--config", help="Path to sweep config YAML"),
@@ -443,6 +464,10 @@ def sweep(
           engine: vectorbt   # or rsims — the engine seam (docs/adr/0008)
           fees: 0.005
           rebalancing_freq: 1D
+          # funding: {ignore: true, reason: ...}  — only where the funding guard refuses: a perp
+          #   dataset (manifest market) or funding_rates in data.frames on an engine that does
+          #   not charge funding, or a perp dataset with no funding_rates on one that does
+          #   (TOM-1619, TOM-1627)
         execution:
           lag_bars: 1        # default; same convention as `quantbox run`
                              # (backtest.shift_signal is a deprecated alias)
@@ -453,8 +478,7 @@ def sweep(
     ``<output_dir>/sweep_manifest.json`` (``quantbox/sweep@1``: strategy, execution
     timing, n_trials = grid rows).
     """
-    from .analysis import DEFAULT_METRICS, run_grid
-    from .analysis.parameter_grid import align_market_data
+    from .sweep import DEFAULT_METRICS, align_market_data, run_grid
 
     config_path = Path(config).resolve()
     with config_path.open(encoding="utf-8") as f:
@@ -499,6 +523,7 @@ def sweep(
     output_dir = (config_dir / cfg.get("output_dir", "heatmaps")).resolve()
     heatmap = cfg.get("heatmap", {}) or {}
     backtest = cfg.get("backtest", {}) or {}
+    _check_sweep_funding(dataset, data_cfg["dataset"], market_data, backtest)
 
     grid = run_grid(
         strategy_cls=strategy_cls,
@@ -515,6 +540,7 @@ def sweep(
         lag_bars=sweep_lag_bars,
         shift_signal=backtest.get("shift_signal"),  # deprecated alias of execution.lag_bars
         engine=backtest.get("engine"),
+        funding=backtest.get("funding"),  # {ignore: true, reason}: funding_rates in frames on vectorbt (TOM-1619)
     )
     # The sweep's own manifest: the timing every row was simulated with, and the
     # honest trial count (one per grid row), so a gate never counts by hand.

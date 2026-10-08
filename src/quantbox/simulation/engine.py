@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from quantbox.inference import moments
 from quantbox.metrics import compute_drawdown_series
 
 from .models import GBM, BaseModel
@@ -78,14 +79,10 @@ class SimulationResult:
         return pd.DataFrame({f"p{p}": np.percentile(prices, p, axis=0) for p in percentiles})
 
     def _skewness(self, x):
-        n = len(x)
-        m, s = np.mean(x), np.std(x)
-        return np.sum(((x - m) / s) ** 3) / n if s > 0 else 0
+        return moments(x, excess=True)[0]  # population skew; 0 for a flat series
 
     def _kurtosis(self, x):
-        n = len(x)
-        m, s = np.mean(x), np.std(x)
-        return np.sum(((x - m) / s) ** 4) / n - 3 if s > 0 else 0
+        return moments(x, excess=True)[1]  # population EXCESS kurtosis; 0 for a flat series
 
     def _max_drawdowns(self, prices):
         drawdowns = compute_drawdown_series(np.asarray(prices, dtype=float))

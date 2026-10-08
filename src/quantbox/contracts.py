@@ -218,6 +218,13 @@ class DataPlugin(Protocol):
             above is guaranteed to be present in ``market_data``.
         load_fx: Returns FX rate DataFrame, or None if not applicable.
 
+    Optional, read before any data is loaded (``quantbox config explain`` and the
+    backtest pipeline): ``planned_paths(params)`` — ``{"prices", "funding_rates"}``,
+    the files the plugin will read; ``planned_market()`` — the dataset's ``market``
+    (its manifest), which the funding guard reads (:mod:`quantbox.funding_guard`);
+    ``planned_funding()`` — for a plugin that plans no files, whether the dataset it
+    will serve carries a funding series (True/False), or None when it cannot say.
+
     Example:
         >>> data = plugin.load_market_data(universe, "2026-02-01", {"lookback_days": 365})
         >>> data["prices"]  # DataFrame: date index x symbol columns

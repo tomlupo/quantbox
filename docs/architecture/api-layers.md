@@ -9,7 +9,7 @@ QuantBox exposes every capability at multiple layers so users (humans, scripts, 
 | Layer | API shape | When to use | Example |
 |---|---|---|---|
 | **L0** Re-exports | `from quantbox.adapters.vectorbt import vbt` | Quick experiment, throwaway script. Pure pass-through to the underlying lib — it fills the bar it is handed, so lag the signal yourself ([ADR-0005](../adr/0005-next-bar-is-mandatory.md)). | `vbt.Portfolio.from_signals(prices, (signals > 0).shift(1, fill_value=False))` |
-| **L1** Convenience helpers | `quantbox.bt.run(...)` (the only L1 namespace today) | Common idiom — one function call. No plugin/config layer. | `qbt.run(prices, signals, fees=0.001)` |
+| **L1** Convenience helpers | `quantbox.bt.run(...)`; `backtest()` / `optimize()` (`quantbox.plugins.backtesting`, through the engine seam) | Common idiom — one function call. No plugin/config layer. | `qbt.run(prices, signals, fees=0.001)` |
 | **L2** Composable units (not built) | — | Building a notebook, composing two ideas, no run_id ceremony. Until it exists, use L3. | — |
 | **L3** Plugin instances | Instantiate `Strategy()`, `DataPlugin()`, call directly | You want validation and contracts but not the YAML/runner. | `MyStrat().run(data, params)` |
 | **L4** Full pipeline | `quantbox.runner.run_from_config(yaml_path)` | Logged experiment, ArtifactStore manifest, EXPERIMENTS.md entry. | `run_from_config("cookbook/configs/research.yaml")` |
@@ -39,6 +39,7 @@ When a skill is unsure, **start at L1.** Escalate only when the task demands it.
 |---|---|---|
 | `quantbox.adapters.{lib}` | Re-exports + thin helpers (`vbt`, ...) — added when ≥2 consumers need same bridge | L0 |
 | `quantbox.bt` | Convenience for backtesting (most common idiom) | L1 |
+| `quantbox.engine` | The engine seam: `simulate()`, the one book function every backtest door uses; engine choice in [ADR-0008](../adr/0008-engine-seam.md) decision 14 | L1–L4 |
 | `quantbox.contracts` | `Protocol`s, `PluginMeta`, `RunResult` | L3 |
 | `quantbox.runner` | `run_from_config` | L4 |
 | `quantbox.cli` | Typer-based CLI | L5 |

@@ -64,7 +64,10 @@ src/quantbox/              ← installable library (uv add quantbox)
   runner.py                Config → plugin instantiation → pipeline.run()
   strategy_runner.py       The ONE strategy runner + StrategyContext builder (backtest and trading)
   decision.py              The ONE decision: decided weights → final target weights (clip, cap, groups, normalise)
-  metrics.py               The ONE metrics module (Sharpe, IR, drawdowns, turnover, VaR)
+  metrics.py               The ONE metrics module: DESCRIBES a run (Sharpe, drawdown, turnover, IC, beta, ...)
+  inference.py             TESTS a claim: NaN refusal, moments, Newey-West/HAC, factor alpha, DSR, bootstrap (ADR-0009)
+  gates.py                 DECIDES: thresholds and verdicts on top of inference (`quantbox gates`, gates_cli.py)
+  sweep.py                 The parameter-grid sweep behind `quantbox sweep` (was analysis/parameter_grid)
   registry.py              Plugin discovery (builtins + entry points)
   cli.py                   CLI entry point (quantbox command)
   store.py                 Artifact storage (Parquet + JSON)
@@ -72,6 +75,7 @@ src/quantbox/              ← installable library (uv add quantbox)
   schemas.py               Runtime schema validation
   exceptions.py            QuantboxError hierarchy (see "Error handling")
   engine/                  The engine seam: decided weights → traded book; vectorbt + rsims adapters (ADR-0008)
+  funding_guard.py         Refuses a perps book that leaves funding out (validate, explain, run, the engine seam)
   artifact_schemas/        JSON schemas for artifacts (bundled as package data)
   plugins/
     manifest.yaml          Builtin plugin list + profiles — THE catalogue (bundled as package data)
@@ -114,6 +118,7 @@ uv run pytest -q                            # run tests
   retired `quantbox-core` skill froze "v0.2.0, 44 plugins" and drifted.
 - **New config:** adapt the closest `cookbook/configs/run_*.yaml` (backtest, fund
   selection, spot/futures paper, stress test, trade-from-allocations).
+- **Engine:** perps, funding or margin → rsims; spot research → either; client installs → rsims; details: [ADR-0008](docs/adr/0008-engine-seam.md) decision 14.
 
 ## Plugin architecture
 

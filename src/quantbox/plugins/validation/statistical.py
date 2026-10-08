@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+from quantbox.inference import bootstrap, gaussian_null
 from quantbox.metrics import sharpe_ratio
 
 
@@ -73,13 +74,14 @@ class StatisticalValidation:
 
         observed_sharpe = sharpe_ratio(rets, trading_days)
 
-        # Bootstrap null-distribution test: simulate n_trials zero-mean series at the
-        # observed series' own volatility, and see how often their Sharpe reaches the
-        # observed Sharpe by chance alone.
+        def annual_sharpe(x: np.ndarray) -> float:
+            return sharpe_ratio(x, trading_days)
+
+        # Null-distribution test: simulate n_trials zero-mean series at the observed
+        # series' own volatility, and see how often their Sharpe reaches the observed
+        # Sharpe by chance alone. One rng drives the null, then the bootstrap.
         rng = np.random.default_rng(42)
-        null_sharpes = np.array(
-            [sharpe_ratio(rng.normal(0, np.std(rets, ddof=1), size=n), trading_days) for _ in range(n_trials)]
-        )
+        null_sharpes = gaussian_null(annual_sharpe, n, float(np.std(rets, ddof=1)), draws=n_trials, rng=rng)
         pct_exceeding = float(np.mean(null_sharpes >= observed_sharpe))
         # Sharpe adjusted for null-test significance: observed if it clears the
         # confidence threshold, otherwise scaled down by how deep into the null
@@ -89,11 +91,8 @@ class StatisticalValidation:
         else:
             bootstrap_adjusted_sharpe = observed_sharpe * (1 - pct_exceeding)
 
-        # Bootstrap CI
-        bootstrap_sharpes = np.empty(n_bootstrap)
-        for i in range(n_bootstrap):
-            sample = rng.choice(rets, size=n, replace=True)
-            bootstrap_sharpes[i] = sharpe_ratio(sample, trading_days)
+        # Bootstrap CI (iid resample)
+        bootstrap_sharpes = bootstrap(annual_sharpe, rets, draws=n_bootstrap, rng=rng)
 
         alpha = 1 - confidence
         ci_lower = float(np.percentile(bootstrap_sharpes, alpha / 2 * 100))

@@ -29,7 +29,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from quantbox.analysis.parameter_grid import sweep
 from quantbox.engine import simulate
 from quantbox.execution import (
     apply_execution_lag,
@@ -42,6 +41,7 @@ from quantbox.execution import (
 )
 from quantbox.plugins.pipeline.backtest_pipeline import BacktestPipeline
 from quantbox.store import FileArtifactStore
+from quantbox.sweep import sweep
 
 REFUSED = "lag_bars must be >= 1"
 N = 40

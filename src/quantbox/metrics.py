@@ -1,10 +1,20 @@
-"""The ONE metrics module: every run statistic quantbox reports is computed here.
+"""The ONE metrics module: every statistic that DESCRIBES a run is computed here.
 
 Sharpe (and excess Sharpe vs a benchmark), information ratio, tracking error,
 CAGR, volatility, max drawdown, top-N drawdowns, turnover, VaR / CVaR. Every
 backtest path, the run metrics, the finding-report export, the validation
 plugins and :mod:`quantbox.performance` (which quantbox-live imports) call
-these functions instead of carrying their own copy (TOM-1448).
+these functions instead of carrying their own copy (TOM-1448). The one
+aggregate is :func:`compute_backtest_metrics`.
+
+The descriptive research statistics live here too (TOM-1596): IC and ICIR,
+beta to a benchmark, hit rate, active share and risk decomposition.
+
+Metrics DESCRIBE; :mod:`quantbox.inference` TESTS (Newey-West, factor
+regression, DSR, bootstrap) and :mod:`quantbox.gates` DECIDES (TOM-1618).
+``newey_west_tstat``, ``newey_west_auto_lags``, ``hac_ols`` and
+``require_finite`` moved to :mod:`quantbox.inference`; the old names here still
+resolve, with a ``DeprecationWarning``.
 
 Core: numpy and pandas only (scipy is imported lazily for parametric VaR).
 ``quantbox.plugins.backtesting.metrics`` re-exports the same objects for the
@@ -20,21 +30,49 @@ Conventions, stated once:
   ``r - benchmark``. :func:`information_ratio` computes it through
   :func:`sharpe_ratio`, so the two names can never disagree.
 - Drawdowns are negative fractions. ``start_is_peak`` says whether the equity
-  before the first return (1.0) counts as a peak.
+  before the first return (1.0) counts as a peak. Every drawdown OUTPUT names
+  its sign (TOM-1627): ``max_drawdown`` is signed (<= 0) and ``max_drawdown_abs``
+  is the same drawdown as a positive depth (>= 0) — :func:`drawdown_fields`.
 - Turnover is two-sided: ``sum(|w[t] - w[t-1]|)`` per bar.
+- A research statistic with no answer (too few observations, no variance) is
+  NaN, never 0.0 — the Sharpe's 0.0 convention above predates it and stays.
 """
 
 from __future__ import annotations
 
 import logging
+import warnings
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
+# The framework's one "cancelled to floating-point noise" threshold and test;
+# the measurement behind DEGENERATE_RTOL is in quantbox._numerics.
+from ._numerics import DEGENERATE_RTOL  # noqa: F401 — public re-export, imported from here before TOM-1618
+from ._numerics import flat as _flat
+
 logger = logging.getLogger(__name__)
 
 TRADING_DAYS_PER_YEAR = 365  # crypto default; callers can override
+
+# Inference that lived here until TOM-1618: the old names resolve to
+# quantbox.inference, with a DeprecationWarning.
+_MOVED_TO_INFERENCE = ("hac_ols", "newey_west_auto_lags", "newey_west_tstat", "require_finite")
+
+
+def __getattr__(name: str) -> Any:
+    if name in _MOVED_TO_INFERENCE:
+        warnings.warn(
+            f"quantbox.metrics.{name} is deprecated: import it from quantbox.inference (TOM-1618)",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        from . import inference
+
+        return getattr(inference, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def sharpe_ratio(
@@ -114,7 +152,8 @@ def compute_backtest_metrics(
     Returns
     -------
     dict
-        Keys: total_return, cagr, sharpe, sortino, max_drawdown,
+        Keys: total_return, cagr, sharpe, sortino, max_drawdown (signed,
+        <= 0), max_drawdown_abs (the same drawdown as a positive depth, >= 0),
         max_drawdown_duration_days, annual_volatility, calmar,
         win_rate, profit_factor, var_95, cvar_95 — plus the optional
         keys above only when their input is given.
@@ -146,7 +185,7 @@ def compute_backtest_metrics(
 
     wins = returns[returns > 0]
     losses = returns[returns < 0]
-    win_rate = len(wins) / len(returns) if len(returns) > 0 else 0.0
+    win_rate = hit_rate(returns)
     profit_factor = (wins.sum() / abs(losses.sum())) if losses.sum() != 0 else float("inf")
 
     var_95 = float(np.percentile(returns, 5))
@@ -158,7 +197,7 @@ def compute_backtest_metrics(
         "cagr": float(cagr),
         "sharpe": float(sharpe),
         "sortino": float(sortino),
-        "max_drawdown": float(max_dd),
+        **drawdown_fields(max_dd),
         "max_drawdown_duration_days": int(dd_dur),
         "annual_volatility": float(ann_vol),
         "calmar": float(calmar),
@@ -194,8 +233,21 @@ def compute_drawdown_series(equity: Any) -> Any:
     return (equity - peak) / peak
 
 
+def drawdown_fields(drawdown: float) -> dict[str, float]:
+    """A drawdown as the two names every drawdown output carries (TOM-1627).
+
+    ``max_drawdown`` is SIGNED, <= 0 (-0.25 = a 25% drawdown), the package's
+    convention; ``max_drawdown_abs`` is the same drawdown as a positive depth,
+    >= 0 (0.25). *drawdown* is a signed drawdown, e.g. :func:`max_drawdown`.
+    """
+    signed = float(drawdown)
+    return {"max_drawdown": signed, "max_drawdown_abs": abs(signed)}
+
+
 def max_drawdown(returns: pd.Series | np.ndarray, *, start_is_peak: bool = False) -> float:
-    """Deepest drawdown of the compounded equity, as a negative fraction (0.0 when none).
+    """Deepest drawdown of the compounded equity, SIGNED: a negative fraction (0.0 when none).
+
+    Its positive depth is ``max_drawdown_abs`` (:func:`drawdown_fields`).
 
     ``start_is_peak=False`` (the run metrics' convention) measures from the
     equity after the first return; ``True`` also counts the starting equity
@@ -291,6 +343,122 @@ def compute_rolling_sharpe(
     roll_mean = returns.rolling(window).mean()
     roll_std = returns.rolling(window).std()
     return (roll_mean / roll_std) * np.sqrt(trading_days)
+
+
+# ---------------------------------------------------------------------------
+# Research statistics (TOM-1596)
+# ---------------------------------------------------------------------------
+
+
+def information_coefficient(signal: pd.DataFrame, forward_returns: pd.DataFrame, *, min_assets: int = 2) -> pd.Series:
+    """Per-date cross-sectional Spearman rank IC of ``signal`` vs ``forward_returns``.
+
+    Both are wide (date x symbol) and aligned on dates and symbols. On each
+    date only the symbols with BOTH a signal and a forward return count; ties
+    take their average rank (as ``scipy.stats.spearmanr``). A date with fewer
+    than ``min_assets`` such symbols, or with no spread in either rank, has no
+    IC and is left out. Lining the forward return up with the bar the signal
+    is traded on (next-bar, ADR-0005) is the caller's job.
+    """
+    s, f = signal.align(forward_returns, join="inner")
+    both = s.notna() & f.notna()
+    rs = s.where(both).rank(axis=1)
+    rf = f.where(both).rank(axis=1)
+    ds = rs.sub(rs.mean(axis=1), axis=0)
+    df = rf.sub(rf.mean(axis=1), axis=0)
+    num = (ds * df).sum(axis=1)
+    den = np.sqrt((ds**2).sum(axis=1) * (df**2).sum(axis=1))
+    ic = num / den.where(den > 0)
+    ic = ic.where(both.sum(axis=1) >= max(min_assets, 2))
+    return ic.dropna().astype(float)
+
+
+def icir(ic: pd.Series) -> float:
+    """IC information ratio: mean IC over its standard deviation (ddof=1), NOT annualised.
+
+    It is the per-period Sharpe of the IC series (:func:`sharpe_ratio` at one
+    bar a year). NaN with fewer than two ICs or no variance.
+    """
+    x = pd.Series(ic, dtype=float).dropna()
+    if len(x) < 2 or _flat(x.to_numpy()):
+        return float("nan")
+    return sharpe_ratio(x, 1.0)
+
+
+def beta(returns: pd.Series | np.ndarray, benchmark: pd.Series | np.ndarray) -> float:
+    """Beta of ``returns`` to ``benchmark``: ``cov(r, b) / var(b)`` (the OLS slope with an intercept).
+
+    Series align by date (inner), arrays by position; rows missing either
+    side are dropped. NaN with fewer than two rows or a flat benchmark.
+    """
+    r, b = _aligned(returns, benchmark)
+    pair = pd.DataFrame({"r": np.asarray(r, dtype=float), "b": np.asarray(b, dtype=float)}).dropna()
+    if len(pair) < 2 or _flat(pair["b"].to_numpy()):
+        return float("nan")
+    c = np.cov(pair["r"].to_numpy(), pair["b"].to_numpy(), ddof=1)
+    return float(c[0, 1] / c[1, 1])
+
+
+def hit_rate(returns: pd.Series | np.ndarray, benchmark: pd.Series | np.ndarray | None = None) -> float:
+    """Share of periods with ``returns > 0`` — or ``returns > benchmark`` when one is given.
+
+    Strict: a flat period is not a hit. Missing periods are left out of the
+    count. Resample first for a monthly hit rate. NaN when no period is left.
+    """
+    if benchmark is None:
+        x = pd.Series(np.asarray(returns, dtype=float)).dropna()
+        wins = x > 0
+    else:
+        r, b = _aligned(returns, benchmark)
+        pair = pd.DataFrame({"r": np.asarray(r, dtype=float), "b": np.asarray(b, dtype=float)}).dropna()
+        wins = pair["r"] > pair["b"]
+    return float(wins.mean()) if len(wins) else float("nan")
+
+
+def active_share(weights: pd.DataFrame, reference: pd.DataFrame | pd.Series | Mapping[str, float]) -> float:
+    """Active share vs a reference book: ``0.5 * sum(|w - ref|)`` per date, averaged over dates.
+
+    ``reference`` is a book (date x symbol, aligned on ``weights``' dates) or
+    one static set of weights. A symbol only one side holds counts in full. A
+    date on which either book carries no weight at all is left out. The level
+    is whatever ``weights`` holds (proxies, sleeves or names).
+    """
+    if isinstance(reference, pd.DataFrame):
+        ref = reference.reindex(weights.index)
+    else:
+        ref = pd.DataFrame([pd.Series(reference, dtype=float)] * len(weights.index), index=weights.index)
+    cols = weights.columns.union(ref.columns)
+    a = weights.reindex(columns=cols).fillna(0.0)
+    b = ref.reindex(columns=cols).fillna(0.0)
+    held = weights.notna().any(axis=1) & ref.notna().any(axis=1)
+    per_date = (a - b).abs().sum(axis=1) * 0.5
+    return float(per_date[held].mean()) if held.any() else float("nan")
+
+
+def risk_contributions(
+    weights: pd.Series | Mapping[str, float],
+    returns: pd.DataFrame | None = None,
+    *,
+    cov: pd.DataFrame | None = None,
+) -> pd.Series:
+    """Each asset's (or sleeve's) share of the portfolio variance: ``w_i (S w)_i / w' S w``.
+
+    ``S`` is ``cov``, or the sample covariance of ``returns`` (date x asset) on
+    the rows where every asset has a return. Pass exactly one. The shares sum
+    to 1; a hedge's share is negative. NaN everywhere when the portfolio has no
+    variance.
+    """
+    if (returns is None) == (cov is None):
+        raise ValueError("risk_contributions needs exactly one of `returns` or `cov`")
+    w = pd.Series(weights, dtype=float)
+    if returns is not None:
+        cov = returns[list(w.index)].dropna().cov()
+    s = cov.reindex(index=w.index, columns=w.index).to_numpy(dtype=float)
+    marginal = s @ w.to_numpy()
+    total = float(w.to_numpy() @ marginal)
+    if not total > 0:
+        return pd.Series(np.nan, index=w.index)
+    return pd.Series(w.to_numpy() * marginal / total, index=w.index)
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,8 @@
 # Backtesting
 
-QuantBox includes two backtesting engines accessible through the `backtest.pipeline.v1` pipeline plugin. Both use the same strategy configs as live trading — swap the pipeline name to go from backtest to production.
+`backtest.pipeline.v1` runs a strategy config through the engine seam
+(`quantbox.engine.simulate`). It uses the same strategy configs as live trading — swap the
+pipeline name to go from backtest to production.
 
 ## Quick start
 
@@ -10,32 +12,31 @@ quantbox run -c cookbook/configs/run_backtest_crypto_trend.yaml
 
 ## Engines
 
-### vectorbt (spot / equity)
-
-Numba-accelerated portfolio simulation. Best for spot strategies without leverage.
+Two engines sit behind the one seam: `engine: vectorbt` (the default) and `engine: rsims`.
+The same config gives the same decision, schedule, lag and costs on both. Which engine to
+pick, and what really differs between them, is [ADR-0008](../adr/0008-engine-seam.md)
+decision 14, which also states what the funding guard refuses and its one escape,
+`funding: {ignore: true, reason: "..."}`.
 
 ```yaml
 plugins:
   pipeline:
     name: "backtest.pipeline.v1"
     params:
-      engine: vectorbt
+      engine: rsims             # perps, funding or margin (ADR-0008 decision 14)
       fees: 0.001               # 10 bps per trade
-      rebalancing_freq: 1       # every N days (or "1W", "1M")
-      # threshold: 0.05         # uncomment for rebalancing-bands mode
-      trading_days: 365
+      rebalancing_policy: {cadence: periodic, frequency: daily}
+      venue: {allow_shorts: true, leverage: borrow}
+      risk: {max_leverage: 2}   # a levered book declares its gross cap (default 1)
 ```
 
-**Rebalancing modes** (the seam's schedule — both engines follow it, docs/adr/0008):
-- `rebalancing_freq: N` — periodic rebalancing every N execution bars (or `"W-FRI"`, `"ME"`, ...)
-- `threshold: 0.05` — a scheduled rebalance is placed only when a held weight drifted more than
-  5% from its target. The seam measures the drift cost-free; with costs a rebalance near the band
-  edge can fall on a slightly different bar than an in-engine band would.
+## Rebalancing
 
-**Rebalancing policies** (`rebalancing_policy`, TOM-1450; replaces the two keys above — declare
-one spelling, not both). Every policy is an orders mask in the seam, the same on both engines
-(`quantbox.engine.policy` has the full rules). A policy is a **cadence** (`periodic` or `tranche`)
-times a **trigger** (`none`, `band` or `corridor`; TOM-1513):
+`rebalancing_policy` (TOM-1450) is an orders mask in the seam, the same on both engines
+(`quantbox.engine.policy` has the full rules). A policy is a **cadence** (`periodic` or
+`tranche`) times a **trigger** (`none`, `band` or `corridor`; TOM-1513). `rebalancing_freq` and
+`threshold` are the legacy spelling of `periodic` and `band` (ADR-0008 decision 11); declare one
+spelling, not both.
 
 ```yaml
       rebalancing_policy: {cadence: tranche, tranches: 5, frequency: daily, trigger: corridor, width: 0.02}
@@ -82,35 +83,6 @@ An infeasible limit refuses the run with the first dates (the minimums need more
 the row holds, or a group with a minimum holds nothing). `data_validation.json` records the
 policy (`rebalancing`) and the limits (`groups`); `quantbox config explain` shows both.
 
-### rsims (futures)
-
-Daily step simulator with funding rates, margin, leverage, and no-trade buffer. Best for futures strategies.
-
-```yaml
-plugins:
-  pipeline:
-    name: "backtest.pipeline.v1"
-    params:
-      engine: rsims
-      fees: 0.001
-      rebalancing_freq: 1
-      trading_days: 365
-
-      risk:
-        tranches: 1
-        max_leverage: 2
-        allow_short: true
-```
-
-rsims has the same defaults as vectorbt (TOM-1500): it compounds, starts from the
-same `initial_cash` and charges `fees`, `slippage` and `fixed_fees` the same way. A
-cost an engine cannot model is refused, never dropped.
-
-**Additional rsims features:**
-- Funding rate simulation (long/short asymmetry)
-- Margin and leverage tracking
-- No-trade buffer to reduce turnover
-
 ## Configuration
 
 ### Full example
@@ -128,9 +100,8 @@ plugins:
   pipeline:
     name: "backtest.pipeline.v1"
     params:
-      engine: vectorbt
+      engine: vectorbt          # spot data, no funding series
       fees: 0.001
-      rebalancing_freq: 1
       trading_days: 365
 
       universe:
@@ -194,28 +165,15 @@ Reading a dataset without it raises an ImportError naming both.
 
 ### Parameters reference
 
-| Parameter | Default | Description |
-|---|---|---|
-| `engine` | `vectorbt` | `"vectorbt"` or `"rsims"` |
-| `fees` | `0.001` | Trading fee per side (0.001 = 10 bps), every engine |
-| `slippage` | `0` | Proportional slippage on the fill price (0.0005 = 5 bps), every engine |
-| `fixed_fees` | `0` | Fixed fee per order, in quote currency, every engine |
-| `initial_cash` | `10000` | Starting cash, every engine (a fixed fee is a share of it) |
-| `capitalise_profits` | `true` | rsims: size off current equity (compound), as vectorbt does; `false` sizes off `min(initial_cash, equity)` |
-| `rebalancing_freq` | `1` | The DECISION schedule on the execution calendar: every N execution bars, or `"1W"`, `"ME"`, `"BMS"`; period-end offsets decide on the period's last execution bar, others on the next one; the trade follows `lag_bars` execution bars later ([ADR-0007](../adr/0007-instrument-calendar-and-financing.md)) |
-| `threshold` | (none) | Drift band: a scheduled rebalance is placed only when a held weight drifted more than this (seam-computed, cost-free, every engine) |
-| `trading_days` | `365` | Days per year for annualization |
-| `universe.top_n` | — | Universe size (top N by volume/mcap) |
-| `prices.lookback_days` | — | Price history window |
-| `execution.lag_bars` | `1` | Bars between deciding a weight and filling it — see [Execution timing and venue constraints](#execution-timing-and-venue-constraints) |
-| `venue.allow_shorts` | (unset) | Whether the venue can hold shorts — same section |
-| `venue.financing` | (unset) | What borrowed / idle cash costs — [Missing prices and financing](#missing-prices-and-financing) |
-| `venue.leverage` | `normalize` (every engine) | How the decision is normalised: a target row above net 1 is scaled to 1, or borrowed — [Missing prices and financing](#missing-prices-and-financing) |
-| `execution.calendar` | `majority` | The execution calendar: `majority` \| `union` \| `intersection` \| a ticker — [Missing prices and financing](#missing-prices-and-financing) |
-| `execution.schedule` | `calendar` | `calendar`: the scheduled book; `bars`: every price bar executes, no deferral, no `venue.leverage` ([ADR-0008](../adr/0008-engine-seam.md)) |
-| `risk.max_leverage` | `1` | Gross cap per bar (`sum \|w\|`); only ever scales DOWN (both engines). The same default in trading, `backtest()`, `optimize()` and the sweep (`quantbox.decision.DEFAULT_MAX_LEVERAGE`, TOM-1525): a levered book declares it |
-| `risk.allow_short` | `false` | Legacy short switch (both engines); prefer `venue.allow_shorts` |
-| `risk.tranches` | `1` | DEPRECATED (TOM-1513): the tranche cadence, `rebalancing_policy: {cadence: tranche, tranches: N}`; warns |
+The pipeline's `params_schema` is the one list of parameters, defaults and meanings, and
+`quantbox validate` checks every config key against it:
+
+```bash
+uv run quantbox plugins info --name backtest.pipeline.v1   # every param, its default and its meaning
+```
+
+The sections below explain the parameters that need more than one line: execution timing,
+the venue, missing prices and financing.
 
 ### Execution timing and venue constraints
 
@@ -227,7 +185,7 @@ the engine seam (`quantbox.engine._lag.lag_positions`, docs/adr/0008: after
 aggregation, venue clipping and risk transforms, before any engine adapter),
 so it holds for both engines, the variants flow, the sweep, `backtest()` and
 `optimize()` alike — they all build the book with the one function
-`quantbox.engine.simulate`. `quantbox sweep` (`analysis.parameter_grid`) uses the same setting,
+`quantbox.engine.simulate`. `quantbox sweep` (`quantbox.sweep`) uses the same setting,
 and so do the Python helpers `backtest()` and `optimize()`
 (`quantbox.plugins.backtesting`): keyword `lag_bars=`, same default, same
 refusal of `0`, and the result carries the same `execution` record. The L1
@@ -292,7 +250,7 @@ On top sits ONE **execution calendar**, the bars decisions are taken and orders 
 ```
 
 `majority`: half of the live instruments print; `union`: any; `intersection`: all; a ticker:
-that series prints. **Decision vs execution:** `rebalancing_freq` picks DECISION bars on that
+that series prints. **Decision vs execution:** the rebalancing policy's `frequency` picks DECISION bars on that
 calendar (`"ME"` = the last execution bar of the month), and the trade happens `lag_bars`
 **execution** bars later. `rebalance_schedule.parquet` records `decision_date`,
 `execution_date` and `deferred_instruments` for every rebalance. Before ADR-0007 the schedule
@@ -457,7 +415,7 @@ Artifacts are written to `artifacts/<run_id>/`:
 | `strategy_weights` | Per-strategy weight time series |
 | `aggregated_weights` | Final blended weights after aggregation |
 | `weights_history` | The strategy's **decided target** weights: aggregated, BEFORE venue clipping, risk transforms and the execution lag |
-| `traded_weights` | The weights the engine actually received: after venue clipping, tranching, leverage cap, execution lag and missing-price masking. Report charts and attribution are built from these |
+| `traded_weights` | The weights the engine actually received: the decision's final targets (`quantbox.decision`: short clip, gross cap, group limits, normalisation) after the rebalancing policy, the execution lag and missing-price masking. Report charts and attribution are built from these |
 | `portfolio_daily` | Daily portfolio value series |
 | `returns` | Daily return series |
 | `metrics` | Summary statistics (Sharpe, drawdown, etc.) |
@@ -478,8 +436,8 @@ The `metrics` artifact includes:
   `traded_short_gross_share` (short gross / total gross over the run),
   `traded_mean_turnover` (mean per-bar `sum(|w[t] - w[t-1]|)`),
   `traded_flat_bar_share` (share of bars with zero gross). They describe the
-  book held after the seam's orders; with `rebalancing_freq` ≠ 1 or a `threshold`
-  the engine trades a subset of the bars and positions drift in between.
+  book held after the seam's orders; with a policy `frequency` other than 1 or a
+  trigger, the engine trades a subset of the bars and positions drift in between.
 - **`target_short_gross_share`, `target_mean_net_exposure`** — the same
   statistics of the strategy's targets, so a clipped short book is visible.
 

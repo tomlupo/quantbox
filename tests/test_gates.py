@@ -25,7 +25,8 @@ import pandas as pd
 import pytest
 from typer.testing import CliRunner
 
-from quantbox.analysis import gates as g
+from quantbox import gates as g
+from quantbox import inference
 from quantbox.cli import app
 
 REL = 1e-9
@@ -196,7 +197,7 @@ def test_factor_inputs_that_cannot_compute_are_refused(call):
 def test_stationary_bootstrap_indices_walk_forward_circularly_within_blocks():
     rng = np.random.default_rng(0)
     n = 50
-    idx = g.stationary_bootstrap_indices(n, mean_block=10, rng=rng)
+    idx = inference.stationary_bootstrap_indices(n, mean_block=10, rng=rng)
     assert idx.shape == (n,) and idx.min() >= 0 and idx.max() < n
     steps = (np.diff(idx) % n) == 1
     # a new block starts with prob 1/mean_block, so most steps continue the block
@@ -205,7 +206,7 @@ def test_stationary_bootstrap_indices_walk_forward_circularly_within_blocks():
 
 def test_mean_block_one_is_the_iid_bootstrap():
     rng = np.random.default_rng(1)
-    idx = np.concatenate([g.stationary_bootstrap_indices(1000, mean_block=1, rng=rng) for _ in range(5)])
+    idx = np.concatenate([inference.stationary_bootstrap_indices(1000, mean_block=1, rng=rng) for _ in range(5)])
     # with p = 1 every observation starts a new block: consecutive steps are chance (~1/n)
     assert ((np.diff(idx) % 1000) == 1).mean() < 0.01
 
@@ -295,20 +296,22 @@ def test_largest_episode_by_hand():
     # equity 1.1, .99, .891, .93555, 1.12266, 1.1338866, 1.0771923, 1.0987361
     # deepest: peak 1.1 (row 0) -> trough row 2 (-19%) -> recovered at row 4
     r = np.array([0.10, -0.10, -0.10, 0.05, 0.20, 0.01, -0.05, 0.02])
-    ep = g.largest_drawdown_episode(r)
+    ep = inference.largest_drawdown_episode(r)
     assert (ep["start"], ep["trough"], ep["end"]) == (1, 2, 4)
-    assert ep["depth"] == pytest.approx(0.19, rel=1e-12) and ep["recovered"] is True
+    # inference speaks the package's drawdown sign (negative); the gate's JSON reports the depth
+    assert ep["depth"] == pytest.approx(-0.19, rel=1e-12) and ep["recovered"] is True
+    assert g.episode_gate(r, metric="mean")["episode"]["depth"] == pytest.approx(0.19, rel=1e-12)
 
 
 def test_an_unrecovered_episode_runs_to_the_end_and_a_leading_loss_starts_at_row_zero():
-    ep = g.largest_drawdown_episode(np.array([0.05, -0.20, 0.01, 0.02]))
+    ep = inference.largest_drawdown_episode(np.array([0.05, -0.20, 0.01, 0.02]))
     assert (ep["start"], ep["end"], ep["recovered"]) == (1, 3, False)
-    lead = g.largest_drawdown_episode(np.array([-0.5, 0.1, 1.0, 0.01, 0.02]))
+    lead = inference.largest_drawdown_episode(np.array([-0.5, 0.1, 1.0, 0.01, 0.02]))
     assert (lead["start"], lead["trough"], lead["end"]) == (0, 0, 2)
 
 
 def test_a_series_that_never_draws_down_has_no_episode():
-    assert g.largest_drawdown_episode(np.array([0.01, 0.02, 0.0, 0.03])) is None
+    assert inference.largest_drawdown_episode(np.array([0.01, 0.02, 0.0, 0.03])) is None
 
 
 def test_episode_gate_re_evaluates_the_leg_without_the_episode():

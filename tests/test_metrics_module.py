@@ -167,9 +167,40 @@ _DUPLICATE_RE = re.compile(
             r"\.mean\(\)\)?\s*/\s*std\b",  # a per-period Sharpe after a std guard
             r"np\.std\(\w+,\s*ddof=1\)\s*\*\s*np\.sqrt",  # a hand-rolled annualised tracking error
             r"\.diff\(\)(\.fillna\(\w+\))?\.abs\(\)\.sum\(axis=1\)",  # a hand-rolled turnover
+            # TOM-1596: the research statistics. The HAC fit and its Bartlett weight are
+            # inference: `_INFERENCE_PATTERNS["hac"]` below guards them (TOM-1618).
+            r"spearmanr\(|method=[\"']spearman[\"']",  # a hand-rolled rank IC
+            r"cov\([^)]*\)+(\[[^\]]*\])?\s*/\s*[\w.\[\]\"'()]*var\b",  # beta, or a risk contribution, by hand
+            r"\w+\s*\*\s*\(\s*\w+\s*@\s*\w+\s*\)\s*/",  # a risk contribution w * (S @ w) / ...
+            r"\(\s*[\w.]+(\[[^\]]+\])?\s*>\s*[\w.]+(\[[^\]]+\])?\s*\)\.mean\(\)",  # a hand-rolled hit rate
+            r"0\.5\s*\*\s*\(.*\)\.abs\(\)\.sum\(axis=1\)",  # a hand-rolled active share
         )
     )
 )
+
+# robo-lab's own copies (robo-lab #11, TOM-1453): each must trip the guard, or a new
+# pattern above is vacuous.
+_LAB_COPIES = (
+    'fit = sm.OLS(r, x).fit(cov_type="HAC", cov_kwds={"maxlags": lags})',
+    "        w = 1 - L / (lags + 1)",
+    "        corr, _ = spearmanr(chunk['signal'], chunk['fwd_ret'])",
+    'ics = pd.Series({d: score.loc[d].corr(fwd.loc[d], method="spearman") for d in dates})',
+    '        "beta": float(df["p"].cov(df["b"]) / df["b"].var()),',
+    "            beta = float(np.cov(strategy, bench, ddof=0)[0, 1] / bench_var)",
+    "        rc = w * r.apply(lambda col: col.cov(acct)) / acct.var()",
+    "    rc = w * (cov @ w) / (w @ cov @ w)",
+    '        "hit": float((m["p"] > m["b"]).mean()),',
+    "    hit_rate = (ic_series > 0).mean()",
+    '            "hit_rate": float((e > 0).mean()),',
+    "    return float((0.5 * (a - b).abs().sum(axis=1))[ok].mean())",
+)
+
+
+@pytest.mark.parametrize("line", _LAB_COPIES)
+def test_guard_catches_the_lab_copies(line):
+    assert _DUPLICATE_RE.search(line) or any(rx.search(line) for rx in _INFERENCE_RE.values()), line
+
+
 # Non-metric uses of the same idioms: a boolean "observed so far" mask, and a
 # signal-block latch inside a strategy's entry logic.
 _ALLOWED = {"instrument_calendar.py"}
@@ -184,3 +215,74 @@ def test_no_run_metric_is_hand_rolled_outside_the_metrics_module():
             if _DUPLICATE_RE.search(line):
                 offenders.append(f"{path.relative_to(_SRC)}:{i}: {line.strip()}")
     assert not offenders, "run metric computed outside quantbox.metrics:\n" + "\n".join(offenders)
+
+
+# ---------------------------------------------------------------------------
+# Guard: no inference statistic is implemented outside quantbox.inference (TOM-1618)
+# ---------------------------------------------------------------------------
+#
+# The metric guard above matched metric NAMES, so two NaN refusals and a second
+# skew/kurtosis passed it (TOM-1618). These patterns match the MECHANICS of each
+# inference class: counting non-finite rows to refuse them, the "cancelled to
+# noise" test, a HAC fit, sample moments, a resample, a Monte-Carlo null.
+
+_INFERENCE_HOMES = {_SRC / "inference.py", _SRC / "_numerics.py"}
+_INFERENCE_PATTERNS = {
+    "nan_refusal": r"\(~\s*(np\.isfinite\(|\w*finite\w*\)|mask\))",  # count the non-finite rows to refuse them
+    "degenerate": r"<=\s*DEGENERATE_RTOL\s*\*",  # a second "constant to floating-point noise" test
+    "hac": r"cov_type=[\"']HAC|1\s*-\s*\w+\s*/\s*\(\s*\w+\s*\+\s*1\s*\)",  # a HAC fit, or a Bartlett weight
+    "moments": r"(stats\.|\.)(skew|kurtosis|kurt)\(|\*\*\s*[34]\)",  # sample skew / kurtosis
+    "bootstrap": (  # an iid resample, a stationary block start, a moving block start
+        r"\.choice\([^)]*replace=True|\.random\(\w+\)\s*<|\.integers\(0,\s*len\(\w+\)\s*-"
+    ),
+    "mc_null": r"\.normal\(0,\s*np\.std\(",  # a Monte-Carlo null at the series' own volatility
+}
+_INFERENCE_RE = {label: re.compile(p) for label, p in _INFERENCE_PATTERNS.items()}
+
+# The copies that stood in the tree when this guard was written (origin/dev bd5865d):
+# each must still trip its pattern, or the pattern is vacuous.
+_INFERENCE_COPIES = (
+    ("nan_refusal", "    dropped = int((~mask).sum())"),  # analysis.gates._finite
+    ("nan_refusal", "    n_dropped = int((~finite_mask).sum())"),  # metrics.require_finite, analysis.dsr
+    ("nan_refusal", "        n_nonfinite = int((~np.isfinite(rets)).sum())"),  # validation BLP
+    ("nan_refusal", "    y_bad = int((~np.isfinite(y)).sum())"),  # analysis.hac.factor_regression
+    ("nan_refusal", "        dropped = int((~finite).sum())"),  # gates_cli factor
+    ("degenerate", "    if std <= DEGENERATE_RTOL * float(np.mean(np.abs(r))):"),  # analysis.gates
+    ("degenerate", "        if std_period <= DEGENERATE_RTOL * scale:"),  # validation BLP
+    ("hac", '    return sm.OLS(y, x).fit(cov_type="HAC", cov_kwds={"maxlags": lags, "use_correction": False})'),
+    ("moments", "    skew = float(np.mean(z**3))"),  # validation BLP
+    ("moments", "    kurt = float(np.mean(z**4))"),
+    ("moments", "        skew=float(stats.skew(r)),"),  # analysis.gates
+    ("moments", "        return np.sum(((x - m) / s) ** 3) / n if s > 0 else 0"),  # simulation.engine
+    ("moments", "        kurt = float(r_pct.kurt())"),  # pipeline blocks
+    ("bootstrap", "            sample = rng.choice(rets, size=n, replace=True)"),  # validation statistical
+    ("bootstrap", "    new = rng.random(n) < p"),  # analysis.gates stationary bootstrap
+    ("bootstrap", "                start = rng.integers(0, len(returns) - block_size)"),  # simulation forecasting
+    (
+        "mc_null",
+        "            [sharpe_ratio(rng.normal(0, np.std(rets, ddof=1), size=n), trading_days) for _ in range(n)]",
+    ),
+)
+
+
+@pytest.mark.parametrize(("label", "line"), _INFERENCE_COPIES)
+def test_inference_guard_catches_the_copies_it_was_written_for(label, line):
+    assert _INFERENCE_RE[label].search(line), (label, line)
+
+
+def _inference_offenders() -> set[tuple[str, str]]:
+    found = set()
+    for path in sorted(_SRC.rglob("*.py")):
+        if path in _INFERENCE_HOMES:
+            continue
+        text = path.read_text()
+        for label, rx in _INFERENCE_RE.items():
+            if any(rx.search(line) for line in text.splitlines()):
+                found.add((str(path.relative_to(_SRC)), label))
+    return found
+
+
+def test_no_inference_statistic_is_implemented_outside_quantbox_inference():
+    """On origin/dev bd5865d this found 22 (file, class) pairs; TOM-1618 moved every one."""
+    found = sorted(_inference_offenders())
+    assert not found, "inference statistic implemented outside quantbox.inference:\n" + "\n".join(map(str, found))

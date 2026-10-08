@@ -1,4 +1,4 @@
-"""Tests for ``quantbox.analysis.hac`` — Newey-West HAC t-stat + factor decomposition.
+"""Tests for Newey-West HAC t-stat + factor decomposition in ``quantbox.inference`` (TOM-1618).
 
 Functional correctness, degenerate-input handling, and input validation. The
 numeric-parity proof against the retired hand-rolled estimators lives in
@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from quantbox.analysis import (
+from quantbox.inference import (
     factor_regression,
     newey_west_auto_lags,
     newey_west_tstat,

@@ -17,7 +17,7 @@ plugins:
     params:
       engine: vectorbt
       fees: 0.001
-      rebalancing_freq: 5
+      rebalancing_policy: {cadence: periodic, frequency: 5}  # every 5th execution bar
       trading_days: 252
       # data.synthetic.v1 reads its knobs at load time: n_assets / symbols in
       # load_universe(), the rest in load_market_data(). plugins.data.params is never read.

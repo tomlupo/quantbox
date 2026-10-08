@@ -131,6 +131,8 @@ def _backtest(
     group_limits: dict[str, Any] | None = None,
     universe: pd.DataFrame | None = None,
     max_leverage: float | None = None,
+    funding_rates: pd.DataFrame | None = None,
+    funding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """``backtest()`` with an already-resolved timing (``optimize()`` resolves it once per call)."""
     from quantbox.decision import DecisionRules, decision_metrics, final_book, gross_cap, with_decision
@@ -166,6 +168,8 @@ def _backtest(
         threshold=threshold,
         policy=policy,
         leverage=lev,
+        funding=funding_rates,
+        funding_ignore=funding,
         engine_params=engine_params,
         trading_days=trading_days,
     )
@@ -206,6 +210,8 @@ def backtest(
     group_limits: dict[str, Any] | None = None,
     universe: pd.DataFrame | None = None,
     max_leverage: float | None = None,
+    funding_rates: pd.DataFrame | None = None,
+    funding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """High-level backtest through the engine seam (:func:`quantbox.engine.simulate`, docs/adr/0008).
 
@@ -284,6 +290,15 @@ def backtest(
         a row whose ``sum |w|`` is above it is scaled down to it. ``None`` =
         the default, 1 (:data:`quantbox.decision.DEFAULT_MAX_LEVERAGE`), the
         same as the pipelines (TOM-1525); a levered book declares it.
+    funding_rates : pd.DataFrame | None
+        The perp funding series (wide, like *prices*); rsims charges it. On an
+        engine that does not charge funding (vectorbt) it is REFUSED
+        (:mod:`quantbox.funding_guard`, the check every door shares) unless
+        *funding* declares the ignore.
+    funding : dict | None
+        ``{"ignore": True, "reason": "..."}`` — the ``funding:`` block of
+        ``quantbox run``: leave *funding_rates* out on an engine that does not
+        charge it. Refused on an engine that charges the series.
 
     Returns
     -------
@@ -316,4 +331,6 @@ def backtest(
         group_limits=group_limits,
         universe=universe,
         max_leverage=max_leverage,
+        funding_rates=funding_rates,
+        funding=funding,
     )

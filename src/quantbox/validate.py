@@ -43,12 +43,15 @@ def _check_legacy_dataset_params(cfg: dict) -> None:
         )
 
 
-def validate_config(cfg: dict[str, Any], registry: Any = None, *, check_params: bool = True) -> list[ValidationFinding]:
+def validate_config(
+    cfg: dict[str, Any], registry: Any = None, *, check_params: bool = True, config_path: Any = None
+) -> list[ValidationFinding]:
     """Findings for a run config.
 
     ``check_params`` checks every plugin block's ``params_init`` / ``params``
-    against that plugin's params schema (see ``check_plugin_params``);
-    ``registry`` defaults to ``PluginRegistry.discover()``.
+    against that plugin's params schema (see ``check_plugin_params``) and, for a
+    backtest config that passes every other check, the funding guard on its plan
+    (``_check_planned_funding``); ``registry`` defaults to ``PluginRegistry.discover()``.
     """
     _check_legacy_dataset_params(cfg)
     findings: list[ValidationFinding] = []
@@ -82,6 +85,12 @@ def validate_config(cfg: dict[str, Any], registry: Any = None, *, check_params: 
         if check_params:
             findings.extend(check_plugin_params(plugins, registry))
             findings.extend(_check_overlay_host(plugins, registry))
+            pipeline = plugins.get("pipeline") or (
+                (resolve_profile(str(profile), load_manifest()) or {}).get("pipeline") if profile else None
+            )
+            is_backtest = isinstance(pipeline, dict) and str(pipeline.get("name", "")).startswith("backtest.pipeline.")
+            if is_backtest and not any(f.level == "error" for f in findings):
+                findings.extend(_check_planned_funding(cfg, registry, config_path))
     return findings
 
 
@@ -307,8 +316,10 @@ def check_plugin_params(plugins: dict[str, Any], registry: Any = None) -> list[V
 
 def _check_backtest_execution(plugins: dict[str, Any]) -> list[ValidationFinding]:
     """Validate ``execution:`` / ``venue:`` for backtest pipelines with the pipeline's own resolver."""
+    from .engine.registry import DEFAULT_ENGINE, get_engine
     from .execution import check_schedule_venue, resolve_allow_shorts, resolve_execution
     from .financing import resolve_financing, resolve_leverage
+    from .funding_guard import resolve_funding
 
     pipeline = plugins.get("pipeline")
     if not isinstance(pipeline, dict) or not str(pipeline.get("name", "")).startswith("backtest.pipeline."):
@@ -322,6 +333,41 @@ def _check_backtest_execution(plugins: dict[str, Any]) -> list[ValidationFinding
         resolve_financing(venue.get("financing"))
         resolve_leverage(venue.get("leverage"))
         check_schedule_venue(timing, params.get("venue"))
+        get_engine(params.get("engine", DEFAULT_ENGINE), require_installed=False)
+        resolve_funding(params.get("funding"))
     except ValueError as exc:
         findings.append(ValidationFinding("error", str(exc)))
     return findings
+
+
+def _check_planned_funding(cfg: dict[str, Any], registry: Any, config_path: Any) -> list[ValidationFinding]:
+    """The funding guard on the run's plan (TOM-1609, TOM-1619): explain's refusal, with its finding.
+
+    Whether the data carries a funding series, and which market it is, is known only
+    once the data plugin is built and its files and market planned, so validate asks
+    ``quantbox config explain``, which
+    calls the SAME check the run calls (:func:`quantbox.funding_guard.check_funding`).
+    A config explain cannot plan is reported as not checked, never as clean.
+    """
+    from .explain import explain_config
+
+    refused: list[ValidationFinding] = []
+    try:
+        if registry is None:
+            from .registry import PluginRegistry
+
+            registry = PluginRegistry.discover()
+        doc = explain_config(cfg, registry, config_path=config_path, findings=refused)
+    except Exception as exc:  # noqa: BLE001 — a plan that cannot be built is "not checked"
+        return [ValidationFinding("warning", f"funding_not_checked: the run could not be planned ({exc})")]
+    if refused:
+        return refused
+    if not doc.get("ok"):
+        why = "; ".join(doc.get("errors") or []) or "unknown"
+        return [
+            ValidationFinding(
+                "warning",
+                f"funding_not_checked: the run could not be planned ({why}); `quantbox config explain` shows it",
+            )
+        ]
+    return []

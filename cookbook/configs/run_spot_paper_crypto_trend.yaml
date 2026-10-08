@@ -1,13 +1,11 @@
 # Live spot paper-trading config for strategy.crypto_trend.v1 (SSRN paper port).
 #
-# NOTE on paper-vs-live drift: the SSRN paper recommends fees=0.005,
-# tranches=5, threshold=0.05. This live config uses different settings
-# (tranches=1, no threshold) because:
-#   * trading_pipeline.v1 handles rebalance pacing differently from the
-#     backtest engine and applies live order shaping on top.
-#   * strategy.crypto_trend.v1 returns the (vol_target=50, tranche=5)
-#     slice through get_simple_weights() — the paper variant is baked into
-#     simple_weights regardless of the outer risk.tranches setting.
+# NOTE on paper-vs-live drift: the SSRN paper recommends fees=0.005, a
+# 5-tranche cadence and a 0.05 band. This live config trades every decision
+# with no band. strategy.crypto_trend.v1 returns the (vol_target=50,
+# tranche=5) slice through get_simple_weights(): the paper's strategy-level
+# tranches are baked into it. Live reads the same rebalancing_policy code as
+# the backtest (docs/adr/0008, decision 11); declare one here to match it.
 # See cookbook/configs/run_backtest_crypto_trend.yaml for paper-faithful
 # backtest defaults, and quantbox-lab/configs/run_backtest_crypto_trend_ssrn.yaml
 # for the full multi-variant research report.
@@ -48,7 +46,6 @@ plugins:
   rebalancing:
     name: "rebalancing.standard.v1"
     params:
-      tranches: 1
       max_leverage: 1
       min_trade_size: 0.01
 

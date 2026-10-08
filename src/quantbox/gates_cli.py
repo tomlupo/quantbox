@@ -1,6 +1,6 @@
 """``quantbox gates dsr|nw|factor|bootstrap|episode`` — the acceptance gates as a CLI.
 
-The maths lives in :mod:`quantbox.analysis.gates`; this module only reads files,
+The maths lives in :mod:`quantbox.gates`; this module only reads files,
 calls the gate and maps the result to an exit code:
 
   0  the gate PASSED          1  the gate ran and FAILED
@@ -51,7 +51,7 @@ HEADLINE = {
 
 
 def _input_error(msg: str) -> Exception:
-    from quantbox.analysis.gates import GateInputError
+    from quantbox.gates import GateInputError
 
     return GateInputError(msg)
 
@@ -192,7 +192,7 @@ def _research_notes(*paths: str | None) -> list[str]:
 
 
 def _emit(gate: str, as_json: bool, compute: Callable[[], dict], *inputs: str | None) -> None:
-    from quantbox.analysis.gates import GateInputError
+    from quantbox.gates import GateInputError
 
     try:
         notes = _research_notes(*inputs)
@@ -234,7 +234,11 @@ _COLUMN = typer.Option(None, "--column", help="return column (else the only nume
 _DROP = typer.Option(False, "--allow-nonfinite-drop", help="drop NaN/Inf rows instead of refusing; count recorded")
 _JSON = typer.Option(False, "--json", help="print the full verdict as JSON")
 _LAGS = typer.Option(None, "--lags", help="HAC lags (default floor(4*(n/100)^(2/9)))")
-_METRIC = typer.Option("sharpe", "--metric", help="sharpe (per period) | mean | max_drawdown (positive fraction)")
+_METRIC = typer.Option(
+    "sharpe",
+    "--metric",
+    help="sharpe (per period) | mean | max_drawdown (leg = positive depth; JSON drawdowns name both signs)",
+)
 _COMPARE = typer.Option("diff", "--compare", help="diff (candidate - baseline) | ratio (candidate / baseline)")
 _PASS_IF = typer.Option("above", "--pass-if", help="above | below the threshold, STRICTLY")
 _BASELINE_COLUMN = typer.Option(None, "--baseline-column", help="return column of the baseline file")
@@ -258,7 +262,7 @@ def dsr(
     """Deflated Sharpe Ratio across a trial-count range (verdict at the most deflated end)."""
 
     def compute() -> dict:
-        from quantbox.analysis.gates import dsr_gate, dsr_gate_from_returns
+        from quantbox.gates import dsr_gate, dsr_gate_from_returns
 
         summary = [sharpe, skew, kurtosis, n_obs]
         kw = dict(n_trials=n_trials, periods=periods, threshold=threshold, trials_sr_std=trials_sr_std)
@@ -301,7 +305,7 @@ def nw(
     """Newey-West HAC t-stat on the mean, plus a minimum out-of-sample window."""
 
     def compute() -> dict:
-        from quantbox.analysis.gates import nw_gate
+        from quantbox.gates import nw_gate
 
         r = _series(returns, column, indexed=False)
         return nw_gate(
@@ -334,10 +338,10 @@ def factor(
     """Jensen's alpha after factor controls, HAC standard error, one-sided."""
 
     def compute() -> dict:
-        import numpy as np
         import pandas as pd
 
-        from quantbox.analysis.gates import factor_gate
+        from quantbox.gates import factor_gate
+        from quantbox.inference import require_finite
 
         strat = _series(returns, column, indexed=True).rename("__y__")
         panel = _read_frame(factors, indexed=True)
@@ -369,14 +373,10 @@ def factor(
             parts.append(panel[[rf_column]].rename(columns={rf_column: "__rf__"}))
         # date order, not file order: the HAC standard error weights NEIGHBOURING rows
         joined = pd.concat(parts, axis=1, join="inner").sort_index(kind="stable")
-        finite = np.isfinite(joined.to_numpy(dtype=float)).all(axis=1)
-        dropped = int((~finite).sum())
-        if dropped and not allow_nonfinite_drop:
-            raise _input_error(
-                f"{dropped} of {len(joined)} aligned rows carry NaN/Inf — refusing to drop them silently; "
-                "pass --allow-nonfinite-drop to drop them and record the count"
-            )
-        joined = joined[finite]
+        rows, dropped = require_finite(
+            joined.to_numpy(dtype=float), allow_nonfinite_drop=allow_nonfinite_drop, what="aligned"
+        )
+        joined = pd.DataFrame(rows, columns=joined.columns)
         rf_arg = joined["__rf__"].to_numpy(dtype=float) if rf_column is not None else rf_value
         out = factor_gate(
             joined["__y__"].to_numpy(dtype=float),
@@ -415,7 +415,7 @@ def bootstrap(
     """Paired stationary block bootstrap: P(candidate-vs-baseline leg holds) over resamples."""
 
     def compute() -> dict:
-        from quantbox.analysis.gates import paired_block_bootstrap
+        from quantbox.gates import paired_block_bootstrap
 
         j = _joined(returns, column, baseline, baseline_column)
         out = paired_block_bootstrap(
@@ -453,7 +453,7 @@ def episode(
     """The leg re-evaluated with the largest drawdown episode excluded."""
 
     def compute() -> dict:
-        from quantbox.analysis.gates import episode_gate
+        from quantbox.gates import episode_gate
 
         kw = dict(
             metric=metric,

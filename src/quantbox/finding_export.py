@@ -16,7 +16,11 @@ It reads runs through their ``quantbox/run@1`` manifest only (``files.returns``,
   name) is one arm, named after the child.
 
 It never recomputes an engine metric: Sharpe, CAGR, drawdown in ``kpis`` and
-``metrics`` are the engine's numbers.
+``metrics`` are the engine's numbers. A drawdown is reported under both names
+(TOM-1627): "Max drawdown" is ``max_drawdown``, signed (<= 0); "Max drawdown
+(depth)" is ``max_drawdown_abs`` (>= 0) — for a run written before run@1 minor 8,
+the magnitude of its recorded ``max_drawdown``. The ``series`` drawdown lines are
+signed fractions, as the renderer's contract defines them.
 
 A RESEARCH run (``run.kind: research`` — same-bar under the explicit override,
 docs/adr/0006) is never exported as a backtest: its hero cards do not report
@@ -54,7 +58,8 @@ _METRIC_ROWS: tuple[tuple[str, str, str], ...] = (
     ("sortino", "Sortino", "num"),
     ("calmar", "Calmar", "num"),
     ("annual_volatility", "Volatility", "pct"),
-    ("max_drawdown", "Max drawdown", "pct"),
+    ("max_drawdown", "Max drawdown", "pct"),  # signed, <= 0
+    ("max_drawdown_abs", "Max drawdown (depth)", "pct"),  # the same drawdown, >= 0 (TOM-1627)
     ("win_rate", "Win rate", "pct"),
     ("traded_mean_gross_exposure", "Mean gross exposure", "num"),
     ("traded_mean_turnover", "Mean turnover", "num"),
@@ -73,6 +78,18 @@ class Arm:
 # ---------------------------------------------------------------------------
 # reading
 # ---------------------------------------------------------------------------
+
+
+def _drawdown_named(metrics: dict[str, Any]) -> dict[str, Any]:
+    """*metrics* with both drawdown names (TOM-1627): ``max_drawdown`` signed, ``max_drawdown_abs`` its depth.
+
+    A run written before run@1 minor 8 recorded only the signed ``max_drawdown``; its
+    depth is that number's magnitude, not a recomputed metric.
+    """
+    signed = metrics.get("max_drawdown")
+    if "max_drawdown_abs" in metrics or not isinstance(signed, (int, float)) or isinstance(signed, bool):
+        return metrics
+    return {**metrics, "max_drawdown_abs": abs(float(signed))}
 
 
 def _manifest(run_dir: Path) -> dict[str, Any]:
@@ -105,7 +122,7 @@ def _run_arms(run_dir: Path, name: str) -> list[Arm]:
             Arm(
                 f"{prefix}{v}",
                 _series(long[long["variant"] == v], "returns"),
-                {k: val for k, val in metrics.loc[v].items() if k != "strategy"},
+                _drawdown_named({k: val for k, val in metrics.loc[v].items() if k != "strategy"}),
                 manifest,
                 run_dir,
             )
@@ -114,7 +131,7 @@ def _run_arms(run_dir: Path, name: str) -> list[Arm]:
     if not files.get("returns") or not files.get("metrics"):
         raise ValueError(f"{run_dir}: the manifest lists no returns/metrics file — not a backtest run")
     returns = _series(read_parquet(run_dir / files["returns"]), "returns")
-    metrics = json.loads((run_dir / files["metrics"]).read_text(encoding="utf-8"))
+    metrics = _drawdown_named(json.loads((run_dir / files["metrics"]).read_text(encoding="utf-8")))
     return [Arm(name or "Strategy", returns, metrics, manifest, run_dir)]
 
 
@@ -224,6 +241,7 @@ def _kpis(arm: Arm) -> list[dict[str, Any]]:
         ("sharpe", "Sharpe", "num", "backtest_sharpe"),
         ("cagr", "CAGR", "pct", None),
         ("max_drawdown", "Max drawdown", "pct", None),
+        ("max_drawdown_abs", "Max drawdown (depth)", "pct", None),
     ):
         value = _num(m.get(key))
         if value is None:

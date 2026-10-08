@@ -23,6 +23,7 @@ import pandas as pd
 
 from quantbox.engine.registry import get_engine
 from quantbox.execution import helper_execution, run_record, timing_record
+from quantbox.funding_guard import check_series
 
 
 def _backtest_lazy():
@@ -54,6 +55,8 @@ def optimize(
     schedule: str = "calendar",
     leverage: str | None = None,
     max_leverage: float | None = None,
+    funding_rates: pd.DataFrame | None = None,
+    funding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Optimize strategy parameters via grid search or walk-forward.
 
@@ -81,6 +84,9 @@ def optimize(
             or ``"bars"``, and ``venue.leverage`` on the calendar.
         max_leverage: The gross cap, as in ``backtest()``: ``None`` = the
             default, 1 (TOM-1525); a levered search declares it.
+        funding_rates, funding: The perp funding series and the ``{"ignore": True,
+            "reason": ...}`` escape, as in ``backtest()``. A series on an engine
+            that does not charge funding is refused once, before the search.
 
     Returns:
         ``{"best_params", "best_metric", "all_results", "execution"}`` for grid
@@ -90,7 +96,9 @@ def optimize(
     """
     timing = helper_execution(lag_bars, allow_same_bar, same_bar_reason, schedule)
     # Refused here, once: inside the search a failing combination is skipped, not raised.
-    get_engine(engine).check_params(engine_params)
+    adapter = get_engine(engine)
+    adapter.check_params(engine_params)
+    check_series(adapter, funding_rates, funding)  # the seam's funding guard, before the search
     bt_kwargs = dict(
         timing=timing,
         engine=engine,
@@ -103,6 +111,8 @@ def optimize(
         trading_days=trading_days,
         leverage=leverage,
         max_leverage=max_leverage,
+        funding_rates=funding_rates,
+        funding=funding,
     )
 
     if method == "walk_forward":
