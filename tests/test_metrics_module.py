@@ -285,11 +285,6 @@ def _inference_offenders() -> set[tuple[str, str]]:
 # Ratchet: what this guard found on origin/dev bd5865d. Every TOM-1618 commit that
 # moves a copy into quantbox.inference deletes its row here; the list must end empty.
 _INFERENCE_KNOWN = {
-    ("analysis/gates.py", "bootstrap"),
-    ("analysis/gates.py", "degenerate"),
-    ("analysis/gates.py", "moments"),
-    ("analysis/gates.py", "nan_refusal"),
-    ("gates_cli.py", "nan_refusal"),
     ("plugins/pipeline/blocks.py", "moments"),
     ("plugins/validation/deflated_sharpe_blp.py", "degenerate"),
     ("plugins/validation/deflated_sharpe_blp.py", "moments"),

@@ -20,15 +20,14 @@ def moved(old: str, *new: str, card: str = "TOM-1618") -> Callable[[str], Any]:
     def __getattr__(name: str) -> Any:
         if name.startswith("__"):
             raise AttributeError(f"module {old!r} has no attribute {name!r}")
-        for target in new:
-            module = importlib.import_module(target)
-            if hasattr(module, name):
-                warnings.warn(
-                    f"{old}.{name} is deprecated: import it from {target} ({card})",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-                return getattr(module, name)
-        raise AttributeError(f"module {old!r} has no attribute {name!r} (it moved to {', '.join(new)})")
+        found = [
+            (t, getattr(importlib.import_module(t), name)) for t in new if hasattr(importlib.import_module(t), name)
+        ]
+        if not found:
+            raise AttributeError(f"module {old!r} has no attribute {name!r} (it moved to {', '.join(new)})")
+        # Name the module that DEFINES it, not one that merely imports it.
+        target, obj = next(((t, o) for t, o in found if getattr(o, "__module__", t) == t), found[0])
+        warnings.warn(f"{old}.{name} is deprecated: import it from {target} ({card})", DeprecationWarning, stacklevel=2)
+        return obj
 
     return __getattr__
