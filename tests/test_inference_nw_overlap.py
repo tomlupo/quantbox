@@ -26,24 +26,25 @@ def _overlapping_sums(n: int, h: int, seed: int) -> np.ndarray:
 
 @pytest.mark.parametrize("seed", [0, 1, 2])
 def test_overlap_corrects_the_overstated_tstat_of_an_ma_series(seed):
-    """MA(h-1), h=21, n=20000. The true SE of the mean is h/sqrt(n) (long-run variance h^2).
+    """MA(h-1), h=63 (a quarter of trading days), n=20000. True SE of the mean: h/sqrt(n).
 
-    Bartlett weights at the auto lag count (7 here) recover a long-run variance of
-    147 of the true 441: SE ratio sqrt(147/441) = 0.577, a t-stat overstated 1.73x.
-    At h-1 = 20 lags they recover 6181/21 = 294.3: SE ratio 0.817. The bounds sit
-    between those two answers, so the test fails if the floor is not applied.
+    The long-run variance of the series is h^2. Bartlett weights at the auto lag
+    count (12 here) recover 19% of it: SE ratio 0.438, a t-stat overstated 2.3x.
+    At h-1 = 62 lags they recover 2/3 of it (Bartlett's own downweighting): SE
+    ratio 0.817. The bounds sit between those two answers, so the test fails
+    when the floor is not applied.
     """
-    n, h = 20_000, 21
+    n, h = 20_000, 63
     x = _overlapping_sums(n, h, seed)
     true_se = h / np.sqrt(n)
 
     auto = newey_west_tstat(x)
     overlap = newey_west_tstat(x, overlap=h)
 
-    assert auto["nw_lags"] == newey_west_auto_lags(n) == 7
+    assert auto["nw_lags"] == newey_west_auto_lags(n) == 12
     assert overlap["nw_lags"] == h - 1
-    assert auto["nw_se"] / true_se < 0.65  # the iid-ish t is overstated
-    assert 0.75 < overlap["nw_se"] / true_se < 1.05  # the overlap t is not
+    assert auto["nw_se"] / true_se < 0.6  # the auto-lag t is overstated
+    assert 0.7 < overlap["nw_se"] / true_se < 1.0  # the overlap t is not
     # Same mean, so the t-stats scale inversely with the SE.
     assert abs(overlap["nw_tstat"]) < abs(auto["nw_tstat"])
 

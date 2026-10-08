@@ -177,7 +177,27 @@ def hac_ols(y: np.ndarray, x: np.ndarray, lags: int) -> Any:
     return sm.OLS(y, x).fit(cov_type="HAC", cov_kwds={"maxlags": lags, "use_correction": False})
 
 
-def newey_west_tstat(returns, lags: int | None = None, *, allow_nonfinite_drop: bool = False) -> dict:
+def _check_overlap(overlap, lags: int | None) -> None:
+    """Refuse an ``overlap`` that is not a whole number of periods >= 1, or one an explicit ``lags`` undercuts."""
+    if isinstance(overlap, bool) or not isinstance(overlap, (int, np.integer)) or overlap < 1:
+        raise InferenceInputError(
+            f"overlap must be a whole number of periods >= 1 (1 = non-overlapping), got {overlap!r}"
+        )
+    if lags is not None and lags < overlap - 1:
+        raise InferenceInputError(
+            f"lags={lags!r} conflicts with overlap={overlap!r}: observations that overlap by "
+            f"{overlap - 1} periods need at least {overlap - 1} Newey-West lags (Hansen-Hodrick 1980). "
+            "Pass lags >= overlap - 1, or drop lags and let overlap set them."
+        )
+
+
+def newey_west_tstat(
+    returns,
+    lags: int | None = None,
+    *,
+    overlap: int | None = None,
+    allow_nonfinite_drop: bool = False,
+) -> dict:
     """Newey-West HAC t-stat on the mean of ``returns`` — the ``nw`` gate calls this one.
 
     An OLS of ``returns`` on a constant with a HAC (Bartlett kernel)
@@ -185,25 +205,49 @@ def newey_west_tstat(returns, lags: int | None = None, *, allow_nonfinite_drop: 
     the serial correlation that inflates a naive t-stat on overlapping or
     trend-following returns. ``lags=None`` picks :func:`newey_west_auto_lags`.
 
+    ``overlap=h`` declares that each observation spans ``h`` periods of the
+    series and its neighbours share ``h - 1`` of them (an IC on h-day forward
+    returns sampled daily, a rolling h-day spread). Such a series is an
+    MA(h-1) by construction, and the automatic lag count alone leaves its
+    t-stat overstated. The rule (Hansen and Hodrick 1980, "Forward Exchange
+    Rates as Optimal Predictors of Future Spot Rates", JPE 88(5)): the lag
+    count is ``max(newey_west_auto_lags(n), h - 1)``. ``h`` counts periods
+    of THIS series; converting a calendar window (21 trading days in a
+    monthly series) is the caller's. Test each horizon on its own, with that
+    horizon's ``h``. An explicit ``lags`` still wins, but one below
+    ``h - 1`` is refused, and so is an ``h`` longer than the sample (its
+    floor could only be met by clamping, which would hide the overstatement).
+    ``overlap=1`` means non-overlapping and changes nothing.
+
     Non-finite observations RAISE by default (see :func:`require_finite`);
     ``allow_nonfinite_drop=True`` opts into dropping them, and the returned
     ``n_obs_raw`` / ``n_nonfinite_dropped`` keep that loss visible.
 
     Returns a dict with full-precision floats: ``n_obs``, ``n_obs_raw``,
-    ``n_nonfinite_dropped``, ``nw_lags``, ``mean_return``, ``nw_se``,
-    ``nw_tstat`` and ``nw_pvalue`` (two-sided, normal). A degenerate series
-    (fewer than 2 finite observations, or zero long-run variance) yields
-    ``None`` for the SE/t-stat/p-value rather than ``inf``/``nan``.
+    ``n_nonfinite_dropped``, ``nw_lags``, ``nw_overlap`` (the ``overlap``
+    passed, or ``None``), ``mean_return``, ``nw_se``, ``nw_tstat`` and
+    ``nw_pvalue`` (two-sided, normal). A degenerate series (fewer than 2
+    finite observations, or zero long-run variance) yields ``None`` for the
+    SE/t-stat/p-value rather than ``inf``/``nan``.
     """
+    if overlap is not None:
+        _check_overlap(overlap, lags)
+        overlap = int(overlap)
     r, n_dropped = require_finite(returns, allow_nonfinite_drop=allow_nonfinite_drop)
     n = int(r.size)
     n_raw = int(np.asarray(returns).size)
+    if overlap is not None and overlap > n:
+        raise InferenceInputError(
+            f"overlap={overlap} needs at least {overlap - 1} Newey-West lags, but {n} finite "
+            f"observations allow at most {max(n - 1, 0)} — the sample is shorter than one overlap window"
+        )
 
     base = {
         "n_obs": n,
         "n_obs_raw": n_raw,
         "n_nonfinite_dropped": n_dropped,
         "nw_lags": 0,
+        "nw_overlap": overlap,
         "mean_return": None,
         "nw_se": None,
         "nw_tstat": None,
@@ -214,6 +258,8 @@ def newey_west_tstat(returns, lags: int | None = None, *, allow_nonfinite_drop: 
 
     if lags is None:
         lags = newey_west_auto_lags(n)
+        if overlap is not None:
+            lags = max(lags, overlap - 1)  # Hansen-Hodrick floor
     lags = max(0, min(lags, n - 1))  # can't use more lags than we have data
     base["nw_lags"] = lags
 
