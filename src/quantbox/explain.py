@@ -13,7 +13,8 @@ Nothing here decides what a config MEANS — every fact comes from the code a ru
   itself reads, so every refusal on params alone happens there, for both);
 - ``data.planned_paths(load_params)`` — the files the data plugin will read, a by-name
   dataset resolved against its lock (never loaded), then ``pipeline.check_planned_data``
-  (a backtest refuses a missing prices file, as its ``run()`` does);
+  (a backtest refuses a missing prices file, and a funding file its engine would not
+  charge, as its ``run()`` does — :mod:`quantbox.funding_guard`);
 - :func:`quantbox.runner.strict_refusal` — the ``run.strict`` dataset-tier refusal;
 - :mod:`quantbox.run_manifest` — the same functions that fill run@1's ``engine``,
   ``dataset`` and ``funding``; :func:`quantbox.overlays.overlay_record` — its ``overlays``.
@@ -38,7 +39,9 @@ from pathlib import Path
 from typing import Any
 
 from . import run_manifest as _rm
+from .exceptions import ConfigValidationError
 from .execution import run_record
+from .funding_guard import ignored_record
 from .overlays import overlay_record
 from .runner import (
     _config_block,
@@ -51,6 +54,7 @@ from .runner import (
     resolve_run,
     strict_refusal,
 )
+from .validate import ValidationFinding
 
 SCHEMA_ID = "quantbox/explain@1"
 
@@ -126,8 +130,13 @@ def explain_config(
     registry: Any,
     *,
     config_path: str | Path | None = None,
+    findings: list[ValidationFinding] | None = None,
 ) -> dict[str, Any]:
-    """The explain@1 document for *cfg*; ``ok`` false and ``errors`` say why a run could not start."""
+    """The explain@1 document for *cfg*; ``ok`` false and ``errors`` say why a run could not start.
+
+    *findings*, when given, receives the structured finding of a guard that refused the
+    plan (the funding guard), so ``quantbox validate`` reports it with its code.
+    """
     cfg = copy.deepcopy(cfg)
     doc: dict[str, Any] = {"schema": SCHEMA_ID, "ok": False, "errors": []}
     errors: list[str] = doc["errors"]
@@ -176,7 +185,12 @@ def explain_config(
             data.loaded_paths = planned_paths((plan or {}).get("load_params") or {})
             check = getattr(pipeline, "check_planned_data", None)
             if callable(check):  # the same refusal run() makes before it loads anything
-                check(data, data.loaded_paths)
+                check(data, data.loaded_paths, plan)
+    except ConfigValidationError as exc:  # the funding guard (TOM-1609); validate reports its findings
+        errors.append(f"funding: {exc}")
+        if findings is not None:
+            findings.extend(exc.findings)
+        return doc
     except Exception as exc:  # noqa: BLE001
         errors.append(f"dataset: {exc}")
         return doc
@@ -204,7 +218,7 @@ def explain_config(
             "plugins": _plugins_block(resolved),
             "engine": _rm.engine_block({"engine": plan["engine"]} if plan else {}),
             "dataset": dataset,
-            "funding": _rm.funding_block(data, {"funding": {"modelled": modelled}}),
+            "funding": _rm.funding_block(data, {"funding": {"modelled": modelled, **ignored_record(plan or {})}}),
             "n_trials": n_trials,
             "strategies": [
                 _strategy(p, s, weight=float(s.get("weight", 1.0)))

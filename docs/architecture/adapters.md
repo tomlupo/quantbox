@@ -143,7 +143,12 @@ Adapters should be more conservative than plugins; downstream relies on them.
 | Custom DataFrame schema that vbt doesn't understand | Pass through standard wide-format prices; let vbt validate |
 | Hiding vbt error messages behind generic exceptions | Let exceptions propagate; users debug against the real lib |
 | Adapter requires importing 3+ external libs | That's a pipeline, not an adapter |
-| Adapter has its own `Pipeline` / `Runner` / `Engine` class | Stop. That's the runner's job at L4. |
+| Adapter has its own `Pipeline` / `Runner` class | Stop. That's the runner's job at L4. |
+
+**The one exception: book simulation.** It has two implementations, so it sits behind the
+engine seam (`quantbox.engine`), and each engine adapter there is a class that only executes
+the seam's orders and keeps its native object reachable. The rule and its limits are
+[ADR-0008](../adr/0008-engine-seam.md); this file's rule holds for every other library.
 
 ---
 

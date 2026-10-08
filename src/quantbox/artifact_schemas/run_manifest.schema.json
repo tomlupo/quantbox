@@ -3,7 +3,7 @@
   "$id": "quantbox/run@1",
   "title": "quantbox run manifest (run@1)",
   "description": "The machine-readable record of one run: <run_dir>/run_manifest.json, also what `quantbox run --json` prints. VERSIONING: `schema` names the MAJOR version and readers check it. Adding a field is a MINOR change: it keeps `quantbox/run@1`, bumps `x-schema-minor` here and is safe for every run@1 reader (unknown keys are allowed). Renaming a field, removing one, or changing what one MEANS is a MAJOR change: it ships as `quantbox/run@2`. Paths under `files` are relative to the run directory.",
-  "x-schema-minor": 6,
+  "x-schema-minor": 7,
   "type": "object",
   "required": [
     "schema",
@@ -73,7 +73,8 @@
       "properties": {
         "modelled": {"type": "boolean", "description": "true only when the engine charged a funding series."},
         "source_path": {"type": ["string", "null"]},
-        "sha256": {"type": ["string", "null"]}
+        "sha256": {"type": ["string", "null"]},
+        "ignored_reason": {"type": "string", "minLength": 1, "description": "Why the config left the funding series out on an engine that does not charge funding (plugins.pipeline.params.funding.reason, TOM-1609). Present exactly when the config declared funding: {ignore: true}; such a run is otherwise refused (minor 7)."}
       }
     },
     "execution": {

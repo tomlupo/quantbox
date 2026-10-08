@@ -41,7 +41,6 @@ plugins:
   rebalancing:
     name: "rebalancing.futures.v1"
     params:
-      tranches: 1
       max_leverage: 2
       min_trade_size: 0.01
 

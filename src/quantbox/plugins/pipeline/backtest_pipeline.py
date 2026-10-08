@@ -105,6 +105,7 @@ from quantbox.execution import (
 )
 from quantbox.financing import ASSUMED_FREE, resolve_financing, resolve_leverage
 from quantbox.frequency import Frequency, resolve_pipeline_frequency
+from quantbox.funding_guard import FUNDING_SCHEMA, check_funding, ignored_record, resolve_funding
 from quantbox.instrument_calendar import calendar_summary
 from quantbox.overlays import OverlayLink, apply_overlays
 from quantbox.plugins.datasources._utils import interval_step, normalize_data_frequency
@@ -252,7 +253,9 @@ class BacktestPipeline:
                     "default": DEFAULT_ENGINE,
                     "description": (
                         "Engine adapter behind the seam (quantbox.engine, docs/adr/0008). Changing it alone "
-                        "changes nothing else in the run: single run and variants both run on either."
+                        "changes nothing else in the run: single run and variants both run on either. "
+                        "Which engine: docs/adr/0008 decision 14 (perps, funding or margin -> rsims). "
+                        "Funding data on an engine that does not charge funding is refused (see funding)."
                     ),
                 },
                 "fees": {
@@ -265,7 +268,7 @@ class BacktestPipeline:
                     "type": "number",
                     "minimum": 0,
                     "default": 0.0,
-                    "description": "Fixed fee per order, in quote currency (vectorbt).",
+                    "description": "Fixed fee per order, in quote currency, on every engine (TOM-1500).",
                 },
                 "slippage": {
                     "type": "number",
@@ -276,6 +279,9 @@ class BacktestPipeline:
                 "rebalancing_freq": {
                     "type": ["integer", "string", "array", "null"],
                     "description": (
+                        "The legacy spelling of rebalancing_policy {cadence: periodic, frequency: ...} "
+                        "(docs/adr/0008 decision 11); new configs declare rebalancing_policy, and "
+                        "declaring both is refused. "
                         "How often portfolio is rebalanced to target weights. Accepts: "
                         "int (every N bars; e.g. 5 = weekly on daily data, every 5 hours on hourly), "
                         "string pandas-offset (1D/1W/1M/1Y), explicit list of dates, "
@@ -434,6 +440,7 @@ class BacktestPipeline:
                     **VENUE_SCHEMA,
                     "description": "Run-level venue constraints (allow_shorts).",
                 },
+                "funding": FUNDING_SCHEMA,
                 "full_report": {
                     "type": "boolean",
                     "default": False,
@@ -458,7 +465,8 @@ class BacktestPipeline:
         examples=(
             "run:\n  mode: backtest\n  asof: '2026-02-01'\n  pipeline: backtest.pipeline.v1\n"
             "plugins:\n  pipeline:\n    name: backtest.pipeline.v1\n    params:\n"
-            "      engine: vectorbt\n      fees: 0.001\n      rebalancing_freq: 1W\n"
+            "      engine: vectorbt\n      fees: 0.001\n"
+            "      rebalancing_policy: {cadence: periodic, frequency: weekly}\n"
             "      strategies:\n        - name: crypto_trend\n          weight: 1.0\n",
         ),
     )
@@ -483,6 +491,8 @@ class BacktestPipeline:
         """
         adapter = get_engine(params.get("engine", DEFAULT_ENGINE))
         engine = adapter.name
+        # A declared funding: {ignore, reason}; refused on an engine that charges funding (TOM-1609).
+        funding_ignore = resolve_funding(params.get("funding"), charges_funding=adapter.charges_funding, engine=engine)
         timing = resolve_execution(params.get("execution"))
         allow_shorts, venue_declared = resolve_allow_shorts(params.get("venue"), params.get("risk"))
         check_schedule_venue(timing, params.get("venue"))
@@ -543,6 +553,8 @@ class BacktestPipeline:
             "financing": financing,
             # Whether the engine charges the funding series it is handed (rsims does, vectorbt does not).
             "charges_funding": adapter.charges_funding,
+            # funding: {ignore, reason} — the one escape from the funding guard (quantbox.funding_guard).
+            "funding_ignore": funding_ignore,
             "frequency": freq,
             "bars_per_year": bars_per_year,
             "trading_days": trading_days,
@@ -562,14 +574,16 @@ class BacktestPipeline:
             "group_limits": groups.record() if groups is not None else None,
         }
 
-    def check_planned_data(self, data: Any, paths: dict[str, str | None]) -> None:
+    def check_planned_data(self, data: Any, paths: dict[str, str | None], plan: dict[str, Any]) -> None:
         """Refuse a data plan this pipeline cannot run on — *paths* from ``data.planned_paths``.
 
         A backtest needs prices: with no prices file the data plugin hands back an
         empty frame and the run died later on an IndexError, after ``quantbox config
         explain`` had said ok. :meth:`run` and explain both call this on the same
-        planned paths (TOM-1362). A by-name dataset was already verified against its
-        lock when it was resolved, so only an inline path is checked on disk.
+        planned paths and :meth:`plan` (TOM-1362). A by-name dataset was already
+        verified against its lock when it was resolved, so only an inline path is
+        checked on disk. A planned funding file on an engine that does not charge
+        funding is refused here too (:func:`quantbox.funding_guard.check_funding`).
         """
         name = getattr(getattr(data, "meta", None), "name", type(data).__name__)
         ppath = paths.get("prices")
@@ -577,6 +591,7 @@ class BacktestPipeline:
             raise DataLoadError(name, "no prices source: set prices_path or dataset")
         if getattr(data, "dataset_resolution", None) is None and not Path(ppath).is_file():
             raise DataLoadError(name, f"prices file not found: {ppath}", path=str(ppath))
+        check_funding(plan, paths.get("funding_rates"))
 
     # ==================================================================
     # Main entry point
@@ -615,7 +630,7 @@ class BacktestPipeline:
         prices_params = plan["load_params"]
         planned_paths = getattr(data, "planned_paths", None)
         if callable(planned_paths):
-            self.check_planned_data(data, planned_paths(prices_params))
+            self.check_planned_data(data, planned_paths(prices_params), plan)
 
         # ------------------------------------------------------------------
         # Frequency resolution (PR B / issue #20) — done in plan()
@@ -676,6 +691,10 @@ class BacktestPipeline:
         market_data.update(market_data_dict)
         for key in ("prices", "volume", "high", "low", "market_cap", "funding_rates", "eligibility_mask"):
             market_data.setdefault(key, pd.DataFrame())
+        if not market_data["funding_rates"].empty:
+            # A data plugin that plans no file (an API plugin) is seen only here, before any strategy runs.
+            data_name = getattr(getattr(data, "meta", None), "name", type(data).__name__)
+            check_funding(plan, f"funding_rates returned by data plugin '{data_name}'")
 
         prices_wide = market_data["prices"]
         logger.info(
@@ -915,7 +934,7 @@ class BacktestPipeline:
                 # The rebalancing policy and the group limits the seam applied (docs/adr/0008).
                 "rebalancing": plan["rebalancing"],
                 "group_limits": plan["group_limits"],
-                "funding": {"modelled": book.funding_modelled},
+                "funding": {"modelled": book.funding_modelled, **ignored_record(plan)},
                 "financing": book.financing,
                 "data_validation": self._validation_note(book.data_validation),
                 "overlays": overlays_applied,
@@ -1285,7 +1304,7 @@ class BacktestPipeline:
                 "rebalancing": primary["config"]["rebalancing_policy"],
                 "group_limits": plan["group_limits"],
                 # The primary variant's book, as every other file of the run.
-                "funding": {"modelled": primary["funding_modelled"]},
+                "funding": {"modelled": primary["funding_modelled"], **ignored_record(plan)},
                 "financing": primary["financing"],
                 "data_validation": self._validation_note(validation),
                 "variants": list(variant_results.keys()),
