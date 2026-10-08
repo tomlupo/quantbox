@@ -74,7 +74,7 @@
         "modelled": {"type": "boolean", "description": "true only when the engine charged a funding series."},
         "source_path": {"type": ["string", "null"]},
         "sha256": {"type": ["string", "null"]},
-        "ignored_reason": {"type": "string", "minLength": 1, "description": "Why the config left the funding series out on an engine that does not charge funding (plugins.pipeline.params.funding.reason, TOM-1609). Present exactly when the config declared funding: {ignore: true}; such a run is otherwise refused (minor 7)."}
+        "ignored_reason": {"type": "string", "minLength": 1, "description": "Why the config left funding out of the book (plugins.pipeline.params.funding.reason, TOM-1609): a funding series or a perp market on an engine that does not charge funding, or a perp market with no funding series (TOM-1619). Present exactly when the config declared funding: {ignore: true}; such a run is otherwise refused (minor 7)."}
       }
     },
     "execution": {

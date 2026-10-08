@@ -34,7 +34,7 @@
     "engine": {"$ref": "quantbox/run@1#/properties/engine"},
     "dataset": {
       "allOf": [{"$ref": "quantbox/run@1#/properties/dataset"}],
-      "properties": {"market": {"type": ["string", "null"], "description": "The dataset's market (its manifest.yaml), for a dataset read by name; else null."}}
+      "properties": {"market": {"type": ["string", "null"], "description": "The dataset's market (its manifest.yaml), as the data plugin's planned_market() answers it (a dataset read by name, dataset.curated.v1); else null. The funding guard reads it."}}
     },
     "funding": {"$ref": "quantbox/run@1#/properties/funding"},
     "execution": {"$ref": "quantbox/run@1#/properties/execution"},

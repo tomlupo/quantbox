@@ -443,6 +443,8 @@ def sweep(
           engine: vectorbt   # or rsims — the engine seam (docs/adr/0008)
           fees: 0.005
           rebalancing_freq: 1D
+          # funding: {ignore: true, reason: ...}  — only with funding_rates in data.frames on
+          #   an engine that does not charge it, which is refused otherwise (TOM-1619)
         execution:
           lag_bars: 1        # default; same convention as `quantbox run`
                              # (backtest.shift_signal is a deprecated alias)
@@ -514,6 +516,7 @@ def sweep(
         lag_bars=sweep_lag_bars,
         shift_signal=backtest.get("shift_signal"),  # deprecated alias of execution.lag_bars
         engine=backtest.get("engine"),
+        funding=backtest.get("funding"),  # {ignore: true, reason}: funding_rates in frames on vectorbt (TOM-1619)
     )
     # The sweep's own manifest: the timing every row was simulated with, and the
     # honest trial count (one per grid row), so a gate never counts by hand.

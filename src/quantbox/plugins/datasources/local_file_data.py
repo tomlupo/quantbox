@@ -315,6 +315,19 @@ class LocalFileDataPlugin:
         fpath = params.get("funding_rates_path") or self.funding_rates_path
         return {"prices": str(ppath) if ppath else None, "funding_rates": str(fpath) if fpath else None}
 
+    def planned_market(self) -> str | None:
+        """A by-name dataset's ``market`` (its manifest, as resolved — nothing loaded); None for inline paths.
+
+        The funding guard reads it (:func:`quantbox.funding_guard.planned_market`): a perp
+        market is refused on an engine that does not charge funding (TOM-1619).
+        """
+        if not self.dataset:
+            return None
+        if self.dataset_resolution is None:
+            self.dataset_resolution = _resolve_pinned(self.dataset, self.dataset_lock)
+        market = self.dataset_resolution.get("market")
+        return str(market) if market else None
+
     def load_universe(self, params: dict[str, Any]) -> pd.DataFrame:
         """Load trading universe from file or params.
 
