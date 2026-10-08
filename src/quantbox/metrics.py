@@ -30,7 +30,9 @@ Conventions, stated once:
   ``r - benchmark``. :func:`information_ratio` computes it through
   :func:`sharpe_ratio`, so the two names can never disagree.
 - Drawdowns are negative fractions. ``start_is_peak`` says whether the equity
-  before the first return (1.0) counts as a peak.
+  before the first return (1.0) counts as a peak. Every drawdown OUTPUT names
+  its sign (TOM-1627): ``max_drawdown`` is signed (<= 0) and ``max_drawdown_abs``
+  is the same drawdown as a positive depth (>= 0) — :func:`drawdown_fields`.
 - Turnover is two-sided: ``sum(|w[t] - w[t-1]|)`` per bar.
 - A research statistic with no answer (too few observations, no variance) is
   NaN, never 0.0 — the Sharpe's 0.0 convention above predates it and stays.
@@ -150,7 +152,8 @@ def compute_backtest_metrics(
     Returns
     -------
     dict
-        Keys: total_return, cagr, sharpe, sortino, max_drawdown,
+        Keys: total_return, cagr, sharpe, sortino, max_drawdown (signed,
+        <= 0), max_drawdown_abs (the same drawdown as a positive depth, >= 0),
         max_drawdown_duration_days, annual_volatility, calmar,
         win_rate, profit_factor, var_95, cvar_95 — plus the optional
         keys above only when their input is given.
@@ -194,7 +197,7 @@ def compute_backtest_metrics(
         "cagr": float(cagr),
         "sharpe": float(sharpe),
         "sortino": float(sortino),
-        "max_drawdown": float(max_dd),
+        **drawdown_fields(max_dd),
         "max_drawdown_duration_days": int(dd_dur),
         "annual_volatility": float(ann_vol),
         "calmar": float(calmar),
@@ -230,8 +233,21 @@ def compute_drawdown_series(equity: Any) -> Any:
     return (equity - peak) / peak
 
 
+def drawdown_fields(drawdown: float) -> dict[str, float]:
+    """A drawdown as the two names every drawdown output carries (TOM-1627).
+
+    ``max_drawdown`` is SIGNED, <= 0 (-0.25 = a 25% drawdown), the package's
+    convention; ``max_drawdown_abs`` is the same drawdown as a positive depth,
+    >= 0 (0.25). *drawdown* is a signed drawdown, e.g. :func:`max_drawdown`.
+    """
+    signed = float(drawdown)
+    return {"max_drawdown": signed, "max_drawdown_abs": abs(signed)}
+
+
 def max_drawdown(returns: pd.Series | np.ndarray, *, start_is_peak: bool = False) -> float:
-    """Deepest drawdown of the compounded equity, as a negative fraction (0.0 when none).
+    """Deepest drawdown of the compounded equity, SIGNED: a negative fraction (0.0 when none).
+
+    Its positive depth is ``max_drawdown_abs`` (:func:`drawdown_fields`).
 
     ``start_is_peak=False`` (the run metrics' convention) measures from the
     equity after the first return; ``True`` also counts the starting equity

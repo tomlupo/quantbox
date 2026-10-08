@@ -3,7 +3,7 @@
   "$id": "quantbox/run@1",
   "title": "quantbox run manifest (run@1)",
   "description": "The machine-readable record of one run: <run_dir>/run_manifest.json, also what `quantbox run --json` prints. VERSIONING: `schema` names the MAJOR version and readers check it. Adding a field is a MINOR change: it keeps `quantbox/run@1`, bumps `x-schema-minor` here and is safe for every run@1 reader (unknown keys are allowed). Renaming a field, removing one, or changing what one MEANS is a MAJOR change: it ships as `quantbox/run@2`. Paths under `files` are relative to the run directory.",
-  "x-schema-minor": 7,
+  "x-schema-minor": 8,
   "type": "object",
   "required": [
     "schema",
@@ -237,7 +237,14 @@
       }
     },
     "n_trials": {"type": ["integer", "null"], "minimum": 1, "description": "How many configurations were tried to reach this one; null when unknown."},
-    "metrics": {"type": "object"},
+    "metrics": {
+      "type": "object",
+      "description": "The run's metrics (quantbox.metrics.compute_backtest_metrics plus the book's own). Every drawdown carries its sign in its name (minor 8, TOM-1627).",
+      "properties": {
+        "max_drawdown": {"type": "number", "maximum": 0, "description": "Deepest drawdown of the compounded equity, SIGNED: a negative fraction (-0.25 = a 25% drawdown)."},
+        "max_drawdown_abs": {"type": "number", "minimum": 0, "description": "The same drawdown as a positive depth (0.25), exactly -max_drawdown (minor 8, TOM-1627). Absent from runs written before minor 8."}
+      }
+    },
     "files": {
       "type": "object",
       "required": ["returns", "traded_weights", "metrics"],

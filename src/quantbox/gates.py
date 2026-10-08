@@ -32,6 +32,12 @@ qute-research's ``acceptance_gates.py`` (whose pinned values
   ``metric="max_drawdown"`` and ``episode.depth``): that is the qute-research
   contract the thresholds are written against. It is the one place the
   package's negative drawdown is turned into a magnitude (:func:`_depth`).
+  Beside those keys, every drawdown the JSON reports also carries the explicit
+  pair (TOM-1627, :func:`quantbox.metrics.drawdown_fields`): ``max_drawdown``
+  SIGNED (<= 0) and ``max_drawdown_abs`` its positive depth (>= 0) — in
+  ``episode``, and, for a ``max_drawdown`` leg, in ``drawdowns`` (``candidate``
+  and ``baseline``, the series the leg compares; ``baseline`` None without one).
+  The positive keys keep their value, so nothing reading them changes.
 
 Every input that cannot produce a statistic raises :class:`GateInputError` — the
 CLI maps it to exit 2, which must never be read as a pass or as a fail.
@@ -55,8 +61,8 @@ from .inference import (
     require_finite,
     return_moments,
 )
+from .metrics import drawdown_fields, sharpe_ratio
 from .metrics import max_drawdown as _max_drawdown
-from .metrics import sharpe_ratio
 
 DEFAULT_N_TRIALS: tuple[int, ...] = (1, 5, 10, 20, 50, 100)
 METRICS = ("sharpe", "mean", "max_drawdown")
@@ -315,6 +321,19 @@ def _metric(r: np.ndarray, metric: str) -> float:
     return sharpe_ratio(r, 1)
 
 
+def _drawdowns(cand: np.ndarray, base: np.ndarray | None) -> dict:
+    """The explicit drawdown pair of each series a ``max_drawdown`` leg compares (TOM-1627).
+
+    Measured as the leg measures it (the starting equity 1.0 a peak), so
+    ``max_drawdown_abs`` is exactly the depth the leg value is built from.
+    """
+
+    def pair(r: np.ndarray) -> dict[str, float]:
+        return drawdown_fields(_max_drawdown(r, start_is_peak=True))
+
+    return {"candidate": pair(cand), "baseline": pair(base) if base is not None else None}
+
+
 def _leg_value(cand: np.ndarray, base: np.ndarray | None, metric: str, compare: str) -> float:
     m = _metric(cand, metric)
     if base is None:
@@ -420,7 +439,7 @@ def paired_block_bootstrap(
     hits = sum(_leg_passes(v, pass_if, threshold) for v in defined)
     probability = hits / draws
     q = np.quantile(defined, [0.025, 0.5, 0.975]) if defined.size else [None] * 3
-    return {
+    out = {
         "gate": "bootstrap",
         "method": "paired-stationary-block-bootstrap",
         "metric": metric,
@@ -443,6 +462,9 @@ def paired_block_bootstrap(
         "min_probability": min_probability,
         "gate_pass": bool(probability >= min_probability),
     }
+    if metric == "max_drawdown":  # the full-sample drawdowns behind point_estimate, both signs named
+        out["drawdowns"] = _drawdowns(c, b)
+    return out
 
 
 # ── largest drawdown episode ──────────────────────────────────────────────
@@ -477,7 +499,8 @@ def episode_gate(
     keep = np.ones(c.size, dtype=bool)
     if episode is not None:
         keep[episode["start"] : episode["end"] + 1] = False
-        episode = {**episode, "depth": _depth(episode["depth"])}
+        # depth: the positive key the contract reads; the explicit pair beside it (TOM-1627)
+        episode = {**episode, "depth": _depth(episode["depth"]), **drawdown_fields(episode["depth"])}
     n_left = int(keep.sum())
     if n_left < 2:
         raise GateInputError(
@@ -490,6 +513,11 @@ def episode_gate(
         raise GateInputError(f"the {metric} leg is undefined (zero variance or a zero baseline)")
     full_pass = _leg_passes(full, pass_if, threshold)
     ex_pass = _leg_passes(ex, pass_if, threshold)
+    full_block = {"value": full, "pass": full_pass, "n_obs": int(c.size)}
+    ex_block = {"value": ex, "pass": ex_pass, "n_obs": n_left}
+    if metric == "max_drawdown":  # the drawdowns behind each leg value, both signs named (TOM-1627)
+        full_block["drawdowns"] = _drawdowns(c, b)
+        ex_block["drawdowns"] = _drawdowns(c[keep], b[keep] if b is not None else None)
     return {
         "gate": "episode",
         "metric": metric,
@@ -500,8 +528,8 @@ def episode_gate(
         "n_nonfinite_dropped": dropped,
         "episode_source": source,
         "episode": episode,
-        "full": {"value": full, "pass": full_pass, "n_obs": int(c.size)},
-        "ex_episode": {"value": ex, "pass": ex_pass, "n_obs": n_left},
+        "full": full_block,
+        "ex_episode": ex_block,
         "passes_only_with_episode": bool(full_pass and not ex_pass),
         "gate_pass": bool(ex_pass),
     }

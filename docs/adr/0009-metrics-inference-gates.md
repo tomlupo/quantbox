@@ -64,6 +64,13 @@ The duplication guard of #236 matched metric NAMES. It did not see these copies:
    `episode.depth`), because the qute-research acceptance-gates contract and
    every threshold written against it use that sign; one helper
    (`gates._depth`) converts it.
+   *Amended by TOM-1627 (2026-10-08):* the sign is now also in the NAME.
+   Every drawdown output carries the pair `max_drawdown` (signed, <= 0) and
+   `max_drawdown_abs` (the positive depth, >= 0), from one helper,
+   `metrics.drawdown_fields`: the metrics dict, run@1 `metrics` (minor 8),
+   the gates' JSON (`episode`, and `drawdowns` on a `max_drawdown` leg) and
+   the finding-report export. No existing key changed value: the leg value
+   and `episode.depth` stay positive.
 5. **The sweep is not analysis.** `analysis.parameter_grid` moves to
    `quantbox.sweep`, the library half of `quantbox sweep`.
 6. **Old paths are shims.** `quantbox.analysis` and its four submodules, and
