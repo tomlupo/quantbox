@@ -13,7 +13,7 @@ Nothing here decides what a config MEANS — every fact comes from the code a ru
   itself reads, so every refusal on params alone happens there, for both);
 - ``data.planned_paths(load_params)`` — the files the data plugin will read, a by-name
   dataset resolved against its lock (never loaded) — and ``data.planned_market()``, the
-  dataset's market; then ``pipeline.check_planned_data`` (a backtest refuses a missing
+  dataset's market (with ``data.planned_funding()`` for a plugin that plans no files); then ``pipeline.check_planned_data`` (a backtest refuses a missing
   prices file, a funding file or a perp market its engine would not charge, and a perp
   market with no funding file, as its ``run()`` does — :mod:`quantbox.funding_guard`);
 - :func:`quantbox.runner.strict_refusal` — the ``run.strict`` dataset-tier refusal;
@@ -42,7 +42,7 @@ from typing import Any
 from . import run_manifest as _rm
 from .exceptions import ConfigValidationError
 from .execution import run_record
-from .funding_guard import ignored_record, planned_market
+from .funding_guard import ignored_record, planned_funding, planned_market
 from .overlays import overlay_record
 from .runner import (
     _config_block,
@@ -206,7 +206,9 @@ def explain_config(
     dataset["market"] = planned_market(data)
 
     funding_path = _rm._effective_path(data, "funding_rates", "funding_rates_path")
-    modelled = bool(plan and plan.get("charges_funding") and funding_path and Path(funding_path).is_file())
+    # A plugin that plans no files says through planned_funding() whether a series will come (TOM-1627).
+    planned = (funding_path and Path(funding_path).is_file()) or (paths is None and planned_funding(data))
+    modelled = bool(plan and plan.get("charges_funding") and planned)
 
     doc.update(
         {

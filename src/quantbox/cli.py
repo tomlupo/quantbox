@@ -413,6 +413,27 @@ def _dataset_frame(dataset: Any, name: str) -> Any:
         return dataset._read(name)
 
 
+def _check_sweep_funding(dataset: Any, name: str, market_data: dict[str, Any], backtest: dict[str, Any]) -> None:
+    """The funding guard on a CLI sweep: the dataset's market and the frames it loaded (TOM-1627).
+
+    The engine seam sees only the funding series it is handed, so a perp dataset whose
+    ``data.frames`` leave out ``funding_rates`` would run on vectorbt with no funding.
+    The market is the dataset manifest's ``market`` (``quantbox_datasets.Dataset.manifest``);
+    a dataset without a manifest declares no market. One check,
+    :func:`quantbox.funding_guard.check_funding`; the escape is ``backtest.funding``.
+    """
+    from .engine.registry import get_engine
+    from .funding_guard import check_funding, engine_plan
+
+    funding = market_data.get("funding_rates")
+    check_funding(
+        engine_plan(get_engine(backtest.get("engine"), require_installed=False), backtest.get("funding")),
+        None if funding is None or funding.empty else f"funding_rates of dataset '{name}' in data.frames",
+        market=(getattr(dataset, "manifest", None) or {}).get("market"),
+        declare="as backtest.funding in the sweep config",
+    )
+
+
 @app.command()
 def sweep(
     config: str = typer.Option(..., "-c", "--config", help="Path to sweep config YAML"),
@@ -443,8 +464,10 @@ def sweep(
           engine: vectorbt   # or rsims — the engine seam (docs/adr/0008)
           fees: 0.005
           rebalancing_freq: 1D
-          # funding: {ignore: true, reason: ...}  — only with funding_rates in data.frames on
-          #   an engine that does not charge it, which is refused otherwise (TOM-1619)
+          # funding: {ignore: true, reason: ...}  — only where the funding guard refuses: a perp
+          #   dataset (manifest market) or funding_rates in data.frames on an engine that does
+          #   not charge funding, or a perp dataset with no funding_rates on one that does
+          #   (TOM-1619, TOM-1627)
         execution:
           lag_bars: 1        # default; same convention as `quantbox run`
                              # (backtest.shift_signal is a deprecated alias)
@@ -500,6 +523,7 @@ def sweep(
     output_dir = (config_dir / cfg.get("output_dir", "heatmaps")).resolve()
     heatmap = cfg.get("heatmap", {}) or {}
     backtest = cfg.get("backtest", {}) or {}
+    _check_sweep_funding(dataset, data_cfg["dataset"], market_data, backtest)
 
     grid = run_grid(
         strategy_cls=strategy_cls,

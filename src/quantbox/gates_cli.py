@@ -234,7 +234,11 @@ _COLUMN = typer.Option(None, "--column", help="return column (else the only nume
 _DROP = typer.Option(False, "--allow-nonfinite-drop", help="drop NaN/Inf rows instead of refusing; count recorded")
 _JSON = typer.Option(False, "--json", help="print the full verdict as JSON")
 _LAGS = typer.Option(None, "--lags", help="HAC lags (default floor(4*(n/100)^(2/9)))")
-_METRIC = typer.Option("sharpe", "--metric", help="sharpe (per period) | mean | max_drawdown (positive fraction)")
+_METRIC = typer.Option(
+    "sharpe",
+    "--metric",
+    help="sharpe (per period) | mean | max_drawdown (leg = positive depth; JSON drawdowns name both signs)",
+)
 _COMPARE = typer.Option("diff", "--compare", help="diff (candidate - baseline) | ratio (candidate / baseline)")
 _PASS_IF = typer.Option("above", "--pass-if", help="above | below the threshold, STRICTLY")
 _BASELINE_COLUMN = typer.Option(None, "--baseline-column", help="return column of the baseline file")

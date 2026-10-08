@@ -105,7 +105,14 @@ from quantbox.execution import (
 )
 from quantbox.financing import ASSUMED_FREE, resolve_financing, resolve_leverage
 from quantbox.frequency import Frequency, resolve_pipeline_frequency
-from quantbox.funding_guard import FUNDING_SCHEMA, check_funding, ignored_record, planned_market, resolve_funding
+from quantbox.funding_guard import (
+    FUNDING_SCHEMA,
+    check_funding,
+    ignored_record,
+    planned_funding_source,
+    planned_market,
+    resolve_funding,
+)
 from quantbox.instrument_calendar import calendar_summary
 from quantbox.overlays import OverlayLink, apply_overlays
 from quantbox.plugins.datasources._utils import interval_step, normalize_data_frequency
@@ -588,7 +595,9 @@ class BacktestPipeline:
         the planned funding file and the data plugin's market
         (:func:`~quantbox.funding_guard.planned_market`): a funding file or a perp
         market on an engine that does not charge funding is refused, and a perp
-        market with no funding file on one that does.
+        market with no funding file on one that does. A plugin that plans no files
+        says whether it will serve a funding series through ``planned_funding()``
+        (:func:`~quantbox.funding_guard.planned_funding`, TOM-1627).
         """
         if paths is not None:
             name = getattr(getattr(data, "meta", None), "name", type(data).__name__)
@@ -597,12 +606,9 @@ class BacktestPipeline:
                 raise DataLoadError(name, "no prices source: set prices_path or dataset")
             if getattr(data, "dataset_resolution", None) is None and not Path(ppath).is_file():
                 raise DataLoadError(name, f"prices file not found: {ppath}", path=str(ppath))
-        check_funding(
-            plan,
-            (paths or {}).get("funding_rates"),
-            market=planned_market(data),
-            funding_known=paths is not None,
-        )
+        # A plugin that plans no files answers planned_funding() instead (TOM-1627).
+        source, known = planned_funding_source(data, paths)
+        check_funding(plan, source, market=planned_market(data), funding_known=known)
 
     # ==================================================================
     # Main entry point
