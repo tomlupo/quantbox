@@ -6,7 +6,12 @@ backtest path, the run metrics, the finding-report export, the validation
 plugins and :mod:`quantbox.performance` (which quantbox-live imports) call
 these functions instead of carrying their own copy (TOM-1448).
 
-Core: numpy and pandas only (scipy is imported lazily for parametric VaR).
+The research statistics live here too (TOM-1596): the Newey-West t-stat of
+the mean (the ``nw`` acceptance gate calls the same function), IC and ICIR,
+beta to a benchmark, hit rate, active share and risk decomposition.
+
+Core: numpy and pandas only (scipy is imported lazily for parametric VaR,
+statsmodels lazily for the Newey-West HAC fit).
 ``quantbox.plugins.backtesting.metrics`` re-exports the same objects for the
 callers that still import that path.
 
@@ -22,11 +27,15 @@ Conventions, stated once:
 - Drawdowns are negative fractions. ``start_is_peak`` says whether the equity
   before the first return (1.0) counts as a peak.
 - Turnover is two-sided: ``sum(|w[t] - w[t-1]|)`` per bar.
+- A research statistic with no answer (too few observations, no variance) is
+  NaN, never 0.0 — the Sharpe's 0.0 convention above predates it and stays.
 """
 
 from __future__ import annotations
 
 import logging
+import math
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
@@ -35,6 +44,27 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 TRADING_DAYS_PER_YEAR = 365  # crypto default; callers can override
+
+# A quantity that is mathematically zero does not reliably come out as 0.0 in
+# binary floating point. A constant returns series is the canonical example:
+# `[0.001] * 200` accumulates rounding to std = 2.17e-19 while `[0.001] * 50`
+# gives exactly 0.0, so whether an `== 0` guard fires is a lottery on the
+# (value, length) pair rather than a property of the input. Measured on the DSR
+# module before the fix: of 32 constant series (8 values x 4 lengths), 20 hit
+# the exact guard and 12 sailed past it into the moment path, where scipy hit
+# catastrophic cancellation.
+#
+# The observed noise floor for a constant series is std/|value| ~ 2e-16
+# (machine epsilon); 1e-12 leaves ~4000x headroom above it while staying far
+# below any real series (std/scale = 1e-12 would imply a Sharpe of ~1e12).
+# Being relative, the test is unit-independent: a genuinely tiny-but-real
+# series (returns of order 1e-9 with std of order 1e-9) is unaffected. When
+# every observation is exactly zero, scale is 0 and the test reduces to
+# std <= 0, which still holds.
+#
+# This is the framework's single threshold for "cancelled to noise";
+# ``quantbox.analysis.dsr`` and the validation plugins import it from here.
+DEGENERATE_RTOL = 1e-12
 
 
 def sharpe_ratio(
@@ -146,7 +176,7 @@ def compute_backtest_metrics(
 
     wins = returns[returns > 0]
     losses = returns[returns < 0]
-    win_rate = len(wins) / len(returns) if len(returns) > 0 else 0.0
+    win_rate = hit_rate(returns)
     profit_factor = (wins.sum() / abs(losses.sum())) if losses.sum() != 0 else float("inf")
 
     var_95 = float(np.percentile(returns, 5))
@@ -294,8 +324,235 @@ def compute_rolling_sharpe(
 
 
 # ---------------------------------------------------------------------------
+# Research statistics (TOM-1596)
+# ---------------------------------------------------------------------------
+
+
+def newey_west_auto_lags(n: int) -> int:
+    """Newey-West (1994) automatic lag truncation: floor(4 * (n/100)^(2/9))."""
+    return int(math.floor(4 * (n / 100.0) ** (2.0 / 9.0)))
+
+
+def require_finite(returns, *, allow_nonfinite_drop: bool = False) -> tuple[np.ndarray, int]:
+    """Validate a raw return array: FAIL LOUDLY on NaN/Inf unless explicitly opted out.
+
+    Returns ``(finite_returns, n_dropped)``. Raises ``ValueError`` when
+    non-finite values are present and ``allow_nonfinite_drop`` is False — a
+    corrupt input must never silently shrink the sample a gate then reports as
+    complete. This is the same invariant as
+    :func:`quantbox.analysis.dsr.deflated_sharpe_ratio_from_returns`.
+    """
+    r = np.asarray(returns, dtype=float)
+    finite_mask = np.isfinite(r)
+    n_dropped = int((~finite_mask).sum())
+    if n_dropped and not allow_nonfinite_drop:
+        raise ValueError(
+            f"{n_dropped} of {r.size} return observations are NaN/Inf — refusing to silently "
+            "drop them (a corrupt file must not pass on the surviving subset). Pass "
+            "allow_nonfinite_drop=True to explicitly opt into dropping them and continuing."
+        )
+    return r[finite_mask], n_dropped
+
+
+def hac_ols(y: np.ndarray, x: np.ndarray, lags: int) -> Any:
+    """OLS of ``y`` on ``x`` with a Newey-West (Bartlett kernel) HAC covariance — the ONE HAC fit.
+
+    statsmodels computes the sandwich (adapter, not reimplementation). The
+    ``nobs/(nobs-k)`` small-sample correction is OFF: the retired hand-rolled
+    estimators (and robo-lab's ``_ols_nw``) used the uncorrected estimator, and
+    ``tests/test_hac_parity.py`` pins that parity. Returns the statsmodels result.
+    """
+    import statsmodels.api as sm
+
+    return sm.OLS(y, x).fit(cov_type="HAC", cov_kwds={"maxlags": lags, "use_correction": False})
+
+
+def newey_west_tstat(returns, lags: int | None = None, *, allow_nonfinite_drop: bool = False) -> dict:
+    """Newey-West HAC t-stat on the mean of ``returns`` — metrics and the ``nw`` gate call this one.
+
+    An OLS of ``returns`` on a constant with a HAC (Bartlett kernel)
+    covariance (:func:`hac_ols`). Corrects the standard error of the mean for
+    the serial correlation that inflates a naive t-stat on overlapping or
+    trend-following returns. ``lags=None`` picks :func:`newey_west_auto_lags`.
+
+    Non-finite observations RAISE by default (see :func:`require_finite`);
+    ``allow_nonfinite_drop=True`` opts into dropping them, and the returned
+    ``n_obs_raw`` / ``n_nonfinite_dropped`` keep that loss visible.
+
+    Returns a dict with full-precision floats: ``n_obs``, ``n_obs_raw``,
+    ``n_nonfinite_dropped``, ``nw_lags``, ``mean_return``, ``nw_se``,
+    ``nw_tstat`` and ``nw_pvalue`` (two-sided, normal). A degenerate series
+    (fewer than 2 finite observations, or zero long-run variance) yields
+    ``None`` for the SE/t-stat/p-value rather than ``inf``/``nan``.
+    """
+    r, n_dropped = require_finite(returns, allow_nonfinite_drop=allow_nonfinite_drop)
+    n = int(r.size)
+    n_raw = int(np.asarray(returns).size)
+
+    base = {
+        "n_obs": n,
+        "n_obs_raw": n_raw,
+        "n_nonfinite_dropped": n_dropped,
+        "nw_lags": 0,
+        "mean_return": None,
+        "nw_se": None,
+        "nw_tstat": None,
+        "nw_pvalue": None,
+    }
+    if n < 2:
+        return base
+
+    if lags is None:
+        lags = newey_west_auto_lags(n)
+    lags = max(0, min(lags, n - 1))  # can't use more lags than we have data
+    base["nw_lags"] = lags
+
+    mu = float(r.mean())
+    base["mean_return"] = mu
+
+    # Zero-variance series: statsmodels would divide by a zero SE. Guard first,
+    # RELATIVELY (see DEGENERATE_RTOL): a constant series does not reliably
+    # come out with std == 0.0 — `[0.001] * 337` gives ~2e-19, which statsmodels
+    # turned into a t-stat of 3.5e16 (29 of 48 constant series probed, TOM-1351).
+    if _flat(r):
+        return base
+
+    fit = hac_ols(r, np.ones((n, 1)), lags)
+    se = float(fit.bse[0])
+    if not math.isfinite(se) or se <= 0:
+        return base
+    t = mu / se
+    from scipy.stats import norm
+
+    # Two-sided normal p-value, matching the retired gate's convention.
+    pval = 2.0 * (1.0 - norm.cdf(abs(t)))
+    return {
+        **base,
+        "nw_se": se,
+        "nw_tstat": float(t),
+        "nw_pvalue": float(pval),
+    }
+
+
+def information_coefficient(signal: pd.DataFrame, forward_returns: pd.DataFrame, *, min_assets: int = 2) -> pd.Series:
+    """Per-date cross-sectional Spearman rank IC of ``signal`` vs ``forward_returns``.
+
+    Both are wide (date x symbol) and aligned on dates and symbols. On each
+    date only the symbols with BOTH a signal and a forward return count; ties
+    take their average rank (as ``scipy.stats.spearmanr``). A date with fewer
+    than ``min_assets`` such symbols, or with no spread in either rank, has no
+    IC and is left out. Lining the forward return up with the bar the signal
+    is traded on (next-bar, ADR-0005) is the caller's job.
+    """
+    s, f = signal.align(forward_returns, join="inner")
+    both = s.notna() & f.notna()
+    rs = s.where(both).rank(axis=1)
+    rf = f.where(both).rank(axis=1)
+    ds = rs.sub(rs.mean(axis=1), axis=0)
+    df = rf.sub(rf.mean(axis=1), axis=0)
+    num = (ds * df).sum(axis=1)
+    den = np.sqrt((ds**2).sum(axis=1) * (df**2).sum(axis=1))
+    ic = num / den.where(den > 0)
+    ic = ic.where(both.sum(axis=1) >= max(min_assets, 2))
+    return ic.dropna().astype(float)
+
+
+def icir(ic: pd.Series) -> float:
+    """IC information ratio: mean IC over its standard deviation (ddof=1), NOT annualised.
+
+    It is the per-period Sharpe of the IC series (:func:`sharpe_ratio` at one
+    bar a year). NaN with fewer than two ICs or no variance.
+    """
+    x = pd.Series(ic, dtype=float).dropna()
+    if len(x) < 2 or _flat(x.to_numpy()):
+        return float("nan")
+    return sharpe_ratio(x, 1.0)
+
+
+def beta(returns: pd.Series | np.ndarray, benchmark: pd.Series | np.ndarray) -> float:
+    """Beta of ``returns`` to ``benchmark``: ``cov(r, b) / var(b)`` (the OLS slope with an intercept).
+
+    Series align by date (inner), arrays by position; rows missing either
+    side are dropped. NaN with fewer than two rows or a flat benchmark.
+    """
+    r, b = _aligned(returns, benchmark)
+    pair = pd.DataFrame({"r": np.asarray(r, dtype=float), "b": np.asarray(b, dtype=float)}).dropna()
+    if len(pair) < 2 or _flat(pair["b"].to_numpy()):
+        return float("nan")
+    c = np.cov(pair["r"].to_numpy(), pair["b"].to_numpy(), ddof=1)
+    return float(c[0, 1] / c[1, 1])
+
+
+def hit_rate(returns: pd.Series | np.ndarray, benchmark: pd.Series | np.ndarray | None = None) -> float:
+    """Share of periods with ``returns > 0`` — or ``returns > benchmark`` when one is given.
+
+    Strict: a flat period is not a hit. Missing periods are left out of the
+    count. Resample first for a monthly hit rate. NaN when no period is left.
+    """
+    if benchmark is None:
+        x = pd.Series(np.asarray(returns, dtype=float)).dropna()
+        wins = x > 0
+    else:
+        r, b = _aligned(returns, benchmark)
+        pair = pd.DataFrame({"r": np.asarray(r, dtype=float), "b": np.asarray(b, dtype=float)}).dropna()
+        wins = pair["r"] > pair["b"]
+    return float(wins.mean()) if len(wins) else float("nan")
+
+
+def active_share(weights: pd.DataFrame, reference: pd.DataFrame | pd.Series | Mapping[str, float]) -> float:
+    """Active share vs a reference book: ``0.5 * sum(|w - ref|)`` per date, averaged over dates.
+
+    ``reference`` is a book (date x symbol, aligned on ``weights``' dates) or
+    one static set of weights. A symbol only one side holds counts in full. A
+    date on which either book carries no weight at all is left out. The level
+    is whatever ``weights`` holds (proxies, sleeves or names).
+    """
+    if isinstance(reference, pd.DataFrame):
+        ref = reference.reindex(weights.index)
+    else:
+        ref = pd.DataFrame([pd.Series(reference, dtype=float)] * len(weights.index), index=weights.index)
+    cols = weights.columns.union(ref.columns)
+    a = weights.reindex(columns=cols).fillna(0.0)
+    b = ref.reindex(columns=cols).fillna(0.0)
+    held = weights.notna().any(axis=1) & ref.notna().any(axis=1)
+    per_date = (a - b).abs().sum(axis=1) * 0.5
+    return float(per_date[held].mean()) if held.any() else float("nan")
+
+
+def risk_contributions(
+    weights: pd.Series | Mapping[str, float],
+    returns: pd.DataFrame | None = None,
+    *,
+    cov: pd.DataFrame | None = None,
+) -> pd.Series:
+    """Each asset's (or sleeve's) share of the portfolio variance: ``w_i (S w)_i / w' S w``.
+
+    ``S`` is ``cov``, or the sample covariance of ``returns`` (date x asset) on
+    the rows where every asset has a return. Pass exactly one. The shares sum
+    to 1; a hedge's share is negative. NaN everywhere when the portfolio has no
+    variance.
+    """
+    if (returns is None) == (cov is None):
+        raise ValueError("risk_contributions needs exactly one of `returns` or `cov`")
+    w = pd.Series(weights, dtype=float)
+    if returns is not None:
+        cov = returns[list(w.index)].dropna().cov()
+    s = cov.reindex(index=w.index, columns=w.index).to_numpy(dtype=float)
+    marginal = s @ w.to_numpy()
+    total = float(w.to_numpy() @ marginal)
+    if not total > 0:
+        return pd.Series(np.nan, index=w.index)
+    return pd.Series(w.to_numpy() * marginal / total, index=w.index)
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _flat(x: np.ndarray) -> bool:
+    """No spread worth the name: std within DEGENERATE_RTOL of the series' scale (never ``== 0``)."""
+    return bool(np.std(x) <= DEGENERATE_RTOL * float(np.mean(np.abs(x))))
 
 
 def _aligned(returns: Any, benchmark: Any) -> tuple[Any, Any]:

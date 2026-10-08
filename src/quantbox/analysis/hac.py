@@ -1,34 +1,36 @@
-"""Newey-West / HAC statistics — thin wrappers over statsmodels.
+"""Newey-West / HAC statistics — the analysis-side door to them.
 
-This module owns two autocorrelation-robust statistics for the whole
-ecosystem, so no downstream repo has to hand-roll a Bartlett-kernel HAC
-sandwich estimator again:
+Two autocorrelation-robust statistics, so no downstream repo has to hand-roll a
+Bartlett-kernel HAC sandwich estimator again:
 
 * :func:`newey_west_tstat` — the HAC t-stat on the mean of a return series
   (is the average return significant once serial correlation is corrected
-  for?). This is an OLS of the series on a constant.
+  for?). It lives in :mod:`quantbox.metrics` (TOM-1596) and is re-exported
+  here as the SAME object, so the ``nw`` gate and the metrics module run one
+  implementation.
 * :func:`factor_regression` — Jensen's-alpha factor decomposition: OLS of a
   strategy return series on an intercept + known factor returns, with the
   HAC-robust standard error / t-stat on the intercept (is the return novel,
   or just paid-for factor exposure?).
 
-Both delegate the HAC covariance to ``statsmodels`` —
-``OLS(...).fit(cov_type="HAC", cov_kwds={"maxlags": k})`` — rather than
-reimplementing the ``(X'X)^-1 S (X'X)^-1`` sandwich by hand. This follows the
+Both fit through :func:`quantbox.metrics.hac_ols`, which delegates the HAC
+covariance to ``statsmodels`` rather than reimplementing the
+``(X'X)^-1 S (X'X)^-1`` sandwich by hand. This follows the
 adapter-not-reimplementation principle: statsmodels is the maintained,
 battle-tested reference for HAC inference; we do not compete with it.
 
-We pass ``use_correction=False`` deliberately. statsmodels' default applies a
-``nobs/(nobs-k)`` small-sample correction to the HAC covariance; the retired
-hand-rolled implementations these functions replace used the *uncorrected*
-estimator. Disabling the correction makes this a provably behaviour-preserving
-migration: the framework reproduces the retired gates' numbers to machine
-precision (see ``tests/test_hac_parity.py``), so no historical promotion
-decision silently flips. The correction is a finite-sample refinement — with it
-enabled, t-stats shrink by exactly ``sqrt(nobs/(nobs-k))`` (~0.1% for a mean
-t-stat, ~0.4% for a 3-factor alpha), the marginally-more-conservative direction
-for an acceptance gate. Adopting it is a reasonable future policy change, but
-belongs in a deliberate decision, not a silent side effect of this port.
+The fit passes ``use_correction=False`` deliberately. statsmodels' default
+applies a ``nobs/(nobs-k)`` small-sample correction to the HAC covariance; the
+retired hand-rolled implementations these functions replace used the
+*uncorrected* estimator. Disabling the correction makes this a provably
+behaviour-preserving migration: the framework reproduces the retired gates'
+numbers to machine precision (see ``tests/test_hac_parity.py``), so no
+historical promotion decision silently flips. The correction is a finite-sample
+refinement — with it enabled, t-stats shrink by exactly ``sqrt(nobs/(nobs-k))``
+(~0.1% for a mean t-stat, ~0.4% for a 3-factor alpha), the
+marginally-more-conservative direction for an acceptance gate. Adopting it is a
+reasonable future policy change, but belongs in a deliberate decision, not a
+silent side effect of this port.
 
 All statistics are returned at full precision; rounding for display/JSON is the
 caller's (CLI's) concern, not this module's.
@@ -41,99 +43,9 @@ import math
 import numpy as np
 from scipy.stats import norm
 
-from .dsr import DEGENERATE_RTOL
+from ..metrics import DEGENERATE_RTOL, hac_ols, newey_west_auto_lags, newey_west_tstat, require_finite
 
-
-def newey_west_auto_lags(n: int) -> int:
-    """Newey-West (1994) automatic lag truncation: floor(4 * (n/100)^(2/9))."""
-    return int(math.floor(4 * (n / 100.0) ** (2.0 / 9.0)))
-
-
-def require_finite(returns, *, allow_nonfinite_drop: bool = False) -> tuple[np.ndarray, int]:
-    """Validate a raw return array: FAIL LOUDLY on NaN/Inf unless explicitly opted out.
-
-    Returns ``(finite_returns, n_dropped)``. Raises ``ValueError`` when
-    non-finite values are present and ``allow_nonfinite_drop`` is False — a
-    corrupt input must never silently shrink the sample a gate then reports as
-    complete. This is the same invariant as
-    :func:`quantbox.analysis.dsr.deflated_sharpe_ratio_from_returns`.
-    """
-    r = np.asarray(returns, dtype=float)
-    finite_mask = np.isfinite(r)
-    n_dropped = int((~finite_mask).sum())
-    if n_dropped and not allow_nonfinite_drop:
-        raise ValueError(
-            f"{n_dropped} of {r.size} return observations are NaN/Inf — refusing to silently "
-            "drop them (a corrupt file must not pass on the surviving subset). Pass "
-            "allow_nonfinite_drop=True to explicitly opt into dropping them and continuing."
-        )
-    return r[finite_mask], n_dropped
-
-
-def newey_west_tstat(returns, lags: int | None = None, *, allow_nonfinite_drop: bool = False) -> dict:
-    """Newey-West HAC t-stat on the mean of ``returns``.
-
-    Equivalent to an OLS of ``returns`` on a constant with a HAC (Bartlett
-    kernel) covariance — statsmodels does the sandwich. Corrects the standard
-    error of the mean for the serial correlation that inflates a naive t-stat
-    on overlapping/trend-following returns.
-
-    Non-finite observations RAISE by default (see :func:`require_finite`);
-    ``allow_nonfinite_drop=True`` opts into dropping them, and the returned
-    ``n_obs_raw`` / ``n_nonfinite_dropped`` keep that loss visible.
-
-    Returns a dict with full-precision floats. A degenerate series (fewer than
-    2 finite observations, or zero long-run variance) yields ``None`` for the
-    SE/t-stat/p-value rather than ``inf``/``nan``.
-    """
-    r, n_dropped = require_finite(returns, allow_nonfinite_drop=allow_nonfinite_drop)
-    n = int(r.size)
-    n_raw = int(np.asarray(returns).size)
-
-    base = {
-        "n_obs": n,
-        "n_obs_raw": n_raw,
-        "n_nonfinite_dropped": n_dropped,
-        "nw_lags": 0,
-        "mean_return": None,
-        "nw_se": None,
-        "nw_tstat": None,
-        "nw_pvalue": None,
-    }
-    if n < 2:
-        return base
-
-    if lags is None:
-        lags = newey_west_auto_lags(n)
-    lags = max(0, min(lags, n - 1))  # can't use more lags than we have data
-    base["nw_lags"] = lags
-
-    mu = float(r.mean())
-    base["mean_return"] = mu
-
-    # Zero-variance series: statsmodels would divide by a zero SE. Guard first,
-    # RELATIVELY (see dsr.DEGENERATE_RTOL): a constant series does not reliably
-    # come out with std == 0.0 — `[0.001] * 337` gives ~2e-19, which statsmodels
-    # turned into a t-stat of 3.5e16 (29 of 48 constant series probed, TOM-1351).
-    if r.std(ddof=0) <= DEGENERATE_RTOL * float(np.mean(np.abs(r))):
-        return base
-
-    import statsmodels.api as sm
-
-    x = np.ones((n, 1))
-    fit = sm.OLS(r, x).fit(cov_type="HAC", cov_kwds={"maxlags": lags, "use_correction": False})
-    se = float(fit.bse[0])
-    if not math.isfinite(se) or se <= 0:
-        return base
-    t = mu / se
-    # Two-sided normal p-value, matching the retired gate's convention.
-    pval = 2.0 * (1.0 - norm.cdf(abs(t)))
-    return {
-        **base,
-        "nw_se": se,
-        "nw_tstat": float(t),
-        "nw_pvalue": float(pval),
-    }
+__all__ = ["factor_regression", "newey_west_auto_lags", "newey_west_tstat", "require_finite"]
 
 
 def factor_regression(y, factors, factor_names: list[str], lags: int | None = None) -> dict:
@@ -204,9 +116,7 @@ def factor_regression(y, factors, factor_names: list[str], lags: int | None = No
     if n < k + 1:
         return base
 
-    import statsmodels.api as sm
-
-    X = sm.add_constant(F, prepend=True, has_constant="add")  # n x k, intercept first
+    X = np.column_stack([np.ones(n), F])  # n x k, intercept first
     # Perfectly collinear factors — refuse to fabricate an alpha (mirrors the
     # retired estimator's np.linalg.inv LinAlgError branch).
     if np.linalg.matrix_rank(X) < k:
@@ -218,7 +128,7 @@ def factor_regression(y, factors, factor_names: list[str], lags: int | None = No
     base["hac_lags"] = int(lags)
 
     try:
-        fit = sm.OLS(y, X).fit(cov_type="HAC", cov_kwds={"maxlags": lags, "use_correction": False})
+        fit = hac_ols(y, X, lags)
     except (np.linalg.LinAlgError, ValueError):
         return base
 
