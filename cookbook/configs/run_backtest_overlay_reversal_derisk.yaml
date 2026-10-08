@@ -29,7 +29,7 @@ plugins:
     params:
       engine: rsims
       fees: 0.0005
-      rebalancing_freq: 1
+      rebalancing_policy: {cadence: periodic, frequency: 1}  # every execution bar
       venue:
         allow_shorts: false
       universe:

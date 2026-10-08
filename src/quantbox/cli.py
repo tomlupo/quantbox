@@ -313,7 +313,7 @@ def validate(
     """Validate a run config file."""
     with open(config, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
-    findings = validate_config(cfg)
+    findings = validate_config(cfg, config_path=config)
     payload = [f.__dict__ for f in findings]
     if json:
         print(_as_json(payload))

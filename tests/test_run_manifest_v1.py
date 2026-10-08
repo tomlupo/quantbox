@@ -46,7 +46,16 @@ def _write_inputs(tmp_path: Path) -> tuple[Path, Path]:
     return prices_path, funding_path
 
 
-def _config(tmp_path: Path, engine: str, *, n_trials: int | None = None, hold: str = "A") -> dict:
+#: The same funding file reaches both engines here; vectorbt does not charge it, so the
+#: config declares that (TOM-1609: otherwise the funding guard refuses it).
+FUNDING_IGNORED = "manifest fixture: the same funding file on every engine; vectorbt does not charge it"
+
+
+def _config(
+    tmp_path: Path, engine: str, *, n_trials: int | None = None, hold: str = "A", ignore_funding: bool | None = None
+) -> dict:
+    """A one-asset backtest with a funding file. ``ignore_funding`` (default: on vectorbt)
+    declares ``funding: {ignore: true, reason}``; ``False`` leaves it out (the guard's tests)."""
     prices_path, funding_path = _write_inputs(tmp_path)
     cfg = yaml.safe_load(f"""
 run: {{mode: backtest, asof: "2024-02-09", pipeline: backtest.pipeline.v1}}
@@ -70,6 +79,8 @@ plugins:
 """)
     if n_trials is not None:
         cfg["run"]["n_trials"] = n_trials
+    if ignore_funding if ignore_funding is not None else engine == "vectorbt":
+        cfg["plugins"]["pipeline"]["params"]["funding"] = {"ignore": True, "reason": FUNDING_IGNORED}
     return cfg
 
 

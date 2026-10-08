@@ -14,7 +14,7 @@ plugins:
     params:
       engine: vectorbt
       fees: 0.001
-      rebalancing_freq: 1
+      rebalancing_policy: {cadence: periodic, frequency: 1}  # every execution bar (docs/adr/0008)
       trading_days: 252
 
       universe:
@@ -24,7 +24,6 @@ plugins:
         lookback_days: 504
 
       risk:
-        tranches: 1
         max_leverage: 1
         allow_short: false
 

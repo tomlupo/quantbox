@@ -15,6 +15,7 @@ status_changes:
   - 2026-10-05: decision 11 extended with TOM-1518 — live trading decides with the same policy code; the live rebalancers keep target weights -> orders only
   - 2026-10-05: decisions 6 and 11 amended with TOM-1520 — Tom, 2026-10-05: "Normalizacja jest częścią strategii" — venue.leverage normalisation and the group limits are the DECISION (quantbox.decision), shared by backtest and live; the seam measures leverage and, without borrow, caps every rebalance's buys at the cash
   - 2026-10-06: decisions 12 and 13 amended with TOM-1525 — Tom, 2026-10-06: "Jedno: 1 wszędzie" — one risk.max_leverage default (1), read by quantbox.decision.gross_cap only, in every door
+  - 2026-10-08: decision 14 added with TOM-1609 — Tom, 2026-10-08 ("czy kod/agent będzie wiedział, którego silnika użyć?"): the one engine table, and a funding series on an engine that does not charge it is refused
 ---
 
 # ADR-0008: Book simulation sits behind one engine seam, with vectorbt and rsims as adapters
@@ -213,6 +214,23 @@ the same strategy gave a different book through `backtest()` than through
     `borrow` or `schedule: bars` and a row above gross 1 moves.
     `tests/test_decision_layer.py` holds the backtest-vs-trading test without
     the key.
+
+14. **Which engine (TOM-1609).** This table is the ONLY place that states
+    the engine choice; every other file points here.
+
+    | | vectorbt | rsims |
+    |---|---|---|
+    | **Identical on both** (the seam, decisions 1-13) | the decision (short clip, `risk.max_leverage` default 1, group limits, `venue.leverage` default `normalize`), `rebalancing_policy` (cadence x trigger, `min_trade`), the execution lag and calendars, the NaN policy, `fees` / `fixed_fees` / `slippage`, `initial_cash` 10,000, compounding, the trade dates, every door, the run manifest | the same |
+    | **Funding** (`charges_funding`) | not charged. A config whose data carries a funding series is REFUSED by `validate`, `config explain` and the run (`quantbox.funding_guard`), unless it declares `funding: {ignore: true, reason}`; the reason is recorded in `run_manifest.json` `funding.ignored_reason` | charged: `funding.modelled` true when the series has rows in the window |
+    | **Margin, net > 1 under `venue.leverage: borrow`** (`models_margin`) | cannot borrow: without `venue.financing` the excess is held as synthetic cash legs at an ASSUMED rate of 0 | a margin simulator: the excess is held on margin, no cash legs; `margin` (maintenance rate, default 0 = off) |
+    | **Own params** (refused on the other engine) | `use_numba`, `use_order_func`, `create_strategy_label` | `trade_buffer`, `margin`, `capitalise_profits`, `equity_basis` |
+    | **Native object** (`book.native`) | `vbt.Portfolio` | the long results frame |
+    | **Sweep metrics** | any `vbt.Portfolio` attribute name | the return-based names only (see Unintended) |
+    | **Install** | the `[vectorbt]` extra | numpy, in core: the only engine a client install carries |
+
+    **The rule:** perps, funding or margin -> rsims; spot research -> either;
+    client installs -> rsims. The default engine stays vectorbt; nothing
+    selects rsims for a config, so a perps config names `engine: rsims`.
 
 ### The threshold caveat
 

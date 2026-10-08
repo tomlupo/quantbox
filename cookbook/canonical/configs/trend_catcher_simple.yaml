@@ -22,7 +22,7 @@ plugins:
     params:
       engine: vectorbt
       fees: 0.0
-      rebalancing_freq: 1
+      rebalancing_policy: {cadence: periodic, frequency: 1}  # every execution bar
       trading_days: 365
 
       universe:

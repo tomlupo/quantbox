@@ -42,7 +42,6 @@ plugins:
   rebalancing:
     name: "rebalancing.standard.v1"
     params:
-      tranches: 1
       max_leverage: 1
       min_trade_size: 0.01
 
