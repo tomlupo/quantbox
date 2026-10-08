@@ -35,6 +35,7 @@ import pandas as pd
 
 from quantbox.execution import SCHEDULES, ExecutionTiming, timing_record
 from quantbox.financing import CASH_LEGS, DEFAULT_LEVERAGE, Financing, add_cash_legs
+from quantbox.funding_guard import check_series
 from quantbox.instrument_calendar import (
     DATA_VALIDATION_SCHEMA,
     InstrumentCalendar,
@@ -68,6 +69,7 @@ def simulate(
     leverage: str | None = None,
     financing: Financing | None = None,
     funding: pd.DataFrame | None = None,
+    funding_ignore: Any = None,
     engine_params: Mapping[str, Any] | None = None,
     trading_days: int = 365,
     where: str = "",
@@ -96,9 +98,16 @@ def simulate(
     ``prices`` / ``orders`` are the REAL book (what is held after each bar's
     orders, saved as ``traded_weights``); the engine itself may also have
     traded the financing cash legs.
+
+    *funding* is the funding series (wide, like *prices*). On an engine that
+    does not charge funding a non-empty series is REFUSED
+    (:func:`quantbox.funding_guard.check_series`, the guard every door shares)
+    unless *funding_ignore* declares ``{"ignore": True, "reason": ...}``; on an
+    engine that charges it, that declaration is refused.
     """
     adapter = get_engine(engine)
     _refuse_uncharged_costs(adapter, costs, where)
+    check_series(adapter, funding, funding_ignore, where=where)
     if timing.schedule not in SCHEDULES:
         raise ValueError(f"execution.schedule must be one of {list(SCHEDULES)}, got {timing.schedule!r}")
     bars = timing.schedule == "bars"

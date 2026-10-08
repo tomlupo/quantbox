@@ -89,6 +89,7 @@ def sweep(
     metrics: Sequence[str] = DEFAULT_METRICS,
     shift_signal: int | None = None,
     lag_bars: int | None = None,
+    funding: Mapping[str, Any] | None = None,
 ) -> pd.DataFrame:
     """Run a strategy across a Cartesian product of parameter values.
 
@@ -125,6 +126,10 @@ def sweep(
         (same-bar) raises ``ValueError``.
     shift_signal
         DEPRECATED alias of ``lag_bars`` (emits ``DeprecationWarning``).
+    funding
+        ``{"ignore": True, "reason": ...}``, as in ``backtest()``: ``data["funding_rates"]``
+        goes to the engine, and on one that does not charge funding it is refused
+        without this escape (:mod:`quantbox.funding_guard`, TOM-1619).
 
     Returns
     -------
@@ -136,6 +141,7 @@ def sweep(
     from quantbox.decision import DecisionRules, final_book, gross_cap
     from quantbox.engine import Costs, get_engine, simulate
     from quantbox.financing import DEFAULT_LEVERAGE
+    from quantbox.funding_guard import check_series
 
     backtest_kwargs = dict(backtest_kwargs or {})
     # The engine and the schedule are the seam's; costs are Costs; anything else is the adapter's own
@@ -153,6 +159,8 @@ def sweep(
     max_leverage = gross_cap({"max_leverage": backtest_kwargs.pop("max_leverage", None)})
     engine_params = adapter.check_params(backtest_kwargs)
     timing = resolve_execution({"lag_bars": resolve_sweep_lag_bars(lag_bars, shift_signal), "schedule": schedule})
+    funding_rates = data.get("funding_rates")
+    check_series(adapter, funding_rates, funding)  # the seam's funding guard, before any strategy runs
 
     # Defensive: strip index.freq so vbt's wrapper.freq lookup doesn't trip on
     # a `<Day>` offset (vbt + recent pandas can't convert it to a Timedelta).
@@ -202,6 +210,8 @@ def sweep(
             costs=costs,
             rebalancing_freq=rebalancing_freq,
             threshold=threshold,
+            funding=funding_rates,
+            funding_ignore=funding,
             engine_params=engine_params,
         )
 
@@ -356,6 +366,7 @@ def run_grid(
     fmt: str = ".3f",
     lag_bars: int | None = None,
     engine: str | None = None,
+    funding: Mapping[str, Any] | None = None,
 ) -> pd.DataFrame:
     """Orchestrate a parameter-grid sweep across rebalancing bands.
 
@@ -367,7 +378,8 @@ def run_grid(
     This is the strategy-agnostic orchestrator used by per-research scripts —
     they supply ``strategy_cls``, base/sweep params and a market_data dict,
     and everything else (iteration, naming, saving) is centralised here.
-    ``engine`` picks the engine adapter (default vectorbt; :mod:`quantbox.engine`).
+    ``engine`` picks the engine adapter (default vectorbt; :mod:`quantbox.engine`);
+    ``funding`` is the funding escape, forwarded to :func:`sweep`.
     """
     output = Path(output_dir) if output_dir is not None else None
     if output is not None:
@@ -390,6 +402,7 @@ def run_grid(
             },
             metrics=metrics,
             lag_bars=lag,
+            funding=funding,
         )
         grid["bands"] = f"{int(band * 100)}%"
         grid["lag_bars"] = lag  # execution timing travels with the numbers

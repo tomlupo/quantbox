@@ -15,8 +15,8 @@ quantbox run -c cookbook/configs/run_backtest_crypto_trend.yaml
 Two engines sit behind the one seam: `engine: vectorbt` (the default) and `engine: rsims`.
 The same config gives the same decision, schedule, lag and costs on both. Which engine to
 pick, and what really differs between them, is [ADR-0008](../adr/0008-engine-seam.md)
-decision 14. A config whose data carries a funding series on an engine that does not charge
-funding is refused; `funding: {ignore: true, reason: "..."}` is the declared escape.
+decision 14, which also states what the funding guard refuses and its one escape,
+`funding: {ignore: true, reason: "..."}`.
 
 ```yaml
 plugins:

@@ -72,7 +72,7 @@ src/quantbox/              ← installable library (uv add quantbox)
   schemas.py               Runtime schema validation
   exceptions.py            QuantboxError hierarchy (see "Error handling")
   engine/                  The engine seam: decided weights → traded book; vectorbt + rsims adapters (ADR-0008)
-  funding_guard.py         Refuses a funding series on an engine that does not charge it (validate, explain, run)
+  funding_guard.py         Refuses a perps book that leaves funding out (validate, explain, run, the engine seam)
   artifact_schemas/        JSON schemas for artifacts (bundled as package data)
   plugins/
     manifest.yaml          Builtin plugin list + profiles — THE catalogue (bundled as package data)

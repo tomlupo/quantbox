@@ -333,18 +333,19 @@ def _check_backtest_execution(plugins: dict[str, Any]) -> list[ValidationFinding
         resolve_financing(venue.get("financing"))
         resolve_leverage(venue.get("leverage"))
         check_schedule_venue(timing, params.get("venue"))
-        engine = get_engine(params.get("engine", DEFAULT_ENGINE), require_installed=False)
-        resolve_funding(params.get("funding"), charges_funding=engine.charges_funding, engine=engine.name)
+        get_engine(params.get("engine", DEFAULT_ENGINE), require_installed=False)
+        resolve_funding(params.get("funding"))
     except ValueError as exc:
         findings.append(ValidationFinding("error", str(exc)))
     return findings
 
 
 def _check_planned_funding(cfg: dict[str, Any], registry: Any, config_path: Any) -> list[ValidationFinding]:
-    """The funding guard on the run's plan (TOM-1609): explain's refusal, with its finding.
+    """The funding guard on the run's plan (TOM-1609, TOM-1619): explain's refusal, with its finding.
 
-    Whether the data carries a funding series is known only once the data plugin is
-    built and its files planned, so validate asks ``quantbox config explain``, which
+    Whether the data carries a funding series, and which market it is, is known only
+    once the data plugin is built and its files and market planned, so validate asks
+    ``quantbox config explain``, which
     calls the SAME check the run calls (:func:`quantbox.funding_guard.check_funding`).
     A config explain cannot plan is reported as not checked, never as clean.
     """

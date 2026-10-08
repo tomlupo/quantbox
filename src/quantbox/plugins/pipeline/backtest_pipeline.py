@@ -105,7 +105,7 @@ from quantbox.execution import (
 )
 from quantbox.financing import ASSUMED_FREE, resolve_financing, resolve_leverage
 from quantbox.frequency import Frequency, resolve_pipeline_frequency
-from quantbox.funding_guard import FUNDING_SCHEMA, check_funding, ignored_record, resolve_funding
+from quantbox.funding_guard import FUNDING_SCHEMA, check_funding, ignored_record, planned_market, resolve_funding
 from quantbox.instrument_calendar import calendar_summary
 from quantbox.overlays import OverlayLink, apply_overlays
 from quantbox.plugins.datasources._utils import interval_step, normalize_data_frequency
@@ -491,8 +491,8 @@ class BacktestPipeline:
         """
         adapter = get_engine(params.get("engine", DEFAULT_ENGINE))
         engine = adapter.name
-        # A declared funding: {ignore, reason}; refused on an engine that charges funding (TOM-1609).
-        funding_ignore = resolve_funding(params.get("funding"), charges_funding=adapter.charges_funding, engine=engine)
+        # A declared funding: {ignore, reason} (TOM-1609); check_funding decides, on the data, whether it is honoured.
+        funding_ignore = resolve_funding(params.get("funding"))
         timing = resolve_execution(params.get("execution"))
         allow_shorts, venue_declared = resolve_allow_shorts(params.get("venue"), params.get("risk"))
         check_schedule_venue(timing, params.get("venue"))
@@ -574,7 +574,7 @@ class BacktestPipeline:
             "group_limits": groups.record() if groups is not None else None,
         }
 
-    def check_planned_data(self, data: Any, paths: dict[str, str | None], plan: dict[str, Any]) -> None:
+    def check_planned_data(self, data: Any, paths: dict[str, str | None] | None, plan: dict[str, Any]) -> None:
         """Refuse a data plan this pipeline cannot run on — *paths* from ``data.planned_paths``.
 
         A backtest needs prices: with no prices file the data plugin hands back an
@@ -582,16 +582,27 @@ class BacktestPipeline:
         explain`` had said ok. :meth:`run` and explain both call this on the same
         planned paths and :meth:`plan` (TOM-1362). A by-name dataset was already
         verified against its lock when it was resolved, so only an inline path is
-        checked on disk. A planned funding file on an engine that does not charge
-        funding is refused here too (:func:`quantbox.funding_guard.check_funding`).
+        checked on disk. *paths* is None for a data plugin that plans no files.
+
+        The funding guard (:func:`quantbox.funding_guard.check_funding`) runs here on
+        the planned funding file and the data plugin's market
+        (:func:`~quantbox.funding_guard.planned_market`): a funding file or a perp
+        market on an engine that does not charge funding is refused, and a perp
+        market with no funding file on one that does.
         """
-        name = getattr(getattr(data, "meta", None), "name", type(data).__name__)
-        ppath = paths.get("prices")
-        if not ppath:
-            raise DataLoadError(name, "no prices source: set prices_path or dataset")
-        if getattr(data, "dataset_resolution", None) is None and not Path(ppath).is_file():
-            raise DataLoadError(name, f"prices file not found: {ppath}", path=str(ppath))
-        check_funding(plan, paths.get("funding_rates"))
+        if paths is not None:
+            name = getattr(getattr(data, "meta", None), "name", type(data).__name__)
+            ppath = paths.get("prices")
+            if not ppath:
+                raise DataLoadError(name, "no prices source: set prices_path or dataset")
+            if getattr(data, "dataset_resolution", None) is None and not Path(ppath).is_file():
+                raise DataLoadError(name, f"prices file not found: {ppath}", path=str(ppath))
+        check_funding(
+            plan,
+            (paths or {}).get("funding_rates"),
+            market=planned_market(data),
+            funding_known=paths is not None,
+        )
 
     # ==================================================================
     # Main entry point
@@ -629,8 +640,7 @@ class BacktestPipeline:
         universe_params = params.get("universe", {})
         prices_params = plan["load_params"]
         planned_paths = getattr(data, "planned_paths", None)
-        if callable(planned_paths):
-            self.check_planned_data(data, planned_paths(prices_params), plan)
+        self.check_planned_data(data, planned_paths(prices_params) if callable(planned_paths) else None, plan)
 
         # ------------------------------------------------------------------
         # Frequency resolution (PR B / issue #20) — done in plan()
@@ -691,10 +701,14 @@ class BacktestPipeline:
         market_data.update(market_data_dict)
         for key in ("prices", "volume", "high", "low", "market_cap", "funding_rates", "eligibility_mask"):
             market_data.setdefault(key, pd.DataFrame())
-        if not market_data["funding_rates"].empty:
-            # A data plugin that plans no file (an API plugin) is seen only here, before any strategy runs.
-            data_name = getattr(getattr(data, "meta", None), "name", type(data).__name__)
-            check_funding(plan, f"funding_rates returned by data plugin '{data_name}'")
+        # The funding guard on what the data plugin handed back, before any strategy runs: a data plugin
+        # that plans no file (an API plugin, dataset.curated.v1) is seen only here.
+        data_name = getattr(getattr(data, "meta", None), "name", type(data).__name__)
+        check_funding(
+            plan,
+            None if market_data["funding_rates"].empty else f"funding_rates returned by data plugin '{data_name}'",
+            market=planned_market(data),
+        )
 
         prices_wide = market_data["prices"]
         logger.info(
@@ -1405,7 +1419,8 @@ class BacktestPipeline:
         rebalancing policy, the execution lag, the cash cap, financing legs
         and the adapter (docs/adr/0007, 0008). The group limits and the
         normalisation already ran in :meth:`_decide`. The engine reads the
-        funding series only when it charges funding.
+        funding series only when it charges funding; the seam refuses a series
+        it would not charge unless the plan declares the ignore.
         """
         leverage = plan["venue"]["leverage"]
         return simulate(
@@ -1418,6 +1433,7 @@ class BacktestPipeline:
             leverage=None if leverage == "none" else leverage,
             financing=plan.get("financing"),
             funding=market_data.get("funding_rates"),
+            funding_ignore=plan["funding_ignore"],
             engine_params=plan["engine_params"],
             trading_days=plan["trading_days"],
             where=where,
