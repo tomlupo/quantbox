@@ -8,7 +8,7 @@ unshifted trades on information the fill price already contains.
 
 This module owns the one answer, shared by every entry point that turns
 strategy weights into a simulated book (``backtest.pipeline.v1`` and
-``analysis.parameter_grid``):
+``quantbox.sweep``):
 
     execution:
       lag_bars: 1      # weights decided with data through bar t trade at the

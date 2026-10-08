@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from quantbox import metrics
+from quantbox import inference, metrics
 
 # ---------------------------------------------------------------------------
 # Newey-West t-stat of the mean: ONE implementation for metrics and gates
@@ -29,7 +29,7 @@ def test_newey_west_tstat_known_answer_lag_1():
     S = gamma0 + 2 * 0.5 * gamma1 = 1.75e-4, var(mean) = S / n.
     """
     r = np.array([0.01, 0.03, -0.01, 0.05])
-    out = metrics.newey_west_tstat(r, lags=1)
+    out = inference.newey_west_tstat(r, lags=1)
     se = math.sqrt(1.75e-4 / 4)
     assert out["nw_lags"] == 1
     assert out["mean_return"] == pytest.approx(0.02, rel=1e-12)
@@ -40,7 +40,7 @@ def test_newey_west_tstat_known_answer_lag_1():
 def test_newey_west_tstat_lag_0_is_the_iid_tstat_with_population_std():
     r = np.array([0.01, 0.03, -0.01, 0.05])
     expected = r.mean() / (r.std(ddof=0) / math.sqrt(len(r)))
-    assert metrics.newey_west_tstat(r, lags=0)["nw_tstat"] == pytest.approx(expected, rel=1e-10)
+    assert inference.newey_west_tstat(r, lags=0)["nw_tstat"] == pytest.approx(expected, rel=1e-10)
 
 
 def test_newey_west_matches_robo_labs_bartlett_sandwich():
@@ -58,20 +58,27 @@ def test_newey_west_matches_robo_labs_bartlett_sandwich():
         g = (x[lag:] * u[lag:, None]).T @ (x[:-lag] * u[:-lag, None])
         s += w * (g + g.T)
     se = float(np.sqrt((xtx_inv @ s @ xtx_inv)[0, 0]))
-    out = metrics.newey_west_tstat(y, lags=lags)
+    out = inference.newey_west_tstat(y, lags=lags)
     assert out["nw_se"] == pytest.approx(se, rel=1e-10)
     assert out["nw_tstat"] == pytest.approx(b[0] / se, rel=1e-10)
 
 
-def test_gates_and_metrics_share_one_newey_west():
-    from quantbox.analysis import gates, hac
-
-    assert hac.newey_west_tstat is metrics.newey_west_tstat
-    assert hac.newey_west_auto_lags is metrics.newey_west_auto_lags
-    assert gates.newey_west_tstat is metrics.newey_west_tstat
+def test_every_old_newey_west_path_is_the_inference_object_with_a_deprecation_warning():
+    """TOM-1618: Newey-West lives in quantbox.inference; the three old paths still resolve to it."""
     import quantbox.analysis as analysis
+    from quantbox.analysis import hac
 
-    assert analysis.newey_west_tstat is metrics.newey_west_tstat
+    for module, name in (
+        (metrics, "newey_west_tstat"),
+        (metrics, "newey_west_auto_lags"),
+        (metrics, "hac_ols"),
+        (metrics, "require_finite"),
+        (hac, "newey_west_tstat"),
+        (hac, "newey_west_auto_lags"),
+        (analysis, "newey_west_tstat"),
+    ):
+        with pytest.warns(DeprecationWarning, match="quantbox.inference"):
+            assert getattr(module, name) is getattr(inference, name), (module.__name__, name)
 
 
 # ---------------------------------------------------------------------------

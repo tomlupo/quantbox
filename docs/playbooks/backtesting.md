@@ -185,7 +185,7 @@ the engine seam (`quantbox.engine._lag.lag_positions`, docs/adr/0008: after
 aggregation, venue clipping and risk transforms, before any engine adapter),
 so it holds for both engines, the variants flow, the sweep, `backtest()` and
 `optimize()` alike — they all build the book with the one function
-`quantbox.engine.simulate`. `quantbox sweep` (`analysis.parameter_grid`) uses the same setting,
+`quantbox.engine.simulate`. `quantbox sweep` (`quantbox.sweep`) uses the same setting,
 and so do the Python helpers `backtest()` and `optimize()`
 (`quantbox.plugins.backtesting`): keyword `lag_bars=`, same default, same
 refusal of `0`, and the result carries the same `execution` record. The L1

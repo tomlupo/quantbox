@@ -1,6 +1,6 @@
 """Numeric-parity proof: statsmodels HAC == the retired hand-rolled estimators.
 
-The framework's ``quantbox.analysis.hac`` functions delegate the Newey-West HAC
+The framework's ``quantbox.inference`` HAC functions delegate the Newey-West HAC
 sandwich to statsmodels, replacing hand-rolled ``(X'X)^-1 S (X'X)^-1`` Bartlett
 loops that previously lived in quantbox-lab's ``nw-tstat-gate.py`` and
 ``factor-decomp-gate.py``. Those gates decided real promotions, so the port must
@@ -27,7 +27,7 @@ import math
 import numpy as np
 import pytest
 
-from quantbox.analysis import factor_regression, newey_west_auto_lags, newey_west_tstat
+from quantbox.inference import factor_regression, newey_west_auto_lags, newey_west_tstat
 
 
 # --------------------------------------------------------------------------

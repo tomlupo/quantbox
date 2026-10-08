@@ -18,12 +18,12 @@ import pytest
 from test_execution_timing import JUMP, J, _Data, _FixedWeights, _prices, _run_pipeline, _weights_decided_on
 
 import quantbox.engine as engine_seam
-from quantbox.analysis.parameter_grid import sweep
 from quantbox.engine import Costs, TradedBook, engine_names, get_engine, simulate
 from quantbox.execution import resolve_execution
 from quantbox.plugins.backtesting import backtest, optimize
 from quantbox.plugins.pipeline.backtest_pipeline import BacktestPipeline
 from quantbox.store import FileArtifactStore
+from quantbox.sweep import sweep
 
 ENGINES = ["vectorbt", "rsims"]
 # (decided on, total return next-bar): the J-1 row is the one same-bar would get wrong.

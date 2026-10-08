@@ -118,7 +118,8 @@ def test_cli_plugins_list_without_vectorbt():
         "import quantbox.plugins.backtesting as b; b.backtest(None, None)",
         "from quantbox.adapters.vectorbt import vbt",
         "import pandas as pd, quantbox.bt as qbt; qbt.run(pd.DataFrame(), pd.DataFrame())",
-        "from quantbox.analysis import run_grid; run_grid(None, {}, {}, {})",
+        "from quantbox.sweep import run_grid; run_grid(None, {}, {}, {})",
+        "from quantbox.analysis import run_grid; run_grid(None, {}, {}, {})",  # the deprecated path
     ],
 )
 def test_asking_for_vectorbt_names_the_extra(snippet: str):

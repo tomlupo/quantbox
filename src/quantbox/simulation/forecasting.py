@@ -14,6 +14,8 @@ from enum import Enum
 import numpy as np
 import pandas as pd
 
+from quantbox.inference import moments, moving_block_indices
+
 try:
     from scipy import stats as _scipy_stats
 
@@ -377,8 +379,7 @@ class ReturnForecaster:
 
         dist_params: dict = {"n_observations": len(horizon_returns)}
         if HAS_SCIPY:
-            dist_params["skewness"] = float(_scipy_stats.skew(horizon_returns))
-            dist_params["kurtosis"] = float(_scipy_stats.kurtosis(horizon_returns))
+            dist_params["skewness"], dist_params["kurtosis"] = moments(horizon_returns, excess=True)
 
         return {
             "expected_return": float(expected),
@@ -391,15 +392,10 @@ class ReturnForecaster:
     def _bootstrap_forecast(self, returns, horizon, confidence_levels, n_simulations):
         rng = np.random.default_rng(42)
         block_size = min(21, horizon)
-        n_blocks = (horizon + block_size - 1) // block_size
         simulated_returns = np.zeros(n_simulations)
 
         for i in range(n_simulations):
-            path = []
-            for _ in range(n_blocks):
-                start = rng.integers(0, len(returns) - block_size)
-                path.extend(returns[start : start + block_size])
-            simulated_returns[i] = np.sum(path[:horizon])
+            simulated_returns[i] = np.sum(returns[moving_block_indices(len(returns), block_size, horizon, rng)])
 
         expected = np.mean(simulated_returns)
         volatility = np.std(simulated_returns)
