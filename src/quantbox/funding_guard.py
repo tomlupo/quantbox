@@ -24,7 +24,9 @@ plugin hands back. ``quantbox config explain`` calls it through the same
 ``BacktestPipeline.check_planned_data``, and ``quantbox validate`` reports what
 explain refuses. The engine seam, :func:`quantbox.engine.simulate`, calls it on
 the series it is handed (:func:`check_series`), so ``backtest()``, ``optimize()``
-and the sweep are refused too. The one escape, in the backtest pipeline's params
+and the sweep are refused too. ``quantbox sweep`` also checks the dataset's market
+(its manifest) against the frames it loaded, which the seam cannot see (TOM-1627).
+The one escape, in the backtest pipeline's params
 and as the ``funding=`` argument of each helper::
 
     funding: {ignore: true, reason: "<why this book may leave funding out>"}
