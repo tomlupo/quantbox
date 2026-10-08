@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 import yaml
 from test_dataset_resolve import _build, fake_datasets, root  # noqa: F401 — fixtures
-from test_run_manifest_v1 import _config
+from test_run_manifest_v1 import FUNDING_IGNORED, _config
 from typer.testing import CliRunner
 
 from quantbox.cli import app
@@ -50,6 +50,8 @@ plugins:
     name: local_file_data
     params_init: {{dataset: perp-daily}}
 """)
+    if engine == "vectorbt":  # the perp dataset ships funding; vectorbt does not charge it (TOM-1609)
+        cfg["plugins"]["pipeline"]["params"]["funding"] = {"ignore": True, "reason": FUNDING_IGNORED}
     config_path = lab / "cfg.yaml"
     config_path.write_text(yaml.safe_dump(cfg))
     return cfg, config_path

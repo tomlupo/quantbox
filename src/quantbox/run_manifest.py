@@ -149,11 +149,15 @@ def dataset_fields(data: Any, dataset_block: dict[str, Any]) -> dict[str, Any]:
 
 def funding_block(data: Any, notes: dict[str, Any]) -> dict[str, Any]:
     path = _effective_path(data, "funding_rates", "funding_rates_path")
-    return {
-        "modelled": bool((notes.get("funding") or {}).get("modelled", False)),
+    note = notes.get("funding") or {}
+    block = {
+        "modelled": bool(note.get("modelled", False)),
         "source_path": str(path) if path else None,
         "sha256": _sha256_file(path),
     }
+    if note.get("ignored_reason"):  # a declared funding: {ignore, reason} (TOM-1609, minor 7)
+        block["ignored_reason"] = str(note["ignored_reason"])
+    return block
 
 
 def files_block(artifacts: dict[str, str], run_dir: str | Path) -> dict[str, str | None]:
