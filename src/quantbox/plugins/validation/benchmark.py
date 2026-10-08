@@ -63,11 +63,9 @@ class BenchmarkValidation:
         strategy = strategy[:n]
         bench = bench[:n]
 
-        bench_var = float(np.var(bench, ddof=0))
-        if bench_var == 0:
+        beta = metrics.beta(strategy, bench)
+        if not np.isfinite(beta):  # a flat benchmark: this plugin has always reported 0.0
             beta = 0.0
-        else:
-            beta = float(np.cov(strategy, bench, ddof=0)[0, 1] / bench_var)
 
         alpha = float((np.mean(strategy) - beta * np.mean(bench)) * trading_days)
 

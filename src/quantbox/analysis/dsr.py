@@ -31,34 +31,13 @@ from dataclasses import dataclass, replace
 
 from scipy import stats
 
-from quantbox.metrics import sharpe_ratio
+from quantbox.metrics import DEGENERATE_RTOL, sharpe_ratio
 
 EULER_MASCHERONI = 0.5772156649015329
 
 # Degeneracy is tested RELATIVELY -- never by exact float equality with zero.
-#
-# A quantity that is mathematically zero does not reliably come out as 0.0 in
-# binary floating point. A constant returns series is the canonical example:
-# `[0.001] * 200` accumulates rounding to std = 2.17e-19 while `[0.001] * 50`
-# gives exactly 0.0, so whether an `== 0` guard fires is a lottery on the
-# (value, length) pair rather than a property of the input. Measured on this
-# module before the fix: of 32 constant series (8 values x 4 lengths), 20 hit
-# the exact guard and 12 sailed past it into the moment path, where scipy hit
-# catastrophic cancellation; those 12 were then refused -- by luck -- by two
-# unrelated downstream checks, 8 by the skew/kurtosis finiteness test (NaN
-# moments) and 4 by the Pearson-bound "impossible moments" test.
-#
-# The observed noise floor for a constant series is std/|value| ~ 2e-16
-# (machine epsilon); 1e-12 leaves ~4000x headroom above it while staying far
-# below any real series (std/scale = 1e-12 would imply a Sharpe of ~1e12).
-# Being relative, the test is unit-independent: a genuinely tiny-but-real
-# series (returns of order 1e-9 with std of order 1e-9) is unaffected. When
-# every observation is exactly zero, scale is 0 and the test reduces to
-# std <= 0, which still holds.
-#
-# This is the framework's single threshold for "cancelled to noise"; the
-# validation plugin imports it rather than keeping a second copy.
-DEGENERATE_RTOL = 1e-12
+# DEGENERATE_RTOL, the framework's single "cancelled to noise" threshold, and the
+# measurement behind it live in quantbox.metrics (TOM-1596); it is re-exported here.
 
 
 @dataclass(frozen=True)
