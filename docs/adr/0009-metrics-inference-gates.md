@@ -9,6 +9,7 @@ amends: "ADR-0008 in sense only: its 'one seam, one function per job' rule now c
 status_changes:
   - 2026-10-08: accepted with TOM-1618 — Tom, 2026-10-08: codebase-design pass over metrics, analysis and the statistics code ("Karta + buduj teraz")
   - 2026-10-08: amended with TOM-1644 — decision 7, the Newey-West lag floor for overlapping observations (Tom: "Tak + do quantbox")
+  - 2026-10-08: amended with TOM-1646 — decision 8, multiple-testing corrections (Tom: "Bonferroni do quantbox")
 ---
 
 # ADR-0009: Metrics describe, inference tests, gates decide
@@ -103,6 +104,7 @@ The duplication guard of #236 matched metric NAMES. It did not see these copies:
      and the floor recovers near 0.82.
    - The `nw` gate and `factor_regression` do not take `overlap` yet: a gate
      tests a strategy's per-period returns, which do not overlap.
+8. **Multiple-testing corrections are inference.** *Added by TOM-1646 (2026-10-08).* `inference.multiple_testing(pvalues, *, alpha, method="bonferroni"|"holm")` and `inference.bonferroni_alpha(n_tests, *, alpha)` (the per-test level `alpha/m`, for a CI) are the one home; the guard's `multiple_testing` class refuses a second one.
 
 ## Consequences
 

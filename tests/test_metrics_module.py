@@ -236,6 +236,13 @@ _INFERENCE_PATTERNS = {
         r"\.choice\([^)]*replace=True|\.random\(\w+\)\s*<|\.integers\(0,\s*len\(\w+\)\s*-"
     ),
     "mc_null": r"\.normal\(0,\s*np\.std\(",  # a Monte-Carlo null at the series' own volatility
+    # TOM-1646: a family-wise level split over the tests (Bonferroni), a Holm
+    # step-down over the reversed ranks, or a second call into the library
+    # multiple_testing wraps.
+    "multiple_testing": (
+        r"(?<![\w.+])(0?\.(05|01|1)|alpha\w*)\s*/\s*(float\()?\s*(n_\w+|len\(|m\b|ntests\b|k\b)"
+        r"|np\.arange\(\s*\w+\s*,\s*0\s*,\s*-1\s*\)|multipletests\("
+    ),
 }
 _INFERENCE_RE = {label: re.compile(p) for label, p in _INFERENCE_PATTERNS.items()}
 
@@ -262,6 +269,16 @@ _INFERENCE_COPIES = (
         "mc_null",
         "            [sharpe_ratio(rng.normal(0, np.std(rets, ddof=1), size=n), trading_days) for _ in range(n)]",
     ),
+    # TOM-1646: the copies multiple_testing / bonferroni_alpha replace or must not grow.
+    (
+        "multiple_testing",
+        "    q = 100 * 0.05 / n_tests / 2  # Bonferroni: family-wise 5% over the criteria",
+    ),  # robo-lab
+    ("multiple_testing", "    level = alpha / len(pvalues)"),
+    ("multiple_testing", "    alphacBonf = alpha / float(ntests)"),  # statsmodels' own Bonferroni level
+    ("multiple_testing", "    thresholds = alpha / np.arange(m, 0, -1)"),  # Holm step-down
+    ("multiple_testing", "    adj = np.maximum.accumulate(p_sorted * np.arange(m, 0, -1))"),
+    ("multiple_testing", "    reject, adj, _, _ = multipletests(p, alpha=alpha, method='holm')"),
 )
 
 
