@@ -167,9 +167,41 @@ _DUPLICATE_RE = re.compile(
             r"\.mean\(\)\)?\s*/\s*std\b",  # a per-period Sharpe after a std guard
             r"np\.std\(\w+,\s*ddof=1\)\s*\*\s*np\.sqrt",  # a hand-rolled annualised tracking error
             r"\.diff\(\)(\.fillna\(\w+\))?\.abs\(\)\.sum\(axis=1\)",  # a hand-rolled turnover
+            # TOM-1596: the research statistics
+            r"cov_type=[\"']HAC",  # a second Newey-West / HAC fit
+            r"1\s*-\s*\w+\s*/\s*\(\s*\w+\s*\+\s*1\s*\)",  # a hand-rolled Bartlett weight
+            r"spearmanr\(|method=[\"']spearman[\"']",  # a hand-rolled rank IC
+            r"cov\([^)]*\)+(\[[^\]]*\])?\s*/\s*[\w.\[\]\"'()]*var\b",  # beta, or a risk contribution, by hand
+            r"\w+\s*\*\s*\(\s*\w+\s*@\s*\w+\s*\)\s*/",  # a risk contribution w * (S @ w) / ...
+            r"\(\s*[\w.]+(\[[^\]]+\])?\s*>\s*[\w.]+(\[[^\]]+\])?\s*\)\.mean\(\)",  # a hand-rolled hit rate
+            r"0\.5\s*\*\s*\(.*\)\.abs\(\)\.sum\(axis=1\)",  # a hand-rolled active share
         )
     )
 )
+
+# robo-lab's own copies (robo-lab #11, TOM-1453): each must trip the guard, or a new
+# pattern above is vacuous.
+_LAB_COPIES = (
+    'fit = sm.OLS(r, x).fit(cov_type="HAC", cov_kwds={"maxlags": lags})',
+    "        w = 1 - L / (lags + 1)",
+    "        corr, _ = spearmanr(chunk['signal'], chunk['fwd_ret'])",
+    'ics = pd.Series({d: score.loc[d].corr(fwd.loc[d], method="spearman") for d in dates})',
+    '        "beta": float(df["p"].cov(df["b"]) / df["b"].var()),',
+    "            beta = float(np.cov(strategy, bench, ddof=0)[0, 1] / bench_var)",
+    "        rc = w * r.apply(lambda col: col.cov(acct)) / acct.var()",
+    "    rc = w * (cov @ w) / (w @ cov @ w)",
+    '        "hit": float((m["p"] > m["b"]).mean()),',
+    "    hit_rate = (ic_series > 0).mean()",
+    '            "hit_rate": float((e > 0).mean()),',
+    "    return float((0.5 * (a - b).abs().sum(axis=1))[ok].mean())",
+)
+
+
+@pytest.mark.parametrize("line", _LAB_COPIES)
+def test_guard_catches_the_lab_copies(line):
+    assert _DUPLICATE_RE.search(line), line
+
+
 # Non-metric uses of the same idioms: a boolean "observed so far" mask, and a
 # signal-block latch inside a strategy's entry logic.
 _ALLOWED = {"instrument_calendar.py"}
