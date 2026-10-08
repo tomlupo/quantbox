@@ -1,4 +1,4 @@
-"""Tests for :mod:`quantbox.analysis.parameter_grid`."""
+"""Tests for :mod:`quantbox.sweep` (``quantbox.analysis.parameter_grid`` until TOM-1618)."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from quantbox.analysis.parameter_grid import _parse_vbt_slice_label, sweep
 from quantbox.plugins.strategies.vol_matched_buy_hold import VolMatchedBuyHoldStrategy
+from quantbox.sweep import _parse_vbt_slice_label, sweep
 
 
 def _btc_prices(n: int = 600, daily_vol: float = 0.03, seed: int = 0) -> pd.DataFrame:

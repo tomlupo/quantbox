@@ -1,19 +1,15 @@
-"""Post-backtest analysis utilities.
+"""Deprecated package: its contents moved in TOM-1618.
 
-The statistics that lived here moved to :mod:`quantbox.inference` (TOM-1618);
-their old names here still resolve, with a ``DeprecationWarning``.
+- The statistics (DSR, Newey-West, factor regression, ``require_finite``) are in
+  :mod:`quantbox.inference`; the gates in :mod:`quantbox.gates`.
+- The parameter-grid sweep (``sweep``, ``run_grid``, ``plot_heatmaps``,
+  ``load_parquet_market_data``, ``DEFAULT_METRICS``) is in :mod:`quantbox.sweep`.
+
+Every old name here and in the old submodules (``analysis.dsr``,
+``analysis.hac``, ``analysis.gates``, ``analysis.parameter_grid``) still
+resolves to the same object, with a ``DeprecationWarning``.
 """
 
 from quantbox._deprecation import moved
 
-from .parameter_grid import DEFAULT_METRICS, load_parquet_market_data, plot_heatmaps, run_grid, sweep
-
-__getattr__ = moved(__name__, "quantbox.inference")
-
-__all__ = [
-    "DEFAULT_METRICS",
-    "load_parquet_market_data",
-    "plot_heatmaps",
-    "run_grid",
-    "sweep",
-]
+__getattr__ = moved(__name__, "quantbox.sweep", "quantbox.inference")

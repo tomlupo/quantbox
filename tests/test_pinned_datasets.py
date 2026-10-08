@@ -86,7 +86,7 @@ def test_dataset_name_is_not_flagged_legacy():
 
 
 def test_sweep_loads_dataset_with_the_lock_next_to_the_config(fake_lock, monkeypatch, tmp_path):
-    import quantbox.analysis
+    import quantbox.sweep
     from quantbox.cli import app
 
     seen = {}
@@ -95,7 +95,7 @@ def test_sweep_loads_dataset_with_the_lock_next_to_the_config(fake_lock, monkeyp
         seen.update(kwargs)
         return pd.DataFrame()
 
-    monkeypatch.setattr(quantbox.analysis, "run_grid", fake_run_grid)
+    monkeypatch.setattr(quantbox.sweep, "run_grid", fake_run_grid)
     (tmp_path / "datasets.lock").write_text("crypto-spot-daily: abc123\n")
     config = tmp_path / "sweep.yaml"
     config.write_text(

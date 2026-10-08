@@ -71,6 +71,12 @@ _MOVED = [
     ),
     ("quantbox.analysis.gates", "stationary_bootstrap_indices", "quantbox.inference"),
     ("quantbox.analysis.gates", "newey_west_tstat", "quantbox.inference"),
+    *(
+        (old, name, "quantbox.sweep")
+        for old in ("quantbox.analysis", "quantbox.analysis.parameter_grid")
+        for name in ("DEFAULT_METRICS", "load_parquet_market_data", "plot_heatmaps", "run_grid", "sweep")
+    ),
+    ("quantbox.analysis.parameter_grid", "align_market_data", "quantbox.sweep"),
 ]
 
 
