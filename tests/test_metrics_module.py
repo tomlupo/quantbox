@@ -282,19 +282,7 @@ def _inference_offenders() -> set[tuple[str, str]]:
     return found
 
 
-# Ratchet: what this guard found on origin/dev bd5865d. Every TOM-1618 commit that
-# moves a copy into quantbox.inference deletes its row here; the list must end empty.
-_INFERENCE_KNOWN = {
-    ("plugins/pipeline/blocks.py", "moments"),
-    ("simulation/engine.py", "moments"),
-    ("simulation/forecasting.py", "bootstrap"),
-    ("simulation/forecasting.py", "moments"),
-}
-
-
 def test_no_inference_statistic_is_implemented_outside_quantbox_inference():
-    found = _inference_offenders()
-    new = sorted(found - _INFERENCE_KNOWN)
-    stale = sorted(_INFERENCE_KNOWN - found)
-    assert not new, "inference statistic implemented outside quantbox.inference:\n" + "\n".join(map(str, new))
-    assert not stale, "moved into quantbox.inference — delete from _INFERENCE_KNOWN:\n" + "\n".join(map(str, stale))
+    """On origin/dev bd5865d this found 22 (file, class) pairs; TOM-1618 moved every one."""
+    found = sorted(_inference_offenders())
+    assert not found, "inference statistic implemented outside quantbox.inference:\n" + "\n".join(map(str, found))
