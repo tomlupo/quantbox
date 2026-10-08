@@ -29,6 +29,23 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.11.0 (2026-10-08)
+
+### Feat
+
+- **guard**: perp market reaches the run, funding guard in the engine seam (TOM-1619) (#257)
+- funding guard, one engine rule, docs describe the code after P3 (TOM-1609) (#255)
+- **metrics**: research statistics in quantbox.metrics, one Newey-West for metrics and gates (TOM-1596) (#254)
+
+### Fix
+
+- last funding-guard gaps and explicit drawdown fields (TOM-1627) (#259)
+- **deps**: override multidict>=6.9.1,<7 past ccxt's pin, and carry overrides into research lines (deps) (#253)
+
+### Refactor
+
+- metrics describe, inference tests, gates decide — one quantbox.inference module (TOM-1618) (#256)
+
 ## v0.10.0 (2026-10-06)
 
 ### BREAKING CHANGE
