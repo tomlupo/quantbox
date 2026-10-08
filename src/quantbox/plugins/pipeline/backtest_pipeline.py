@@ -268,7 +268,7 @@ class BacktestPipeline:
                     "type": "number",
                     "minimum": 0,
                     "default": 0.0,
-                    "description": "Fixed fee per order, in quote currency (vectorbt).",
+                    "description": "Fixed fee per order, in quote currency, on every engine (TOM-1500).",
                 },
                 "slippage": {
                     "type": "number",
@@ -279,6 +279,9 @@ class BacktestPipeline:
                 "rebalancing_freq": {
                     "type": ["integer", "string", "array", "null"],
                     "description": (
+                        "The legacy spelling of rebalancing_policy {cadence: periodic, frequency: ...} "
+                        "(docs/adr/0008 decision 11); new configs declare rebalancing_policy, and "
+                        "declaring both is refused. "
                         "How often portfolio is rebalanced to target weights. Accepts: "
                         "int (every N bars; e.g. 5 = weekly on daily data, every 5 hours on hourly), "
                         "string pandas-offset (1D/1W/1M/1Y), explicit list of dates, "
@@ -462,7 +465,8 @@ class BacktestPipeline:
         examples=(
             "run:\n  mode: backtest\n  asof: '2026-02-01'\n  pipeline: backtest.pipeline.v1\n"
             "plugins:\n  pipeline:\n    name: backtest.pipeline.v1\n    params:\n"
-            "      engine: vectorbt\n      fees: 0.001\n      rebalancing_freq: 1W\n"
+            "      engine: vectorbt\n      fees: 0.001\n"
+            "      rebalancing_policy: {cadence: periodic, frequency: weekly}\n"
             "      strategies:\n        - name: crypto_trend\n          weight: 1.0\n",
         ),
     )

@@ -17,7 +17,7 @@ plugins:
     params:
       engine: vectorbt
       fees: 0.001
-      rebalancing_freq: "1W"
+      rebalancing_policy: {cadence: periodic, frequency: "1W"}
       trading_days: 365
 
   strategies:
