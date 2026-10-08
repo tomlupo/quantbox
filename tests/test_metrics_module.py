@@ -167,9 +167,8 @@ _DUPLICATE_RE = re.compile(
             r"\.mean\(\)\)?\s*/\s*std\b",  # a per-period Sharpe after a std guard
             r"np\.std\(\w+,\s*ddof=1\)\s*\*\s*np\.sqrt",  # a hand-rolled annualised tracking error
             r"\.diff\(\)(\.fillna\(\w+\))?\.abs\(\)\.sum\(axis=1\)",  # a hand-rolled turnover
-            # TOM-1596: the research statistics
-            r"cov_type=[\"']HAC",  # a second Newey-West / HAC fit
-            r"1\s*-\s*\w+\s*/\s*\(\s*\w+\s*\+\s*1\s*\)",  # a hand-rolled Bartlett weight
+            # TOM-1596: the research statistics. The HAC fit and its Bartlett weight are
+            # inference: `_INFERENCE_PATTERNS["hac"]` below guards them (TOM-1618).
             r"spearmanr\(|method=[\"']spearman[\"']",  # a hand-rolled rank IC
             r"cov\([^)]*\)+(\[[^\]]*\])?\s*/\s*[\w.\[\]\"'()]*var\b",  # beta, or a risk contribution, by hand
             r"\w+\s*\*\s*\(\s*\w+\s*@\s*\w+\s*\)\s*/",  # a risk contribution w * (S @ w) / ...
@@ -199,7 +198,7 @@ _LAB_COPIES = (
 
 @pytest.mark.parametrize("line", _LAB_COPIES)
 def test_guard_catches_the_lab_copies(line):
-    assert _DUPLICATE_RE.search(line), line
+    assert _DUPLICATE_RE.search(line) or any(rx.search(line) for rx in _INFERENCE_RE.values()), line
 
 
 # Non-metric uses of the same idioms: a boolean "observed so far" mask, and a
@@ -216,3 +215,104 @@ def test_no_run_metric_is_hand_rolled_outside_the_metrics_module():
             if _DUPLICATE_RE.search(line):
                 offenders.append(f"{path.relative_to(_SRC)}:{i}: {line.strip()}")
     assert not offenders, "run metric computed outside quantbox.metrics:\n" + "\n".join(offenders)
+
+
+# ---------------------------------------------------------------------------
+# Guard: no inference statistic is implemented outside quantbox.inference (TOM-1618)
+# ---------------------------------------------------------------------------
+#
+# The metric guard above matched metric NAMES, so two NaN refusals and a second
+# skew/kurtosis passed it (TOM-1618). These patterns match the MECHANICS of each
+# inference class: counting non-finite rows to refuse them, the "cancelled to
+# noise" test, a HAC fit, sample moments, a resample, a Monte-Carlo null.
+
+_INFERENCE_HOMES = {_SRC / "inference.py", _SRC / "_numerics.py"}
+_INFERENCE_PATTERNS = {
+    "nan_refusal": r"\(~\s*(np\.isfinite\(|\w*finite\w*\)|mask\))",  # count the non-finite rows to refuse them
+    "degenerate": r"<=\s*DEGENERATE_RTOL\s*\*",  # a second "constant to floating-point noise" test
+    "hac": r"cov_type=[\"']HAC|1\s*-\s*\w+\s*/\s*\(\s*\w+\s*\+\s*1\s*\)",  # a HAC fit, or a Bartlett weight
+    "moments": r"(stats\.|\.)(skew|kurtosis|kurt)\(|\*\*\s*[34]\)",  # sample skew / kurtosis
+    "bootstrap": (  # an iid resample, a stationary block start, a moving block start
+        r"\.choice\([^)]*replace=True|\.random\(\w+\)\s*<|\.integers\(0,\s*len\(\w+\)\s*-"
+    ),
+    "mc_null": r"\.normal\(0,\s*np\.std\(",  # a Monte-Carlo null at the series' own volatility
+}
+_INFERENCE_RE = {label: re.compile(p) for label, p in _INFERENCE_PATTERNS.items()}
+
+# The copies that stood in the tree when this guard was written (origin/dev bd5865d):
+# each must still trip its pattern, or the pattern is vacuous.
+_INFERENCE_COPIES = (
+    ("nan_refusal", "    dropped = int((~mask).sum())"),  # analysis.gates._finite
+    ("nan_refusal", "    n_dropped = int((~finite_mask).sum())"),  # metrics.require_finite, analysis.dsr
+    ("nan_refusal", "        n_nonfinite = int((~np.isfinite(rets)).sum())"),  # validation BLP
+    ("nan_refusal", "    y_bad = int((~np.isfinite(y)).sum())"),  # analysis.hac.factor_regression
+    ("nan_refusal", "        dropped = int((~finite).sum())"),  # gates_cli factor
+    ("degenerate", "    if std <= DEGENERATE_RTOL * float(np.mean(np.abs(r))):"),  # analysis.gates
+    ("degenerate", "        if std_period <= DEGENERATE_RTOL * scale:"),  # validation BLP
+    ("hac", '    return sm.OLS(y, x).fit(cov_type="HAC", cov_kwds={"maxlags": lags, "use_correction": False})'),
+    ("moments", "    skew = float(np.mean(z**3))"),  # validation BLP
+    ("moments", "    kurt = float(np.mean(z**4))"),
+    ("moments", "        skew=float(stats.skew(r)),"),  # analysis.gates
+    ("moments", "        return np.sum(((x - m) / s) ** 3) / n if s > 0 else 0"),  # simulation.engine
+    ("moments", "        kurt = float(r_pct.kurt())"),  # pipeline blocks
+    ("bootstrap", "            sample = rng.choice(rets, size=n, replace=True)"),  # validation statistical
+    ("bootstrap", "    new = rng.random(n) < p"),  # analysis.gates stationary bootstrap
+    ("bootstrap", "                start = rng.integers(0, len(returns) - block_size)"),  # simulation forecasting
+    (
+        "mc_null",
+        "            [sharpe_ratio(rng.normal(0, np.std(rets, ddof=1), size=n), trading_days) for _ in range(n)]",
+    ),
+)
+
+
+@pytest.mark.parametrize(("label", "line"), _INFERENCE_COPIES)
+def test_inference_guard_catches_the_copies_it_was_written_for(label, line):
+    assert _INFERENCE_RE[label].search(line), (label, line)
+
+
+def _inference_offenders() -> set[tuple[str, str]]:
+    found = set()
+    for path in sorted(_SRC.rglob("*.py")):
+        if path in _INFERENCE_HOMES:
+            continue
+        text = path.read_text()
+        for label, rx in _INFERENCE_RE.items():
+            if any(rx.search(line) for line in text.splitlines()):
+                found.add((str(path.relative_to(_SRC)), label))
+    return found
+
+
+# Ratchet: what this guard found on origin/dev bd5865d. Every TOM-1618 commit that
+# moves a copy into quantbox.inference deletes its row here; the list must end empty.
+_INFERENCE_KNOWN = {
+    ("analysis/dsr.py", "degenerate"),
+    ("analysis/dsr.py", "moments"),
+    ("analysis/dsr.py", "nan_refusal"),
+    ("analysis/gates.py", "bootstrap"),
+    ("analysis/gates.py", "degenerate"),
+    ("analysis/gates.py", "moments"),
+    ("analysis/gates.py", "nan_refusal"),
+    ("analysis/hac.py", "degenerate"),
+    ("analysis/hac.py", "nan_refusal"),
+    ("gates_cli.py", "nan_refusal"),
+    ("metrics.py", "degenerate"),
+    ("metrics.py", "hac"),
+    ("metrics.py", "nan_refusal"),
+    ("plugins/pipeline/blocks.py", "moments"),
+    ("plugins/validation/deflated_sharpe_blp.py", "degenerate"),
+    ("plugins/validation/deflated_sharpe_blp.py", "moments"),
+    ("plugins/validation/deflated_sharpe_blp.py", "nan_refusal"),
+    ("plugins/validation/statistical.py", "bootstrap"),
+    ("plugins/validation/statistical.py", "mc_null"),
+    ("simulation/engine.py", "moments"),
+    ("simulation/forecasting.py", "bootstrap"),
+    ("simulation/forecasting.py", "moments"),
+}
+
+
+def test_no_inference_statistic_is_implemented_outside_quantbox_inference():
+    found = _inference_offenders()
+    new = sorted(found - _INFERENCE_KNOWN)
+    stale = sorted(_INFERENCE_KNOWN - found)
+    assert not new, "inference statistic implemented outside quantbox.inference:\n" + "\n".join(map(str, new))
+    assert not stale, "moved into quantbox.inference — delete from _INFERENCE_KNOWN:\n" + "\n".join(map(str, stale))
