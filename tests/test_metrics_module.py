@@ -286,11 +286,6 @@ def _inference_offenders() -> set[tuple[str, str]]:
 # moves a copy into quantbox.inference deletes its row here; the list must end empty.
 _INFERENCE_KNOWN = {
     ("plugins/pipeline/blocks.py", "moments"),
-    ("plugins/validation/deflated_sharpe_blp.py", "degenerate"),
-    ("plugins/validation/deflated_sharpe_blp.py", "moments"),
-    ("plugins/validation/deflated_sharpe_blp.py", "nan_refusal"),
-    ("plugins/validation/statistical.py", "bootstrap"),
-    ("plugins/validation/statistical.py", "mc_null"),
     ("simulation/engine.py", "moments"),
     ("simulation/forecasting.py", "bootstrap"),
     ("simulation/forecasting.py", "moments"),
