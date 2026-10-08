@@ -369,7 +369,7 @@ class _Levered:
 
 
 def test_the_sweep_caps_gross_at_one_unless_backtest_kwargs_declare_leverage():
-    from quantbox.analysis import sweep
+    from quantbox.sweep import sweep
 
     prices, _ = _levered()
 

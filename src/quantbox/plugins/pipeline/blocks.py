@@ -65,6 +65,7 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
+from quantbox.inference import moments
 from quantbox.metrics import compute_rolling_sharpe, turnover_series
 
 BuilderFn = Callable[..., dict | None]
@@ -152,12 +153,13 @@ def _build_return_distribution_chart(_payload: dict | None, *, returns: pd.Serie
     r_pct = r * 100
     mean = float(r_pct.mean())
     std = float(r_pct.std())
-    try:
-        skew = float(r_pct.skew())
-        kurt = float(r_pct.kurt())
-    except Exception:
-        skew = float("nan")
+    # pandas' convention (bias-corrected, excess kurtosis), computed by the one moments function
+    # (pandas has no skew below 3 observations and no kurtosis below 4).
+    skew, kurt = moments(r_pct.to_numpy(), excess=True, bias=False)
+    if len(r_pct) < 4:
         kurt = float("nan")
+        if len(r_pct) < 3:
+            skew = float("nan")
     q05 = float(r_pct.quantile(0.05))
     q95 = float(r_pct.quantile(0.95))
 

@@ -1,17 +1,22 @@
-"""The ONE metrics module: every run statistic quantbox reports is computed here.
+"""The ONE metrics module: every statistic that DESCRIBES a run is computed here.
 
 Sharpe (and excess Sharpe vs a benchmark), information ratio, tracking error,
 CAGR, volatility, max drawdown, top-N drawdowns, turnover, VaR / CVaR. Every
 backtest path, the run metrics, the finding-report export, the validation
 plugins and :mod:`quantbox.performance` (which quantbox-live imports) call
-these functions instead of carrying their own copy (TOM-1448).
+these functions instead of carrying their own copy (TOM-1448). The one
+aggregate is :func:`compute_backtest_metrics`.
 
-The research statistics live here too (TOM-1596): the Newey-West t-stat of
-the mean (the ``nw`` acceptance gate calls the same function), IC and ICIR,
+The descriptive research statistics live here too (TOM-1596): IC and ICIR,
 beta to a benchmark, hit rate, active share and risk decomposition.
 
-Core: numpy and pandas only (scipy is imported lazily for parametric VaR,
-statsmodels lazily for the Newey-West HAC fit).
+Metrics DESCRIBE; :mod:`quantbox.inference` TESTS (Newey-West, factor
+regression, DSR, bootstrap) and :mod:`quantbox.gates` DECIDES (TOM-1618).
+``newey_west_tstat``, ``newey_west_auto_lags``, ``hac_ols`` and
+``require_finite`` moved to :mod:`quantbox.inference`; the old names here still
+resolve, with a ``DeprecationWarning``.
+
+Core: numpy and pandas only (scipy is imported lazily for parametric VaR).
 ``quantbox.plugins.backtesting.metrics`` re-exports the same objects for the
 callers that still import that path.
 
@@ -34,37 +39,38 @@ Conventions, stated once:
 from __future__ import annotations
 
 import logging
-import math
+import warnings
 from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
+# The framework's one "cancelled to floating-point noise" threshold and test;
+# the measurement behind DEGENERATE_RTOL is in quantbox._numerics.
+from ._numerics import DEGENERATE_RTOL  # noqa: F401 — public re-export, imported from here before TOM-1618
+from ._numerics import flat as _flat
+
 logger = logging.getLogger(__name__)
 
 TRADING_DAYS_PER_YEAR = 365  # crypto default; callers can override
 
-# A quantity that is mathematically zero does not reliably come out as 0.0 in
-# binary floating point. A constant returns series is the canonical example:
-# `[0.001] * 200` accumulates rounding to std = 2.17e-19 while `[0.001] * 50`
-# gives exactly 0.0, so whether an `== 0` guard fires is a lottery on the
-# (value, length) pair rather than a property of the input. Measured on the DSR
-# module before the fix: of 32 constant series (8 values x 4 lengths), 20 hit
-# the exact guard and 12 sailed past it into the moment path, where scipy hit
-# catastrophic cancellation.
-#
-# The observed noise floor for a constant series is std/|value| ~ 2e-16
-# (machine epsilon); 1e-12 leaves ~4000x headroom above it while staying far
-# below any real series (std/scale = 1e-12 would imply a Sharpe of ~1e12).
-# Being relative, the test is unit-independent: a genuinely tiny-but-real
-# series (returns of order 1e-9 with std of order 1e-9) is unaffected. When
-# every observation is exactly zero, scale is 0 and the test reduces to
-# std <= 0, which still holds.
-#
-# This is the framework's single threshold for "cancelled to noise";
-# ``quantbox.analysis.dsr`` and the validation plugins import it from here.
-DEGENERATE_RTOL = 1e-12
+# Inference that lived here until TOM-1618: the old names resolve to
+# quantbox.inference, with a DeprecationWarning.
+_MOVED_TO_INFERENCE = ("hac_ols", "newey_west_auto_lags", "newey_west_tstat", "require_finite")
+
+
+def __getattr__(name: str) -> Any:
+    if name in _MOVED_TO_INFERENCE:
+        warnings.warn(
+            f"quantbox.metrics.{name} is deprecated: import it from quantbox.inference (TOM-1618)",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        from . import inference
+
+        return getattr(inference, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def sharpe_ratio(
@@ -328,112 +334,6 @@ def compute_rolling_sharpe(
 # ---------------------------------------------------------------------------
 
 
-def newey_west_auto_lags(n: int) -> int:
-    """Newey-West (1994) automatic lag truncation: floor(4 * (n/100)^(2/9))."""
-    return int(math.floor(4 * (n / 100.0) ** (2.0 / 9.0)))
-
-
-def require_finite(returns, *, allow_nonfinite_drop: bool = False) -> tuple[np.ndarray, int]:
-    """Validate a raw return array: FAIL LOUDLY on NaN/Inf unless explicitly opted out.
-
-    Returns ``(finite_returns, n_dropped)``. Raises ``ValueError`` when
-    non-finite values are present and ``allow_nonfinite_drop`` is False — a
-    corrupt input must never silently shrink the sample a gate then reports as
-    complete. This is the same invariant as
-    :func:`quantbox.analysis.dsr.deflated_sharpe_ratio_from_returns`.
-    """
-    r = np.asarray(returns, dtype=float)
-    finite_mask = np.isfinite(r)
-    n_dropped = int((~finite_mask).sum())
-    if n_dropped and not allow_nonfinite_drop:
-        raise ValueError(
-            f"{n_dropped} of {r.size} return observations are NaN/Inf — refusing to silently "
-            "drop them (a corrupt file must not pass on the surviving subset). Pass "
-            "allow_nonfinite_drop=True to explicitly opt into dropping them and continuing."
-        )
-    return r[finite_mask], n_dropped
-
-
-def hac_ols(y: np.ndarray, x: np.ndarray, lags: int) -> Any:
-    """OLS of ``y`` on ``x`` with a Newey-West (Bartlett kernel) HAC covariance — the ONE HAC fit.
-
-    statsmodels computes the sandwich (adapter, not reimplementation). The
-    ``nobs/(nobs-k)`` small-sample correction is OFF: the retired hand-rolled
-    estimators (and robo-lab's ``_ols_nw``) used the uncorrected estimator, and
-    ``tests/test_hac_parity.py`` pins that parity. Returns the statsmodels result.
-    """
-    import statsmodels.api as sm
-
-    return sm.OLS(y, x).fit(cov_type="HAC", cov_kwds={"maxlags": lags, "use_correction": False})
-
-
-def newey_west_tstat(returns, lags: int | None = None, *, allow_nonfinite_drop: bool = False) -> dict:
-    """Newey-West HAC t-stat on the mean of ``returns`` — metrics and the ``nw`` gate call this one.
-
-    An OLS of ``returns`` on a constant with a HAC (Bartlett kernel)
-    covariance (:func:`hac_ols`). Corrects the standard error of the mean for
-    the serial correlation that inflates a naive t-stat on overlapping or
-    trend-following returns. ``lags=None`` picks :func:`newey_west_auto_lags`.
-
-    Non-finite observations RAISE by default (see :func:`require_finite`);
-    ``allow_nonfinite_drop=True`` opts into dropping them, and the returned
-    ``n_obs_raw`` / ``n_nonfinite_dropped`` keep that loss visible.
-
-    Returns a dict with full-precision floats: ``n_obs``, ``n_obs_raw``,
-    ``n_nonfinite_dropped``, ``nw_lags``, ``mean_return``, ``nw_se``,
-    ``nw_tstat`` and ``nw_pvalue`` (two-sided, normal). A degenerate series
-    (fewer than 2 finite observations, or zero long-run variance) yields
-    ``None`` for the SE/t-stat/p-value rather than ``inf``/``nan``.
-    """
-    r, n_dropped = require_finite(returns, allow_nonfinite_drop=allow_nonfinite_drop)
-    n = int(r.size)
-    n_raw = int(np.asarray(returns).size)
-
-    base = {
-        "n_obs": n,
-        "n_obs_raw": n_raw,
-        "n_nonfinite_dropped": n_dropped,
-        "nw_lags": 0,
-        "mean_return": None,
-        "nw_se": None,
-        "nw_tstat": None,
-        "nw_pvalue": None,
-    }
-    if n < 2:
-        return base
-
-    if lags is None:
-        lags = newey_west_auto_lags(n)
-    lags = max(0, min(lags, n - 1))  # can't use more lags than we have data
-    base["nw_lags"] = lags
-
-    mu = float(r.mean())
-    base["mean_return"] = mu
-
-    # Zero-variance series: statsmodels would divide by a zero SE. Guard first,
-    # RELATIVELY (see DEGENERATE_RTOL): a constant series does not reliably
-    # come out with std == 0.0 — `[0.001] * 337` gives ~2e-19, which statsmodels
-    # turned into a t-stat of 3.5e16 (29 of 48 constant series probed, TOM-1351).
-    if _flat(r):
-        return base
-
-    fit = hac_ols(r, np.ones((n, 1)), lags)
-    se = float(fit.bse[0])
-    if not math.isfinite(se) or se <= 0:
-        return base
-    t = mu / se
-    from scipy.stats import norm
-
-    # Two-sided normal p-value, matching the retired gate's convention.
-    pval = 2.0 * (1.0 - norm.cdf(abs(t)))
-    return {
-        **base,
-        "nw_se": se,
-        "nw_tstat": float(t),
-        "nw_pvalue": float(pval),
-    }
-
-
 def information_coefficient(signal: pd.DataFrame, forward_returns: pd.DataFrame, *, min_assets: int = 2) -> pd.Series:
     """Per-date cross-sectional Spearman rank IC of ``signal`` vs ``forward_returns``.
 
@@ -548,11 +448,6 @@ def risk_contributions(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _flat(x: np.ndarray) -> bool:
-    """No spread worth the name: std within DEGENERATE_RTOL of the series' scale (never ``== 0``)."""
-    return bool(np.std(x) <= DEGENERATE_RTOL * float(np.mean(np.abs(x))))
 
 
 def _aligned(returns: Any, benchmark: Any) -> tuple[Any, Any]:

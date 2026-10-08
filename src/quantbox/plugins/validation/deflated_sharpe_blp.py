@@ -19,10 +19,12 @@ where SR_hat/skew/kurt are computed on *per-period* returns, T is the number
 of observations, gamma is the Euler-Mascheroni constant, and sigma_SR is the
 standard deviation of the Sharpe ratio across the N trials actually attempted.
 
-**The scalar math is NOT reimplemented here.** ``quantbox.analysis.dsr`` owns
-the Sharpe-estimator variance (``sr_estimator_std``) and the expected-max-Sharpe
-deflation term (``expected_max_sr``) for the whole ecosystem, and this plugin
-imports both. What belongs to this plugin is only the layer around them:
+**The scalar math is NOT reimplemented here.** ``quantbox.inference`` owns
+the NaN refusal, the sample moments (``return_moments``: per-period Sharpe,
+skew, Pearson kurtosis), the Sharpe-estimator variance (``sr_estimator_std``)
+and the expected-max-Sharpe deflation term (``expected_max_sr``) for the whole
+ecosystem, and this plugin imports them (TOM-1618 deleted its own skew/kurtosis
+copy). What belongs to this plugin is only the layer around them:
 selecting sigma_SR (see below), annualising, and translating that module's
 raised errors into the ``findings``/``passed`` dict a validation plugin must
 return. Do not re-derive skew/kurtosis/expected-max-SR formulas in this file --
@@ -60,8 +62,14 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm
 
-from quantbox.analysis.dsr import DEGENERATE_RTOL, expected_max_sr, sr_estimator_std
 from quantbox.contracts import PluginMeta
+from quantbox.inference import (
+    InferenceInputError,
+    expected_max_sr,
+    require_finite,
+    return_moments,
+    sr_estimator_std,
+)
 from quantbox.metrics import sharpe_ratio
 
 
@@ -78,21 +86,6 @@ class _UndefinedDSR(ValueError):
         self.detail = detail
 
 
-def _skew_kurtosis(x: np.ndarray) -> tuple[float, float]:
-    """Sample skewness and (non-excess, Gaussian=3) kurtosis."""
-    n = len(x)
-    if n < 3:
-        return 0.0, 3.0
-    mean = x.mean()
-    std = x.std(ddof=0)
-    if std == 0:
-        return 0.0, 3.0
-    z = (x - mean) / std
-    skew = float(np.mean(z**3))
-    kurt = float(np.mean(z**4))
-    return skew, kurt
-
-
 def _as_trial_count(n_trials: Any) -> int:
     """Read a config-supplied ``n_trials`` as a trial count WITHOUT rounding it.
 
@@ -100,7 +93,7 @@ def _as_trial_count(n_trials: Any) -> int:
     Silently coercing a nonsensical value (0, -5, 2.7) into a usable one
     removes the entire multiple-testing penalty and yields a plausible number
     instead of an obvious error -- the 2026-07 gate bug that
-    ``analysis.dsr.expected_max_sr`` was written to refuse. Non-positive values
+    ``inference.expected_max_sr`` was written to refuse. Non-positive values
     are rejected by ``expected_max_sr`` itself; this only rejects the shapes it
     cannot see.
     """
@@ -123,7 +116,7 @@ def _expected_max_sharpe(
     "se_proxy_approximation" when falling back to the observed strategy's own
     Sharpe standard error.
 
-    The expected-max-SR term comes from ``quantbox.analysis.dsr``, which RAISES
+    The expected-max-SR term comes from ``quantbox.inference``, which RAISES
     on a non-positive trial count rather than coercing it to 1. Raises
     ``_UndefinedDSR`` when no deflation benchmark can be computed.
     """
@@ -214,7 +207,9 @@ class DeflatedSharpeBLPValidation:
                 {"n_observations": t},
             )
 
-        n_nonfinite = int((~np.isfinite(rets)).sum())
+        # The refusals are quantbox.inference's (one NaN refusal, one degenerate test);
+        # this plugin only translates them into its findings, rule by rule.
+        _, n_nonfinite = require_finite(rets, allow_nonfinite_drop=True)
         if n_nonfinite:
             return self._undefined(
                 "non_finite_returns",
@@ -223,9 +218,11 @@ class DeflatedSharpeBLPValidation:
                 {"n_observations": t, "n_nonfinite": n_nonfinite},
             )
 
-        std_period = float(np.std(rets, ddof=1))
-        scale = float(np.mean(np.abs(rets)))
-        if std_period <= DEGENERATE_RTOL * scale:
+        try:
+            moments = return_moments(rets)
+        except InferenceInputError:  # finite and T >= 3, so the one refusal left is a degenerate series
+            std_period = float(np.std(rets, ddof=1))
+            scale = float(np.mean(np.abs(rets)))
             return self._undefined(
                 "degenerate_returns",
                 f"degenerate returns: standard deviation ({std_period!r}) is negligible against the "
@@ -235,9 +232,9 @@ class DeflatedSharpeBLPValidation:
                 {"n_observations": t, "std": std_period, "scale": scale},
             )
 
-        sr_hat_period = sharpe_ratio(rets, 1)
+        sr_hat_period = moments.sr_period
         observed_sharpe = sharpe_ratio(rets, trading_days)
-        skew, kurt = _skew_kurtosis(rets)
+        skew, kurt = moments.skew, moments.kurtosis
 
         partial_metrics: dict[str, Any] = {
             "observed_sharpe": observed_sharpe,

@@ -455,8 +455,7 @@ def sweep(
     ``<output_dir>/sweep_manifest.json`` (``quantbox/sweep@1``: strategy, execution
     timing, n_trials = grid rows).
     """
-    from .analysis import DEFAULT_METRICS, run_grid
-    from .analysis.parameter_grid import align_market_data
+    from .sweep import DEFAULT_METRICS, align_market_data, run_grid
 
     config_path = Path(config).resolve()
     with config_path.open(encoding="utf-8") as f:

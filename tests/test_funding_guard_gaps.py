@@ -38,12 +38,8 @@ from quantbox.registry import PluginRegistry
 from quantbox.run_manifest import validate_run_manifest
 from quantbox.runner import run_from_config
 from quantbox.store import FileArtifactStore
+from quantbox.sweep import sweep
 from quantbox.validate import validate_config
-
-try:  # TOM-1618 moves the sweep to quantbox.sweep; the old path stays a deprecated alias
-    from quantbox.sweep import sweep
-except ImportError:
-    from quantbox.analysis.parameter_grid import sweep
 
 NOT_CHARGED = "funding_not_charged"
 MISSING = "funding_missing"
