@@ -39,10 +39,9 @@ from collections.abc import Sequence
 
 import numpy as np
 
+from ..inference import DEGENERATE_RTOL, deflated_sharpe_ratio, factor_regression, newey_west_tstat
 from ..metrics import compute_drawdown_series, sharpe_ratio
 from ..metrics import max_drawdown as _metrics_max_drawdown
-from .dsr import DEGENERATE_RTOL, deflated_sharpe_ratio
-from .hac import factor_regression, newey_west_tstat
 
 DEFAULT_N_TRIALS: tuple[int, ...] = (1, 5, 10, 20, 50, 100)
 METRICS = ("sharpe", "mean", "max_drawdown")

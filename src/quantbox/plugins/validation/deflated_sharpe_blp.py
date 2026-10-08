@@ -60,8 +60,8 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm
 
-from quantbox.analysis.dsr import DEGENERATE_RTOL, expected_max_sr, sr_estimator_std
 from quantbox.contracts import PluginMeta
+from quantbox.inference import DEGENERATE_RTOL, expected_max_sr, sr_estimator_std
 from quantbox.metrics import sharpe_ratio
 
 

@@ -1,4 +1,4 @@
-"""Tests for the Deflated Sharpe Ratio math in ``quantbox.analysis.dsr``.
+"""Tests for the Deflated Sharpe Ratio math in ``quantbox.inference`` (``quantbox.analysis.dsr`` until TOM-1618).
 
 Ported (math unchanged) from quantbox-lab's ``test_dsr_gate.py`` when the DSR
 implementation moved into the framework. Guards the 2026-07-19 correctness fix:
@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 from scipy import stats
 
-from quantbox.analysis import (
+from quantbox.inference import (
     deflated_sharpe_ratio,
     deflated_sharpe_ratio_from_returns,
     expected_max_sr,

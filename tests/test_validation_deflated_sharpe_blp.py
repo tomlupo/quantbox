@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from quantbox.analysis.dsr import expected_max_sr
+from quantbox.inference import expected_max_sr
 from quantbox.plugins.validation.deflated_sharpe_blp import DeflatedSharpeBLPValidation
 
 
