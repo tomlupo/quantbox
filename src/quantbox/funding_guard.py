@@ -41,7 +41,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .exceptions import ConfigValidationError
+from .exceptions import ConfigValidationError, ValidationFinding
 
 #: Finding code of the refusal; ``quantbox validate`` and the run carry it.
 FUNDING_NOT_CHARGED = "funding_not_charged"
@@ -246,8 +246,6 @@ def check_funding(
 
 
 def _refuse(code: str, message: str, engine: str, source: str | None, market: str | None) -> None:
-    from .validate import ValidationFinding
-
     finding = ValidationFinding(
         "error", f"{code}: {message}", code, {"engine": engine, "source": source, "market": market}
     )

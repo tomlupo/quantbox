@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from . import run_manifest as _rm
-from .exceptions import ConfigValidationError
+from .exceptions import ConfigValidationError, ValidationFinding
 from .execution import run_record
 from .funding_guard import ignored_record, planned_funding, planned_market
 from .overlays import overlay_record
@@ -55,7 +55,6 @@ from .runner import (
     resolve_run,
     strict_refusal,
 )
-from .validate import ValidationFinding
 
 SCHEMA_ID = "quantbox/explain@1"
 

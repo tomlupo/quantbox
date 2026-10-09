@@ -124,7 +124,9 @@ quantbox plugins list | grep {slug}
 deriving one name from another:
 
 1. Export the class from the kind's directory, `src/quantbox/plugins/<dir>/__init__.py`.
-2. Import it in `src/quantbox/plugins/builtins.py` and add it to that kind's map there.
+2. Add `"<meta.name>": "<module>:<Class>"` to that kind's table in `BUILTIN_PLUGINS`,
+   `src/quantbox/plugins/builtins.py`. The table holds strings and imports nothing; the
+   registry imports the module the first time the class is asked for (TOM-1451).
 3. List its `meta.name` under the kind's section in `src/quantbox/plugins/manifest.yaml`
    (`plugins.builtins.<section>`, the manifest's own key, e.g. `data` or `brokers`).
 
