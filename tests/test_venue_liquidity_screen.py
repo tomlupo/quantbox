@@ -10,9 +10,10 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from quantbox.plugins.datasources._utils import MarketCapProvider, resolve_screen_inputs
+from quantbox.market_cap import MarketCapProvider
+from quantbox.plugins.datasources._utils import resolve_screen_inputs
 from quantbox.plugins.datasources.kraken_data_plugin import KrakenDataPlugin
-from quantbox.plugins.strategies._universe import select_universe
+from quantbox.universe import select_universe
 
 _IDX = pd.date_range("2026-01-01", periods=3, freq="D")
 _PRICES = pd.DataFrame({"BTC": [1.0, 1.1, 1.2], "ETH": [2.0, 2.1, 2.2]}, index=_IDX)

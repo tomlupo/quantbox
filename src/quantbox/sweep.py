@@ -51,6 +51,15 @@ import pandas as pd
 from quantbox.execution import resolve_execution, resolve_sweep_lag_bars
 from quantbox.parquet_io import read_parquet
 
+__all__ = [
+    "DEFAULT_METRICS",
+    "align_market_data",
+    "load_parquet_market_data",
+    "plot_heatmaps",
+    "run_grid",
+    "sweep",
+]
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_METRICS: tuple[str, ...] = (

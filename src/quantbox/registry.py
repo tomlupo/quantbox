@@ -20,6 +20,8 @@ from .contracts import (
 )
 from .plugins.builtins import builtins as builtin_plugins
 
+__all__ = ["ENTRYPOINT_GROUPS", "PluginRegistry"]
+
 ENTRYPOINT_GROUPS = {
     "pipeline": "quantbox.pipelines",
     "broker": "quantbox.brokers",

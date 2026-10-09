@@ -51,8 +51,9 @@ import pandas as pd
 import requests
 
 from quantbox.contracts import PluginMeta
+from quantbox.market_cap import MarketCapProvider
 
-from ._utils import MarketCapProvider, resolve_screen_inputs
+from ._utils import resolve_screen_inputs
 
 logger = logging.getLogger(__name__)
 

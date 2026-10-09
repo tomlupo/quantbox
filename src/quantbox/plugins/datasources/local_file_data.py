@@ -15,10 +15,20 @@ from typing import Any
 
 import pandas as pd
 
+from quantbox._deprecation import moved
 from quantbox.contracts import PluginMeta
+from quantbox.dataset import _resolve_pinned, load_pinned_dataset
 from quantbox.parquet_io import read_parquet
 
 logger = logging.getLogger(__name__)
+
+# ``_load_pinned_dataset`` is public now as quantbox.dataset.load_pinned_dataset (TOM-1449).
+__getattr__ = moved(
+    "quantbox.plugins.datasources.local_file_data",
+    "quantbox.dataset",
+    card="TOM-1449",
+    names={"_load_pinned_dataset": "load_pinned_dataset"},
+)
 
 try:
     import duckdb
@@ -150,38 +160,6 @@ def _read_via_pandas(path: str, ext: str, asof: str | None, symbols: list[str] |
     return df
 
 
-def _resolve_pinned(name: str, lock: str | None = None) -> dict[str, Any]:
-    """Where a by-name dataset will be read from, refused when its bytes are not the pin.
-
-    :func:`quantbox.dataset_lock.resolve_dataset` — the root from ``$QUANTBOX_DATASETS_ROOT``,
-    the pin from *lock* (default: the nearest ``datasets.lock``).
-    """
-    from quantbox.dataset_lock import require_match, resolve_dataset
-
-    return require_match(resolve_dataset(name, lock=lock))
-
-
-def _load_pinned_dataset(
-    name: str, lock: str | None = None, resolved: dict[str, Any] | None = None
-) -> tuple[Any, dict[str, Any]]:
-    """A quantbox-datasets Dataset and the resolution it was served from.
-
-    Resolved by :func:`_resolve_pinned` (unless *resolved* already is) and refused
-    before any read when the bytes are not the pinned build.
-    """
-    if resolved is None:
-        resolved = _resolve_pinned(name, lock)
-    try:
-        from quantbox_datasets.lock import load
-    except ImportError as exc:
-        raise ImportError(
-            f"dataset={name!r} needs quantbox-datasets installed (it carries quantbox_datasets.lock); "
-            "quantbox does not depend on it — install it from its clone and point "
-            "QUANTBOX_DATASETS_ROOT at <clone>/datasets"
-        ) from exc
-    return load(name, root=resolved["root"], sha256=resolved["sha256"], pinned=False), resolved
-
-
 def _clip_frame(df: pd.DataFrame, asof: str | None) -> pd.DataFrame:
     """Give a dataset frame the same UTC date index and ``<= asof`` cut as ``_read_file``."""
     if df.empty or not isinstance(df.index, pd.DatetimeIndex):
@@ -289,7 +267,7 @@ class LocalFileDataPlugin:
 
     def _pinned(self) -> Any:
         if self._dataset is None:
-            self._dataset, self.dataset_resolution = _load_pinned_dataset(
+            self._dataset, self.dataset_resolution = load_pinned_dataset(
                 self.dataset, self.dataset_lock, self.dataset_resolution
             )
         return self._dataset
