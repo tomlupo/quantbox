@@ -18,6 +18,8 @@ import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
+from quantbox._lazy import load
+
 logger = logging.getLogger(__name__)
 
 LAYERS = ("bronze", "silver", "gold")
@@ -181,8 +183,12 @@ class DuckDBEngine:
     Supports SQL queries, view creation, materialization, and Parquet export.
     """
 
+    # A class default, so close() and __del__ hold when __init__ raised.
+    _conn = None
+
     def __init__(self, database: str | Path):
-        import duckdb
+        # Fail at construction, naming the extra, when duckdb is absent.
+        duckdb = load("duckdb", extra="research")
 
         self._db_path = Path(database)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -191,8 +197,7 @@ class DuckDBEngine:
     @property
     def conn(self):
         if self._conn is None:
-            import duckdb
-
+            duckdb = load("duckdb", extra="research")
             self._conn = duckdb.connect(str(self._db_path))
             self._conn.execute("SET enable_progress_bar = false")
         return self._conn

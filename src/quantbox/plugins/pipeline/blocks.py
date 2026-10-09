@@ -65,6 +65,7 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
+from quantbox._lazy import load
 from quantbox.inference import moments
 from quantbox.metrics import compute_rolling_sharpe, turnover_series
 
@@ -141,8 +142,8 @@ def _build_return_distribution_chart(_payload: dict | None, *, returns: pd.Serie
 
     Builds from ``returns`` alone — no strategy opt-in required.
     """
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
+    go = load("plotly.graph_objects", extra="research")
+    make_subplots = load("plotly.subplots:make_subplots", extra="research")
 
     if returns is None or len(returns) == 0:
         return None
@@ -214,8 +215,8 @@ def _build_rolling_metrics_chart(_payload: dict | None, *, returns: pd.Series, *
     backtest lengths. Annualisation uses 365 (crypto default); for equities
     pass a custom payload override (future work).
     """
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
+    go = load("plotly.graph_objects", extra="research")
+    make_subplots = load("plotly.subplots:make_subplots", extra="research")
 
     if returns is None or len(returns) == 0:
         return None
@@ -272,8 +273,8 @@ def _build_turnover_timeline_chart(_payload: dict | None, *, weights_history: pd
     Useful for assessing rebalancing cost vs strategy churn. Cumulative
     turnover (right axis) gives a sense of total trading volume.
     """
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
+    go = load("plotly.graph_objects", extra="research")
+    make_subplots = load("plotly.subplots:make_subplots", extra="research")
 
     if weights_history is None or weights_history.empty:
         return None

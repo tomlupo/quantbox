@@ -10,7 +10,7 @@ import typer
 import yaml
 
 from ._lazy import load
-from .exceptions import PluginNotFoundError
+from .exceptions import MissingExtraError, PluginNotFoundError
 from .gates_cli import gates_app
 from .plugin_manifest import load_manifest, resolve_profile
 from .registry import PluginRegistry
@@ -100,6 +100,9 @@ def cmd_plugins_schema(reg: PluginRegistry, name: str | None = None, as_json: bo
         return
     for p in payload["plugins"]:
         print(f"{p['id']}  [{p['group']}, {p['status']}]")
+        if p.get("missing_extra"):
+            print(f"  (not installed: needs the [{p['missing_extra']}] extra)")
+            continue
         if p["params"] is None:
             print("  (no params_schema declared)")
             continue
@@ -110,21 +113,32 @@ def cmd_plugins_schema(reg: PluginRegistry, name: str | None = None, as_json: bo
 def cmd_plugins_doctor(as_json: bool = False, strict: bool = False):
     import importlib.metadata
 
-    from .plugins.builtins import builtins as builtin_plugins
+    from .plugins.builtins import BUILTIN_PLUGINS
     from .registry import ENTRYPOINT_GROUPS
 
     results = []
 
-    builtins = builtin_plugins()
-    for group, mapping in builtins.items():
-        for name in sorted(mapping.keys()):
+    # Import every builtin, in table order. One whose extra is not installed
+    # is a warning that names the extra, not a crash (TOM-1451).
+    builtins: dict[str, dict[str, Any]] = {}
+    missing: dict[tuple[str, str], MissingExtraError] = {}
+    for group, table in BUILTIN_PLUGINS.items():
+        builtins[group] = {}
+        for name, target in table.items():
+            try:
+                builtins[group][name] = load(target)
+            except MissingExtraError as exc:
+                missing[(group, name)] = exc
+    for group, table in BUILTIN_PLUGINS.items():
+        for name in sorted(table):
+            exc = missing.get((group, name))
             results.append(
                 {
                     "source": "builtin",
                     "group": group,
                     "name": name,
-                    "status": "ok",
-                    "message": "",
+                    "status": "ok" if exc is None else "warn",
+                    "message": "" if exc is None else f"missing_extra: install quantbox[{exc.extra}] ({exc.name})",
                 }
             )
 
@@ -173,7 +187,7 @@ def cmd_plugins_doctor(as_json: bool = False, strict: bool = False):
                 status = "error"
                 message = f"entrypoint_load_failed: {e}"
 
-            if ep.name in builtins.get(group_name, {}):
+            if ep.name in BUILTIN_PLUGINS.get(group_name, {}):
                 if status == "ok":
                     status = "warn"
                 if message:
@@ -957,7 +971,14 @@ def config_explain(
 
 
 def main():
-    app()
+    # A command that needs an extra which is not installed (a research or trade
+    # library on a base install) ends on one line naming the extra, not a
+    # traceback. The exit status stays 1, as for any uncaught error.
+    try:
+        app()
+    except MissingExtraError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

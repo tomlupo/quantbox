@@ -2,8 +2,8 @@
 
 Provides:
 - OHLCV validation (ported from quantlab's ``basic_validate_ohlcv``)
-- Transient-error classification for retry logic (used with ``tenacity``)
-- DuckDB-backed Parquet OHLCV cache for incremental fetching
+- Transient-error classification for retry logic (re-exported from :mod:`quantbox.retry`)
+- DuckDB-backed Parquet OHLCV cache for incremental fetching (duckdb: the ``[data]`` extra)
 - The mode-aware universe-screen inputs (:func:`resolve_screen_inputs`)
 
 Market cap moved to :mod:`quantbox.market_cap` (TOM-1449). ``MarketCapProvider``,
@@ -17,10 +17,10 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import duckdb
 import pandas as pd
 
 from quantbox._deprecation import moved
+from quantbox._lazy import load
 from quantbox.frequency import FREQUENCY_ALIASES
 from quantbox.market_cap import MarketCapProvider as _MarketCapProvider
 from quantbox.market_cap import load_pit_market_cap as _load_pit_market_cap
@@ -220,6 +220,7 @@ class OHLCVCache:
             return None
 
         glob_pattern = str(tdir / "*.parquet")
+        duckdb = load("duckdb", extra="data")  # outside the try: a missing extra is not "no cache"
         try:
             query = f"""
                 SELECT date, open, high, low, close, volume
@@ -243,6 +244,7 @@ class OHLCVCache:
             return None
 
         glob_pattern = str(tdir / "*.parquet")
+        duckdb = load("duckdb", extra="data")  # outside the try: a missing extra is not "no cache"
         try:
             query = f"SELECT MAX(date) AS last_date FROM read_parquet('{glob_pattern}')"
             result = duckdb.query(query).df()

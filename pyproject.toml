@@ -3,25 +3,33 @@ name = "quantbox"
 version = "0.11.0"
 description = "Quant research & trading core with plugin marketplace (entry points)."
 requires-python = ">=3.10"
+# The base install is what the CORE layer imports (ADR-0010 decision 4,
+# TOM-1451): a client install (robo) gets core and nothing else. A library a
+# core module does not import belongs in an extra below. This file is the one
+# owner of every list; docs point here.
 dependencies = [
   "pandas>=2.3.3",
+  "numpy>=2.2.6",
   "scipy>=1.15.3",
-  "pyyaml>=6.0.3",
   "pyarrow>=25.0.1",
-  "duckdb>=1.5.5",
+  "pyyaml>=6.0.3",
   "jsonschema>=4.26.0",
-  "tenacity>=9.1.4",
-  "httpx>=0.28.1",
-  "pycoingecko>=3.2.0",
-  "typer>=0.27.2",
-  # Declared, not borrowed: report blocks import plotly lazily, and until
-  # TOM-1334 it only arrived transitively through vectorbt.
-  "plotly>=6.5.2",
-  "pandas-market-calendars>=5.4.0",
   "statsmodels>=0.15.0",
+  "pandas-market-calendars>=5.4.0",
+  "typer>=0.27.2",
 ]
 
 [project.optional-dependencies]
+# Per-audience extras (ADR-0010). Without one, a module that needs it raises
+# MissingExtraError naming it, on import or on use; it never fails bare.
+# [data]: the data-source clients (datasources, market_cap, the duckdb store).
+data = ["duckdb>=1.5.5", "httpx>=0.28.1", "pycoingecko>=3.2.0", "requests>=2.34.2"]
+# [research]: the research layer's libraries (reports need plotly) plus [data].
+research = ["quantbox[data]", "plotly>=6.5.2"]
+# [trade]: the venue clients brokers and publishers import. requests is
+# declared, not borrowed from ccxt: the Binance-futures and Hyperliquid brokers
+# import it for their Telegram notices.
+trade = ["ccxt>=4.5.81", "httpx>=0.28.1", "requests>=2.34.2"]
 # The vectorbt backtest engine (quantbox.bt, adapters.vectorbt, run_vectorbt,
 # engine: vectorbt, quantbox.sweep sweep/run_grid). Without it those raise
 # MissingExtraError naming this extra; everything else imports (TOM-1334).
@@ -32,7 +40,7 @@ ccxt = ["ccxt>=4.5.81"]
 ml = ["scikit-learn>=1.7.2"]
 simulation = ["arch>=8.0"]
 viz = ["matplotlib>=3.10.9", "seaborn>=0.13.2"]
-full = ["vectorbt>=1.0.0", "numba>=0.67.0", "python-binance", "ccxt>=4.5.81", "ib_insync", "scikit-learn>=1.7.2", "arch>=8.0"]
+full = ["quantbox[data,research,trade,vectorbt,ibkr,binance,ccxt,ml,simulation,viz]"]
 
 [project.scripts]
 quantbox = "quantbox.cli:main"
@@ -46,8 +54,9 @@ dev = [
     # The suite exercises the vectorbt engine, so the dev env carries the
     # [vectorbt] extra's pins; the no-vectorbt path is proven by
     # tests/test_without_vectorbt.py and the ci.yml `no-vectorbt` job.
-    "vectorbt>=1.0.0",
-    "numba>=0.67.0",
+    # [research] (which includes [data]) is what the old base install carried
+    # beyond core: the suite exercises datasources, the store and reports.
+    "quantbox[research,vectorbt]",
     "commitizen>=4.18.1",
     "pytest>=9.1.1",
     "ruff>=0.16.8",

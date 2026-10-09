@@ -48,9 +48,15 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pandas as pd
-import requests
 
 from quantbox.contracts import PluginMeta
+from quantbox.exceptions import MissingExtraError
+
+try:
+    import requests
+except ModuleNotFoundError as exc:  # the Hyperliquid info client needs the [data] extra
+    raise MissingExtraError("data", __name__, exc.name) from exc
+
 from quantbox.market_cap import MarketCapProvider
 
 from ._utils import resolve_screen_inputs

@@ -25,11 +25,10 @@ from __future__ import annotations
 import functools
 import logging
 import random
+import sys
 import time
 from collections.abc import Callable
 from typing import TypeVar
-
-import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -87,12 +86,19 @@ def is_transient(exc: BaseException) -> bool:
     # Fail-closed: genuine errors never retry.
     if name in _NON_RETRYABLE_EXC_NAMES:
         return False
-    if isinstance(exc, (ConnectionError, TimeoutError, OSError, httpx.TransportError)):
+    if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
         return True
-    # ccxt HTTP 429 surfaces as RateLimitExceeded; httpx surfaces it as an
-    # HTTPStatusError carrying a response.
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code in {429, 500, 502, 503, 504}
+    # httpx is in the [data] / [trade] extras, not the base install, and this
+    # module is core. An httpx exception exists only once httpx is imported, so
+    # reading sys.modules gives the same answer as a top-level import would.
+    httpx = sys.modules.get("httpx")
+    if httpx is not None:
+        if isinstance(exc, httpx.TransportError):
+            return True
+        # ccxt HTTP 429 surfaces as RateLimitExceeded; httpx surfaces it as an
+        # HTTPStatusError carrying a response.
+        if isinstance(exc, httpx.HTTPStatusError):
+            return exc.response.status_code in {429, 500, 502, 503, 504}
     if name in _TRANSIENT_EXC_NAMES:
         return True
     code = getattr(exc, "code", None)
