@@ -1,119 +1,40 @@
-# API Layers (L0–L5)
+# API surface: audiences and entry styles
 
-QuantBox exposes every capability at multiple layers so users (humans, scripts, LLMs) can pick the lightest one that solves their task. This is the operationalization of the [lowest-viable-abstraction principle](principles.md#2-lowest-viable-abstraction).
+The decision is [ADR-0010](../adr/0010-audience-layers-one-distribution.md). It
+supersedes the L0–L5 ladder of ADR-0002. This page is the operational rule:
+which layer a module belongs to, and how a caller reaches it.
 
 ---
 
-## The table
+## Four layers, three audiences
 
-| Layer | API shape | When to use | Example |
+quantbox is one distribution. Its modules sit in four layers, in import order:
+`core` < `plugins` < `research`, `trade`. A layer imports only the layers below
+it. `research` and `trade` never import each other.
+
+| Layer | Audience | Examples | Install |
 |---|---|---|---|
-| **L0** Re-exports | `from quantbox.adapters.vectorbt import vbt` | Quick experiment, throwaway script. Pure pass-through to the underlying lib — it fills the bar it is handed, so lag the signal yourself ([ADR-0005](../adr/0005-next-bar-is-mandatory.md)). | `vbt.Portfolio.from_signals(prices, (signals > 0).shift(1, fill_value=False))` |
-| **L1** Convenience helpers | `quantbox.bt.run(...)`; `backtest()` / `optimize()` (`quantbox.plugins.backtesting`, through the engine seam) | Common idiom — one function call. No plugin/config layer. | `qbt.run(prices, signals, fees=0.001)` |
-| **L2** Composable units (not built) | — | Building a notebook, composing two ideas, no run_id ceremony. Until it exists, use L3. | — |
-| **L3** Plugin instances | Instantiate `Strategy()`, `DataPlugin()`, call directly | You want validation and contracts but not the YAML/runner. | `MyStrat().run(data, params)` |
-| **L4** Full pipeline | `quantbox.runner.run_from_config(yaml_path)` | Logged experiment, ArtifactStore manifest, EXPERIMENTS.md entry. | `run_from_config("cookbook/configs/research.yaml")` |
-| **L5** CLI | `quantbox run -c config.yaml` | Production cron, reproducibility-pinned, lifecycle-tracked. | scheduled job in agent-cron / systemd |
+| **core** | every caller, including a client install (robo) | `quantbox.contracts`, `quantbox.registry`, `quantbox.strategy_runner`, `quantbox.decision`, `quantbox.metrics`, `quantbox.inference`, `quantbox.gates`, `quantbox.engine` (the seam and rsims), `quantbox.dataset`, `quantbox.runner`, `quantbox.cli` | base |
+| **plugins** | every caller that uses the builtin strategies and data | builtin strategies, datasources, features, overlays, monitors; `quantbox.universe`, `quantbox.market_cap` (ADR-0010 decision 6) | base, `[data]` for the data clients |
+| **research** | the lab | backtest pipeline, `quantbox.sweep`, `quantbox.arms`, validation plugins, reports, `quantbox.warehouse`, `quantbox.bt`, `quantbox.adapters.vectorbt` | `[research]`, `[vectorbt]` |
+| **trade** | live | brokers, trading pipeline, rebalancing, reconciliation, `quantbox.portfolio_value` | `[trade]` |
+
+The full module map is on TOM-1451. **The layers and the extras are built by
+4b (TOM-1451).** Until 4b lands, this table is the target; the code on `dev`
+still has the edges TOM-1451 lists, and `pyproject.toml` still has the old
+extras. Once 4b lands, the import-linter contracts are the owner of the map.
 
 ---
 
-## Default layer per task type
+## Two entry styles
 
-| Task | Default layer | Rationale |
-|---|---|---|
-| "Try this idea" | L1 | Function call beats YAML for one-off work. |
-| "Compare A vs B" | L3 | L2 is not built; two plugin calls, runner overkill. |
-| "Show me the chart" | L0 + L1 | Use vbt's plotting directly. |
-| "Backtest with my dm-evo data" | L1 with project-specific helper, or L3 plugin | Depends on whether the data plugin is registered. |
-| "Author a new strategy" | L3 (plugin instance) → L4 once registered | Build it without the runner first; promote later. |
-| "Log this for EXPERIMENTS.md" | L4 | The runner produces the manifest you reference. |
-| "Production methodology run" | L5 | CLI + `--strict` enforces reproducibility pins. |
+Every audience reaches the same plugins in one of two ways. Neither is "lower".
 
-When a skill is unsure, **start at L1.** Escalate only when the task demands it.
+### Python API on the contracts
 
----
-
-## Module map
-
-| Module | Purpose | Layer |
-|---|---|---|
-| `quantbox.adapters.{lib}` | Re-exports + thin helpers (`vbt`, ...) — added when ≥2 consumers need same bridge | L0 |
-| `quantbox.bt` | Convenience for backtesting (most common idiom) | L1 |
-| `quantbox.engine` | The engine seam: `simulate()`, the one book function every backtest door uses; engine choice in [ADR-0008](../adr/0008-engine-seam.md) decision 14 | L1–L4 |
-| `quantbox.contracts` | `Protocol`s, `PluginMeta`, `RunResult` | L3 |
-| `quantbox.runner` | `run_from_config` | L4 |
-| `quantbox.cli` | Typer-based CLI | L5 |
-
-The L0–L2 surface is part of the public API stability contract — same as the plugin contracts. Don't break them lightly.
-
----
-
-## L0 — Re-exports
-
-The rule: an adapter re-exports the underlying library so users can drop down without import gymnastics.
-
-```python
-# adapters/vectorbt.py
-import vectorbt as vbt
-
-__all__ = ["vbt"]
-
-
-# Optional: small convenience helpers, but vbt itself is the export.
-def from_dm_evo(df): ...
-```
-
-Users:
-
-```python
-from quantbox.adapters.vectorbt import vbt
-
-# vbt fills the bar it is handed: a signal computed through close t must reach
-# it on bar t+1 (next-bar is mandatory, ADR-0005). quantbox cannot police raw vbt.
-entries, exits = entries.shift(1, fill_value=False), exits.shift(1, fill_value=False)
-pf = vbt.Portfolio.from_signals(prices, entries, exits)
-```
-
-If a user has to write `import vectorbt as vbt` to bypass quantbox, the adapter has failed.
-
----
-
-## L1 — Convenience helpers
-
-The rule: one function call covers the most common idiom for that capability. No plugin, no config, no manifest.
-
-`quantbox.bt.run` (`src/quantbox/bt.py`) delegates to
-`adapters.vectorbt.from_signals_with_costs`: next-bar always, `lag_bars=0`
-raises ([ADR-0005](../adr/0005-next-bar-is-mandatory.md)).
-
-Users:
-
-```python
-import quantbox.bt as qbt
-
-result = qbt.run(prices, signals, fees=0.001)
-print(result.metrics)
-```
-
-L1 helpers should:
-- Take primitive types (`DataFrame`, `Series`, `dict`) — not quantbox-specific objects.
-- Have sensible defaults that match the most common use case.
-- Return a result object that carries both the underlying-library object (`pf`) and a normalized view (metrics dict).
-
----
-
-## L2 — Composable units
-
-**Not built.** The intent: a function-style API for users who want validation and
-contracts but want to compose things by hand — functions that accept plugin
-instances and return validated artifacts without writing to ArtifactStore (that
-is L4's job). No module implements it; use L3 until one does.
-
----
-
-## L3 — Plugin instances
-
-Instantiate a plugin and call its methods directly. Useful when authoring a new plugin (test it before registering it) or when you want the contract but not the runner.
+Instantiate a plugin and call it, or call a core module. No YAML, no run
+directory. Use it to try an idea, to test a plugin before it is registered,
+or to compose steps in a notebook.
 
 ```python
 strat = MyStrategy(target_vol=0.15)  # dataclass attrs at construction
@@ -121,79 +42,63 @@ result = strat.run(data, params={"lookback_days": 60})  # params override at cal
 weights = result["weights"]  # date × symbol DataFrame
 ```
 
-`data` is a dict with required `"prices"` and optional `"volume"`, `"market_cap"`, `"universe"`, `"funding_rates"` (all wide-format DataFrames). `params` overrides instance attributes for that one call.
+`data` is a dict with required `"prices"` and optional `"volume"`,
+`"market_cap"`, `"universe"`, `"funding_rates"` (all wide-format DataFrames).
+The book function is `quantbox.engine.simulate` ([ADR-0008](../adr/0008-engine-seam.md)).
 
-This layer is what scratch-plugins use during research (see [lifecycle.md](lifecycle.md)).
-
----
-
-## L4 — Full pipeline
-
-The runner. YAML config. Validated. Produces a `RunResult` with manifest, lineage, content-hashed datasets.
+Research also has the vectorbt re-export and one helper:
 
 ```python
-from quantbox import run_from_config
+from quantbox.adapters.vectorbt import vbt
+import quantbox.bt as qbt
 
-result = run_from_config("cookbook/configs/research/regime_taa.yaml")
+# vbt fills the bar it is handed: lag the signal yourself (ADR-0005).
+pf = vbt.Portfolio.from_signals(prices, entries.shift(1, fill_value=False))
+result = qbt.run(prices, signals, fees=0.001)  # next-bar always; lag_bars=0 raises
 ```
 
-This is what the EXPERIMENTS.md log references. Use this when you want the run to be *part of the record*.
+If a caller has to write `import vectorbt as vbt` to get past quantbox, the
+adapter has failed ([adapters.md](adapters.md)).
 
----
+### YAML through the runner
 
-## L5 — CLI
+The runner validates the config, runs the pipeline and writes the run
+manifest and the lineage. Use it when the run must be part of the record.
 
-Production. Combined with `--strict`, enforces reproducibility pins (uv.lock + dataset hashes + seeds).
+```python
+from quantbox.runner import run_from_config
+
+result = run_from_config("cookbook/configs/run_backtest_crypto_trend.yaml")
+```
 
 ```bash
-quantbox run -c cookbook/configs/prod/dm_evo_fund_selection.yaml --strict
+quantbox run -c cookbook/configs/run_backtest_crypto_trend.yaml  # the same, from the CLI
 ```
 
-Used by cron jobs and agent-cron schedules. Not for interactive use.
+Strict mode is `run.strict: true` in the config (or a promotion run); the
+runner reads it (`quantbox.runner.strict_refusal`). It is a property of the
+run, not a layer. `uv run quantbox --help` is the authority for the commands.
 
 ---
 
-## Skill frontmatter contract
+## Skill frontmatter labels (L0–L5)
 
-Every capability skill declares its `default_layer` and `escalation_rules` in frontmatter:
+Skills still declare `default_layer` with the old labels. The labels now name
+an entry style, not a module or a package:
 
-```yaml
----
-name: quantbox-backtest
-description: ...
-default_layer: L1
-escalation_rules:
-  - to: L4
-    when: "task requires logged experiment / EXPERIMENTS.md entry"
-  - to: L5
-    when: "production run / reproducibility pinning required"
----
-```
+| Label | Means |
+|---|---|
+| L0, L1 | Python API: the vectorbt re-export or `quantbox.bt` (research) |
+| L3 | Python API: a plugin instance, called directly |
+| L4 | YAML through `run_from_config` |
+| L5 | YAML through the CLI, with `run.strict: true` for production |
 
-This makes layer choice auditable and consistent. Skills without this frontmatter are considered incomplete. See [skills.md](skills.md).
+L2 was never built. The field and its rules are owned by [skills.md](skills.md).
 
 ---
 
-## When to add a new convenience helper
+## Stability and moved names
 
-Add an L1 helper when:
-
-- The same 3–10 line idiom appears in ≥2 places (your projects, examples, or skills).
-- The helper hides no functionality — users can still drop to L0 if they need a knob the helper doesn't expose.
-- The function has obvious sensible defaults.
-
-Don't add an L1 helper:
-
-- For a one-off project-specific need (put it in the project).
-- That hides the underlying library's API in a way users would have to fight.
-- That requires importing more than one external library — that's an L4 pipeline, not a helper.
-
----
-
-## Versioning
-
-Layers L0–L2 follow library semver: breaking changes only on majors.
-Layers L3–L4 follow plugin semver: covered by `meta.version` on each plugin.
-Layer L5 (CLI) follows the package semver.
-
-Inner layers should be more stable than outer ones. Breaking L1 forces every L4 caller to revalidate. Breaking L4 only affects YAML configs.
+A public module declares `__all__`. When a name moves, its old import path
+keeps working for one minor version and emits a `DeprecationWarning` that
+names the new path (ADR-0010 decision 7). YAML plugin ids keep their aliases.

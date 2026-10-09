@@ -45,7 +45,7 @@ This keeps skills declarative and resistant to API drift.
 
 ### Rule 2 — Lowest viable abstraction
 
-Every capability skill teaches the LLM the [layer table](api-layers.md) and picks the lightest layer that solves the task. A 5-line vectorbt sanity check belongs at L0/L1, not in a YAML pipeline.
+Every capability skill teaches the LLM the [entry-style labels](api-layers.md#skill-frontmatter-labels-l0l5) and picks the lightest layer that solves the task. A 5-line vectorbt sanity check belongs at L0/L1, not in a YAML pipeline.
 
 Skills with `default_layer: L1` are the most common. Skills that always produce L4 configs are usually doing too much ceremony.
 
@@ -61,7 +61,7 @@ name: quantbox-backtest
 description: Use when the user wants to run a backtest. Triggers — "backtest", "test this strategy", "compare A vs B against historical data."
 default_layer: L1
 escalation_rules:
-  - to: L2
+  - to: L3
     when: "comparing two or more strategies on the same data"
   - to: L4
     when: "task requires logged experiment / EXPERIMENTS.md entry"
@@ -97,7 +97,7 @@ Recommended template:
 | "Does this idea even work?" | L0/L1 | vbt or qbt.run |
 | "Compare A vs B" | L3 (L2 not built) | two plugin `.run()` calls |
 | "Log this for EXPERIMENTS.md" | L4 | YAML + run_from_config |
-| "Production run" | L5 | quantbox run --strict |
+| "Production run" | L5 | quantbox run, config with run.strict: true |
 
 Default to L1.
 
@@ -191,7 +191,7 @@ The repo CI runs a smoke check that all skill examples (in fenced ```yaml or ```
 
 ## See also
 
-- [api-layers.md](api-layers.md) — what each layer means.
+- [api-layers.md](api-layers.md) — what each label means.
 - [plugin-authoring.md](plugin-authoring.md) — what authoring skills generate.
 - [lifecycle.md](lifecycle.md) — what `meta.status` means at scaffold time.
 - [playbooks/add-a-skill.md](../playbooks/add-a-skill.md) — step-by-step.

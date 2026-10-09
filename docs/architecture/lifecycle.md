@@ -230,5 +230,5 @@ Not in v1.
 ## See also
 
 - [plugin-authoring.md](plugin-authoring.md) — `meta.status` field and the Protocol.
-- [api-layers.md](api-layers.md) — `--strict` mode applies at L5.
+- [api-layers.md](api-layers.md) — strict mode is `run.strict: true` in the config, read by the runner.
 - [skills.md](skills.md) — `quantbox-promote` skill drives state transitions.
