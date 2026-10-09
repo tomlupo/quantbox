@@ -15,28 +15,28 @@ dependencies = [
   "pyyaml>=6.0.3",
   "jsonschema>=4.26.0",
   "statsmodels>=0.15.0",
-  "pandas-market-calendars>=5.4.0",
-  "typer>=0.27.2",
+  "pandas-market-calendars>=5.5.0",
+  "typer>=0.27.3",
 ]
 
 [project.optional-dependencies]
 # Per-audience extras (ADR-0010). Without one, a module that needs it raises
 # MissingExtraError naming it, on import or on use; it never fails bare.
 # [data]: the data-source clients (datasources, market_cap, the duckdb store).
-data = ["duckdb>=1.5.5", "httpx>=0.28.1", "pycoingecko>=3.2.0", "requests>=2.34.2"]
+data = ["duckdb>=1.5.6", "httpx>=0.28.1", "pycoingecko>=3.2.0", "requests>=2.34.2"]
 # [research]: the research layer's libraries (reports need plotly) plus [data].
-research = ["quantbox[data]", "plotly>=6.5.2"]
+research = ["quantbox[data]", "plotly>=7.1.0"]
 # [trade]: the venue clients brokers and publishers import. requests is
 # declared, not borrowed from ccxt: the Binance-futures and Hyperliquid brokers
 # import it for their Telegram notices.
-trade = ["ccxt>=4.5.81", "httpx>=0.28.1", "requests>=2.34.2"]
+trade = ["ccxt>=4.5.85", "httpx>=0.28.1", "requests>=2.34.2"]
 # The vectorbt backtest engine (quantbox.bt, adapters.vectorbt, run_vectorbt,
 # engine: vectorbt, quantbox.sweep sweep/run_grid). Without it those raise
 # MissingExtraError naming this extra; everything else imports (TOM-1334).
-vectorbt = ["vectorbt>=1.0.0", "numba>=0.67.0"]
+vectorbt = ["vectorbt>=1.0.0", "numba>=0.68.0"]
 ibkr = ["ib_insync"]
 binance = ["python-binance"]
-ccxt = ["ccxt>=4.5.81"]
+ccxt = ["ccxt>=4.5.85"]
 ml = ["scikit-learn>=1.7.2"]
 simulation = ["arch>=8.0"]
 viz = ["matplotlib>=3.10.9", "seaborn>=0.13.2"]
@@ -46,7 +46,7 @@ full = ["quantbox[data,research,trade,vectorbt,ibkr,binance,ccxt,ml,simulation,v
 quantbox = "quantbox.cli:main"
 
 [build-system]
-requires = ["uv_build>=0.12.17,<0.13.0"]
+requires = ["uv_build>=0.12.23,<0.13.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
@@ -57,9 +57,9 @@ dev = [
     # [research] (which includes [data]) is what the old base install carried
     # beyond core: the suite exercises datasources, the store and reports.
     "quantbox[research,vectorbt]",
-    "commitizen>=4.18.1",
+    "commitizen>=4.19.1",
     "pytest>=9.1.1",
-    "ruff>=0.16.8",
+    "ruff>=0.16.10",
     "import-linter>=2.15",
 ]
 
