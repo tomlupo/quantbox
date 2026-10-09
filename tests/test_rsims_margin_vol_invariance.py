@@ -14,7 +14,7 @@ import inspect
 import numpy as np
 import pandas as pd
 
-from quantbox.plugins.backtesting.rsims_engine import fixed_commission_backtest_with_funding
+from quantbox.engine.rsims_sim import fixed_commission_backtest_with_funding
 
 
 def _sharpe(res: pd.DataFrame, initial: float) -> float:

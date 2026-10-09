@@ -264,7 +264,7 @@ def test_rsims_compounds_by_default():
     """``capitalise_profits`` defaults to True on the adapter, the primitive and the pipeline schema."""
     import inspect
 
-    from quantbox.plugins.backtesting.rsims_engine import fixed_commission_backtest_with_funding
+    from quantbox.engine.rsims_sim import fixed_commission_backtest_with_funding
     from quantbox.plugins.pipeline.backtest_pipeline import BacktestPipeline
 
     adapter = get_engine("rsims")

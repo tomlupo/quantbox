@@ -12,10 +12,10 @@ from typing import Any
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
-from quantbox.parquet_io import read_parquet
-from quantbox.simulation.stress_testing import (
+from quantbox.montecarlo.stress_testing import (
     StressTestEngine,
 )
+from quantbox.parquet_io import read_parquet
 
 
 @dataclass

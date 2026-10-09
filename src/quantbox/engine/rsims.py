@@ -1,7 +1,7 @@
 """The rsims adapter (core, numpy only) — the perps simulator behind the engine seam.
 
 Owns: the rsims primitive
-(:func:`quantbox.plugins.backtesting.rsims_engine.fixed_commission_backtest_with_funding`),
+(:func:`quantbox.engine.rsims_sim.fixed_commission_backtest_with_funding`),
 its parameters (``trade_buffer``, ``initial_cash``, ``margin``,
 ``capitalise_profits``, ``equity_basis``), its capabilities (it charges the
 funding series it is handed; it is a margin simulator) and the normalisation
@@ -24,6 +24,7 @@ from typing import Any
 import pandas as pd
 
 from .base import TRADE_COLUMNS, Costs, EngineAdapter, TradedBook, weight_turnover
+from .rsims_sim import fixed_commission_backtest_with_funding
 
 logger = logging.getLogger(__name__)
 
@@ -193,8 +194,6 @@ def _simulate(
     cash_legs: Sequence[str],
     params: Mapping[str, Any],
 ) -> pd.DataFrame:
-    from quantbox.plugins.backtesting.rsims_engine import fixed_commission_backtest_with_funding
-
     return fixed_commission_backtest_with_funding(
         prices=prices,
         target_weights=weights,
