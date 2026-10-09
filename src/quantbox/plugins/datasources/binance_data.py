@@ -61,15 +61,15 @@ from typing import Any
 import httpx
 import pandas as pd
 
+from quantbox.market_cap import MarketCapProvider
 from quantbox.plugins.datasources._utils import (
-    MarketCapProvider,
     OHLCVCache,
     interval_step,
     resolve_screen_inputs,
     retry_transient,
     validate_ohlcv,
 )
-from quantbox.plugins.strategies._universe import DEFAULT_STABLECOINS
+from quantbox.universe import DEFAULT_STABLECOINS
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +88,7 @@ except ImportError:
 # Constants
 # ============================================================================
 
-# DEFAULT_STABLECOINS is re-exported from quantbox.plugins.strategies._universe
+# DEFAULT_STABLECOINS is re-exported from quantbox.universe
 # (imported above) so existing callers
 # `from quantbox.plugins.datasources.binance_data import DEFAULT_STABLECOINS`
 # keep working. The authoritative source is quantbox-datasets'

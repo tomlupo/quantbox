@@ -27,7 +27,7 @@ import pandas as pd
 from quantbox.contracts import PluginMeta, StrategyContext
 
 # Canonical non-tradeable-crypto exclusion list — sourced from quantbox-datasets'
-# catalog/asset_categories.yaml via quantbox.plugins.strategies._universe. The
+# catalog/asset_categories.yaml via quantbox.universe. The
 # legacy hardcoded list (30 symbols) was a strict subset of the canonical (43);
 # switching makes the strategy reject the same names plus the previously-missed
 # wrapped/staked-ETH derivatives (STETH, WSTETH, RETH, WBETH, WEETH, EZETH,
@@ -35,7 +35,7 @@ from quantbox.contracts import PluginMeta, StrategyContext
 # tokens (CHIP, MEGA). None of these were "correctly tradeable" under the
 # strategy's intent; backtests touching periods where those tokens were
 # top-of-book will produce different curves.
-from quantbox.plugins.strategies._universe import DEFAULT_STABLECOINS
+from quantbox.universe import DEFAULT_STABLECOINS
 
 logger = logging.getLogger(__name__)
 

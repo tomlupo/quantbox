@@ -82,7 +82,7 @@ except ImportError:
     vbt = None
     VECTORBT_AVAILABLE = False
 
-from quantbox.plugins.strategies._universe import (
+from quantbox.universe import (
     DEFAULT_STABLECOINS,
     select_universe as select_universe_vectorized,
     select_universe_duckdb,

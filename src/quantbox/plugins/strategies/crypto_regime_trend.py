@@ -32,8 +32,8 @@ import numpy as np
 import pandas as pd
 
 from quantbox.contracts import PluginMeta, StrategyContext
+from quantbox.universe import select_universe
 
-from ._universe import select_universe
 from .crypto_trend import (
     DEFAULT_STABLECOINS,
     compute_inv_vol_track,

@@ -14,8 +14,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from quantbox.market_cap import MarketCapProvider
 from quantbox.plugins.datasources._utils import (
-    MarketCapProvider,
     OHLCVCache,
     is_transient,
     retry_transient,
@@ -426,7 +426,7 @@ class TestMarketCapProviderSource:
             captured["headers"] = headers
             return _FakeResp(_FAKE_CMC_PAYLOAD)
 
-        monkeypatch.setattr("quantbox.plugins.datasources._utils.httpx.get", fake_get)
+        monkeypatch.setattr("quantbox.market_cap.httpx.get", fake_get)
 
         prov = MarketCapProvider(cache_dir=tmp_path, source="cmc")
         df = prov.fetch_rankings()
@@ -455,7 +455,7 @@ class TestMarketCapProviderSource:
     def test_cmc_estimate_market_cap_uses_cmc(self, tmp_path, monkeypatch):
         monkeypatch.setenv("API_KEY_COINMARKETCAP", "test-key")
         monkeypatch.setattr(
-            "quantbox.plugins.datasources._utils.httpx.get",
+            "quantbox.market_cap.httpx.get",
             lambda *a, **k: _FakeResp(_FAKE_CMC_PAYLOAD),
         )
         dates = pd.date_range("2025-01-01", periods=5, freq="D")
@@ -502,7 +502,7 @@ class TestMarketCapNeverFabricates:
         assert not (mc["ZZZ"] == prices["ZZZ"] * 1e9).any()
 
     def test_uncovered_symbol_excluded_from_ranking(self, tmp_path):
-        from quantbox.plugins.strategies._universe import select_universe
+        from quantbox.universe import select_universe
 
         prov = self._provider_with_only_btc_eth(tmp_path)
         dates = pd.date_range("2025-01-01", periods=4, freq="D")

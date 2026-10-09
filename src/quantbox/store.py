@@ -9,6 +9,8 @@ import pandas as pd
 
 from quantbox.parquet_io import read_parquet as _read_parquet
 
+__all__ = ["FileArtifactStore"]
+
 logger = logging.getLogger(__name__)
 
 

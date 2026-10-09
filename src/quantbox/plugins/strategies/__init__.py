@@ -1,4 +1,5 @@
-from ._universe import DEFAULT_STABLECOINS, select_universe, select_universe_duckdb
+from quantbox.universe import DEFAULT_STABLECOINS, select_universe, select_universe_duckdb
+
 from .altcoin_crash_bounce import AltcoinCrashBounceStrategy
 from .beglobal_strategy import BeGlobalStrategy
 from .carry import CarryStrategy

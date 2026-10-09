@@ -19,15 +19,15 @@ from typing import Any
 
 import pandas as pd
 
+from quantbox.market_cap import MarketCapProvider
 from quantbox.plugins.datasources._utils import (
-    MarketCapProvider,
     OHLCVCache,
     interval_step,
     resolve_screen_inputs,
     retry_transient,
     validate_ohlcv,
 )
-from quantbox.plugins.strategies._universe import DEFAULT_STABLECOINS
+from quantbox.universe import DEFAULT_STABLECOINS
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ except ImportError:
     logger.warning("ccxt not installed — futures OHLCV/funding fetching unavailable")
 
 # DEFAULT_STABLECOINS is re-exported above from
-# quantbox.plugins.strategies._universe so existing imports work; the
+# quantbox.universe so existing imports work; the
 # authoritative source is quantbox-datasets' catalog/asset_categories.yaml.
 
 FAPI_BASE = "https://fapi.binance.com"
