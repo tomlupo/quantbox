@@ -29,29 +29,10 @@ PY="$WORK/venv/bin/python"
 QB="$WORK/venv/bin/quantbox"
 uv pip install -q -p "$PY" "$ROOT"
 
-# The modules OUTSIDE the core layer (ADR-0010; module map: TOM-1451). Longest
-# prefix wins; a module under none of these is core and must import on a base
-# install. 4b-3 encodes the same map as import-linter contracts.
-export QB_UPPER_LAYERS="
-quantbox.plugins=plugins
-quantbox.plugins.builtins=core
-quantbox.universe=plugins
-quantbox.market_cap=plugins
-quantbox.montecarlo=plugins
-quantbox.sweep=research
-quantbox.arms=research
-quantbox.simulation=research
-quantbox.warehouse=research
-quantbox.cache=research
-quantbox.bt=research
-quantbox.adapters=research
-quantbox.engine.vectorbt=research
-quantbox.line=research
-quantbox.finding_export=research
-quantbox.analysis.parameter_grid=research
-quantbox.reconciliation=trade
-quantbox.portfolio_value=trade
-"
+# The layer of each module (ADR-0010) comes from its one owner, the import-linter
+# contracts in pyproject.toml, read by scripts/layer_map.py (stdlib only). A
+# core module must import on a base install.
+export QB_ROOT="$ROOT"
 
 echo "== 1. extras absent, base present"
 "$PY" - <<'EOF'
@@ -80,14 +61,13 @@ from pathlib import Path
 import quantbox
 from quantbox.exceptions import MissingExtraError
 
-upper = dict(line.split("=") for line in os.environ["QB_UPPER_LAYERS"].split())
+sys.path.insert(0, os.path.join(os.environ["QB_ROOT"], "scripts"))
+from layer_map import layer_of, read_layers
+
+layers = read_layers(Path(os.environ["QB_ROOT"]) / "pyproject.toml")
 
 def layer(mod):
-    best = ("", "core")
-    for prefix, lay in upper.items():
-        if (mod == prefix or mod.startswith(prefix + ".")) and len(prefix) > len(best[0]):
-            best = (prefix, lay)
-    return best[1]
+    return layer_of(mod, layers)
 
 extras = set(importlib.metadata.metadata("quantbox").get_all("Provides-Extra") or [])
 root = Path(quantbox.__file__).parent
@@ -203,16 +183,16 @@ PACK="$ROOT/tests/fixtures/client_pack"
 uv pip install -q -p "$PY" "$ROOT" "$PACK"
 "$PY" - <<'EOF'
 import importlib.util, os, sys
+from pathlib import Path
 import qb_client_pack.plugins  # noqa: F401
 
-upper = dict(line.split("=") for line in os.environ["QB_UPPER_LAYERS"].split())
+sys.path.insert(0, os.path.join(os.environ["QB_ROOT"], "scripts"))
+from layer_map import layer_of, read_layers
+
+layers = read_layers(Path(os.environ["QB_ROOT"]) / "pyproject.toml")
 
 def layer(mod):
-    best = ("", "core")
-    for prefix, lay in upper.items():
-        if (mod == prefix or mod.startswith(prefix + ".")) and len(prefix) > len(best[0]):
-            best = (prefix, lay)
-    return best[1]
+    return layer_of(mod, layers)
 
 loaded = sorted(m for m in sys.modules if m == "quantbox" or m.startswith("quantbox."))
 above = [m for m in loaded if layer(m) != "core"]

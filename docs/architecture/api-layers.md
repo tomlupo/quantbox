@@ -2,7 +2,7 @@
 
 The decision is [ADR-0010](../adr/0010-audience-layers-one-distribution.md). It
 supersedes the L0–L5 ladder of ADR-0002. This page is the operational rule:
-which layer a module belongs to, and how a caller reaches it.
+what each layer is for, and how a caller reaches it.
 
 ---
 
@@ -12,18 +12,23 @@ quantbox is one distribution. Its modules sit in four layers, in import order:
 `core` < `plugins` < `research`, `trade`. A layer imports only the layers below
 it. `research` and `trade` never import each other.
 
-| Layer | Audience | Examples | Install |
+| Layer | Audience | Holds | Install |
 |---|---|---|---|
-| **core** | every caller, including a client install (robo) | `quantbox.contracts`, `quantbox.registry`, `quantbox.strategy_runner`, `quantbox.decision`, `quantbox.metrics`, `quantbox.inference`, `quantbox.gates`, `quantbox.engine` (the seam and rsims), `quantbox.dataset`, `quantbox.runner`, `quantbox.cli` | base |
-| **plugins** | every caller that uses the builtin strategies and data | builtin strategies, datasources, features, overlays, monitors; `quantbox.universe`, `quantbox.market_cap` (ADR-0010 decision 6) | base, `[data]` for the data clients |
-| **research** | the lab | backtest pipeline, `quantbox.sweep`, `quantbox.arms`, validation plugins, reports, `quantbox.warehouse`, `quantbox.bt`, `quantbox.adapters.vectorbt` | base for an rsims backtest; `[research]` for reports and the warehouse; `[vectorbt]` |
-| **trade** | live | brokers, trading pipeline, rebalancing, reconciliation, `quantbox.portfolio_value` | `[trade]` |
+| **core** | every caller, including a client install (robo) | the contracts, the registry, the runner and the CLI, the engine seam with rsims, metrics, inference and gates, datasets and the store | base |
+| **plugins** | every caller that uses the builtin strategies and data | builtin strategies, datasources, features, overlays, monitors (ADR-0010 decision 6) | base, `[data]` for the data clients |
+| **research** | the lab | backtest pipelines, sweeps, validation plugins, reports, the warehouse, the vectorbt adapter | base for an rsims backtest; `[research]` for reports and the warehouse; `[vectorbt]` |
+| **trade** | live | brokers, the trading pipeline, rebalancing, reconciliation, risk, publishers | `[trade]` |
 
-The full module map is on TOM-1451. **The layers and the extras are built by
-4b (TOM-1451).** The edges are cut (4b-1) and the extras exist (4b-2):
-`pyproject.toml` owns what each install carries, and
+**The module map has one owner: the import-linter contracts in
+`pyproject.toml` `[tool.importlinter]`.** Each layer is the `source_modules`
+of the contract named after it. `uv run lint-imports` checks every import
+against them (ci.yml job `lint`). `tests/test_layer_map.py` fails when a
+module is in no layer or in two. To place a new module, add it to its layer's
+contract and to `forbidden_modules` of each contract below it. Decide the
+layer by who imports the module.
+
+`pyproject.toml` also owns what each install carries.
 `scripts/check_no_vectorbt.sh` proves the base install is the client install.
-Once 4b-3 lands, the import-linter contracts are the owner of the map.
 
 ---
 

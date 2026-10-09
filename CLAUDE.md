@@ -10,7 +10,7 @@ A **template-driven SDK with adapters** for quant research and production. Three
 2. **Adapters** — thin wrappers around best-of-breed external libraries (vectorbt, riskfolio, ...). The wheel does the wheel's work. A core adapter is added only when ≥2 consumers need the same bridge; single-consumer libraries (mlflow, dvc) are imported directly in the downstream repo.
 3. **Skills + templates** — LLM-facing interface and project bootstrap, coupled to the SDK in this repo.
 
-The code is organised by audience — core, plugins, research, trade — in one distribution, and every plugin is reachable from Python or from YAML through the runner ([ADR-0010](docs/adr/0010-audience-layers-one-distribution.md); the map is [`api-layers.md`](docs/architecture/api-layers.md)).
+The code is organised by audience — core, plugins, research, trade — in one distribution, and every plugin is reachable from Python or from YAML through the runner ([ADR-0010](docs/adr/0010-audience-layers-one-distribution.md); the layers are [`api-layers.md`](docs/architecture/api-layers.md)).
 
 QuantBox is a **composing framework** — owned and opinionated, but composing external libraries (vectorbt, MLflow, riskfolio, optionally Qlib) rather than competing with them on their turf. See [ADR-0001](docs/adr/0001-library-not-framework.md).
 
@@ -47,7 +47,7 @@ Which skill when: qute-code-kit `docs/playbooks/skill-router.md`.
 | # | Doc | When |
 |---|---|---|
 | 1 | [`docs/architecture/principles.md`](docs/architecture/principles.md) | Read first, every time. The doctrine. |
-| 2 | [`docs/architecture/api-layers.md`](docs/architecture/api-layers.md) | The audience layers and the two entry styles. Which layer a module belongs to. |
+| 2 | [`docs/architecture/api-layers.md`](docs/architecture/api-layers.md) | The audience layers and the two entry styles. Where the module map lives (`pyproject.toml` `[tool.importlinter]`). |
 | 3 | [`docs/architecture/plugin-authoring.md`](docs/architecture/plugin-authoring.md) | Plugin types, `meta.status`, registration, naming, testing. |
 | 4 | [`docs/architecture/adapters.md`](docs/architecture/adapters.md) | Wrap-don't-rebuild rule. |
 | 5 | [`docs/architecture/skills.md`](docs/architecture/skills.md) | LLM-facing API, frontmatter contract, capability-gap branch. |
@@ -109,6 +109,7 @@ uv run quantbox validate -c <config>        # validate config
 uv run quantbox run -c <config>             # run pipeline
 uv run quantbox run --dry-run -c <config>   # dry run
 uv run pytest -q                            # run tests
+uv run lint-imports                         # layer contracts (pyproject.toml [tool.importlinter])
 ```
 
 - **Full CLI** (`plugins doctor`, `approve`, `sweep`, `warehouse`): `uv run quantbox --help`
