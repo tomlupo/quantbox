@@ -92,7 +92,7 @@ from quantbox.engine.policy import (
     resolve_policy,
     tranches_alias,
 )
-from quantbox.exceptions import DataLoadError
+from quantbox.exceptions import DataLoadError, MissingExtraError
 from quantbox.execution import (
     EXECUTION_SCHEMA,
     VENUE_SCHEMA,
@@ -904,6 +904,8 @@ class BacktestPipeline:
                 )
                 store.put_text("report_data.json", report_data_to_json(rd))
                 store.put_text("report.html", generate_html_report(rd))
+            except MissingExtraError:
+                raise  # full_report asked for plotly: a missing extra is loud (ADR-0010)
             except Exception as _report_exc:
                 logger.warning("HTML report generation failed: %s", _report_exc)
 
@@ -1275,6 +1277,8 @@ class BacktestPipeline:
                 )
                 store.put_text("report_data.json", report_data_to_json(rd))
                 store.put_text("report.html", generate_html_report(rd))
+        except MissingExtraError:
+            raise  # full_report asked for plotly: a missing extra is loud (ADR-0010)
         except Exception as _exc:
             logger.warning("Multi-variant report generation failed: %s", _exc)
 

@@ -1,0 +1,27 @@
+# One rsims backtest on the client pack's own plugins (TOM-1451 client smoke).
+# scripts/check_no_vectorbt.sh rewrites artifacts.root into its scratch dir.
+run:
+  mode: backtest
+  asof: "2025-06-30"
+  pipeline: backtest.pipeline.v1
+
+artifacts:
+  root: ./artifacts
+
+plugins:
+  pipeline:
+    name: backtest.pipeline.v1
+    params:
+      engine: rsims
+      fees: 0.001
+      rebalancing_policy: {cadence: periodic, frequency: 5}
+      trading_days: 365
+
+  strategies:
+    - name: client_pack.top_momentum.v1
+      weight: 1.0
+      params: {lookback: 20, top_n: 2}
+
+  data:
+    name: client_pack.synthetic_data.v1
+    params_init: {n_days: 400, seed: 7}

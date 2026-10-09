@@ -2972,19 +2972,16 @@ name = "quantbox"
 version = "0.11.0"
 source = { editable = "." }
 dependencies = [
-    { name = "duckdb" },
-    { name = "httpx" },
     { name = "jsonschema" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pandas" },
     { name = "pandas-market-calendars" },
-    { name = "plotly" },
     { name = "pyarrow" },
-    { name = "pycoingecko" },
     { name = "pyyaml" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "statsmodels" },
-    { name = "tenacity" },
     { name = "typer" },
 ]
 
@@ -2995,14 +2992,27 @@ binance = [
 ccxt = [
     { name = "ccxt" },
 ]
+data = [
+    { name = "duckdb" },
+    { name = "httpx" },
+    { name = "pycoingecko" },
+    { name = "requests" },
+]
 full = [
     { name = "arch" },
     { name = "ccxt" },
+    { name = "duckdb" },
+    { name = "httpx" },
     { name = "ib-insync" },
+    { name = "matplotlib" },
     { name = "numba" },
+    { name = "plotly" },
+    { name = "pycoingecko" },
     { name = "python-binance" },
+    { name = "requests" },
     { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scikit-learn", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "seaborn" },
     { name = "vectorbt" },
 ]
 ibkr = [
@@ -3012,8 +3022,20 @@ ml = [
     { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scikit-learn", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
+research = [
+    { name = "duckdb" },
+    { name = "httpx" },
+    { name = "plotly" },
+    { name = "pycoingecko" },
+    { name = "requests" },
+]
 simulation = [
     { name = "arch" },
+]
+trade = [
+    { name = "ccxt" },
+    { name = "httpx" },
+    { name = "requests" },
 ]
 vectorbt = [
     { name = "numba" },
@@ -3027,53 +3049,50 @@ viz = [
 [package.dev-dependencies]
 dev = [
     { name = "commitizen" },
-    { name = "numba" },
     { name = "pytest" },
+    { name = "quantbox", extra = ["research", "vectorbt"] },
     { name = "ruff" },
-    { name = "vectorbt" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "arch", marker = "extra == 'full'", specifier = ">=8.0" },
     { name = "arch", marker = "extra == 'simulation'", specifier = ">=8.0" },
     { name = "ccxt", marker = "extra == 'ccxt'", specifier = ">=4.5.81" },
-    { name = "ccxt", marker = "extra == 'full'", specifier = ">=4.5.81" },
-    { name = "duckdb", specifier = ">=1.5.5" },
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "ib-insync", marker = "extra == 'full'" },
+    { name = "ccxt", marker = "extra == 'trade'", specifier = ">=4.5.81" },
+    { name = "duckdb", marker = "extra == 'data'", specifier = ">=1.5.5" },
+    { name = "httpx", marker = "extra == 'data'", specifier = ">=0.28.1" },
+    { name = "httpx", marker = "extra == 'trade'", specifier = ">=0.28.1" },
     { name = "ib-insync", marker = "extra == 'ibkr'" },
     { name = "jsonschema", specifier = ">=4.26.0" },
     { name = "matplotlib", marker = "extra == 'viz'", specifier = ">=3.10.9" },
-    { name = "numba", marker = "extra == 'full'", specifier = ">=0.67.0" },
     { name = "numba", marker = "extra == 'vectorbt'", specifier = ">=0.67.0" },
+    { name = "numpy", specifier = ">=2.2.6" },
     { name = "pandas", specifier = ">=2.3.3" },
     { name = "pandas-market-calendars", specifier = ">=5.4.0" },
-    { name = "plotly", specifier = ">=6.5.2" },
+    { name = "plotly", marker = "extra == 'research'", specifier = ">=6.5.2" },
     { name = "pyarrow", specifier = ">=25.0.1" },
-    { name = "pycoingecko", specifier = ">=3.2.0" },
+    { name = "pycoingecko", marker = "extra == 'data'", specifier = ">=3.2.0" },
     { name = "python-binance", marker = "extra == 'binance'" },
-    { name = "python-binance", marker = "extra == 'full'" },
     { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "scikit-learn", marker = "extra == 'full'", specifier = ">=1.7.2" },
+    { name = "quantbox", extras = ["data"], marker = "extra == 'research'" },
+    { name = "quantbox", extras = ["data", "research", "trade", "vectorbt", "ibkr", "binance", "ccxt", "ml", "simulation", "viz"], marker = "extra == 'full'" },
+    { name = "requests", marker = "extra == 'data'", specifier = ">=2.34.2" },
+    { name = "requests", marker = "extra == 'trade'", specifier = ">=2.34.2" },
     { name = "scikit-learn", marker = "extra == 'ml'", specifier = ">=1.7.2" },
     { name = "scipy", specifier = ">=1.15.3" },
     { name = "seaborn", marker = "extra == 'viz'", specifier = ">=0.13.2" },
     { name = "statsmodels", specifier = ">=0.15.0" },
-    { name = "tenacity", specifier = ">=9.1.4" },
     { name = "typer", specifier = ">=0.27.2" },
-    { name = "vectorbt", marker = "extra == 'full'", specifier = ">=1.0.0" },
     { name = "vectorbt", marker = "extra == 'vectorbt'", specifier = ">=1.0.0" },
 ]
-provides-extras = ["vectorbt", "ibkr", "binance", "ccxt", "ml", "simulation", "viz", "full"]
+provides-extras = ["data", "research", "trade", "vectorbt", "ibkr", "binance", "ccxt", "ml", "simulation", "viz", "full"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "commitizen", specifier = ">=4.18.1" },
-    { name = "numba", specifier = ">=0.67.0" },
     { name = "pytest", specifier = ">=9.1.1" },
+    { name = "quantbox", extras = ["research", "vectorbt"] },
     { name = "ruff", specifier = ">=0.16.8" },
-    { name = "vectorbt", specifier = ">=1.0.0" },
 ]
 
 [[package]]
@@ -3779,15 +3798,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/cc/f5/b9b47f3c688a8af1b199af96e098b8f20897a60b45187c57ce6fcde77a5f/statsmodels-0.15.0-cp315-cp315t-musllinux_1_2_x86_64.whl", hash = "sha256:583eb2a46f7c7a5c34a26715c8b6d92199bfb4f04623db5fff9902a3c7c832d3", size = 11934786, upload-time = "2026-08-30T07:41:46.809Z" },
     { url = "https://files.pythonhosted.org/packages/c4/08/608871f18bc18c6cba0b484e81fd25a023ef3ca6541f6793ec839fa49e1f/statsmodels-0.15.0-cp315-cp315t-win_amd64.whl", hash = "sha256:38038823fbe86f11e09433b4a0f4af5f102327c3137a1604b002ce3cf722a31f", size = 11549124, upload-time = "2026-08-30T16:05:53.179Z" },
     { url = "https://files.pythonhosted.org/packages/e3/eb/90a506dbee5cde669e2ef28565ff6b7a0791ab415eab2da82f92d033cccc/statsmodels-0.15.0-cp315-cp315t-win_arm64.whl", hash = "sha256:90df413d7e09474f7e7cbf8807440c1bf76298cdd9daabf9141f76d7627c9151", size = 11021454, upload-time = "2026-08-30T16:06:08.124Z" },
-]
-
-[[package]]
-name = "tenacity"
-version = "9.1.4"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/47/c6/ee486fd809e357697ee8a44d3d69222b344920433d3b6666ccd9b374630c/tenacity-9.1.4.tar.gz", hash = "sha256:adb31d4c263f2bd041081ab33b498309a57c77f9acf2db65aadf0898179cf93a", size = 49413, upload-time = "2026-02-07T10:45:33.841Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d7/c1/eb8f9debc45d3b7918a32ab756658a0904732f75e555402972246b0b8e71/tenacity-9.1.4-py3-none-any.whl", hash = "sha256:6095a360c919085f28c6527de529e76a06ad89b23659fa881ae0649b867a9d55", size = 28926, upload-time = "2026-02-07T10:45:32.24Z" },
 ]
 
 [[package]]

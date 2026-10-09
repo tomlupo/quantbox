@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from quantbox._lazy import load
 from quantbox.metrics import compute_drawdown_series, compute_rolling_sharpe
 
 _TEMPLATE_PATH = Path(__file__).parent / "templates" / "research_report.html"
@@ -112,8 +113,8 @@ def _build_portfolio_chart_manual(
     bt_prices: pd.DataFrame,
 ) -> dict:
     """Fallback portfolio chart — 4-subplot manual figure."""
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
+    go = load("plotly.graph_objects", extra="research")
+    make_subplots = load("plotly.subplots:make_subplots", extra="research")
 
     pv_col = "portfolio_value" if "portfolio_value" in portfolio_daily.columns else portfolio_daily.columns[0]
     pv_idx = (
@@ -207,7 +208,7 @@ def _build_portfolio_chart_manual(
 
 
 def _build_monthly_chart(returns: pd.Series) -> dict:
-    import plotly.graph_objects as go
+    go = load("plotly.graph_objects", extra="research")
 
     ret = returns.copy()
     if not isinstance(ret.index, pd.DatetimeIndex):
@@ -346,7 +347,7 @@ def _build_variant_framework_charts(
 
 
 def _build_contrib_chart(weights_history: pd.DataFrame, bt_prices: pd.DataFrame) -> dict | None:
-    import plotly.graph_objects as go
+    go = load("plotly.graph_objects", extra="research")
 
     wh_num = (
         weights_history.select_dtypes(include="number")
@@ -385,7 +386,7 @@ def _build_contrib_chart(weights_history: pd.DataFrame, bt_prices: pd.DataFrame)
 
 
 def _build_weights_chart(weights_history: pd.DataFrame) -> dict | None:
-    import plotly.graph_objects as go
+    go = load("plotly.graph_objects", extra="research")
 
     wh_num = (
         weights_history.select_dtypes(include="number")
@@ -422,7 +423,7 @@ def _build_weights_chart(weights_history: pd.DataFrame) -> dict | None:
 
 def _build_universe_size_chart(bt_prices: pd.DataFrame) -> dict | None:
     """Chart 1 — count of available tickers per day in the backtest universe."""
-    import plotly.graph_objects as go
+    go = load("plotly.graph_objects", extra="research")
 
     if bt_prices.empty:
         return None
@@ -459,7 +460,7 @@ def _build_regime_overlay_chart(
 
     Payload: {ref_ticker: str, fast_window: int, slow_window: int, label?: str, log_y?: bool}
     """
-    import plotly.graph_objects as go
+    go = load("plotly.graph_objects", extra="research")
 
     ref_ticker = str(payload.get("ref_ticker", ""))
     fast_window = int(payload.get("fast_window", 0))
@@ -515,7 +516,7 @@ def _build_signal_count_chart(
 
     Payload: {series: pd.Series, cap?: int|float, label?: str}
     """
-    import plotly.graph_objects as go
+    go = load("plotly.graph_objects", extra="research")
 
     series = payload.get("series")
     if not isinstance(series, pd.Series):
@@ -563,7 +564,7 @@ def _build_position_stack_chart(
     top_n: int = 25,
 ) -> dict | None:
     """Chart 5 — stacked area of position memberships over time (long only)."""
-    import plotly.graph_objects as go
+    go = load("plotly.graph_objects", extra="research")
 
     wh = (
         weights_history.select_dtypes(include="number")
@@ -609,7 +610,7 @@ def _build_equity_overlay_chart(variant_results: dict[str, dict[str, Any]]) -> d
     Each variant's portfolio value normalised to base 100. Variants share an
     x-axis. Best-fit chart type for "BTC B&H vs strategy variants".
     """
-    import plotly.graph_objects as go
+    go = load("plotly.graph_objects", extra="research")
 
     if not variant_results:
         return None
@@ -650,7 +651,7 @@ def _build_equity_overlay_chart(variant_results: dict[str, dict[str, Any]]) -> d
 
 def _build_per_variant_table_chart(variant_results: dict[str, dict[str, Any]]) -> dict | None:
     """Per-variant metrics table (chart 13 / summary table)."""
-    import plotly.graph_objects as go
+    go = load("plotly.graph_objects", extra="research")
 
     if not variant_results:
         return None
@@ -774,7 +775,7 @@ def _build_per_variant_stats_heatmap(
     configured variants. One row per metric, one column per variant.
     Colorscale is metric-aware (higher-is-better vs lower-is-better).
     """
-    import plotly.graph_objects as go
+    go = load("plotly.graph_objects", extra="research")
 
     if not variant_results:
         return None
@@ -874,7 +875,7 @@ def _build_gross_exposure_overlay_chart(
     variant_results: dict[str, dict[str, Any]],
 ) -> dict | None:
     """Per-variant gross exposure totals (chart 7: EW vs RW gross exposure)."""
-    import plotly.graph_objects as go
+    go = load("plotly.graph_objects", extra="research")
 
     if not variant_results:
         return None
@@ -912,7 +913,7 @@ def _build_per_variant_symbol_weight_chart(
     symbol: str = "BTC",
 ) -> dict | None:
     """Single-symbol weight time series across variants (chart 8: BTC EW vs RW)."""
-    import plotly.graph_objects as go
+    go = load("plotly.graph_objects", extra="research")
 
     if not variant_results:
         return None
@@ -957,8 +958,8 @@ def _build_donchian_overlay_chart(
     Two-row figure (top: price + bands + trailing stop, bottom: 0/1 signal).
     Replicates notebook charts 3 + 4 + 6 + 22 in a single visual.
     """
-    import plotly.graph_objects as go
-    import plotly.subplots as sp
+    go = load("plotly.graph_objects", extra="research")
+    sp = load("plotly.subplots", extra="research")
 
     ref_ticker = str(payload.get("ref_ticker", ""))
     price = payload.get("price")
@@ -1111,7 +1112,7 @@ def _build_per_window_heatmap(
     a per-window view; the multi-variant orchestration (P3) layers the actual
     metric heatmaps via `_build_per_variant_table_chart`.
     """
-    import plotly.graph_objects as go
+    go = load("plotly.graph_objects", extra="research")
 
     sigs = payload.get("signals")
     if not isinstance(sigs, dict) or not sigs:
@@ -1173,8 +1174,8 @@ def _build_vol_overview_chart(
 
     Payload: {realized_vol: DataFrame, scalers: {label: DataFrame}, vol_lookback: int}.
     """
-    import plotly.graph_objects as go
-    import plotly.subplots as sp
+    go = load("plotly.graph_objects", extra="research")
+    sp = load("plotly.subplots", extra="research")
 
     rv = payload.get("realized_vol")
     scalers = payload.get("scalers") or {}
@@ -1393,6 +1394,12 @@ def generate_report_data(
     reproducibility: dict[str, Any] | None = None,
     execution: str = "",
 ) -> dict[str, Any]:
+    # Every chart below is wrapped best-effort (suppress / except Exception), and
+    # MissingExtraError is an Exception: without this check a base install would
+    # write a hollow report. Load plotly once, outside every wrapper, so a missing
+    # [research] extra raises here (ADR-0010: a missing extra is loud).
+    load("plotly.graph_objects", extra="research")
+    load("plotly.subplots", extra="research")
     charts: dict[str, Any] = {}
     vr = variant_results or {}
     is_multi = len(vr) >= 2

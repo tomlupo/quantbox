@@ -7,6 +7,8 @@ from typing import Any
 
 import pandas as pd
 
+from quantbox._lazy import load
+from quantbox.exceptions import MissingExtraError
 from quantbox.parquet_io import read_parquet as _read_parquet
 
 __all__ = ["FileArtifactStore"]
@@ -150,11 +152,12 @@ class FileArtifactStore:
                 paths.append(str(parquet_path))
         if not paths:
             return pd.DataFrame()
+        # duckdb (the [data] extra) is an accelerator here, not a requirement:
+        # without it the same rows come from pandas.
         try:
-            import duckdb
-
-            query = f"SELECT * FROM read_parquet({paths!r})"
-            return duckdb.sql(query).df()
-        except ImportError:
+            duckdb = load("duckdb", extra="data")
+        except MissingExtraError:
             frames = [_read_parquet(p) for p in paths]
             return pd.concat(frames, ignore_index=True)
+        query = f"SELECT * FROM read_parquet({paths!r})"
+        return duckdb.sql(query).df()

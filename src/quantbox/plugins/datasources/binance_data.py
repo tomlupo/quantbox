@@ -58,8 +58,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-import httpx
 import pandas as pd
+
+from quantbox.exceptions import MissingExtraError
+
+try:
+    import httpx
+except ModuleNotFoundError as exc:  # the Binance REST client needs the [data] extra
+    raise MissingExtraError("data", __name__, exc.name) from exc
 
 from quantbox.market_cap import MarketCapProvider
 from quantbox.plugins.datasources._utils import (

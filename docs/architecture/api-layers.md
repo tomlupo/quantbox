@@ -16,13 +16,14 @@ it. `research` and `trade` never import each other.
 |---|---|---|---|
 | **core** | every caller, including a client install (robo) | `quantbox.contracts`, `quantbox.registry`, `quantbox.strategy_runner`, `quantbox.decision`, `quantbox.metrics`, `quantbox.inference`, `quantbox.gates`, `quantbox.engine` (the seam and rsims), `quantbox.dataset`, `quantbox.runner`, `quantbox.cli` | base |
 | **plugins** | every caller that uses the builtin strategies and data | builtin strategies, datasources, features, overlays, monitors; `quantbox.universe`, `quantbox.market_cap` (ADR-0010 decision 6) | base, `[data]` for the data clients |
-| **research** | the lab | backtest pipeline, `quantbox.sweep`, `quantbox.arms`, validation plugins, reports, `quantbox.warehouse`, `quantbox.bt`, `quantbox.adapters.vectorbt` | `[research]`, `[vectorbt]` |
+| **research** | the lab | backtest pipeline, `quantbox.sweep`, `quantbox.arms`, validation plugins, reports, `quantbox.warehouse`, `quantbox.bt`, `quantbox.adapters.vectorbt` | base for an rsims backtest; `[research]` for reports and the warehouse; `[vectorbt]` |
 | **trade** | live | brokers, trading pipeline, rebalancing, reconciliation, `quantbox.portfolio_value` | `[trade]` |
 
 The full module map is on TOM-1451. **The layers and the extras are built by
-4b (TOM-1451).** Until 4b lands, this table is the target; the code on `dev`
-still has the edges TOM-1451 lists, and `pyproject.toml` still has the old
-extras. Once 4b lands, the import-linter contracts are the owner of the map.
+4b (TOM-1451).** The edges are cut (4b-1) and the extras exist (4b-2):
+`pyproject.toml` owns what each install carries, and
+`scripts/check_no_vectorbt.sh` proves the base install is the client install.
+Once 4b-3 lands, the import-linter contracts are the owner of the map.
 
 ---
 

@@ -19,10 +19,19 @@ import os
 from collections.abc import Container
 from pathlib import Path
 
-import httpx
 import pandas as pd
 
+from quantbox._lazy import load
+from quantbox.exceptions import MissingExtraError
 from quantbox.parquet_io import read_parquet
+
+# The LIVE provider's HTTP clients (httpx, pycoingecko) are the [data] extra.
+# The backtest path (load_pit_market_cap, map_symbol) needs neither, so the
+# module imports on a base install and the live fetch names the extra on use.
+try:
+    import httpx
+except ModuleNotFoundError:
+    httpx = None  # type: ignore[assignment]
 
 __all__ = ["HL_K_PREFIX_UNITS", "MarketCapProvider", "load_pit_market_cap", "map_symbol"]
 
@@ -203,10 +212,10 @@ class MarketCapProvider:
         if self.source == "coinmarketcap":
             return self._fetch_cmc_rankings(cached)
 
-        # Fetch from CoinGecko (free, no API key needed)
+        # Fetch from CoinGecko (free, no API key needed). Loaded outside the
+        # try: a missing [data] extra is an install error, not a stale cache.
+        CoinGeckoAPI = load("pycoingecko:CoinGeckoAPI", extra="data")
         try:
-            from pycoingecko import CoinGeckoAPI
-
             cg = CoinGeckoAPI()
             coins = cg.get_coins_markets(
                 vs_currency="usd",
@@ -258,6 +267,8 @@ class MarketCapProvider:
         falls back to the stale cache (then to hardcoded supplies upstream) —
         never raises, so the daily run degrades gracefully instead of aborting.
         """
+        if httpx is None:
+            raise MissingExtraError("data", "the CoinMarketCap market-cap source", "httpx")
         api_key = os.environ.get("API_KEY_COINMARKETCAP") or os.environ.get("CMC_API_KEY")
         if not api_key:
             if self.strict:
