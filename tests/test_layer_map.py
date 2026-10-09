@@ -132,6 +132,29 @@ def test_the_stdlib_reader_expands_entries_as_import_linter_does(modules, contra
             assert _resolve([expr], modules) == theirs, expr
 
 
+def test_every_module_the_client_pack_imports_is_core(layers):
+    """The client pack mirrors what robo imports (TOM-1451): a client uses core only."""
+    import ast
+
+    pack = ROOT / "tests" / "fixtures" / "client_pack" / "src"
+    imported = set()
+    for path in pack.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.ImportFrom) and node.module and node.module.split(".")[0] == "quantbox":
+                imported.add(node.module)
+            elif isinstance(node, ast.Import):
+                imported |= {a.name for a in node.names if a.name.split(".")[0] == "quantbox"}
+    # Count what was looked at: robo's surface is these five modules.
+    assert imported >= {
+        "quantbox.bootstrap",
+        "quantbox.cache.strategy_cache",
+        "quantbox.contracts",
+        "quantbox.features",
+        "quantbox.features.covariance",
+    }, imported
+    assert {m: layer_map.layer_of(m, layers) for m in sorted(imported)} == dict.fromkeys(sorted(imported), "core")
+
+
 def test_the_reader_refuses_a_wildcard_it_cannot_expand():
     with pytest.raises(ValueError, match="unsupported module expression"):
         layer_map.matches("quantbox.*", "quantbox.cli")

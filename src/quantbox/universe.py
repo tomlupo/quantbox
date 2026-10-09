@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from quantbox.exceptions import MissingExtraError
+
 __all__ = ["DEFAULT_STABLECOINS", "select_universe", "select_universe_duckdb"]
 
 try:
@@ -340,13 +342,29 @@ def select_universe_duckdb(
 ) -> pd.DataFrame:
     """Select universe using DuckDB (faster for very large datasets).
 
-    Falls back to :func:`select_universe` when DuckDB is not installed or
-    when *market_cap* is ``None``.
+    Without *market_cap* there is no mcap tier, and :func:`select_universe`
+    answers. With it, this path needs duckdb (the ``[data]`` extra) and raises
+    :class:`~quantbox.exceptions.MissingExtraError` without it.
+
+    It never falls back to :func:`select_universe` silently, because the two
+    are NOT the same selection (TOM-1451): this path ranks market cap only
+    within the price columns and uses it unfilled, while
+    :func:`select_universe` ranks the whole market-cap frame, forward-filled.
+    They differ when the market-cap source lists coins the venue does not, and
+    when it is a month-end snapshot (``tests/test_optional_duckdb_paths.py``).
     """
     has_mcap = market_cap is not None and not market_cap.empty
 
-    if not DUCKDB_AVAILABLE or not has_mcap:
+    if not has_mcap:
         return select_universe(prices, volume, market_cap, top_by_mcap, top_by_volume, exclude_tickers)
+    if not DUCKDB_AVAILABLE:
+        raise MissingExtraError(
+            "data",
+            "the DuckDB universe selection (select_universe_duckdb, which strategy.crypto_trend.v1 runs "
+            "with use_duckdb: true and volume_is_dollar: false). select_universe ranks market cap "
+            "differently, so it is not used in its place; set use_duckdb: false to choose it",
+            "duckdb",
+        )
 
     if exclude_tickers is None:
         exclude_tickers = DEFAULT_STABLECOINS

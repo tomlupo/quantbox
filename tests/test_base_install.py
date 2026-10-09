@@ -158,6 +158,31 @@ def test_a_research_command_fails_on_one_line_naming_the_extra(tmp_path):
     assert "Exception ignored" not in proc.stderr, proc.stderr
 
 
+def test_the_client_pack_imports_on_a_base_install_and_loads_only_core():
+    """robo's quantbox surface, strategy_cache included, loads with no extra and stays in core (TOM-1451)."""
+    pack_src = Path(__file__).parent / "fixtures" / "client_pack" / "src"
+    layer_map_dir = Path(__file__).resolve().parents[1] / "scripts"
+    result = _last_json(
+        _run(
+            f"""
+            import json, sys
+            from pathlib import Path
+            sys.path.insert(0, {str(pack_src)!r})
+            sys.path.insert(0, {str(layer_map_dir)!r})
+            import qb_client_pack.plugins
+            from layer_map import layer_of, read_layers
+
+            layers = read_layers(Path({str(layer_map_dir)!r}).parent / "pyproject.toml")
+            loaded = sorted(m for m in sys.modules if m == "quantbox" or m.startswith("quantbox."))
+            print(json.dumps({{"loaded": loaded, "above": [m for m in loaded if layer_of(m, layers) != "core"]}}))
+            """,
+            blocked=NOT_IN_BASE,
+        )
+    )
+    assert "quantbox.cache.strategy_cache" in result["loaded"]
+    assert result["above"] == []
+
+
 def test_lazy_packages_resolve_without_the_extra_and_refuse_with_it_named():
     result = _last_json(
         _run(

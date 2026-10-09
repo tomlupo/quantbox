@@ -3211,7 +3211,7 @@ requires-dist = [
     { name = "jsonschema", specifier = ">=4.26.0" },
     { name = "matplotlib", marker = "extra == 'viz'", specifier = ">=3.10.9" },
     { name = "numba", marker = "extra == 'vectorbt'", specifier = ">=0.67.0" },
-    { name = "numpy", specifier = ">=2.2.6" },
+    { name = "numpy", specifier = ">=1.26.4" },
     { name = "pandas", specifier = ">=2.3.3" },
     { name = "pandas-market-calendars", specifier = ">=5.4.0" },
     { name = "plotly", marker = "extra == 'research'", specifier = ">=6.5.2" },

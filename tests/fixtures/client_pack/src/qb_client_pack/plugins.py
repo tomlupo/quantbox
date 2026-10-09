@@ -1,9 +1,13 @@
-"""The client pack's two plugins. They import quantbox CORE only (``quantbox.contracts``).
+"""The client pack's two plugins. They import quantbox CORE only.
 
 - :class:`InMemoryDataPlugin` builds a seeded random-walk price panel in
   memory: no file, no network, no extra.
 - :class:`TopMomentumStrategy` holds the ``top_n`` symbols with the best
   ``lookback``-bar return, equal weight, long only.
+
+The imports below are every quantbox module robo (a client, Rockbridge
+production) imports, so the smoke proves each one loads on a base install and
+is core (TOM-1451). Add a module here when a client starts importing it.
 """
 
 from __future__ import annotations
@@ -14,7 +18,23 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from quantbox.bootstrap import configure_logging, load_yaml_merged  # noqa: F401
+from quantbox.cache.strategy_cache import StrategyCache  # noqa: F401
 from quantbox.contracts import PluginMeta, StrategyContext
+from quantbox.features import (  # noqa: F401
+    FREQ_TO_PERIODS,
+    compute_riskmetrics_vol,
+    compute_rolling_vol,
+    compute_total_returns,
+    compute_tsmom,
+    parametric_mc,
+    simulations_stats,
+)
+from quantbox.features.covariance import (  # noqa: F401
+    rolling_covariance_ewma_lw_from_config,
+    rolling_covariance_lw_from_config,
+    rolling_covariance_oas_from_config,
+)
 
 
 @dataclass
