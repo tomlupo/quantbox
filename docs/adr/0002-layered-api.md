@@ -1,11 +1,18 @@
 ---
 adr: 0002
 title: Layered API (L0–L5)
-status: accepted
+status: superseded
 date: 2026-04-25
+superseded_by: 0010
+status_changes:
+  - 2026-10-09: superseded by ADR-0010 with TOM-1449 — Tom, 2026-10-09: the surface is organised by audience (core, plugins, research, trade) in one distribution, with two entry styles
 ---
 
 # ADR-0002: Layered API (L0–L5)
+
+> **Superseded by [ADR-0010](0010-audience-layers-one-distribution.md) (2026-10-09).**
+> The body below is the record of 2026-04-25. `quantbox.opt` and
+> `quantbox.score` were never built.
 
 ## Context
 

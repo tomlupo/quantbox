@@ -1,9 +1,9 @@
 # Autoresearch
 
-<!-- design-only: names modules that are not built (tests/test_docs_module_refs.py) -->
 > **Design only — not built.** No `autoresearch` module, proposer plugin or CLI
-> command exists (`uv run quantbox --help`). Every module path below is the
-> intended layout, not the code. ADR-0003 records the decision.
+> command exists (`uv run quantbox --help`). The class and command names below
+> are the intended shape, not the code; no module path is named until one is
+> built. ADR-0003 records the decision.
 
 LLM-driven continuous improvement loops over QuantBox strategies. Propose → run → evaluate → learn → iterate, with hard budget bounds and statistical gates that prevent the loop from p-hacking its way to false alpha.
 
@@ -32,7 +32,7 @@ The loop is **autonomous within budget** and **human-gated for promotion**. It w
 - Not a way to skip walk-forward testing — autoresearch *enforces* it.
 - Not a substitute for human methodology design — the loop optimizes within a search space *you* defined.
 - Not magic alpha generation — without statistical gates it will reliably p-hack.
-- Not a new plugin runtime — it composes existing L4 pipelines.
+- Not a new plugin runtime — it composes existing runner pipelines.
 - Not an LLM agent that writes plugin code — that's `quantbox-strategy-author`. Autoresearch *tunes* existing plugins (or composes their parameters into a search space).
 
 ---
@@ -41,13 +41,13 @@ The loop is **autonomous within budget** and **human-gated for promotion**. It w
 
 | Component | Maps to | Status |
 |---|---|---|
-| Experiment runner | `run_from_config` (L4) | exists |
+| Experiment runner | `run_from_config` | exists |
 | Variant generator | `VariantProposerPlugin` + adapters | new — see below |
 | Evaluation gate | `ValidationPlugin` + `RiskPlugin` + autoresearch-specific gates | mostly exists |
 | Research memory | `EXPERIMENTS.jsonl` (machine) + `EXPERIMENTS.md` (human) + `findings.md` (LLM summary) | jsonl is new |
-| Loop driver | `AutoResearchDriver` (L4 driver, not in runner) | new |
+| Loop driver | `AutoResearchDriver` (beside the runner, not in it) | new |
 
-The driver is **L4** — it sits *alongside* `run_from_config`, not above it. Each iteration is a normal pipeline run; the driver decides what runs next. See [ADR-0003](../adr/0003-autoresearch-as-driver-not-runtime.md) for why.
+The driver sits *alongside* `run_from_config`, not above it. Each iteration is a normal pipeline run; the driver decides what runs next. See [ADR-0003](../adr/0003-autoresearch-as-driver-not-runtime.md) for why.
 
 ---
 
@@ -75,11 +75,11 @@ class VariantProposerPlugin(Protocol):
 
 Built-in proposers:
 
-| Proposer | Adapter | When to use |
+| Proposer | Library | When to use |
 |---|---|---|
-| `proposer.optuna.tpe.v1` | `quantbox.adapters.optuna` | Pure algorithmic, no LLM cost |
-| `proposer.optuna.bayesian.v1` | `quantbox.adapters.optuna` | Sample-efficient on continuous params |
-| `proposer.llm.anthropic.v1` | `quantbox.adapters.anthropic` | Reasoning across qualitative variants |
+| `proposer.optuna.tpe.v1` | optuna | Pure algorithmic, no LLM cost |
+| `proposer.optuna.bayesian.v1` | optuna | Sample-efficient on continuous params |
+| `proposer.llm.anthropic.v1` | Anthropic SDK | Reasoning across qualitative variants |
 | `proposer.hybrid.v1` | both | LLM for branch decisions, Bayesian within branches |
 | `proposer.random.v1` | none | Diversity injection (escape local optima) |
 
@@ -89,16 +89,14 @@ A hybrid proposer can wrap multiple sub-proposers and route based on heuristics 
 
 ## AutoResearchDriver
 
-Lives at `quantbox.autoresearch.driver`. Top-level API:
+A research-layer module, not built and not named yet ([ADR-0010](../adr/0010-audience-layers-one-distribution.md)). The intended API:
 
 ```python
-from quantbox.autoresearch import AutoResearchDriver, AutoResearchConfig
-
 driver = AutoResearchDriver.from_config("cookbook/configs/clients/X/autoresearch.yaml")
 report = driver.run()
 ```
 
-Exposes the same shape at L5:
+The intended CLI has the same shape:
 
 ```bash
 quantbox autoresearch run -c cookbook/configs/clients/X/autoresearch.yaml
@@ -116,7 +114,7 @@ quantbox autoresearch status -c cookbook/configs/clients/X/autoresearch.yaml # c
 3. Cap recent history to last N (keeps proposer context bounded)
 4. Proposer.propose(baseline, history, search_space, params) → next variant
 5. Materialize variant as a quantbox config
-6. quantbox.validate(config) — refuses if schema/PIT invalid
+6. quantbox.validate.validate_config(config) — refuses if schema/PIT invalid
 7. run_from_config(config) → RunResult
 8. Evaluation gate:
    - walk-forward sharpe ≥ threshold
@@ -349,8 +347,8 @@ This is what "improve client strategies continuously" looks like in practice.
 This integrates without violating any principle:
 
 - **Composer not competitor** — Optuna does search; Anthropic SDK does LLM calls; QuantBox does the loop + conventions + skill API. All adapters.
-- **Lowest viable abstraction** — Driver is L4. Casual users don't see autoresearch unless they invoke it. Plain `run_from_config` is unaffected.
-- **Layered API** — `quantbox.autoresearch` is itself an L1 namespace; you can call `from quantbox.autoresearch import propose` directly.
+- **Lowest viable abstraction** — the driver sits alongside the runner. Casual users don't see autoresearch unless they invoke it. Plain `run_from_config` is unaffected.
+- **Audience layers** — the driver and the proposers belong to the research layer; a client install never carries them ([ADR-0010](../adr/0010-audience-layers-one-distribution.md)).
 - **Owned conventions** — `EXPERIMENTS.jsonl` format, the `VariantProposerPlugin` Protocol, the budget tracker, the `tick` cron mode are quantbox-owned. The hard work is somebody else's library.
 - **Adapter not reimplementation** — search algos: optuna; LLM: anthropic/openai SDKs; experiment tracking: optionally MLflow.
 
@@ -358,8 +356,8 @@ This integrates without violating any principle:
 
 ## See also
 
-- [ADR-0003](../adr/0003-autoresearch-as-driver-not-runtime.md) — design decision for L4 driver placement.
-- [api-layers.md](api-layers.md) — driver lives at L4, not embedded in runner.
+- [ADR-0003](../adr/0003-autoresearch-as-driver-not-runtime.md) — the driver sits alongside the runner, not in it.
+- [api-layers.md](api-layers.md) — the research layer and the two entry styles.
 - [plugin-authoring.md](plugin-authoring.md) — `VariantProposerPlugin` is a new plugin type.
 - [lifecycle.md](lifecycle.md) — autoresearch produces candidates; promotion path is normal.
 - [adapters.md](adapters.md) — Optuna, Anthropic, OpenAI as adapters.

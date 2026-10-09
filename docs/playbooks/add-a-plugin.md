@@ -147,22 +147,20 @@ def test_smoke():
 
 def test_params_schema_rejects_bad_input():
     """Schema validation catches bogus params."""
-    from quantbox.runner import validate_params
+    from quantbox.params_schema import check_params, resolve_params_schema
 
-    findings = validate_params(MyStrategy.meta, {"lookback_days": -1})
-    assert findings  # non-empty = validation caught it
+    unknown, violations = check_params(resolve_params_schema(MyStrategy), {"lookback_days": -1})
+    assert violations  # non-empty = the schema caught it
 
 
-def test_output_schema():
-    """Output matches the registered schema."""
+def test_output_shape():
+    """Weights are wide: dates down the index, one column per symbol."""
     strat = MyStrategy()
     result = strat.run({"prices": _synthetic_prices()}, params={})
-    from quantbox.schemas import validate
-
-    assert validate("strategy_weights", result["weights"])
+    assert isinstance(result["weights"].index, pd.DatetimeIndex)
 ```
 
-### 5. Validate at L3 before wiring L4
+### 5. Call it from Python before wiring YAML
 
 ```python
 # python REPL or test
@@ -174,7 +172,7 @@ print(result["weights"].tail())
 print(result["simple_weights"])
 ```
 
-If this works, the plugin is sound. Wiring into L4 (YAML config) is a separate step.
+If this works, the plugin is sound. Wiring it into a YAML config through the runner is a separate step.
 
 ### 6. Add a YAML config example
 

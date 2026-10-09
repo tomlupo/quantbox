@@ -139,6 +139,7 @@ Copy-paste scaffolds for methodology specs, dataset docs, and runbooks are in [`
 ## Documentation
 
 See [docs/](docs/) for full documentation:
+- [Architecture](docs/architecture/README.md) — the audience layers (core, plugins, research, trade) and the two entry styles ([ADR-0010](docs/adr/0010-audience-layers-one-distribution.md))
 - [Backtesting guide](docs/playbooks/backtesting.md)
 - [Multi-repo workflow](docs/playbooks/multi-repo-workflow.md)
 - [Trading bridge](docs/playbooks/trading-bridge.md)

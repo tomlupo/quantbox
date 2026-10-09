@@ -154,6 +154,6 @@ the seam's orders and keeps its native object reachable. The rule and its limits
 
 ## See also
 
-- [api-layers.md](api-layers.md) — how adapters compose into L0/L1.
+- [api-layers.md](api-layers.md) — the vectorbt re-export in the research layer.
 - [principles.md](principles.md) — the doctrine.
 - [playbooks/add-an-adapter.md](../playbooks/add-an-adapter.md) — step-by-step.
