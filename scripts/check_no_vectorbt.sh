@@ -3,8 +3,9 @@
 # install ADR-0010 promises (TOM-1451; it grew out of TOM-1334's no-vectorbt
 # check). Builds a CLEAN venv from this checkout — no lockfile, no dev group,
 # no extras — then:
-#   1. asserts vectorbt, numba, ccxt, duckdb, httpx and plotly are NOT
-#      installed (otherwise nothing is proven) and the base libraries are;
+#   1. asserts no library an extra declares is installed (vectorbt, numba,
+#      ccxt, duckdb, httpx, plotly, requests, ...; otherwise nothing is
+#      proven) and the base libraries are;
 #   2. imports every quantbox module: every CORE module imports; every other
 #      module imports or raises MissingExtraError naming a declared extra,
 #      never a bare ImportError; the vectorbt engine modules name [vectorbt];
@@ -55,7 +56,13 @@ quantbox.portfolio_value=trade
 echo "== 1. extras absent, base present"
 "$PY" - <<'EOF'
 import importlib.util, sys
-ABSENT = ("vectorbt", "numba", "ccxt", "duckdb", "httpx", "plotly")
+# The same list as tests/test_base_install.py NOT_IN_BASE: every library an extra
+# declares, by import name. requests too: [data] and [trade] declare it, so a base
+# dependency that pulls it in transitively would hide a missing-extra path.
+ABSENT = (
+    "vectorbt", "numba", "ccxt", "duckdb", "httpx", "plotly", "requests", "pycoingecko",
+    "binance", "ib_insync", "sklearn", "arch", "matplotlib", "seaborn",
+)
 BASE = ("pandas", "numpy", "scipy", "pyarrow", "yaml", "jsonschema", "statsmodels", "pandas_market_calendars", "typer")
 present = [m for m in ABSENT if importlib.util.find_spec(m)]
 if present:
@@ -237,4 +244,4 @@ ls "$WORK"/pack-artifacts/*/metrics.json >/dev/null || {
     exit 1
 }
 echo "ok: quantbox run on the client pack (engine: rsims)"
-echo "PASS: base quantbox is the client install (no vectorbt, numba, ccxt, duckdb, httpx, plotly)"
+echo "PASS: base quantbox is the client install (no library an extra declares)"

@@ -28,7 +28,7 @@ from .contracts import (
     RunResult,
     StrategyPlugin,
 )
-from .exceptions import ConfigValidationError, PluginNotFoundError
+from .exceptions import ConfigValidationError, MissingExtraError, PluginNotFoundError
 from .execution import run_record
 from .llm_utils import event_line, load_schema, validate_table
 from .params_schema import PLUGIN_GROUPS
@@ -892,6 +892,8 @@ def run_from_config(
 
             with Warehouse(wh_cfg["root"], wh_cfg.get("database")) as wh:
                 ingest_run(wh, store, tables=wh_cfg.get("ingest_tables"))
+        except MissingExtraError:
+            raise  # auto_ingest asked for duckdb: a missing extra is loud (ADR-0010)
         except Exception as exc:
             import logging
 

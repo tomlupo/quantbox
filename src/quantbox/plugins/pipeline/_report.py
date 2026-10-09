@@ -1394,6 +1394,12 @@ def generate_report_data(
     reproducibility: dict[str, Any] | None = None,
     execution: str = "",
 ) -> dict[str, Any]:
+    # Every chart below is wrapped best-effort (suppress / except Exception), and
+    # MissingExtraError is an Exception: without this check a base install would
+    # write a hollow report. Load plotly once, outside every wrapper, so a missing
+    # [research] extra raises here (ADR-0010: a missing extra is loud).
+    load("plotly.graph_objects", extra="research")
+    load("plotly.subplots", extra="research")
     charts: dict[str, Any] = {}
     vr = variant_results or {}
     is_multi = len(vr) >= 2

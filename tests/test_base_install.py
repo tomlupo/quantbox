@@ -10,6 +10,7 @@ the real install.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from test_without_vectorbt import _run
@@ -240,6 +241,65 @@ def test_market_cap_live_fetch_names_the_data_extra(tmp_path):
         "coingecko": ["data", "pycoingecko"],
         "coinmarketcap": ["data", "httpx"],
     }
+
+
+_REPO = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize("ask", ["full_report", "full_report_variants", "auto_ingest"])
+def test_an_opt_in_research_feature_on_a_base_install_raises_naming_the_extra(tmp_path, ask):
+    """A best-effort ``except Exception`` must not swallow a missing extra (ADR-0010).
+
+    full_report needs plotly and warehouse.auto_ingest needs duckdb, both [research].
+    Each used to log a warning and exit 0 with a hollow or missing output. The
+    control run (``none``) proves the same config runs on a base install, so the
+    raise comes from the asked-for feature and nothing else.
+    """
+    result = _last_json(
+        _run(
+            f"""
+            import json, os
+            import yaml
+            from quantbox.exceptions import MissingExtraError
+            from quantbox.registry import PluginRegistry
+            from quantbox.runner import run_from_config
+
+            os.chdir({str(_REPO)!r})
+            ask = {ask!r}
+
+            def config(feature):
+                with open("cookbook/canonical/configs/momentum.yaml") as fh:
+                    cfg = yaml.safe_load(fh)
+                cfg["artifacts"]["root"] = {str(tmp_path)!r} + "/" + feature
+                params = cfg["plugins"]["pipeline"]["params"]
+                params["engine"] = "rsims"
+                if feature.startswith("full_report"):
+                    params["full_report"] = True
+                if feature == "full_report_variants":
+                    strat = cfg["plugins"]["strategies"][0]
+                    params["variants"] = [
+                        {{"name": "a", "strategy": {{"name": strat["name"], "params": {{}}}}}},
+                        {{"name": "b", "strategy": {{"name": strat["name"], "params": {{}}}}}},
+                    ]
+                if feature == "auto_ingest":
+                    cfg["warehouse"] = {{"auto_ingest": True, "root": {str(tmp_path / "wh")!r}}}
+                return cfg
+
+            registry = PluginRegistry.discover()
+            out = {{}}
+            for feature in ("none", ask):
+                try:
+                    run_from_config(config(feature), registry)
+                    out[feature] = "ran"
+                except MissingExtraError as exc:
+                    out[feature] = [exc.extra, exc.name]
+            print(json.dumps(out))
+            """,
+            blocked=NOT_IN_BASE,
+        )
+    )
+    missing = "duckdb" if ask == "auto_ingest" else "plotly"
+    assert result == {"none": "ran", ask: ["research", missing]}
 
 
 def test_is_transient_without_httpx_keeps_every_non_httpx_answer():
