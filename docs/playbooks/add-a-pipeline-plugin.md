@@ -133,18 +133,18 @@ class MyCustomPipeline:
 ### 2. Export from `__init__.py`
 
 ```python
-# In plugins/pipeline/__init__.py, add:
-from .my_pipeline import MyCustomPipeline
+# In plugins/pipeline/__init__.py, add a lazy entry (the package imports no pipeline
+# at import time: research and trade pipelines must not drag each other, TOM-1451),
+# and add the name to __all__:
+"MyCustomPipeline": (f"{__name__}.my_pipeline:MyCustomPipeline", "research"),
 ```
 
 ### 3. Register in builtins
 
 ```python
-# In plugins/builtins.py, add to imports:
-from .pipeline import MyCustomPipeline
-
-# Add to the "pipeline" line in builtins():
-"pipeline": _map(..., MyCustomPipeline),
+# In plugins/builtins.py, add to the "pipeline" table of BUILTIN_PLUGINS
+# (a string, imported on first use: registering never imports the pipeline):
+"my.custom_pipeline.v1": f"{_P}.pipeline.my_pipeline:MyCustomPipeline",
 ```
 
 ### 4. Add example config

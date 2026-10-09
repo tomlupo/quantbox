@@ -1,15 +1,15 @@
-"""Tests for quantbox.simulation.engine — MarketSimulator orchestrator."""
+"""Tests for quantbox.montecarlo.engine — MarketSimulator orchestrator."""
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from quantbox.simulation.engine import (
+from quantbox.montecarlo.engine import (
     MarketSimulator,
     SimulationConfig,
     generate_correlated_returns,
 )
-from quantbox.simulation.models import GBM, GBMParams
+from quantbox.montecarlo.models import GBM, GBMParams
 
 
 class TestSimulationConfig:

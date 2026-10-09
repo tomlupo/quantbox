@@ -308,7 +308,7 @@ ADAPTER_FILES = {
     SRC / "engine" / "registry.py",
     SRC / "adapters" / "vectorbt.py",  # the L0 re-export: it names its own module on an ImportError
     SRC / "plugins" / "backtesting" / "vectorbt_engine.py",
-    SRC / "plugins" / "backtesting" / "rsims_engine.py",
+    SRC / "engine" / "rsims_sim.py",  # was plugins/backtesting/rsims_engine.py (TOM-1451)
 }
 
 

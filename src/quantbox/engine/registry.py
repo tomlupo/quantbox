@@ -2,16 +2,28 @@
 
 from __future__ import annotations
 
+from quantbox._lazy import load
 from quantbox.exceptions import MissingExtraError
 
 from .base import EngineAdapter
 from .rsims import RsimsAdapter
-from .vectorbt import VectorbtAdapter
 
 #: ``engine:`` when a config or call does not name one.
 DEFAULT_ENGINE = "vectorbt"
 
-_ADAPTERS: dict[str, type[EngineAdapter]] = {a.name: a for a in (VectorbtAdapter, RsimsAdapter)}
+#: ``engine:`` name -> its adapter. The vectorbt adapter is research-layer code (ADR-0010):
+#: it is named here and imported on first use (:func:`quantbox._lazy.load`), never at import.
+_ADAPTERS: dict[str, type[EngineAdapter] | str] = {
+    "vectorbt": "quantbox.engine.vectorbt:VectorbtAdapter",
+    RsimsAdapter.name: RsimsAdapter,
+}
+
+
+def _adapter(name: str) -> type[EngineAdapter] | None:
+    cls = _ADAPTERS.get(name)
+    if isinstance(cls, str):
+        cls = _ADAPTERS[name] = load(cls, extra=name)
+    return cls
 
 
 def engine_names() -> list[str]:
@@ -29,7 +41,7 @@ def get_engine(engine: str | EngineAdapter | None = None, *, require_installed: 
     if isinstance(engine, EngineAdapter):
         return engine
     name = str(engine if engine is not None else DEFAULT_ENGINE).lower()
-    cls = _ADAPTERS.get(name)
+    cls = _adapter(name)
     if cls is None:
         names = " or ".join(repr(n) for n in _ADAPTERS)
         raise ValueError(f"Unknown engine: {engine!r}. Use {names}.")
@@ -40,5 +52,5 @@ def get_engine(engine: str | EngineAdapter | None = None, *, require_installed: 
 
 def engine_distribution(name: str) -> str:
     """The distribution whose version is *name*'s version; an unknown name is its own distribution."""
-    cls = _ADAPTERS.get(str(name).lower())
+    cls = _adapter(str(name).lower())
     return cls.distribution if cls is not None else str(name)

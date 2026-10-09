@@ -29,12 +29,11 @@ Example::
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from .validate import ValidationFinding
+from dataclasses import dataclass
+from typing import Any
 
 __all__ = [
+    "UNKNOWN_PLUGIN",
     "BrokerExecutionError",
     "ConfigValidationError",
     "DataLoadError",
@@ -42,7 +41,30 @@ __all__ = [
     "PluginLoadError",
     "PluginNotFoundError",
     "QuantboxError",
+    "ValidationFinding",
 ]
+
+#: Finding code of a block naming a plugin this environment does not register. ``validate``
+#: and the runner refuse it alike (TOM-1528, TOM-1529).
+UNKNOWN_PLUGIN = "unknown_plugin"
+
+
+@dataclass
+class ValidationFinding:
+    """One finding on a run config; :class:`ConfigValidationError` carries a list of them.
+
+    Defined here, the leaf every checker imports, so that :mod:`quantbox.validate`,
+    :mod:`quantbox.funding_guard` and :mod:`quantbox.explain` share it without an
+    import cycle (TOM-1451). ``quantbox.validate.ValidationFinding`` is the same class.
+    """
+
+    level: str  # "error" or "warning"
+    message: str
+    #: Machine-readable kind, set where a consumer acts on it (``UNKNOWN_PLUGIN``); None otherwise.
+    code: str | None = None
+    #: What the finding is about, for a consumer that acts on it: for ``UNKNOWN_PLUGIN``,
+    #: ``{"plugin_name", "group", "where"}``.
+    subject: dict[str, str] | None = None
 
 
 class QuantboxError(Exception):

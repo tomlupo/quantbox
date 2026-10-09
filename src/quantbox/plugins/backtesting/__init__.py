@@ -38,6 +38,7 @@ from typing import Any
 
 import pandas as pd
 
+from quantbox.engine.rsims_sim import positions_from_no_trade_buffer
 from quantbox.execution import ExecutionTiming, helper_execution, run_record
 from quantbox.metrics import (
     compute_backtest_metrics,
@@ -50,7 +51,6 @@ from quantbox.metrics import (
 )
 
 from .optimizer import optimize
-from .rsims_engine import positions_from_no_trade_buffer
 
 __all__ = [
     "backtest",
@@ -72,9 +72,7 @@ __all__ = [
 # and engine tests, and asking for them here says where the lagged path is.
 _ENGINE_PRIMITIVES = {
     "run_vectorbt": "quantbox.plugins.backtesting.vectorbt_engine.run",
-    "fixed_commission_backtest_with_funding": (
-        "quantbox.plugins.backtesting.rsims_engine.fixed_commission_backtest_with_funding"
-    ),
+    "fixed_commission_backtest_with_funding": "quantbox.engine.rsims_sim.fixed_commission_backtest_with_funding",
 }
 
 

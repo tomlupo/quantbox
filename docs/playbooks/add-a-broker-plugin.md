@@ -112,11 +112,9 @@ from .my_exchange import MyExchangeBroker
 ### 3. Register in builtins
 
 ```python
-# In plugins/builtins.py, add to imports:
-from .broker import MyExchangeBroker
-
-# Add to the "broker" line in builtins():
-"broker": _map(..., MyExchangeBroker),
+# In plugins/builtins.py, add to the "broker" table of BUILTIN_PLUGINS
+# (a string, imported on first use: registering never imports the broker):
+"myexchange.live.v1": f"{_P}.broker.my_exchange:MyExchangeBroker",
 ```
 
 ### 4. Add example config

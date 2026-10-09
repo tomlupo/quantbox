@@ -1,8 +1,8 @@
-"""Tests for quantbox.simulation.models — 5 stochastic price models."""
+"""Tests for quantbox.montecarlo.models — 5 stochastic price models."""
 
 import numpy as np
 
-from quantbox.simulation.models import (
+from quantbox.montecarlo.models import (
     GARCH,
     GBM,
     GARCHParams,
