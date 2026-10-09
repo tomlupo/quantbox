@@ -60,6 +60,7 @@ dev = [
     "commitizen>=4.18.1",
     "pytest>=9.1.1",
     "ruff>=0.16.8",
+    "import-linter>=2.15",
 ]
 
 [tool.uv]
@@ -111,6 +112,381 @@ markers = [
     "canonical_reproduction: end-to-end backtests against committed goldens. Run via `pytest -m canonical_reproduction`.",
     "slow: takes multiple seconds — relocated to CI by the pre-push hook, never weakened. Run via `pytest -m slow`.",
 ]
+
+[tool.importlinter]
+# THE LAYER MAP (ADR-0010, TOM-1451). These contracts are its one owner: docs,
+# tests and scripts/check_no_vectorbt.sh read it from here (scripts/layer_map.py).
+# Layers, in import order: core < plugins < research, trade. A layer imports only
+# the layers below it; research and trade never import each other.
+#
+# Each layer is the `source_modules` of its contract. tests/test_layer_map.py
+# fails when a module under src/quantbox is in no layer or in two, and when a
+# contract's `forbidden_modules` is not exactly the layers above its source.
+#
+# Why `forbidden` contracts, not one `layers` contract: the layers interleave in
+# the package tree (quantbox.engine is core, quantbox.engine.vectorbt research;
+# quantbox.plugins.builtins is core, its siblings are plugins, research or trade;
+# the root package and the plugins.pipeline namespace hold several layers). A
+# `layers` contract treats each entry as a package with all its descendants, so
+# it cannot state that. Here `as_packages = false`: an entry is one module, and
+# `X.**` adds every module below X.
+root_package = "quantbox"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+id = "core"
+name = "core imports no plugins, research or trade module"
+type = "forbidden"
+as_packages = false
+source_modules = [
+  "quantbox",  # the package __init__ only
+  "quantbox._deprecation",
+  "quantbox._lazy",  # the one door from core to an upper layer: a string, loaded at run time
+  "quantbox._numerics",
+  "quantbox.analysis",  # deprecation shims onto inference and gates
+  "quantbox.analysis.dsr",
+  "quantbox.analysis.gates",
+  "quantbox.analysis.hac",
+  "quantbox.bootstrap",
+  "quantbox.bootstrap.**",
+  "quantbox.cli",  # research and trade commands load through _lazy and name their extra
+  "quantbox.config_checks",
+  "quantbox.contracts",
+  "quantbox.dataset",
+  "quantbox.dataset_lock",
+  "quantbox.decision",
+  "quantbox.engine",  # the seam with the rsims code; engine.vectorbt is research
+  "quantbox.engine._lag",
+  "quantbox.engine.base",
+  "quantbox.engine.book",
+  "quantbox.engine.groups",
+  "quantbox.engine.policy",
+  "quantbox.engine.registry",
+  "quantbox.engine.rsims",
+  "quantbox.engine.rsims_sim",
+  "quantbox.engine.schedule",
+  "quantbox.exceptions",
+  "quantbox.execution",
+  "quantbox.execution_schedule",
+  "quantbox.explain",
+  "quantbox.features",
+  "quantbox.features.**",
+  "quantbox.financing",
+  "quantbox.frequency",
+  "quantbox.funding_guard",
+  "quantbox.gates",
+  "quantbox.gates_cli",
+  "quantbox.indicators",  # pure pandas indicators; imports nothing internal
+  "quantbox.inference",
+  "quantbox.instrument_calendar",
+  "quantbox.llm_utils",  # event lines and schema checks; the runner imports it
+  "quantbox.metrics",
+  "quantbox.overlays",  # the overlay chaining contract; explain imports it
+  "quantbox.params_schema",
+  "quantbox.parquet_io",
+  "quantbox.performance",  # a wrapper over metrics; quantbox-live imports it
+  "quantbox.plugin_manifest",
+  "quantbox.plugins.builtins",  # a string table, name -> "module:Class"; the registry resolves it
+  "quantbox.registry",
+  "quantbox.retry",  # stdlib retry helper; datasources (plugins) and brokers (trade) import it
+  "quantbox.run_history",  # run-id timestamps; store and runner import it
+  "quantbox.run_manifest",
+  "quantbox.runner",
+  "quantbox.schemas",
+  "quantbox.store",
+  "quantbox.strategy_runner",
+  "quantbox.strict",  # capability registry; registry and runner import it
+  "quantbox.validate",
+]
+forbidden_modules = [
+  # plugins
+  "quantbox.market_cap",
+  "quantbox.montecarlo",
+  "quantbox.montecarlo.**",
+  "quantbox.plugins",
+  "quantbox.plugins.datasources",
+  "quantbox.plugins.datasources.**",
+  "quantbox.plugins.features",
+  "quantbox.plugins.features.**",
+  "quantbox.plugins.monitor",
+  "quantbox.plugins.monitor.**",
+  "quantbox.plugins.overlays",
+  "quantbox.plugins.overlays.**",
+  "quantbox.plugins.pipeline",
+  "quantbox.plugins.strategies",
+  "quantbox.plugins.strategies.**",
+  "quantbox.universe",
+  # research
+  "quantbox.adapters",
+  "quantbox.adapters.**",
+  "quantbox.analysis.parameter_grid",
+  "quantbox.arms",
+  "quantbox.bt",
+  "quantbox.cache",
+  "quantbox.cache.**",
+  "quantbox.engine.vectorbt",
+  "quantbox.finding_export",
+  "quantbox.line",
+  "quantbox.plugins.backtesting",
+  "quantbox.plugins.backtesting.**",
+  "quantbox.plugins.pipeline._report",
+  "quantbox.plugins.pipeline.backtest_pipeline",
+  "quantbox.plugins.pipeline.blocks",
+  "quantbox.plugins.pipeline.fund_selection",
+  "quantbox.plugins.validation",
+  "quantbox.plugins.validation.**",
+  "quantbox.simulation",
+  "quantbox.simulation.**",
+  "quantbox.sweep",
+  "quantbox.warehouse",
+  "quantbox.warehouse.**",
+  # trade
+  "quantbox.plugins.broker",
+  "quantbox.plugins.broker.**",
+  "quantbox.plugins.pipeline.alloc2orders",
+  "quantbox.plugins.pipeline.trading_pipeline",
+  "quantbox.plugins.publisher",
+  "quantbox.plugins.publisher.**",
+  "quantbox.plugins.rebalancing",
+  "quantbox.plugins.rebalancing.**",
+  "quantbox.plugins.risk",
+  "quantbox.plugins.risk.**",
+  "quantbox.plugins.trading",
+  "quantbox.plugins.trading.**",
+  "quantbox.portfolio_value",
+  "quantbox.reconciliation",
+  "quantbox.reconciliation.**",
+]
+
+[[tool.importlinter.contracts]]
+id = "plugins"
+name = "plugins import no research or trade module"
+type = "forbidden"
+as_packages = false
+source_modules = [
+  "quantbox.market_cap",
+  "quantbox.montecarlo",  # Monte Carlo kernels: data.synthetic.v1 (plugins) and risk.stress_test.v1 (trade) use them
+  "quantbox.montecarlo.**",
+  "quantbox.plugins",  # the package __init__ only
+  "quantbox.plugins.datasources",
+  "quantbox.plugins.datasources.**",
+  "quantbox.plugins.features",
+  "quantbox.plugins.features.**",
+  "quantbox.plugins.monitor",
+  "quantbox.plugins.monitor.**",
+  "quantbox.plugins.overlays",
+  "quantbox.plugins.overlays.**",
+  "quantbox.plugins.pipeline",  # the lazy namespace: it holds research and trade pipelines and imports neither
+  "quantbox.plugins.strategies",
+  "quantbox.plugins.strategies.**",
+  "quantbox.universe",
+]
+forbidden_modules = [
+  # research
+  "quantbox.adapters",
+  "quantbox.adapters.**",
+  "quantbox.analysis.parameter_grid",
+  "quantbox.arms",
+  "quantbox.bt",
+  "quantbox.cache",
+  "quantbox.cache.**",
+  "quantbox.engine.vectorbt",
+  "quantbox.finding_export",
+  "quantbox.line",
+  "quantbox.plugins.backtesting",
+  "quantbox.plugins.backtesting.**",
+  "quantbox.plugins.pipeline._report",
+  "quantbox.plugins.pipeline.backtest_pipeline",
+  "quantbox.plugins.pipeline.blocks",
+  "quantbox.plugins.pipeline.fund_selection",
+  "quantbox.plugins.validation",
+  "quantbox.plugins.validation.**",
+  "quantbox.simulation",
+  "quantbox.simulation.**",
+  "quantbox.sweep",
+  "quantbox.warehouse",
+  "quantbox.warehouse.**",
+  # trade
+  "quantbox.plugins.broker",
+  "quantbox.plugins.broker.**",
+  "quantbox.plugins.pipeline.alloc2orders",
+  "quantbox.plugins.pipeline.trading_pipeline",
+  "quantbox.plugins.publisher",
+  "quantbox.plugins.publisher.**",
+  "quantbox.plugins.rebalancing",
+  "quantbox.plugins.rebalancing.**",
+  "quantbox.plugins.risk",
+  "quantbox.plugins.risk.**",
+  "quantbox.plugins.trading",
+  "quantbox.plugins.trading.**",
+  "quantbox.portfolio_value",
+  "quantbox.reconciliation",
+  "quantbox.reconciliation.**",
+]
+
+[[tool.importlinter.contracts]]
+id = "research"
+name = "research imports no trade module"
+type = "forbidden"
+as_packages = false
+source_modules = [
+  "quantbox.adapters",
+  "quantbox.adapters.**",
+  "quantbox.analysis.parameter_grid",  # deprecation shim onto sweep
+  "quantbox.arms",
+  "quantbox.bt",
+  "quantbox.cache",  # no importer today; strategy-result caching for research runs
+  "quantbox.cache.**",
+  "quantbox.engine.vectorbt",  # the vectorbt adapter behind the core seam
+  "quantbox.finding_export",
+  "quantbox.line",
+  "quantbox.plugins.backtesting",  # the rsims_engine shim included; the rsims code is core
+  "quantbox.plugins.backtesting.**",
+  "quantbox.plugins.pipeline._report",
+  "quantbox.plugins.pipeline.backtest_pipeline",
+  "quantbox.plugins.pipeline.blocks",
+  "quantbox.plugins.pipeline.fund_selection",
+  "quantbox.plugins.validation",
+  "quantbox.plugins.validation.**",
+  "quantbox.simulation",  # forecasting and plots; re-exports quantbox.montecarlo
+  "quantbox.simulation.**",
+  "quantbox.sweep",
+  "quantbox.warehouse",
+  "quantbox.warehouse.**",
+]
+forbidden_modules = [
+  "quantbox.plugins.broker",
+  "quantbox.plugins.broker.**",
+  "quantbox.plugins.pipeline.alloc2orders",
+  "quantbox.plugins.pipeline.trading_pipeline",
+  "quantbox.plugins.publisher",
+  "quantbox.plugins.publisher.**",
+  "quantbox.plugins.rebalancing",
+  "quantbox.plugins.rebalancing.**",
+  "quantbox.plugins.risk",
+  "quantbox.plugins.risk.**",
+  "quantbox.plugins.trading",
+  "quantbox.plugins.trading.**",
+  "quantbox.portfolio_value",
+  "quantbox.reconciliation",
+  "quantbox.reconciliation.**",
+]
+
+[[tool.importlinter.contracts]]
+id = "trade"
+name = "trade imports no research module"
+type = "forbidden"
+as_packages = false
+source_modules = [
+  "quantbox.plugins.broker",
+  "quantbox.plugins.broker.**",
+  "quantbox.plugins.pipeline.alloc2orders",
+  "quantbox.plugins.pipeline.trading_pipeline",
+  "quantbox.plugins.publisher",
+  "quantbox.plugins.publisher.**",
+  "quantbox.plugins.rebalancing",
+  "quantbox.plugins.rebalancing.**",
+  "quantbox.plugins.risk",
+  "quantbox.plugins.risk.**",
+  "quantbox.plugins.trading",
+  "quantbox.plugins.trading.**",
+  "quantbox.portfolio_value",
+  "quantbox.reconciliation",
+  "quantbox.reconciliation.**",
+]
+forbidden_modules = [
+  "quantbox.adapters",
+  "quantbox.adapters.**",
+  "quantbox.analysis.parameter_grid",
+  "quantbox.arms",
+  "quantbox.bt",
+  "quantbox.cache",
+  "quantbox.cache.**",
+  "quantbox.engine.vectorbt",
+  "quantbox.finding_export",
+  "quantbox.line",
+  "quantbox.plugins.backtesting",
+  "quantbox.plugins.backtesting.**",
+  "quantbox.plugins.pipeline._report",
+  "quantbox.plugins.pipeline.backtest_pipeline",
+  "quantbox.plugins.pipeline.blocks",
+  "quantbox.plugins.pipeline.fund_selection",
+  "quantbox.plugins.validation",
+  "quantbox.plugins.validation.**",
+  "quantbox.simulation",
+  "quantbox.simulation.**",
+  "quantbox.sweep",
+  "quantbox.warehouse",
+  "quantbox.warehouse.**",
+]
+
+[[tool.importlinter.contracts]]
+id = "core-externals"
+name = "core imports no vectorbt, numba or ccxt"
+type = "forbidden"
+as_packages = false
+# The same module list as the `core` contract's source_modules (the test checks it).
+source_modules = [
+  "quantbox",
+  "quantbox._deprecation",
+  "quantbox._lazy",
+  "quantbox._numerics",
+  "quantbox.analysis",
+  "quantbox.analysis.dsr",
+  "quantbox.analysis.gates",
+  "quantbox.analysis.hac",
+  "quantbox.bootstrap",
+  "quantbox.bootstrap.**",
+  "quantbox.cli",
+  "quantbox.config_checks",
+  "quantbox.contracts",
+  "quantbox.dataset",
+  "quantbox.dataset_lock",
+  "quantbox.decision",
+  "quantbox.engine",
+  "quantbox.engine._lag",
+  "quantbox.engine.base",
+  "quantbox.engine.book",
+  "quantbox.engine.groups",
+  "quantbox.engine.policy",
+  "quantbox.engine.registry",
+  "quantbox.engine.rsims",
+  "quantbox.engine.rsims_sim",
+  "quantbox.engine.schedule",
+  "quantbox.exceptions",
+  "quantbox.execution",
+  "quantbox.execution_schedule",
+  "quantbox.explain",
+  "quantbox.features",
+  "quantbox.features.**",
+  "quantbox.financing",
+  "quantbox.frequency",
+  "quantbox.funding_guard",
+  "quantbox.gates",
+  "quantbox.gates_cli",
+  "quantbox.indicators",
+  "quantbox.inference",
+  "quantbox.instrument_calendar",
+  "quantbox.llm_utils",
+  "quantbox.metrics",
+  "quantbox.overlays",
+  "quantbox.params_schema",
+  "quantbox.parquet_io",
+  "quantbox.performance",
+  "quantbox.plugin_manifest",
+  "quantbox.plugins.builtins",
+  "quantbox.registry",
+  "quantbox.retry",
+  "quantbox.run_history",
+  "quantbox.run_manifest",
+  "quantbox.runner",
+  "quantbox.schemas",
+  "quantbox.store",
+  "quantbox.strategy_runner",
+  "quantbox.strict",
+  "quantbox.validate",
+]
+forbidden_modules = ["vectorbt", "numba", "ccxt"]
 
 [tool.commitizen]
 name = "cz_conventional_commits"

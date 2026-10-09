@@ -63,7 +63,7 @@ If a user has to reach for `import vbt` to bypass quantbox, the design has faile
 
 quantbox is one distribution in four layers: `core` < `plugins` < `research`, `trade`. A client install carries core and must not carry the research or trade libraries. A plugin is usable on its own — no "must be invoked via the runner."
 
-The decision is [ADR-0010](../adr/0010-audience-layers-one-distribution.md); [api-layers.md](api-layers.md) maps the modules.
+The decision is [ADR-0010](../adr/0010-audience-layers-one-distribution.md); [api-layers.md](api-layers.md) says what each layer is for. The module map is the import-linter contracts in `pyproject.toml`.
 
 ### 4. Owned conventions
 

@@ -24,6 +24,9 @@ jobs:
       - run: uv sync
       - run: uv run ruff check .
       - run: uv run ruff format --check .
+      # The layer contracts (ADR-0010, TOM-1451): pyproject.toml [tool.importlinter].
+      # tests/test_layer_map.py proves every module is in exactly one layer.
+      - run: uv run lint-imports
 
   test:
     runs-on: ubuntu-latest
