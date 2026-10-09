@@ -15,7 +15,7 @@ it. `research` and `trade` never import each other.
 | Layer | Audience | Examples | Install |
 |---|---|---|---|
 | **core** | every caller, including a client install (robo) | `quantbox.contracts`, `quantbox.registry`, `quantbox.strategy_runner`, `quantbox.decision`, `quantbox.metrics`, `quantbox.inference`, `quantbox.gates`, `quantbox.engine` (the seam and rsims), `quantbox.dataset`, `quantbox.runner`, `quantbox.cli` | base |
-| **plugins** | every caller that uses the builtin strategies and data | builtin strategies, datasources, features, overlays, monitors; `quantbox.universe`, `quantbox.market_cap` | base, `[data]` for the data clients |
+| **plugins** | every caller that uses the builtin strategies and data | builtin strategies, datasources, features, overlays, monitors; the universe and market-cap modules 4a adds (ADR-0010 decision 6) | base, `[data]` for the data clients |
 | **research** | the lab | backtest pipeline, `quantbox.sweep`, `quantbox.arms`, validation plugins, reports, `quantbox.warehouse`, `quantbox.bt`, `quantbox.adapters.vectorbt` | `[research]`, `[vectorbt]` |
 | **trade** | live | brokers, trading pipeline, rebalancing, reconciliation, `quantbox.portfolio_value` | `[trade]` |
 
