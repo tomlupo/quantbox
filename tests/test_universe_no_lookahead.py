@@ -28,8 +28,9 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from quantbox.plugins.datasources._utils import load_pit_market_cap, resolve_screen_inputs
-from quantbox.plugins.strategies._universe import select_universe
+from quantbox.market_cap import load_pit_market_cap
+from quantbox.plugins.datasources._utils import resolve_screen_inputs
+from quantbox.universe import select_universe
 
 
 class RecordingSnapshotProvider:

@@ -32,6 +32,15 @@ import pandas as pd
 from quantbox.contracts import StrategyContext
 from quantbox.frequency import resolve_pipeline_frequency
 
+__all__ = [
+    "FALLBACK_BARS_PER_YEAR",
+    "LEGACY_ANNUALIZE_KEY",
+    "build_strategy_context",
+    "call_strategy",
+    "resolve_annualize",
+    "run_strategies",
+]
+
 logger = logging.getLogger(__name__)
 
 LEGACY_ANNUALIZE_KEY = "_pipeline_annualize"

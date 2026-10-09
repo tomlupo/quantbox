@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from quantbox.plugins.strategies._universe import select_universe
+from quantbox.universe import select_universe
 
 
 def _frame(cols_values: dict[str, list[float]], n: int = 10) -> pd.DataFrame:

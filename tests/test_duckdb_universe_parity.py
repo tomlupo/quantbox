@@ -21,7 +21,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from quantbox.plugins.strategies._universe import (
+from quantbox.universe import (
     DUCKDB_AVAILABLE,
     select_universe,
     select_universe_duckdb,

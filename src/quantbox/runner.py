@@ -37,6 +37,15 @@ from .store import FileArtifactStore
 from .strict import get_capability
 from .validate import UNKNOWN_PLUGIN, check_plugin_params, validate_config
 
+__all__ = [
+    "ResolvedRun",
+    "plugin_refs",
+    "prepare_config",
+    "resolve_run",
+    "run_from_config",
+    "strict_refusal",
+]
+
 logger = logging.getLogger(__name__)
 
 

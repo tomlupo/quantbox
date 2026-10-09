@@ -53,6 +53,32 @@ import pandas as pd
 from ._numerics import DEGENERATE_RTOL  # noqa: F401 — public re-export, imported from here before TOM-1618
 from ._numerics import flat as _flat
 
+__all__ = [
+    "DEGENERATE_RTOL",
+    "TRADING_DAYS_PER_YEAR",
+    "active_share",
+    "annual_turnover",
+    "beta",
+    "compute_backtest_metrics",
+    "compute_cvar",
+    "compute_drawdown_series",
+    "compute_portfolio_cvar",
+    "compute_portfolio_var",
+    "compute_rolling_sharpe",
+    "compute_var",
+    "drawdown_fields",
+    "hit_rate",
+    "icir",
+    "information_coefficient",
+    "information_ratio",
+    "max_drawdown",
+    "risk_contributions",
+    "sharpe_ratio",
+    "top_drawdowns",
+    "tracking_error",
+    "turnover_series",
+]
+
 logger = logging.getLogger(__name__)
 
 TRADING_DAYS_PER_YEAR = 365  # crypto default; callers can override
