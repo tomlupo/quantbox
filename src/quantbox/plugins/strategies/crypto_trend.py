@@ -447,7 +447,10 @@ class CryptoTrendStrategy:
                 "vol_lookback": {"description": "Bars of the volatility estimate used by vol targeting."},
                 "output_periods": {"description": "Number of most recent bars returned in the weights output."},
                 "normalize_weights": {"description": "Normalise weights to sum to one per track."},
-                "use_duckdb": {"description": "Compute the signal panel with DuckDB."},
+                "use_duckdb": {
+                    "description": "Select the universe with DuckDB (needs the [data] extra); false uses "
+                    "select_universe, which ranks the whole market-cap frame, forward-filled."
+                },
                 "use_trailing_stop": {"description": "Exit on the trailing stop as well as the trend signal."},
                 "inv_vol_track": {
                     "description": "Add an 'inv_vol' track derived from the 'off' track (needs 'off' in vol_targets)."
@@ -611,6 +614,10 @@ class CryptoTrendStrategy:
         # best-practice knobs (volume_is_dollar, rolling-window, listing
         # cool-off, hysteresis) or the market-wide screen_volume override, so
         # fall back to the vectorized impl whenever any of them is in effect.
+        # That choice depends on the params only. Whether duckdb is installed
+        # never picks the path: the two rank market cap differently, so
+        # select_universe_duckdb raises MissingExtraError naming [data] when it
+        # needs duckdb and duckdb is absent (TOM-1451).
         needs_vectorized = (
             self.volume_is_dollar
             or self.volume_rolling_window > 1
@@ -618,7 +625,7 @@ class CryptoTrendStrategy:
             or self.hysteresis_rank_band > 0
             or screen_volume is not None
         )
-        if self.use_duckdb and DUCKDB_AVAILABLE and not needs_vectorized:
+        if self.use_duckdb and not needs_vectorized:
             universe = select_universe_duckdb(
                 prices, volume, market_cap, self.top_by_mcap, self.top_by_volume, self.exclude_tickers
             )

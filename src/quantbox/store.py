@@ -15,6 +15,15 @@ __all__ = ["FileArtifactStore"]
 
 logger = logging.getLogger(__name__)
 
+_ACCELERATOR_LOGGED = False
+
+
+def _log_accelerator_once(reader: str) -> None:
+    global _ACCELERATOR_LOGGED
+    if not _ACCELERATOR_LOGGED:
+        _ACCELERATOR_LOGGED = True
+        logger.info("query_artifacts reads with %s", reader)
+
 
 class FileArtifactStore:
     def __init__(self, root: str, run_id: str, *, _readonly: bool = False):
@@ -153,11 +162,15 @@ class FileArtifactStore:
         if not paths:
             return pd.DataFrame()
         # duckdb (the [data] extra) is an accelerator here, not a requirement:
-        # without it the same rows come from pandas.
+        # without it the same rows come from pandas (put_parquet writes no
+        # index; tests/test_optional_duckdb_paths.py, TOM-1451). Which one ran
+        # is logged once, at INFO.
         try:
             duckdb = load("duckdb", extra="data")
         except MissingExtraError:
+            _log_accelerator_once("pandas (duckdb, the [data] extra, is not installed)")
             frames = [_read_parquet(p) for p in paths]
             return pd.concat(frames, ignore_index=True)
+        _log_accelerator_once("duckdb")
         query = f"SELECT * FROM read_parquet({paths!r})"
         return duckdb.sql(query).df()

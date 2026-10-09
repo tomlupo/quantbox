@@ -30,6 +30,10 @@ __getattr__ = moved(
     names={"_load_pinned_dataset": "load_pinned_dataset"},
 )
 
+# duckdb (the [data] extra) is an accelerator here, not a requirement: the
+# pandas reader returns the same frame on the same file, date cut and symbol
+# filter included (tests/test_optional_duckdb_paths.py, TOM-1451). Which one
+# ran is logged once, at INFO.
 try:
     import duckdb
 
@@ -37,7 +41,19 @@ try:
 except ImportError:
     duckdb = None  # type: ignore[assignment]
     DUCKDB_AVAILABLE = False
-    logger.warning("duckdb not installed — LocalFileDataPlugin will use pandas fallback")
+
+_READER_LOGGED = False
+
+
+def _log_reader_once() -> None:
+    global _READER_LOGGED
+    if _READER_LOGGED:
+        return
+    _READER_LOGGED = True
+    if DUCKDB_AVAILABLE:
+        logger.info("local_file_data reads files with duckdb")
+    else:
+        logger.info("local_file_data reads files with pandas (duckdb, the [data] extra, is not installed)")
 
 
 def _universe_with_metadata(df: pd.DataFrame) -> pd.DataFrame:
@@ -69,6 +85,7 @@ def _read_file(path: str, asof: str | None = None, symbols: list[str] | None = N
 
     ext = p.suffix.lower()
 
+    _log_reader_once()
     if DUCKDB_AVAILABLE:
         df = _read_via_duckdb(path, ext, asof, symbols)
     else:
@@ -149,6 +166,13 @@ def _read_via_pandas(path: str, ext: str, asof: str | None, symbols: list[str] |
         df = pd.read_csv(path)
     else:
         raise ValueError(f"Unsupported file extension: {ext}")
+
+    # A frame saved with its date as the INDEX comes back from pandas with the
+    # date as the index, and from duckdb with it as a column. Make it the column,
+    # as duckdb does, so the date cut below applies to it: before TOM-1451 this
+    # reader skipped the cut on such a file and returned rows after asof.
+    if "date" not in df.columns and df.index.name == "date":
+        df = df.reset_index()
 
     if asof and "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"])
@@ -418,6 +442,7 @@ class LocalFileDataPlugin:
             return None
 
         ext = p.suffix.lower()
+        _log_reader_once()
         if DUCKDB_AVAILABLE:
             con = duckdb.connect()
             try:
@@ -428,15 +453,8 @@ class LocalFileDataPlugin:
             finally:
                 con.close()
 
-        # Pandas fallback
-        if ext == ".parquet":
-            df = read_parquet(path)
-        elif ext == ".csv":
-            df = pd.read_csv(path)
-        else:
+        # Pandas fallback: the same reader as _read_file, so a date-index file
+        # gets the same date column and the same cut as duckdb gives it.
+        if ext not in (".parquet", ".csv"):
             return None
-
-        if "date" in df.columns:
-            df["date"] = pd.to_datetime(df["date"])
-            df = df[df["date"] <= asof]
-        return df
+        return _read_via_pandas(str(path), ext, asof, None)
