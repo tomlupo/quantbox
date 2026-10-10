@@ -9,6 +9,7 @@ Replaces the old ``DuckDBParquetData`` stub with a real implementation that:
 from __future__ import annotations
 
 import logging
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -99,19 +100,52 @@ def _read_file(path: str, asof: str | None = None, symbols: list[str] | None = N
     if "symbol" in df.columns and "date" in df.columns:
         df = _pivot_long_to_wide(df)
 
-    # Ensure date index
+    # Ensure date index. A tz-aware date is first taken at its wall-clock time in
+    # its own timezone, so the label below is the row's own calendar date.
     if "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"], utc=True)
+        df["date"] = pd.to_datetime(_wall_clock(df["date"]), utc=True)
         df = df.set_index("date").sort_index()
     elif not isinstance(df.index, pd.DatetimeIndex):
-        df.index = pd.to_datetime(df.index, utc=True)
+        df.index = pd.DatetimeIndex(pd.to_datetime(_wall_clock(pd.Series(df.index)), utc=True), name=df.index.name)
         df = df.sort_index()
 
-    # Normalize tz-aware index to UTC midnight (DuckDB may return local tz)
+    # Label every row with its own calendar date at UTC midnight: the bar of day D
+    # is labelled D in any timezone (TOM-1681). Converting to UTC first labelled a
+    # Warsaw-midnight bar D as D-1 and a New York one as D.
     if isinstance(df.index, pd.DatetimeIndex) and df.index.tz is not None:
-        df.index = df.index.tz_convert("UTC").normalize()
+        df.index = df.index.tz_localize(None).normalize().tz_localize("UTC")
 
     return df
+
+
+def _parse_dates(values: pd.Series) -> pd.Series:
+    """``pd.to_datetime`` that keeps mixed timezones as one ``Timestamp`` per row, each in its own tz.
+
+    pandas returns such a column as objects and warns that it will raise one day;
+    the per-row parse gives the same objects when it does.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        try:
+            return pd.to_datetime(values)
+        except (ValueError, TypeError):
+            return values.map(lambda v: pd.NaT if pd.isna(v) else pd.Timestamp(v))
+
+
+def _wall_clock(values: pd.Series) -> pd.Series:
+    """Each date's wall-clock time in its OWN timezone, as naive datetimes; a naive date as is.
+
+    The asof cut and the date label both read this, so neither depends on the box's
+    timezone, on duckdb's session timezone, or on how far the file's zone is from UTC.
+    """
+    if not pd.api.types.is_datetime64_any_dtype(values.dtype):
+        values = _parse_dates(values)
+    if isinstance(values.dtype, pd.DatetimeTZDtype):
+        return values.dt.tz_localize(None)
+    if pd.api.types.is_datetime64_dtype(values.dtype):
+        return values
+    # Mixed timezones: pandas holds each row as an object in its own tz.
+    return pd.to_datetime(values.map(lambda v: pd.NaT if pd.isna(v) else pd.Timestamp(v).tz_localize(None)), utc=False)
 
 
 def _saved_index_columns(path: str) -> list[str]:
@@ -134,9 +168,12 @@ def _date_column_and_cut(df: pd.DataFrame, index_cols: list[str], asof: str | No
     a ``date`` column was cut, so a file saved with an unnamed date index returned
     rows after asof (a look-ahead) from both readers.
 
-    A row is kept when its UTC instant is ``<= asof`` 00:00 UTC; a naive date counts
-    as UTC. This is done here, not in duckdb SQL: ``date <= 'asof'`` on a tz-aware
-    column compares in the duckdb session's timezone, which is the box's.
+    A row is kept when its WALL-CLOCK time in its own timezone is ``<= asof`` 00:00
+    (:func:`_wall_clock`); a naive date is compared as is. So the bar of day D stays
+    in a run as of D in any timezone: a New York daily bar stamped 00:00 local is
+    05:00 UTC, and the UTC-instant rule #271 used dropped it (TOM-1681). This is done
+    here, not in duckdb SQL: ``date <= 'asof'`` on a tz-aware column compares in the
+    duckdb session's timezone, which is the box's.
     """
     if "date" not in df.columns:
         dated = [c for c in index_cols if c in df.columns and pd.api.types.is_datetime64_any_dtype(df[c])]
@@ -144,8 +181,24 @@ def _date_column_and_cut(df: pd.DataFrame, index_cols: list[str], asof: str | No
             df = df.rename(columns={dated[0]: "date"})
     if asof and "date" in df.columns:
         if not pd.api.types.is_datetime64_any_dtype(df["date"]):
-            df = df.assign(date=pd.to_datetime(df["date"]))
-        df = df[pd.to_datetime(df["date"], utc=True) <= pd.Timestamp(asof, tz="UTC")]
+            df = df.assign(date=_parse_dates(df["date"]))
+        df = df[_wall_clock(df["date"]) <= pd.Timestamp(asof)]
+    return df
+
+
+def _file_timezones(path: str) -> dict[str, str]:
+    """The timezone each tz-aware timestamp column of a parquet file was written in."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    return {f.name: f.type.tz for f in pq.read_schema(path) if pa.types.is_timestamp(f.type) and f.type.tz}
+
+
+def _restore_timezones(df: pd.DataFrame, tzs: dict[str, str]) -> pd.DataFrame:
+    """Give duckdb's tz-aware columns back the file's own timezone (duckdb hands back its session's)."""
+    for col, tz in tzs.items():
+        if col in df.columns and isinstance(df[col].dtype, pd.DatetimeTZDtype):
+            df[col] = df[col].dt.tz_convert(tz)
     return df
 
 
@@ -153,9 +206,11 @@ def _read_via_duckdb(path: str, ext: str, asof: str | None, symbols: list[str] |
     """Read file using DuckDB SQL; the symbol filter runs in SQL, the date cut in ``_date_column_and_cut``."""
     con = duckdb.connect()
     try:
+        tzs: dict[str, str] = {}
         if ext == ".parquet":
             read_fn = f"read_parquet('{path}')"
             index_cols = _saved_index_columns(path)
+            tzs = _file_timezones(path)
         elif ext == ".csv":
             read_fn = f"read_csv_auto('{path}')"
             index_cols = []
@@ -163,13 +218,17 @@ def _read_via_duckdb(path: str, ext: str, asof: str | None, symbols: list[str] |
             logger.warning("Unsupported file extension: %s, trying pandas", ext)
             return _read_via_pandas(path, ext, asof, symbols)
 
+        types = {row[0]: row[1] for row in con.execute(f"DESCRIBE SELECT * FROM {read_fn}").fetchall()}
+        if ext == ".csv" and types.get("date") == "TIMESTAMP WITH TIME ZONE":
+            # duckdb keeps the instant and drops each row's own UTC offset; read the
+            # text and parse it as pandas does, so the wall-clock cut sees the offset.
+            read_fn = f"read_csv_auto('{path}', types={{'date': 'VARCHAR'}})"
         # Only apply the symbol filter if the column exists.
-        cols = set(con.execute(f"SELECT * FROM {read_fn} LIMIT 0").fetchdf().columns)
         where = ""
-        if symbols and "symbol" in cols:
+        if symbols and "symbol" in types:
             sym_list = ", ".join(f"'{s}'" for s in symbols)
             where = f" WHERE symbol IN ({sym_list})"
-        df = con.execute(f"SELECT * FROM {read_fn}{where}").fetchdf()
+        df = _restore_timezones(con.execute(f"SELECT * FROM {read_fn}{where}").fetchdf(), tzs)
         return _date_column_and_cut(df, index_cols, asof)
     except Exception as exc:
         logger.warning("DuckDB read failed for %s: %s, falling back to pandas", path, exc)
@@ -206,11 +265,15 @@ def _read_via_pandas(path: str, ext: str, asof: str | None, symbols: list[str] |
 
 
 def _clip_frame(df: pd.DataFrame, asof: str | None) -> pd.DataFrame:
-    """Give a dataset frame the same UTC date index and ``<= asof`` cut as ``_read_file``."""
+    """Give a dataset frame the same date label as ``_read_file``, then cut the labels at ``<= asof``.
+
+    The label is the row's own calendar date at UTC midnight (TOM-1681), so a
+    Warsaw-midnight bar D is D here, as in ``_read_file``, not D-1.
+    """
     if df.empty or not isinstance(df.index, pd.DatetimeIndex):
         return df
     df = df.copy()
-    df.index = (df.index.tz_localize("UTC") if df.index.tz is None else df.index.tz_convert("UTC")).normalize()
+    df.index = (df.index.tz_localize(None) if df.index.tz is not None else df.index).normalize().tz_localize("UTC")
     if asof:
         df = df[df.index <= pd.Timestamp(asof, tz="UTC")]
     return df
