@@ -5,6 +5,13 @@ each old path for one minor version, as a shim with a ``DeprecationWarning``.
 0.13.0 removes those shims. An old path now raises ``ImportError`` and names
 its replacement, so a stale import fails at once and says what to write.
 
+TOM-1711 (the P3+P4 design review, 2026-10-10) adds, in the same release, a
+shim that escaped 4d (``quantbox.execution_schedule``), one pass-through
+function, and ten names that ``quantbox.engine`` re-exported from its
+submodules with no deprecation step. Their messages carry :data:`CARD` like the
+rest: it names the release's contract step, and the card of each entry is the
+comment above it in :data:`REMOVED`.
+
 :data:`REMOVED` is the one list: old path -> what to import instead. It is read
 two ways:
 
