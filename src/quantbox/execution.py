@@ -46,10 +46,14 @@ from typing import Any
 
 import pandas as pd
 
+from quantbox._removed import removed_names
 from quantbox.financing import FINANCING_SCHEMA, LEVERAGE_SCHEMA
 from quantbox.instrument_calendar import DEFAULT_EXECUTION_CALENDAR, EXECUTION_CALENDARS, resolve_execution_calendar
 
 logger = logging.getLogger(__name__)
+
+# A removed name (materialise_nan_policy, TOM-1711) raises ImportError naming its new home.
+__getattr__ = removed_names(__name__)
 
 DEFAULT_LAG_BARS = 1
 MIN_LAG_BARS = 1
@@ -298,26 +302,11 @@ def apply_execution_lag(
     A lag below 1 is refused, so a caller that skips :func:`resolve_execution`
     cannot hand an engine a same-bar book; ``0`` passes only with the
     :class:`SameBarOverride` that resolver granted. The lag itself is applied by
-    :func:`quantbox.engine.lag_frame` (docs/adr/0008).
+    :func:`quantbox.engine._lag.lag_frame` (docs/adr/0008).
     """
     from quantbox.engine._lag import lag_frame
 
     return lag_frame(weights, lag_bars, same_bar=same_bar, fill_leading=fill_leading)
-
-
-def materialise_nan_policy(weights: pd.DataFrame, engine: str | None = None) -> pd.DataFrame:
-    """Make the seam's NaN policy explicit in a weights frame: a NaN cell HOLDS the last target (leading NaN -> 0).
-
-    A NaN weight cell means "the strategy said nothing for this bar". The
-    policy is decided ONCE, in the engine seam (:func:`quantbox.engine.materialise_nan`),
-    for every engine (docs/adr/0008); *engine* is accepted for old callers and
-    does not change the answer. ``engine=None`` returns the frame untouched.
-    """
-    if engine is None:
-        return weights
-    from quantbox.engine.book import materialise_nan
-
-    return materialise_nan(weights)
 
 
 def describe_execution(lag_bars: int, same_bar: SameBarOverride | None = None) -> str:

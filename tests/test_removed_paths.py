@@ -24,6 +24,8 @@ REMOVED_MODULES = {
     "quantbox.simulation.engine": ("quantbox.montecarlo.engine",),
     "quantbox.simulation.correlation": ("quantbox.montecarlo.correlation",),
     "quantbox.simulation.stress_testing": ("quantbox.montecarlo.stress_testing",),
+    # TOM-1711 (design review, 2026-10-10): a shim that escaped 4d.
+    "quantbox.execution_schedule": ("quantbox.engine.schedule",),
 }
 
 # Removed NAMES in modules that stay: (module, name) -> the replacement, module.attr.
@@ -39,6 +41,18 @@ REMOVED_NAMES = {
         "quantbox.plugins.datasources.local_file_data",
         "_load_pinned_dataset",
     ): "quantbox.dataset.load_pinned_dataset",
+    # TOM-1711 (design review, 2026-10-10): a pass-through, and the engine package exports its interface only.
+    ("quantbox.execution", "materialise_nan_policy"): "quantbox.engine.schedule.materialise_nan",
+    ("quantbox.engine", "NAN_POLICY"): "quantbox.engine.schedule.NAN_POLICY",
+    ("quantbox.engine", "CADENCES"): "quantbox.engine.policy.CADENCES",
+    ("quantbox.engine", "POLICIES"): "quantbox.engine.policy.POLICIES",
+    ("quantbox.engine", "TRIGGERS"): "quantbox.engine.policy.TRIGGERS",
+    ("quantbox.engine", "engine_distribution"): "quantbox.engine.registry.engine_distribution",
+    ("quantbox.engine", "lag_frame"): "quantbox.engine._lag.lag_frame",
+    ("quantbox.engine", "lag_positions"): "quantbox.engine._lag.lag_positions",
+    ("quantbox.engine", "apply_group_limits"): "quantbox.engine.groups.apply_group_limits",
+    ("quantbox.engine", "materialise_nan"): "quantbox.engine.schedule.materialise_nan",
+    ("quantbox.engine", "resolve_group_limits"): "quantbox.engine.groups.resolve_group_limits",
 }
 
 # Imports a user had before 0.13.0 that reached the analysis package's old submodules.

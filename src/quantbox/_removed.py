@@ -59,6 +59,19 @@ REMOVED: dict[str, str] = {
     "quantbox.simulation.engine": "quantbox.montecarlo.engine (or: from quantbox.simulation import ...)",
     "quantbox.simulation.correlation": "quantbox.montecarlo.correlation (or: from quantbox.simulation import ...)",
     "quantbox.simulation.stress_testing": "quantbox.montecarlo.stress_testing (or: from quantbox.simulation import ...)",
+    # TOM-1711: pass-through code the P3+P4 design review found (2026-10-10).
+    "quantbox.execution_schedule": "quantbox.engine.schedule",
+    "quantbox.execution.materialise_nan_policy": "quantbox.engine.schedule.materialise_nan",
+    "quantbox.engine.NAN_POLICY": "quantbox.engine.schedule.NAN_POLICY",
+    "quantbox.engine.CADENCES": "quantbox.engine.policy.CADENCES",
+    "quantbox.engine.POLICIES": "quantbox.engine.policy.POLICIES",
+    "quantbox.engine.TRIGGERS": "quantbox.engine.policy.TRIGGERS",
+    "quantbox.engine.engine_distribution": "quantbox.engine.registry.engine_distribution",
+    "quantbox.engine.lag_frame": "quantbox.engine._lag.lag_frame",
+    "quantbox.engine.lag_positions": "quantbox.engine._lag.lag_positions",
+    "quantbox.engine.apply_group_limits": "quantbox.engine.groups.apply_group_limits",
+    "quantbox.engine.materialise_nan": "quantbox.engine.schedule.materialise_nan",
+    "quantbox.engine.resolve_group_limits": "quantbox.engine.groups.resolve_group_limits",
 }
 
 

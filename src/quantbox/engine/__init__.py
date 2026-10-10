@@ -22,40 +22,38 @@ threshold (:mod:`quantbox.engine.schedule`) and the rebalancing policies
 (:mod:`quantbox.engine.policy`: a cadence, periodic or tranche, x a trigger, none, band or corridor), as a
 per-cell orders mask; group limits on the decided book
 (:mod:`quantbox.engine.groups`); the
-NaN policy (:func:`materialise_nan`); the default ``venue.leverage``. An
+NaN policy (:func:`quantbox.engine.schedule.materialise_nan`); the default ``venue.leverage``. An
 adapter only executes the orders (:meth:`EngineAdapter.execute`) and declares
 two real capability differences, ``charges_funding`` and ``models_margin``.
 Nothing outside an adapter module branches on the engine name.
+
+The package exports the seam's interface only: :func:`simulate`, what goes in
+and comes out of it, and the adapter registry. The machinery behind it is
+imported from its own submodule (TOM-1711).
 """
 
 from __future__ import annotations
 
-from ._lag import lag_frame, lag_positions
+from quantbox._removed import removed_names
+
 from .base import Costs, EngineAdapter, TradedBook
-from .book import NAN_POLICY, materialise_nan, simulate
-from .groups import GroupLimits, apply_group_limits, resolve_group_limits
-from .policy import CADENCES, POLICIES, TRIGGERS, RebalancePolicy, resolve_policy
-from .registry import DEFAULT_ENGINE, engine_distribution, engine_names, get_engine
+from .book import simulate
+from .groups import GroupLimits
+from .policy import RebalancePolicy, resolve_policy
+from .registry import DEFAULT_ENGINE, engine_names, get_engine
 
 __all__ = [
     "DEFAULT_ENGINE",
-    "NAN_POLICY",
-    "CADENCES",
-    "POLICIES",
-    "TRIGGERS",
     "Costs",
     "EngineAdapter",
     "GroupLimits",
     "RebalancePolicy",
     "TradedBook",
-    "engine_distribution",
     "engine_names",
     "get_engine",
-    "lag_frame",
-    "lag_positions",
-    "apply_group_limits",
-    "materialise_nan",
-    "resolve_group_limits",
     "resolve_policy",
     "simulate",
 ]
+
+# A name that left the package front (TOM-1711) raises ImportError naming its submodule.
+__getattr__ = removed_names(__name__)
