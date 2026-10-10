@@ -51,8 +51,8 @@ import numpy as np
 import pandas as pd
 
 from quantbox.contracts import PluginMeta, StrategyContext
-from quantbox.plugins.strategies._universe import DEFAULT_STABLECOINS
 from quantbox.strategy_runner import resolve_annualize
+from quantbox.universe import DEFAULT_STABLECOINS
 
 logger = logging.getLogger(__name__)
 
@@ -696,7 +696,7 @@ class CarverTrendStrategy:
         #    actually in the universe at that point in time.
         universe_mask_ts: pd.DataFrame | None = None
         if self.use_universe_selection:
-            from quantbox.plugins.strategies._universe import select_universe
+            from quantbox.universe import select_universe
 
             volume = data.get("volume", pd.DataFrame())
             market_cap = data.get("market_cap", pd.DataFrame())

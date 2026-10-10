@@ -9,7 +9,8 @@ from typing import Any
 import typer
 import yaml
 
-from .exceptions import PluginNotFoundError
+from ._lazy import load
+from .exceptions import MissingExtraError, PluginNotFoundError
 from .gates_cli import gates_app
 from .plugin_manifest import load_manifest, resolve_profile
 from .registry import PluginRegistry
@@ -99,6 +100,9 @@ def cmd_plugins_schema(reg: PluginRegistry, name: str | None = None, as_json: bo
         return
     for p in payload["plugins"]:
         print(f"{p['id']}  [{p['group']}, {p['status']}]")
+        if p.get("missing_extra"):
+            print(f"  (not installed: needs the [{p['missing_extra']}] extra)")
+            continue
         if p["params"] is None:
             print("  (no params_schema declared)")
             continue
@@ -109,27 +113,38 @@ def cmd_plugins_schema(reg: PluginRegistry, name: str | None = None, as_json: bo
 def cmd_plugins_doctor(as_json: bool = False, strict: bool = False):
     import importlib.metadata
 
-    from .plugins.builtins import builtins as builtin_plugins
+    from .plugins.builtins import BUILTIN_PLUGINS
     from .registry import ENTRYPOINT_GROUPS
 
     results = []
 
-    builtins = builtin_plugins()
-    for group, mapping in builtins.items():
-        for name in sorted(mapping.keys()):
+    # Import every builtin, in table order. One whose extra is not installed
+    # is a warning that names the extra, not a crash (TOM-1451).
+    builtins: dict[str, dict[str, Any]] = {}
+    missing: dict[tuple[str, str], MissingExtraError] = {}
+    for group, table in BUILTIN_PLUGINS.items():
+        builtins[group] = {}
+        for name, target in table.items():
+            try:
+                builtins[group][name] = load(target)
+            except MissingExtraError as exc:
+                missing[(group, name)] = exc
+    for group, table in BUILTIN_PLUGINS.items():
+        for name in sorted(table):
+            exc = missing.get((group, name))
             results.append(
                 {
                     "source": "builtin",
                     "group": group,
                     "name": name,
-                    "status": "ok",
-                    "message": "",
+                    "status": "ok" if exc is None else "warn",
+                    "message": "" if exc is None else f"missing_extra: install quantbox[{exc.extra}] ({exc.name})",
                 }
             )
 
     # Optional dependency checks for built-in live brokers
     try:
-        from .plugins.broker import ibkr as _ibkr_mod
+        _ibkr_mod = load("quantbox.plugins.broker.ibkr", extra="trade")
 
         if getattr(_ibkr_mod, "IB", None) is None:
             results.append(
@@ -145,7 +160,7 @@ def cmd_plugins_doctor(as_json: bool = False, strict: bool = False):
         pass
 
     try:
-        from .plugins.broker import binance as _binance_mod
+        _binance_mod = load("quantbox.plugins.broker.binance", extra="trade")
 
         if getattr(_binance_mod, "Client", None) is None:
             results.append(
@@ -172,7 +187,7 @@ def cmd_plugins_doctor(as_json: bool = False, strict: bool = False):
                 status = "error"
                 message = f"entrypoint_load_failed: {e}"
 
-            if ep.name in builtins.get(group_name, {}):
+            if ep.name in BUILTIN_PLUGINS.get(group_name, {}):
                 if status == "ok":
                     status = "warn"
                 if message:
@@ -478,7 +493,8 @@ def sweep(
     ``<output_dir>/sweep_manifest.json`` (``quantbox/sweep@1``: strategy, execution
     timing, n_trials = grid rows).
     """
-    from .sweep import DEFAULT_METRICS, align_market_data, run_grid
+    sweep_mod = load("quantbox.sweep", extra="research")
+    run_grid = sweep_mod.run_grid
 
     config_path = Path(config).resolve()
     with config_path.open(encoding="utf-8") as f:
@@ -507,18 +523,21 @@ def sweep(
     if "dataset" not in data_cfg:
         raise typer.BadParameter("sweep config needs data.dataset: <quantbox-datasets name>")
     try:
-        from quantbox_datasets.lock import find_lock, load
+        from quantbox_datasets.lock import find_lock
+        from quantbox_datasets.lock import load as load_dataset
     except ImportError as exc:  # quantbox does not depend on quantbox-datasets
         raise typer.BadParameter(
             "sweep needs quantbox-datasets installed (it carries quantbox_datasets.lock); "
             "install it from its clone and point QUANTBOX_DATASETS_ROOT at <clone>/datasets"
         ) from exc
 
-    # The lock nearest the config wins; with none there, load() searches from cwd.
-    dataset = load(data_cfg["dataset"], lock=find_lock(config_dir))
+    # The lock nearest the config wins; with none there, load_dataset() searches from cwd.
+    dataset = load_dataset(data_cfg["dataset"], lock=find_lock(config_dir))
     align_to = data_cfg.get("align_to", "prices")
     names = [*data_cfg.get("frames", ["prices", "volume", "market_cap"]), align_to]
-    market_data = align_market_data({name: _dataset_frame(dataset, name) for name in dict.fromkeys(names)}, align_to)
+    market_data = sweep_mod.align_market_data(
+        {name: _dataset_frame(dataset, name) for name in dict.fromkeys(names)}, align_to
+    )
 
     output_dir = (config_dir / cfg.get("output_dir", "heatmaps")).resolve()
     heatmap = cfg.get("heatmap", {}) or {}
@@ -534,7 +553,7 @@ def sweep(
         output_dir=output_dir,
         heatmap_index=heatmap.get("index"),
         heatmap_columns=heatmap.get("columns"),
-        metrics=tuple(heatmap.get("metrics") or DEFAULT_METRICS),
+        metrics=tuple(heatmap.get("metrics") or sweep_mod.DEFAULT_METRICS),
         fees=float(backtest.get("fees", 0.005)),
         rebalancing_freq=backtest.get("rebalancing_freq", "1D"),
         lag_bars=sweep_lag_bars,
@@ -600,11 +619,13 @@ def arms(
     """
     import json as json_mod
 
-    from .arms import load_arms, run_arms
+    arms_mod = load("quantbox.arms", extra="research")
 
     out = sys.stderr if as_json else sys.stdout
     with contextlib.redirect_stdout(out):
-        summary = run_arms(load_arms(config), max_workers=max_workers, memory_budget_gb=memory_budget_gb)
+        summary = arms_mod.run_arms(
+            arms_mod.load_arms(config), max_workers=max_workers, memory_budget_gb=memory_budget_gb
+        )
     if as_json:
         print(json_mod.dumps(summary, indent=2))
     else:
@@ -631,7 +652,7 @@ def warehouse(
     json_out: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Interact with the warehouse (query, ingest, manage)."""
-    from .warehouse import Warehouse
+    Warehouse = load("quantbox.warehouse:Warehouse", extra="research")
 
     if action == "init":
         wh = Warehouse(root)
@@ -682,7 +703,8 @@ def warehouse(
             from pathlib import Path
 
             from .store import FileArtifactStore
-            from .warehouse.ingestion import ingest_run
+
+            ingest_run = load("quantbox.warehouse.ingestion:ingest_run", extra="research")
 
             run_path = Path(run_dir)
             store = FileArtifactStore(str(run_path.parent), run_path.name, _readonly=True)
@@ -828,7 +850,7 @@ def new_line(
     quantbox is pinned to the commit the tag names, every transitive dependency exactly.
     Then: `cd <slug> && uv sync && uv run quantbox run -c config.yaml`.
     """
-    from . import line
+    line = load("quantbox.line", extra="research")
 
     kwargs: dict[str, Any] = {
         "directory": directory,
@@ -871,7 +893,7 @@ def line_repin(
 
     Then: `uv sync && uv run pytest -m reproduction` — red means the engine moved a number.
     """
-    from . import line
+    line = load("quantbox.line", extra="research")
 
     try:
         result = line.repin(path, ref=ref, quantbox_url=quantbox_url, lock=not no_lock)
@@ -898,16 +920,18 @@ def report_export(
     the page and the contract. Exits 1 when there is no run under PATH, 2 on an
     unknown --format.
     """
-    from .finding_export import FORMATS, dumps, export_finding_report
+    finding_export = load("quantbox.finding_export", extra="research")
 
-    if fmt not in FORMATS:
-        raise typer.BadParameter(f"unknown format {fmt!r}; supported: {', '.join(FORMATS)}", param_hint="--format")
+    if fmt not in finding_export.FORMATS:
+        raise typer.BadParameter(
+            f"unknown format {fmt!r}; supported: {', '.join(finding_export.FORMATS)}", param_hint="--format"
+        )
     try:
-        payload = export_finding_report(path, primary=primary)
+        payload = finding_export.export_finding_report(path, primary=primary)
     except (FileNotFoundError, ValueError) as exc:
         typer.echo(f"ERROR: {exc}", err=True)
         raise SystemExit(1) from exc
-    text = dumps(payload)
+    text = finding_export.dumps(payload)
     if out:
         Path(out).write_text(text, encoding="utf-8")
     else:
@@ -947,7 +971,14 @@ def config_explain(
 
 
 def main():
-    app()
+    # A command that needs an extra which is not installed (a research or trade
+    # library on a base install) ends on one line naming the extra, not a
+    # traceback. The exit status stays 1, as for any uncaught error.
+    try:
+        app()
+    except MissingExtraError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

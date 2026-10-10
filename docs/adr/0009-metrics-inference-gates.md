@@ -8,6 +8,8 @@ superseded_by:
 amends: "ADR-0008 in sense only: its 'one seam, one function per job' rule now covers the statistics too."
 status_changes:
   - 2026-10-08: accepted with TOM-1618 — Tom, 2026-10-08: codebase-design pass over metrics, analysis and the statistics code ("Karta + buduj teraz")
+  - 2026-10-08: amended with TOM-1644 — decision 7, the Newey-West lag floor for overlapping observations (Tom: "Tak + do quantbox")
+  - 2026-10-08: amended with TOM-1646 — decision 8, multiple-testing corrections (Tom: "Bonferroni do quantbox")
 ---
 
 # ADR-0009: Metrics describe, inference tests, gates decide
@@ -79,6 +81,30 @@ The duplication guard of #236 matched metric NAMES. It did not see these copies:
    emit a `DeprecationWarning` that names it (`quantbox._deprecation.moved`).
    `analysis.gates.max_drawdown` and `analysis.gates.largest_drawdown_episode`
    keep their old positive sign on the old path only.
+7. **Overlapping observations set a lag floor.** *Added by TOM-1644
+   (2026-10-08), Tom: "Tak + do quantbox"; from robo-lab#16.* A series of
+   overlapping h-period observations (an IC on h-day forward returns, a
+   rolling h-day spread) is an MA(h-1): neighbours share h-1 periods. Its
+   Newey-West lag count is **max(auto lags, h-1)** (Hansen and Hodrick
+   1980). The automatic rule alone leaves the long-horizon t-stat
+   overstated: in robo-lab#16 the floor moves bg6's 252d IC t from 7.93
+   to 0.83.
+   - `inference.newey_west_tstat(returns, lags=None, *, overlap=None)` holds
+     the rule. `overlap=h` counts periods of the series passed; converting a
+     calendar window to periods (21 trading days in a monthly series) is the
+     caller's job.
+   - Each horizon is tested on its own, with only that horizon's overlap.
+   - An explicit `lags` still wins. A `lags` below h-1 is refused, and so is
+     an h longer than the sample: the floor could only be met by clamping,
+     which would hide the overstatement.
+   - The result dict reports `nw_overlap` (`None` when not given). Without
+     `overlap` no number moves.
+   - `tests/test_inference_nw_overlap.py` holds the known answer: an MA(62)
+     series where auto lags recover an SE ratio near 0.44 of the true SE,
+     and the floor recovers near 0.82.
+   - The `nw` gate and `factor_regression` do not take `overlap` yet: a gate
+     tests a strategy's per-period returns, which do not overlap.
+8. **Multiple-testing corrections are inference.** *Added by TOM-1646 (2026-10-08).* `inference.multiple_testing(pvalues, *, alpha, method="bonferroni"|"holm")` and `inference.bonferroni_alpha(n_tests, *, alpha)` (the per-test level `alpha/m`, for a CI) are the one home; the guard's `multiple_testing` class refuses a second one.
 
 ## Consequences
 

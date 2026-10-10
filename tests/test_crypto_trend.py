@@ -14,9 +14,6 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from quantbox.plugins.strategies._universe import (
-    select_universe,
-)
 from quantbox.plugins.strategies.crypto_trend import (
     CryptoTrendStrategy,
     compute_donchian_breakout_vectorized,
@@ -27,6 +24,7 @@ from quantbox.plugins.strategies.crypto_trend import (
     get_simple_weights,
     run,
 )
+from quantbox.universe import select_universe
 
 # ---------------------------------------------------------------------------
 # Helpers

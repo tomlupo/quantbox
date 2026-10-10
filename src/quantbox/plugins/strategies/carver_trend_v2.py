@@ -512,7 +512,7 @@ class CarverTrendV2Strategy:
         # 0. Time-varying universe mask (no look-ahead) — same machinery as v1.
         universe_mask_ts: pd.DataFrame | None = None
         if self.use_universe_selection:
-            from quantbox.plugins.strategies._universe import select_universe
+            from quantbox.universe import select_universe
 
             volume = data.get("volume", pd.DataFrame())
             market_cap = data.get("market_cap", pd.DataFrame())

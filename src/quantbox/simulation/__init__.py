@@ -19,6 +19,12 @@ Optional dependencies:
 - ``arch`` — required for GARCH fitting and DCC-GARCH correlation
 - ``scipy`` — required for parametric VaR, Bayesian forecasting, DCC optimisation
 - ``matplotlib`` + ``seaborn`` — required for visualisation (``SimulationPlotter``)
+
+The models, the simulator, correlation and stress testing live in
+:mod:`quantbox.montecarlo` (plugins layer, TOM-1451): a builtin datasource and a
+trade risk plugin use them, and neither may import research. This package
+re-exports them unchanged; ``quantbox.simulation.{models,engine,correlation,stress_testing}``
+are deprecation shims.
 """
 
 from __future__ import annotations
@@ -26,51 +32,37 @@ from __future__ import annotations
 # Visualization (optional — requires matplotlib/seaborn)
 import contextlib
 
-# Correlation
-from .correlation import (
+from quantbox.montecarlo import (
+    GARCH,
+    GBM,
+    HISTORICAL_SCENARIOS,
+    BaseModel,
     CorrelationEngine,
     CorrelationResult,
+    GARCHParams,
+    GBMParams,
+    HistoricalScenario,
+    JumpDiffusion,
+    JumpDiffusionParams,
+    MarketSimulator,
+    MeanReversion,
+    MeanReversionParams,
+    ModelParameters,
+    RegimeSwitching,
+    SimulationConfig,
+    SimulationResult,
+    StressScenario,
+    StressTestEngine,
+    StressTestResult,
+    generate_correlated_returns,
     generate_random_correlation_matrix,
 )
 
-# Engine
-from .engine import (
-    MarketSimulator,
-    SimulationConfig,
-    SimulationResult,
-    generate_correlated_returns,
-)
-
-# Forecasting
 from .forecasting import (
     ForecastResult,
     Horizon,
     MultiHorizonForecast,
     ReturnForecaster,
-)
-
-# Models
-from .models import (
-    GARCH,
-    GBM,
-    BaseModel,
-    GARCHParams,
-    GBMParams,
-    JumpDiffusion,
-    JumpDiffusionParams,
-    MeanReversion,
-    MeanReversionParams,
-    ModelParameters,
-    RegimeSwitching,
-)
-
-# Stress testing
-from .stress_testing import (
-    HISTORICAL_SCENARIOS,
-    HistoricalScenario,
-    StressScenario,
-    StressTestEngine,
-    StressTestResult,
 )
 
 with contextlib.suppress(ImportError):

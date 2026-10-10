@@ -12,10 +12,15 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
 import pandas as pd
 
 from quantbox.contracts import PluginMeta, RunResult
+from quantbox.exceptions import MissingExtraError
+
+try:
+    import httpx
+except ModuleNotFoundError as exc:  # the Telegram Bot API client needs the [trade] extra
+    raise MissingExtraError("trade", __name__, exc.name) from exc
 
 logger = logging.getLogger(__name__)
 

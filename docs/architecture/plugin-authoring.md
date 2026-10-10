@@ -1,6 +1,6 @@
 # Plugin Authoring
 
-Plugins are how QuantBox extends behavior at L3+ (see [api-layers.md](api-layers.md)). They're optional — most casual work happens at L0/L1. Use a plugin when you want validated contracts, registry discoverability, or full-pipeline (L4) integration.
+Plugins are how QuantBox extends behavior (see [api-layers.md](api-layers.md)). They're optional — most casual work is a plain script. Use a plugin when you want validated contracts, registry discoverability, or a YAML config through the runner.
 
 ---
 
@@ -8,13 +8,12 @@ Plugins are how QuantBox extends behavior at L3+ (see [api-layers.md](api-layers
 
 | Need | Use |
 |---|---|
-| Quick experiment, throwaway code | L0/L1 — just write a script |
-| One-off comparison or notebook | L2 composable functions |
-| Want validation + contracts but don't need YAML | L3 plugin instance, called directly |
-| Need YAML config, manifest, and EXPERIMENTS.md entry | L3 plugin + L4 runner |
-| Production cron, reproducibility-pinned | L3 plugin + L5 CLI + `--strict` |
+| Quick experiment, throwaway code, one-off comparison | a script or notebook (vectorbt or `quantbox.bt` in research) |
+| Want validation + contracts but don't need YAML | a plugin instance, called directly |
+| Need YAML config, manifest, and EXPERIMENTS.md entry | a plugin + the runner |
+| Production cron, reproducibility-pinned | a plugin + `quantbox run` + `run.strict: true` |
 
-If you can do the work at L1, do it at L1. Reach for plugins only when the contract or the runner adds value.
+If a script does the work, write a script. Reach for plugins only when the contract or the runner adds value.
 
 ---
 
@@ -203,7 +202,7 @@ The rule: **the `v{N}` in the plugin name is the user-facing version.** Internal
 
 ## See also
 
-- [api-layers.md](api-layers.md) — where plugins fit (L3) and how to use them at lower layers.
+- [api-layers.md](api-layers.md) — which layer a plugin belongs to, and the two ways to call it.
 - [adapters.md](adapters.md) — how plugins compose external libs.
 - [lifecycle.md](lifecycle.md) — the status state machine and promotion path.
 - [skills.md](skills.md) — how LLMs author plugins via skills.

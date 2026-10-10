@@ -48,8 +48,18 @@ from typing import Any
 
 import pandas as pd
 
+from quantbox._lazy import load
 from quantbox.execution import resolve_execution, resolve_sweep_lag_bars
 from quantbox.parquet_io import read_parquet
+
+__all__ = [
+    "DEFAULT_METRICS",
+    "align_market_data",
+    "load_parquet_market_data",
+    "plot_heatmaps",
+    "run_grid",
+    "sweep",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -268,13 +278,9 @@ def plot_heatmaps(
     Returns a dict keyed by metric name. If ``save_dir`` is given, each entry
     is the saved PNG path; otherwise, the matplotlib Axes.
     """
-    try:
-        import matplotlib.pyplot as plt
-        import seaborn as sns
-    except ImportError as exc:
-        raise ImportError(
-            "plot_heatmaps requires matplotlib + seaborn; install with `pip install matplotlib seaborn`"
-        ) from exc
+    # MissingExtraError (an ImportError) names [viz] when either is absent.
+    plt = load("matplotlib.pyplot", extra="viz")
+    sns = load("seaborn", extra="viz")
 
     if metrics is None:
         metrics = [c for c in grid.columns if c not in _sweep_axis_columns(grid, index, columns)]

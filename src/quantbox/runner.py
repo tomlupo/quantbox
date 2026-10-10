@@ -15,6 +15,8 @@ import pandas as pd
 from quantbox.parquet_io import read_parquet
 
 from . import run_manifest as _run_manifest
+from ._lazy import load
+from .config_checks import UNKNOWN_PLUGIN, check_config, check_plugin_params
 from .contracts import (
     BrokerPlugin,
     DataPlugin,
@@ -26,7 +28,7 @@ from .contracts import (
     RunResult,
     StrategyPlugin,
 )
-from .exceptions import ConfigValidationError, PluginNotFoundError
+from .exceptions import ConfigValidationError, MissingExtraError, PluginNotFoundError
 from .execution import run_record
 from .llm_utils import event_line, load_schema, validate_table
 from .params_schema import PLUGIN_GROUPS
@@ -35,7 +37,15 @@ from .run_history import RUN_TS_FORMAT
 from .run_manifest import _sha256_file
 from .store import FileArtifactStore
 from .strict import get_capability
-from .validate import UNKNOWN_PLUGIN, check_plugin_params, validate_config
+
+__all__ = [
+    "ResolvedRun",
+    "plugin_refs",
+    "prepare_config",
+    "resolve_run",
+    "run_from_config",
+    "strict_refusal",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -381,7 +391,7 @@ def prepare_config(cfg: dict[str, Any]) -> dict[str, Any]:
                 if key in prof and key not in cfg["plugins"]:
                     cfg["plugins"][key] = prof[key]
     # Basic config validation (LLM-friendly)
-    findings = validate_config(cfg, check_params=False)
+    findings = check_config(cfg, check_params=False)
     if any(f.level == "error" for f in findings):
         msgs = "; ".join(f.message for f in findings)
         raise ConfigValidationError(f"config_validation_failed: {msgs}", findings=findings)
@@ -860,11 +870,10 @@ def run_from_config(
         # the run (its results are written; `quantbox report export` re-derives the report),
         # but it is never only a log line (TOM-1529): the manifest records that the report
         # was not produced and why, and `quantbox run` prints it in its summary.
-        from .finding_export import FILENAME, write_finding_report
-
         try:
-            write_finding_report(store.root)
-            record: dict[str, Any] = {"produced": True, "file": FILENAME}
+            finding_export = load("quantbox.finding_export", extra="research")
+            finding_export.write_finding_report(store.root)
+            record: dict[str, Any] = {"produced": True, "file": finding_export.FILENAME}
         except Exception as exc:
             logger.warning("finding_report.json export failed: %s", exc)
             record = {"produced": False, "error": f"{type(exc).__name__}: {exc}"}
@@ -878,11 +887,13 @@ def run_from_config(
     wh_cfg = cfg.get("warehouse")
     if wh_cfg and wh_cfg.get("auto_ingest"):
         try:
-            from .warehouse import Warehouse
-            from .warehouse.ingestion import ingest_run
+            Warehouse = load("quantbox.warehouse:Warehouse", extra="research")
+            ingest_run = load("quantbox.warehouse.ingestion:ingest_run", extra="research")
 
             with Warehouse(wh_cfg["root"], wh_cfg.get("database")) as wh:
                 ingest_run(wh, store, tables=wh_cfg.get("ingest_tables"))
+        except MissingExtraError:
+            raise  # auto_ingest asked for duckdb: a missing extra is loud (ADR-0010)
         except Exception as exc:
             import logging
 

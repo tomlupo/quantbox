@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
-from quantbox.simulation import (
+from quantbox.montecarlo import (
     GBM,
     GBMParams,
     JumpDiffusion,

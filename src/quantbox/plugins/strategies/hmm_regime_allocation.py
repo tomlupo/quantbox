@@ -137,10 +137,17 @@ strategy:
             Dict with 'weights' DataFrame (date index x symbol columns),
             'regimes' Series, and diagnostic info.
         """
+        # Without hmmlearn this used to return all-zero weights (an all-cash book)
+        # with an "error" key nothing reads: a silent, different result. It now
+        # refuses. No quantbox extra carries hmmlearn, so the error names the
+        # package itself (TOM-1451).
         try:
             import hmmlearn.hmm  # noqa: F401
-        except ImportError:
-            return self._fallback_run(data, params, error="hmmlearn not installed; pip install hmmlearn")
+        except ImportError as exc:
+            raise ImportError(
+                "strategy.hmm_regime_allocation.v1 needs hmmlearn, which no quantbox extra carries: "
+                "install it with `uv add hmmlearn` (or `pip install hmmlearn`)"
+            ) from exc
 
         # Extract parameters
         n_regimes = params.get("n_regimes", 3)
@@ -360,9 +367,3 @@ strategy:
                 weights.loc[idx, col] = class_weight / max(n_same_class, 1)
 
         return weights
-
-    def _fallback_run(self, data: dict, params: dict, error: str) -> dict:
-        """Return zero weights with error when dependencies are missing."""
-        prices_df = data["prices"]
-        weights = pd.DataFrame(0.0, index=prices_df.index, columns=prices_df.columns)
-        return {"weights": weights, "regimes": pd.Series(dtype=object), "error": error}

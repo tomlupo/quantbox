@@ -4,8 +4,8 @@ Read these in order. The first two are mandatory before modifying anything; the 
 
 | # | Document | Description |
 |---|---|---|
-| 1 | [**principles.md**](principles.md) | The doctrine. Composer-not-competitor, lowest-viable-abstraction, layered API, owned conventions, adapter-not-reimplementation. Read this first, every time. |
-| 2 | [**api-layers.md**](api-layers.md) | The L0–L5 table. Operational rule for "which layer should this live at." Skill defaults reference this. |
+| 1 | [**principles.md**](principles.md) | The doctrine. Composer-not-competitor, lowest-viable-abstraction, audience layers, owned conventions, adapter-not-reimplementation. Read this first, every time. |
+| 2 | [**api-layers.md**](api-layers.md) | The audiences (core, plugins, research, trade) and the two entry styles ([ADR-0010](../adr/0010-audience-layers-one-distribution.md)). Where the module map lives. |
 | 3 | [**plugin-authoring.md**](plugin-authoring.md) | Plugin types, `meta.status`, registration paths, naming, testing. |
 | 4 | [**adapters.md**](adapters.md) | The wrap-don't-rebuild rule with examples. When to add an adapter, when not. |
 | 5 | [**skills.md**](skills.md) | LLM-facing API conventions. Frontmatter contract, capability-gap branch, authoring skills. |
@@ -16,4 +16,4 @@ Read these in order. The first two are mandatory before modifying anything; the 
 Once you've read principles + api-layers, the others are reference material — pull what's relevant.
 
 For step-by-step how-tos, see [../playbooks/](../playbooks/).
-For historical decisions, see [../decisions/](../decisions/).
+For historical decisions, see [../adr/](../adr/).

@@ -19,6 +19,8 @@ The interface, grouped by question:
 - Deflated Sharpe Ratio: :func:`deflated_sharpe_ratio`,
   :func:`deflated_sharpe_ratio_from_returns`, :func:`expected_max_sr`,
   :func:`sr_estimator_std`, :class:`DSRResult`.
+- Multiple testing: :func:`multiple_testing` (Bonferroni, Holm),
+  :func:`bonferroni_alpha`, :class:`MultipleTestingResult`.
 - Resampling: :func:`bootstrap` (iid or paired stationary block),
   :func:`stationary_bootstrap_indices`, :func:`moving_block_indices`,
   :func:`gaussian_null`.
@@ -177,7 +179,27 @@ def hac_ols(y: np.ndarray, x: np.ndarray, lags: int) -> Any:
     return sm.OLS(y, x).fit(cov_type="HAC", cov_kwds={"maxlags": lags, "use_correction": False})
 
 
-def newey_west_tstat(returns, lags: int | None = None, *, allow_nonfinite_drop: bool = False) -> dict:
+def _check_overlap(overlap, lags: int | None) -> None:
+    """Refuse an ``overlap`` that is not a whole number of periods >= 1, or one an explicit ``lags`` undercuts."""
+    if isinstance(overlap, bool) or not isinstance(overlap, (int, np.integer)) or overlap < 1:
+        raise InferenceInputError(
+            f"overlap must be a whole number of periods >= 1 (1 = non-overlapping), got {overlap!r}"
+        )
+    if lags is not None and lags < overlap - 1:
+        raise InferenceInputError(
+            f"lags={lags!r} conflicts with overlap={overlap!r}: observations that overlap by "
+            f"{overlap - 1} periods need at least {overlap - 1} Newey-West lags (Hansen-Hodrick 1980). "
+            "Pass lags >= overlap - 1, or drop lags and let overlap set them."
+        )
+
+
+def newey_west_tstat(
+    returns,
+    lags: int | None = None,
+    *,
+    overlap: int | None = None,
+    allow_nonfinite_drop: bool = False,
+) -> dict:
     """Newey-West HAC t-stat on the mean of ``returns`` — the ``nw`` gate calls this one.
 
     An OLS of ``returns`` on a constant with a HAC (Bartlett kernel)
@@ -185,25 +207,49 @@ def newey_west_tstat(returns, lags: int | None = None, *, allow_nonfinite_drop: 
     the serial correlation that inflates a naive t-stat on overlapping or
     trend-following returns. ``lags=None`` picks :func:`newey_west_auto_lags`.
 
+    ``overlap=h`` declares that each observation spans ``h`` periods of the
+    series and its neighbours share ``h - 1`` of them (an IC on h-day forward
+    returns sampled daily, a rolling h-day spread). Such a series is an
+    MA(h-1) by construction, and the automatic lag count alone leaves its
+    t-stat overstated. The rule (Hansen and Hodrick 1980, "Forward Exchange
+    Rates as Optimal Predictors of Future Spot Rates", JPE 88(5)): the lag
+    count is ``max(newey_west_auto_lags(n), h - 1)``. ``h`` counts periods
+    of THIS series; converting a calendar window (21 trading days in a
+    monthly series) is the caller's. Test each horizon on its own, with that
+    horizon's ``h``. An explicit ``lags`` still wins, but one below
+    ``h - 1`` is refused, and so is an ``h`` longer than the sample (its
+    floor could only be met by clamping, which would hide the overstatement).
+    ``overlap=1`` means non-overlapping and changes nothing.
+
     Non-finite observations RAISE by default (see :func:`require_finite`);
     ``allow_nonfinite_drop=True`` opts into dropping them, and the returned
     ``n_obs_raw`` / ``n_nonfinite_dropped`` keep that loss visible.
 
     Returns a dict with full-precision floats: ``n_obs``, ``n_obs_raw``,
-    ``n_nonfinite_dropped``, ``nw_lags``, ``mean_return``, ``nw_se``,
-    ``nw_tstat`` and ``nw_pvalue`` (two-sided, normal). A degenerate series
-    (fewer than 2 finite observations, or zero long-run variance) yields
-    ``None`` for the SE/t-stat/p-value rather than ``inf``/``nan``.
+    ``n_nonfinite_dropped``, ``nw_lags``, ``nw_overlap`` (the ``overlap``
+    passed, or ``None``), ``mean_return``, ``nw_se``, ``nw_tstat`` and
+    ``nw_pvalue`` (two-sided, normal). A degenerate series (fewer than 2
+    finite observations, or zero long-run variance) yields ``None`` for the
+    SE/t-stat/p-value rather than ``inf``/``nan``.
     """
+    if overlap is not None:
+        _check_overlap(overlap, lags)
+        overlap = int(overlap)
     r, n_dropped = require_finite(returns, allow_nonfinite_drop=allow_nonfinite_drop)
     n = int(r.size)
     n_raw = int(np.asarray(returns).size)
+    if overlap is not None and overlap > n:
+        raise InferenceInputError(
+            f"overlap={overlap} needs at least {overlap - 1} Newey-West lags, but {n} finite "
+            f"observations allow at most {max(n - 1, 0)} — the sample is shorter than one overlap window"
+        )
 
     base = {
         "n_obs": n,
         "n_obs_raw": n_raw,
         "n_nonfinite_dropped": n_dropped,
         "nw_lags": 0,
+        "nw_overlap": overlap,
         "mean_return": None,
         "nw_se": None,
         "nw_tstat": None,
@@ -214,6 +260,8 @@ def newey_west_tstat(returns, lags: int | None = None, *, allow_nonfinite_drop: 
 
     if lags is None:
         lags = newey_west_auto_lags(n)
+        if overlap is not None:
+            lags = max(lags, overlap - 1)  # Hansen-Hodrick floor
     lags = max(0, min(lags, n - 1))  # can't use more lags than we have data
     base["nw_lags"] = lags
 
@@ -562,6 +610,112 @@ def deflated_sharpe_ratio_from_returns(returns, n_trials: int, *, allow_nonfinit
     return replace(result, n_obs_raw=m.n_obs_raw, n_nonfinite_dropped=m.n_nonfinite_dropped)
 
 
+# ── multiple testing ───────────────────────────────────────────────────────
+#
+# Family-wise error control over m tests run on one question (TOM-1646).
+# statsmodels' ``multipletests`` computes the corrections (adapter, not
+# reimplementation); this module owns the refusals and the result shape.
+
+MULTIPLE_TESTING_METHODS = ("bonferroni", "holm")
+
+
+def _check_alpha(alpha) -> float:
+    """Refuse a family-wise level outside the open interval (0, 1)."""
+    if isinstance(alpha, bool) or not isinstance(alpha, (int, float, np.floating)) or not 0.0 < alpha < 1.0:
+        raise InferenceInputError(f"alpha must be a family-wise level in the open interval (0, 1), got {alpha!r}")
+    return float(alpha)
+
+
+def bonferroni_alpha(n_tests: int, *, alpha: float = 0.05) -> float:
+    """The level each of ``n_tests`` tests runs at for a family-wise ``alpha``: ``alpha / n_tests`` (Bonferroni).
+
+    The one place this level is computed. A test with no p-value uses it
+    directly: a two-sided bootstrap CI at ``1 - bonferroni_alpha(m)`` cuts at
+    the ``100 * bonferroni_alpha(m) / 2`` percentile on each side. With
+    p-values in hand, :func:`multiple_testing` applies it (and Holm).
+    Refuses an ``n_tests`` that is not a whole number >= 1, and an ``alpha``
+    outside (0, 1).
+    """
+    if isinstance(n_tests, bool) or not isinstance(n_tests, (int, np.integer)) or n_tests < 1:
+        raise InferenceInputError(f"n_tests must be a whole number of tests >= 1, got {n_tests!r}")
+    return _check_alpha(alpha) / int(n_tests)
+
+
+@dataclass(frozen=True)
+class MultipleTestingResult:
+    """A family of p-values after a family-wise correction, in the INPUT order."""
+
+    method: str  # "bonferroni" or "holm"
+    alpha: float  # the family-wise level
+    m: int  # tests in the family
+    pvalues: np.ndarray  # the raw p-values, as passed
+    adjusted: np.ndarray  # adjusted p-values, capped at 1; reject == (adjusted <= alpha)
+    reject: np.ndarray  # bool: the null of that test is rejected at family-wise alpha
+    per_test_alpha: float | None  # Bonferroni: alpha / m. Holm: None (its level depends on the rank)
+
+
+def multiple_testing(pvalues, *, alpha: float = 0.05, method: str = "bonferroni") -> MultipleTestingResult:
+    """Adjusted p-values and a reject mask for a family of ``m`` tests at family-wise level ``alpha``.
+
+    ``method="bonferroni"`` rejects a test when ``p <= alpha / m``
+    (:func:`bonferroni_alpha`); its adjusted p-value is ``min(1, m * p)``.
+    ``method="holm"`` (Holm 1979, "A Simple Sequentially Rejective Multiple
+    Test Procedure", Scand. J. Statist. 6(2)) steps down through the sorted
+    p-values: the k-th smallest is tested against ``alpha / (m - k + 1)`` and
+    the first one that fails stops the procedure. It controls the same
+    family-wise error as Bonferroni and rejects at least as much. Its
+    adjusted p-value is the running maximum of ``(m - k + 1) * p_(k)``,
+    capped at 1. Neither assumes the tests are independent.
+
+    The contract is ``reject == (adjusted <= alpha)``, for both methods. In
+    exact arithmetic that is the rule above; in floating point a p-value
+    within one rounding of its level (``p = 0.1/3`` at ``alpha=0.1``, ``m=3``)
+    can fall on either side, and the mask follows the adjusted p-value.
+
+    ``m`` is the size of the family passed. Every test tried on the question
+    belongs in it, the ones that failed included; leaving one out loosens
+    every other test's level. For the same reason a NaN/Inf p-value is
+    refused, never dropped. Also refused: an empty or non-1-D family, a
+    p-value outside [0, 1], an ``alpha`` outside (0, 1), an unknown method.
+    """
+    from statsmodels.stats.multitest import multipletests
+
+    if method not in MULTIPLE_TESTING_METHODS:
+        raise InferenceInputError(f"method must be one of {MULTIPLE_TESTING_METHODS}, got {method!r}")
+    alpha = _check_alpha(alpha)
+    raw = np.asarray(pvalues, dtype=float)
+    if raw.ndim != 1:
+        raise InferenceInputError(f"pvalues must be a 1-D family of p-values, got shape {raw.shape}")
+    if raw.size == 0:
+        raise InferenceInputError("pvalues must hold at least one p-value, got an empty family")
+    try:
+        p, _ = require_finite(raw, what="p-value")
+    except InferenceInputError as e:
+        # No drop option here: dropping a p-value would shrink m and loosen every other test's level.
+        raise InferenceInputError(
+            f"{e} multiple_testing takes no drop option: fix the test that produced the NaN, or pass "
+            "1.0 for a test that ran and has no evidence."
+        ) from e
+    if ((p < 0.0) | (p > 1.0)).any():
+        raise InferenceInputError(f"every p-value must lie in [0, 1], got {p[(p < 0.0) | (p > 1.0)].tolist()}")
+
+    # The reject mask is read off the adjusted p-values, not taken from
+    # statsmodels' own mask: the two are the same rule in exact arithmetic, and
+    # one source keeps them from disagreeing in the last bit at the boundary.
+    _, adjusted, _, _ = multipletests(p, alpha=alpha, method=method)
+    adjusted = np.minimum(np.asarray(adjusted, dtype=float), 1.0)
+    m = int(p.size)
+    return MultipleTestingResult(
+        method=method,
+        alpha=alpha,
+        m=m,
+        pvalues=p,
+        adjusted=adjusted,
+        reject=adjusted <= alpha,
+        per_test_alpha=bonferroni_alpha(m, alpha=alpha) if method == "bonferroni" else None,
+    )
+
+
 # ── resampling ─────────────────────────────────────────────────────────────
 
 
@@ -665,7 +819,10 @@ __all__ = [
     "DSRResult",
     "EULER_MASCHERONI",
     "InferenceInputError",
+    "MULTIPLE_TESTING_METHODS",
+    "MultipleTestingResult",
     "ReturnMoments",
+    "bonferroni_alpha",
     "bootstrap",
     "deflated_sharpe_ratio",
     "deflated_sharpe_ratio_from_returns",
@@ -676,6 +833,7 @@ __all__ = [
     "largest_drawdown_episode",
     "moments",
     "moving_block_indices",
+    "multiple_testing",
     "newey_west_auto_lags",
     "newey_west_tstat",
     "require_finite",

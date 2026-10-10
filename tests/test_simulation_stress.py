@@ -1,10 +1,10 @@
-"""Tests for quantbox.simulation.stress_testing — StressTestEngine."""
+"""Tests for quantbox.montecarlo.stress_testing — StressTestEngine."""
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from quantbox.simulation.stress_testing import (
+from quantbox.montecarlo.stress_testing import (
     HISTORICAL_SCENARIOS,
     HistoricalScenario,
     StressScenario,

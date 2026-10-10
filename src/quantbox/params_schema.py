@@ -25,6 +25,8 @@ from typing import Any, Literal, Union
 
 from jsonschema import Draft202012Validator
 
+from .exceptions import MissingExtraError
+
 # group label -> PluginRegistry attribute. The configurable plugin groups only:
 # datasets and capabilities are not configured through params.
 PLUGIN_GROUPS: dict[str, str] = {
@@ -183,10 +185,33 @@ def check_params(
 
 
 def catalog(registry: Any) -> dict[str, Any]:
-    """Every registered plugin with its id, status and resolved params schema."""
+    """Every registered plugin with its id, status and resolved params schema.
+
+    A builtin whose module needs an extra that is not installed cannot be
+    imported, so its meta and schema are unknown: its row carries
+    ``missing_extra`` (the extra to install) and nulls, and it is still listed.
+    """
     plugins = []
     for group, attr in PLUGIN_GROUPS.items():
-        for name, cls in sorted((getattr(registry, attr, None) or {}).items()):
+        mapping = getattr(registry, attr, None) or {}
+        for name in sorted(mapping.keys()):
+            try:
+                cls = mapping[name]
+            except MissingExtraError as exc:
+                plugins.append(
+                    {
+                        "id": name,
+                        "group": group,
+                        "kind": None,
+                        "status": None,
+                        "version": None,
+                        "description": "",
+                        "params_schema": None,
+                        "params": None,
+                        "missing_extra": exc.extra,
+                    }
+                )
+                continue
             meta = getattr(cls, "meta", None)
             schema = resolve_params_schema(cls)
             plugins.append(
@@ -222,6 +247,8 @@ CATALOG_SCHEMA: dict[str, Any] = {
                     "status": {"type": ["string", "null"]},
                     "version": {"type": ["string", "null"]},
                     "description": {"type": "string"},
+                    # Present only when the plugin's extra is not installed.
+                    "missing_extra": {"type": "string"},
                     "params_schema": {"type": ["object", "null"]},
                     "params": {
                         "type": ["array", "null"],

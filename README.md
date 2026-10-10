@@ -12,16 +12,18 @@ Quant research and trading framework with a plugin architecture. Config-driven p
 ## Install
 
 ```bash
-uv venv && source .venv/bin/activate
-uv sync
+uv add quantbox                # the base install: core only (a client install)
+uv add 'quantbox[research]'    # pick the extras you need, or
+uv add 'quantbox[full]'        # every extra
 
-# Optional extras:
-uv sync --extra vectorbt  # vectorbt backtest engine (quantbox.bt, engine: vectorbt, sweeps)
-uv sync --extra ccxt      # Binance, Hyperliquid (via ccxt)
-uv sync --extra ibkr      # Interactive Brokers
-uv sync --extra binance   # python-binance
-uv sync --extra full      # all of the above
+# In a clone: uv sync (dev env), or uv sync --extra full
 ```
+
+The base install carries what the core layer imports, and nothing else
+(ADR-0010). Each extra adds one audience's libraries: `[data]`, `[research]`,
+`[trade]`, plus `[vectorbt]` and the venue extras. A module that needs a
+missing extra raises `MissingExtraError` naming it. `pyproject.toml`
+(`dependencies`, `[project.optional-dependencies]`) owns every list.
 
 ## Quick start
 
@@ -139,6 +141,7 @@ Copy-paste scaffolds for methodology specs, dataset docs, and runbooks are in [`
 ## Documentation
 
 See [docs/](docs/) for full documentation:
+- [Architecture](docs/architecture/README.md) — the audience layers (core, plugins, research, trade) and the two entry styles ([ADR-0010](docs/adr/0010-audience-layers-one-distribution.md))
 - [Backtesting guide](docs/playbooks/backtesting.md)
 - [Multi-repo workflow](docs/playbooks/multi-repo-workflow.md)
 - [Trading bridge](docs/playbooks/trading-bridge.md)

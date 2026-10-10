@@ -21,9 +21,10 @@ from typing import Any
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
+from quantbox.market_cap import MarketCapProvider
 from quantbox.parquet_io import read_parquet
 
-from ._utils import MarketCapProvider, resolve_screen_inputs
+from ._utils import resolve_screen_inputs
 from .hyperliquid_data_plugin import HyperliquidDataPlugin
 
 logger = logging.getLogger(__name__)

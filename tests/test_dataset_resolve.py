@@ -390,9 +390,9 @@ def test_a_restored_pin_is_what_the_run_reads_not_the_moved_on_checkout(root, tm
     monkeypatch.setitem(sys.modules, "quantbox_datasets.lock", module)
     monkeypatch.chdir(tmp_path)
 
-    from quantbox.plugins.datasources.local_file_data import _load_pinned_dataset
+    from quantbox.dataset import load_pinned_dataset
 
-    dataset, resolved = _load_pinned_dataset("etf-daily")
+    dataset, resolved = load_pinned_dataset("etf-daily")
 
     assert resolved["restored"] is True and resolved["path"] == str(tmp_path / "history" / "etf-daily")
     assert calls == [("etf-daily", {"root": str(root), "sha256": pinned, "pinned": False})]

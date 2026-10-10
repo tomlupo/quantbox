@@ -21,7 +21,6 @@ inject survives only as a shim for strategies whose ``run`` takes no
 
 from __future__ import annotations
 
-import importlib
 import inspect
 import logging
 import warnings
@@ -29,8 +28,18 @@ from typing import Any
 
 import pandas as pd
 
+from quantbox._lazy import load
 from quantbox.contracts import StrategyContext
 from quantbox.frequency import resolve_pipeline_frequency
+
+__all__ = [
+    "FALLBACK_BARS_PER_YEAR",
+    "LEGACY_ANNUALIZE_KEY",
+    "build_strategy_context",
+    "call_strategy",
+    "resolve_annualize",
+    "run_strategies",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +154,7 @@ def run_strategies(
         for cfg in strategies_cfg:
             name = cfg["name"]
             try:
-                module = importlib.import_module(f"quantbox.plugins.strategies.{name}")
+                module = load(f"quantbox.plugins.strategies.{name}")
             except ImportError:
                 logger.error("Could not import strategy '%s'", name)
                 raise

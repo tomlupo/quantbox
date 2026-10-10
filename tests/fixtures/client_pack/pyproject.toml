@@ -1,0 +1,23 @@
+# A minimal robo-shaped client pack (TOM-1451, the client smoke).
+#
+# It installs next to a BASE quantbox (no extras) and registers one strategy
+# and one data source through entry points, the way a client install does.
+# Its code imports quantbox CORE only and builds its data in memory, so it
+# needs no network, no dataset and no extra. scripts/check_no_vectorbt.sh
+# installs it and runs one rsims backtest on it through `quantbox run`.
+[project]
+name = "qb-client-pack"
+version = "0.0.1"
+description = "Test fixture: a minimal client plugin pack for the quantbox base-install smoke."
+requires-python = ">=3.10"
+dependencies = ["quantbox"]
+
+[project.entry-points."quantbox.strategies"]
+"client_pack.top_momentum.v1" = "qb_client_pack.plugins:TopMomentumStrategy"
+
+[project.entry-points."quantbox.data"]
+"client_pack.synthetic_data.v1" = "qb_client_pack.plugins:InMemoryDataPlugin"
+
+[build-system]
+requires = ["uv_build>=0.12.17,<0.13.0"]
+build-backend = "uv_build"

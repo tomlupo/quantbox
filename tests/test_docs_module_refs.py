@@ -4,7 +4,10 @@ The architecture docs once advertised ``quantbox.opt`` and ``quantbox.score``
 as L1 modules; neither was ever built. A dotted ``quantbox.x.y`` reference in a
 doc is resolved against the installed package: the longest importable prefix
 must be a module, and every remaining segment an attribute of it. Code blocks
-are checked too — a snippet importing a missing module is the same claim.
+are checked too — a snippet importing a missing module is the same claim. So
+is ``from quantbox import run_from_config``: each imported name is checked as
+``quantbox.run_from_config`` (TOM-1449; api-layers.md carried exactly that
+line, and the dotted pattern alone did not see it).
 
 Three things are not a claim about the current code, and are skipped:
 
@@ -33,6 +36,18 @@ DOC_GLOBS = ("*.md", "docs/**/*.md", "templates/**/*.md", "cookbook/**/*.md", "s
 DESIGN_ONLY_MARKER = "<!-- design-only:"
 
 _REF = re.compile(r"(?<![\w./-])quantbox(?:\.[A-Za-z_]\w*)+")
+_FROM_IMPORT = re.compile(r"\bfrom\s+(quantbox(?:\.[A-Za-z_]\w*)*)\s+import\s+([^#\n]+)")
+
+
+def _line_refs(line: str) -> list[str]:
+    """Every dotted name a doc line claims, including each `from quantbox... import x`."""
+    refs = _REF.findall(line)
+    for m in _FROM_IMPORT.finditer(line):
+        for item in m.group(2).replace("(", " ").replace(")", " ").split(","):
+            name = item.split(" as ")[0].strip()
+            if name.isidentifier():
+                refs.append(f"{m.group(1)}.{name}")
+    return refs
 
 
 def _skipped(rel: Path) -> bool:
@@ -72,7 +87,7 @@ def _refs() -> list[tuple[str, int, str]]:
         if DESIGN_ONLY_MARKER in text:
             continue
         for lineno, line in enumerate(text.splitlines(), 1):
-            for ref in _REF.findall(line):
+            for ref in _line_refs(line):
                 out.append((str(path.relative_to(REPO)), lineno, ref))
     return out
 
@@ -89,6 +104,17 @@ def test_resolver_rejects_a_missing_module() -> None:
     assert not _resolves("quantbox.opt")
     assert not _resolves("quantbox.score.peer_z")
     assert not _resolves("quantbox.contracts.NoSuchThing")
+
+
+def test_from_import_names_are_claims() -> None:
+    assert _line_refs("from quantbox import run_from_config") == ["quantbox.run_from_config"]
+    assert not _resolves("quantbox.run_from_config")
+    assert _line_refs("from quantbox.runner import (run_from_config as r, Foo)  # x") == [
+        "quantbox.runner",
+        "quantbox.runner.run_from_config",
+        "quantbox.runner.Foo",
+    ]
+    assert _resolves("quantbox.runner.run_from_config")
 
 
 @pytest.mark.filterwarnings("ignore")

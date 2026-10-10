@@ -24,6 +24,9 @@ jobs:
       - run: uv sync
       - run: uv run ruff check .
       - run: uv run ruff format --check .
+      # The layer contracts (ADR-0010, TOM-1451): pyproject.toml [tool.importlinter].
+      # tests/test_layer_map.py proves every module is in exactly one layer.
+      - run: uv run lint-imports
 
   test:
     runs-on: ubuntu-latest
@@ -48,10 +51,13 @@ jobs:
       - run: uv run pytest -q -m "not pipeline_smoke and not canonical_reproduction"
 
   no-vectorbt:
-    # A base `quantbox` (no extras, no lockfile, no dev group) installed into a
-    # CLEAN venv must import, list plugins and run an rsims backtest without
-    # vectorbt — and `engine: vectorbt` must fail naming the extra (TOM-1334).
-    # The `test` job cannot prove this: its env carries vectorbt via the dev group.
+    # The CLIENT SMOKE (TOM-1451; it began as TOM-1334's no-vectorbt check). A
+    # base `quantbox` (no extras, no lockfile, no dev group) in a CLEAN venv must
+    # carry none of vectorbt, numba, ccxt, duckdb, httpx, plotly; import every
+    # core module; name the extra wherever one is missing; and run an rsims
+    # backtest, also on a client pack installed through entry points. The
+    # script header lists every step. The `test` job cannot prove this: its env
+    # carries every library through the dev group.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
