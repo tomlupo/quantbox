@@ -29,6 +29,27 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.12.0 (2026-10-10)
+
+### Feat
+
+- **layers**: import-linter contracts own the layer map (TOM-1451, 4b-3) (#268)
+- **deps**: lean base install, [data]/[research]/[trade] extras and the client smoke (TOM-1451, 4b-2) (#267)
+- **api**: declared public surface with deprecation shims, one HL symbol mapping (TOM-1449, TOM-1419) (#265)
+- **inference**: multiple-testing corrections, Bonferroni and Holm (TOM-1646) (#263)
+- **inference**: Newey-West lags for overlapping returns (TOM-1644) (#262)
+
+### Fix
+
+- **data**: asof cut on each row's own wall-clock date, keeping west-of-UTC asof bars (TOM-1681) (#272)
+- **data**: the pandas reader cuts at asof for any DatetimeIndex (TOM-1681) (#271)
+- **deps**: client-safe numpy floor, core strategy_cache, no silent duckdb fallback (TOM-1451) (#270)
+- **release**: after-release reads the quantbox-live pin from origin/main (TOM-1640) (#261)
+
+### Refactor
+
+- **layers**: cut every forbidden layer edge, lazy registry and one lazy helper (TOM-1451, 4b-1) (#266)
+
 ## v0.11.0 (2026-10-08)
 
 ### Feat
