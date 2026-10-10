@@ -18,8 +18,8 @@ Features
 
 Core code (numpy and pandas only), behind the engine seam's rsims adapter
 (:mod:`quantbox.engine.rsims`). It lived at
-``quantbox.plugins.backtesting.rsims_engine`` until TOM-1451; that path is a
-deprecation shim now.
+``quantbox.plugins.backtesting.rsims_engine`` until TOM-1451; since 0.13.0 that
+path raises ``ImportError`` naming this one (TOM-1457).
 """
 
 from __future__ import annotations

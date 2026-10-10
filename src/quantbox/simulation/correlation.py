@@ -1,10 +1,8 @@
-"""Deprecated: correlation structures moved to :mod:`quantbox.montecarlo.correlation` (TOM-1451).
+"""Removed in quantbox 0.13.0 (TOM-1457): correlation is :mod:`quantbox.montecarlo.correlation` (TOM-1451).
 
-Every name resolves to the SAME object and emits a ``DeprecationWarning`` that
-names the new path. ``from quantbox.simulation import CorrelationEngine`` still
-works with no warning. This shim stays for one minor version.
+``from quantbox.simulation import CorrelationEngine`` still works.
 """
 
-from quantbox._deprecation import moved
+from quantbox._removed import removed
 
-__getattr__ = moved("quantbox.simulation.correlation", "quantbox.montecarlo.correlation", card="TOM-1451")
+removed(__name__)

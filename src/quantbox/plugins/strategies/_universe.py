@@ -1,10 +1,5 @@
-"""Deprecated: universe selection moved to :mod:`quantbox.universe` (TOM-1449).
+"""Removed in quantbox 0.13.0 (TOM-1457): universe selection is :mod:`quantbox.universe` (TOM-1449)."""
 
-Every name resolves to the SAME object in :mod:`quantbox.universe` and emits a
-``DeprecationWarning`` that names the new path. This shim stays for one minor
-version.
-"""
+from quantbox._removed import removed
 
-from quantbox._deprecation import moved
-
-__getattr__ = moved("quantbox.plugins.strategies._universe", "quantbox.universe", card="TOM-1449")
+removed(__name__)

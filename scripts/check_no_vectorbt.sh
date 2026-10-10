@@ -59,6 +59,7 @@ echo "== 2. every module imports, or names its extra"
 import importlib, importlib.metadata, os, sys
 from pathlib import Path
 import quantbox
+from quantbox._removed import REMOVED
 from quantbox.exceptions import MissingExtraError
 
 sys.path.insert(0, os.path.join(os.environ["QB_ROOT"], "scripts"))
@@ -78,8 +79,19 @@ for p in sorted(root.rglob("*.py")):
         parts = parts[:-1]
     names.append(".".join(parts))
 ENGINE = {"quantbox.adapters.vectorbt", "quantbox.plugins.backtesting.vectorbt_engine"}
-ok, n_core, refused, bad = 0, 0, {}, {}
+ok, n_core, refused, bad, tombstones = 0, 0, {}, {}, []
 for name in names:
+    if name in REMOVED:
+        # A path removed in 0.13.0 (TOM-1457): its tombstone must refuse, naming the replacement.
+        try:
+            importlib.import_module(name)
+            bad[name] = "a removed path imported"
+        except ImportError as exc:
+            if "removed in quantbox" in str(exc) and not isinstance(exc, MissingExtraError):
+                tombstones.append(name)
+            else:
+                bad[name] = f"tombstone raised the wrong error: {exc!r}"
+        continue
     is_core = layer(name) == "core"
     n_core += is_core
     try:
@@ -100,11 +112,13 @@ for name in names:
         bad[name] = repr(exc)
 if ok < 150 or n_core < 60:
     bad["<walk>"] = f"only {ok} modules imported, {n_core} core — the walk did not look"
+if not tombstones:
+    bad["<tombstones>"] = "the walk met no tombstone of a removed path"
 if not ENGINE <= set(refused):
     bad["<engine>"] = f"engine modules did not refuse: {sorted(ENGINE - set(refused))}"
 if bad:
     sys.exit("FAIL:\n" + "\n".join(f"  {k}: {v}" for k, v in sorted(bad.items())))
-print(f"ok: {len(names)} modules; {ok} imported ({n_core} core, all of them);")
+print(f"ok: {len(names)} modules; {ok} imported ({n_core} core, all of them); {len(tombstones)} removed paths refuse;")
 for name, extra in sorted(refused.items()):
     print(f"    {name} -> MissingExtraError [{extra}]")
 EOF

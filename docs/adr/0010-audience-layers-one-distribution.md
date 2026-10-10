@@ -88,6 +88,10 @@ release, pin and lockfile work by three for every consumer.
    `quantbox._deprecation.moved` (the helper of ADR-0009 decision 6). The
    contract step, 4d (TOM-1457), removes import shims only. YAML plugin-id
    aliases stay: a config written today keeps running.
+   *Amended by TOM-1457 (4d, v0.13.0):* the import shims are removed. An old
+   module path is a tombstone file and an old name in a live module is refused
+   by its `__getattr__`; both raise `ImportError` naming the replacement, from
+   one list, `quantbox._removed.REMOVED`. `quantbox._deprecation` is gone.
 8. **This ADR decides; 4b builds.** The layers, the import-linter contracts,
    the edge cuts and the extras are built by 4b (TOM-1451). Until 4b lands,
    the layer map is the target, and the code on `dev` does not obey it yet.

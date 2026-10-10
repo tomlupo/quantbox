@@ -143,13 +143,10 @@ type = "forbidden"
 as_packages = false
 source_modules = [
   "quantbox",  # the package __init__ only
-  "quantbox._deprecation",
   "quantbox._lazy",  # the one door from core to an upper layer: a string, loaded at run time
   "quantbox._numerics",
-  "quantbox.analysis",  # deprecation shims onto inference and gates
-  "quantbox.analysis.dsr",
-  "quantbox.analysis.gates",
-  "quantbox.analysis.hac",
+  "quantbox._removed",  # the list of import paths removed in 0.13.0 (TOM-1457)
+  "quantbox.analysis",  # a tombstone: raises ImportError naming inference, gates and sweep
   "quantbox.bootstrap",
   "quantbox.bootstrap.**",
   "quantbox.cache",  # StrategyCache: pandas + pyarrow only; robo (a client) imports it
@@ -224,7 +221,6 @@ forbidden_modules = [
   # research
   "quantbox.adapters",
   "quantbox.adapters.**",
-  "quantbox.analysis.parameter_grid",
   "quantbox.arms",
   "quantbox.bt",
   "quantbox.engine.vectorbt",
@@ -288,7 +284,6 @@ forbidden_modules = [
   # research
   "quantbox.adapters",
   "quantbox.adapters.**",
-  "quantbox.analysis.parameter_grid",
   "quantbox.arms",
   "quantbox.bt",
   "quantbox.engine.vectorbt",
@@ -333,13 +328,12 @@ as_packages = false
 source_modules = [
   "quantbox.adapters",
   "quantbox.adapters.**",
-  "quantbox.analysis.parameter_grid",  # deprecation shim onto sweep
   "quantbox.arms",
   "quantbox.bt",
   "quantbox.engine.vectorbt",  # the vectorbt adapter behind the core seam
   "quantbox.finding_export",
   "quantbox.line",
-  "quantbox.plugins.backtesting",  # the rsims_engine shim included; the rsims code is core
+  "quantbox.plugins.backtesting",  # the rsims_engine tombstone included; the rsims code is core
   "quantbox.plugins.backtesting.**",
   "quantbox.plugins.pipeline._report",
   "quantbox.plugins.pipeline.backtest_pipeline",
@@ -396,7 +390,6 @@ source_modules = [
 forbidden_modules = [
   "quantbox.adapters",
   "quantbox.adapters.**",
-  "quantbox.analysis.parameter_grid",
   "quantbox.arms",
   "quantbox.bt",
   "quantbox.engine.vectorbt",
@@ -425,13 +418,10 @@ as_packages = false
 # The same module list as the `core` contract's source_modules (the test checks it).
 source_modules = [
   "quantbox",
-  "quantbox._deprecation",
   "quantbox._lazy",
   "quantbox._numerics",
+  "quantbox._removed",
   "quantbox.analysis",
-  "quantbox.analysis.dsr",
-  "quantbox.analysis.gates",
-  "quantbox.analysis.hac",
   "quantbox.bootstrap",
   "quantbox.bootstrap.**",
   "quantbox.cache",

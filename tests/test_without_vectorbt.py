@@ -65,9 +65,12 @@ def test_every_non_engine_module_imports_without_vectorbt():
         """
         import importlib, json, pkgutil, traceback
         import quantbox
+        from quantbox._removed import REMOVED
 
         ok, failed = [], {}
         for info in pkgutil.walk_packages(quantbox.__path__, "quantbox."):
+            if info.name in REMOVED:  # a tombstone (TOM-1457): tests/test_removed_paths.py checks it
+                continue
             try:
                 importlib.import_module(info.name)
                 ok.append(info.name)
@@ -119,7 +122,6 @@ def test_cli_plugins_list_without_vectorbt():
         "from quantbox.adapters.vectorbt import vbt",
         "import pandas as pd, quantbox.bt as qbt; qbt.run(pd.DataFrame(), pd.DataFrame())",
         "from quantbox.sweep import run_grid; run_grid(None, {}, {}, {})",
-        "from quantbox.analysis import run_grid; run_grid(None, {}, {}, {})",  # the deprecated path
     ],
 )
 def test_asking_for_vectorbt_names_the_extra(snippet: str):
