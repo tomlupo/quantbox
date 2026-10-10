@@ -8,8 +8,8 @@
   market-cap source lists. Both paths above use it, so a Hyperliquid ``kPEPE``
   is ``PEPE`` live and in a backtest alike (TOM-1419).
 
-These lived in ``quantbox.plugins.datasources._utils``; the old names there are
-deprecation shims that resolve to the objects here.
+These lived in ``quantbox.plugins.datasources._utils``; since 0.13.0 the old
+names there raise ``ImportError`` naming this module (TOM-1457).
 """
 
 from __future__ import annotations

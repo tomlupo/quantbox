@@ -1,4 +1,4 @@
-"""The declared public surface (TOM-1449): four private names got public homes, old paths still work.
+"""The declared public surface (TOM-1449): four private names got public homes.
 
 - ``quantbox.universe``: ``select_universe``, ``DEFAULT_STABLECOINS`` (was
   ``quantbox.plugins.strategies._universe``).
@@ -7,74 +7,20 @@
 - ``quantbox.dataset.load_pinned_dataset`` (was
   ``quantbox.plugins.datasources.local_file_data._load_pinned_dataset``).
 
-Every old path resolves to the SAME object as the new one and emits a
-DeprecationWarning naming the new path. The package itself never takes an old
-path, so importing it emits none. pyproject's ``filterwarnings`` ignores
+The old paths were shims until 0.13.0; their removal is checked in
+``tests/test_removed_paths.py`` (TOM-1457). The package itself raises no
+DeprecationWarning on import. pyproject's ``filterwarnings`` ignores
 DeprecationWarning, so every check here catches warnings explicitly.
 """
 
 from __future__ import annotations
 
 import importlib
-import re
 import subprocess
 import sys
 import warnings
 
 import pytest
-
-# (old module, old name, new module, new name)
-_MOVED = [
-    *(
-        ("quantbox.plugins.strategies._universe", name, "quantbox.universe", name)
-        for name in (
-            "DEFAULT_STABLECOINS",
-            "DUCKDB_AVAILABLE",
-            "select_universe",
-            "select_universe_duckdb",
-            "select_universe_vectorized",
-        )
-    ),
-    ("quantbox.plugins.datasources._utils", "MarketCapProvider", "quantbox.market_cap", "MarketCapProvider"),
-    ("quantbox.plugins.datasources._utils", "CMCMarketCapProvider", "quantbox.market_cap", "MarketCapProvider"),
-    ("quantbox.plugins.datasources._utils", "load_pit_market_cap", "quantbox.market_cap", "load_pit_market_cap"),
-    (
-        "quantbox.plugins.datasources.local_file_data",
-        "_load_pinned_dataset",
-        "quantbox.dataset",
-        "load_pinned_dataset",
-    ),
-]
-
-
-@pytest.mark.parametrize(("old", "name", "new", "new_name"), _MOVED)
-def test_an_old_path_resolves_to_the_new_object_with_a_deprecation_warning(old, name, new, new_name):
-    module = importlib.import_module(old)
-    pattern = re.escape(f"{old}.{name} is deprecated: ") + ".*" + re.escape(new)
-    with pytest.warns(DeprecationWarning, match=pattern):
-        obj = getattr(module, name)
-    assert obj is getattr(importlib.import_module(new), new_name)
-
-
-def test_a_from_import_of_an_old_path_works_and_warns():
-    with pytest.warns(DeprecationWarning, match=r"quantbox\.universe"):
-        from quantbox.plugins.strategies._universe import select_universe
-    from quantbox.universe import select_universe as new
-
-    assert select_universe is new
-
-
-@pytest.mark.parametrize(
-    ("module", "name"),
-    [
-        ("quantbox.plugins.datasources._utils", "no_such_name"),
-        ("quantbox.plugins.datasources.local_file_data", "no_such_name"),
-        ("quantbox.plugins.strategies._universe", "no_such_name"),
-    ],
-)
-def test_an_unknown_name_on_an_old_path_is_still_an_attribute_error(module, name):
-    with pytest.raises(AttributeError):
-        getattr(importlib.import_module(module), name)
 
 
 def test_names_that_did_not_move_still_import_from_the_old_module_without_a_warning():

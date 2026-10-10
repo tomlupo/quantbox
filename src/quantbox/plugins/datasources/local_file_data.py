@@ -16,20 +16,16 @@ from typing import Any
 
 import pandas as pd
 
-from quantbox._deprecation import moved
+from quantbox._removed import removed_names
 from quantbox.contracts import PluginMeta
 from quantbox.dataset import _resolve_pinned, load_pinned_dataset
 from quantbox.parquet_io import read_parquet
 
 logger = logging.getLogger(__name__)
 
-# ``_load_pinned_dataset`` is public now as quantbox.dataset.load_pinned_dataset (TOM-1449).
-__getattr__ = moved(
-    "quantbox.plugins.datasources.local_file_data",
-    "quantbox.dataset",
-    card="TOM-1449",
-    names={"_load_pinned_dataset": "load_pinned_dataset"},
-)
+# ``_load_pinned_dataset`` is public as quantbox.dataset.load_pinned_dataset (TOM-1449);
+# the old name raises ImportError naming it (TOM-1457).
+__getattr__ = removed_names(__name__)
 
 # duckdb (the [data] extra) is an accelerator here, not a requirement: the
 # pandas reader returns the same frame on the same file, date cut and symbol

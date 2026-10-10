@@ -1,10 +1,8 @@
-"""Deprecated: the Monte Carlo simulator moved to :mod:`quantbox.montecarlo.engine` (TOM-1451).
+"""Removed in quantbox 0.13.0 (TOM-1457): the simulator is :mod:`quantbox.montecarlo.engine` (TOM-1451).
 
-Every name resolves to the SAME object and emits a ``DeprecationWarning`` that
-names the new path. ``from quantbox.simulation import MarketSimulator`` still
-works with no warning. This shim stays for one minor version.
+``from quantbox.simulation import MarketSimulator`` still works.
 """
 
-from quantbox._deprecation import moved
+from quantbox._removed import removed
 
-__getattr__ = moved("quantbox.simulation.engine", "quantbox.montecarlo.engine", card="TOM-1451")
+removed(__name__)
