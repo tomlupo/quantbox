@@ -1,4 +1,4 @@
-"""TOM-1451 (4b-1): the edges that crossed the layer map are cut, and the old paths still work.
+"""TOM-1451 (4b-1): the edges that crossed the layer map are cut.
 
 Layers (ADR-0010): core < plugins < research, trade. These tests pin the cuts
 by what a fresh interpreter IMPORTS, so an eager import that comes back goes
@@ -9,8 +9,10 @@ red here before import-linter (4b-3) exists:
 - the engine seam does not import the vectorbt adapter until it is named;
 - ``quantbox.plugins.pipeline`` imports neither the backtest nor the trading
   pipeline until one is named, and neither drags the other;
-- ``from quantbox import *`` imports core only;
-- every moved module keeps its old path as a shim (same object, DeprecationWarning).
+- ``from quantbox import *`` imports core only.
+
+The moved modules' old paths were shims until 0.13.0; their removal is checked
+in ``tests/test_removed_paths.py``.
 """
 
 from __future__ import annotations

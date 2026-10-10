@@ -2,8 +2,8 @@
 
 Lived at ``quantbox.analysis.parameter_grid`` until TOM-1618: a sweep RUNS a
 grid of backtests, it does not analyse a result, so it sits next to the sweep
-door rather than with the statistics. The old path still resolves, with a
-``DeprecationWarning``.
+door rather than with the statistics. Since 0.13.0 the old path raises
+``ImportError`` naming ``quantbox.sweep`` (TOM-1457).
 
 Enumerate a Cartesian grid of strategy parameter values, run each combination
 through the engine seam (:mod:`quantbox.engine`; vectorbt by default, ``engine: rsims``
