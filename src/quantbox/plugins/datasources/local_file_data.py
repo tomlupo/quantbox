@@ -32,8 +32,9 @@ __getattr__ = moved(
 
 # duckdb (the [data] extra) is an accelerator here, not a requirement: the
 # pandas reader returns the same frame on the same file, date cut and symbol
-# filter included (tests/test_optional_duckdb_paths.py, TOM-1451). Which one
-# ran is logged once, at INFO.
+# filter included (tests/test_optional_duckdb_paths.py, TOM-1451; every saved
+# index shape and timezone: tests/test_local_file_asof_cut.py, TOM-1681). Which
+# one ran is logged once, at INFO.
 try:
     import duckdb
 
@@ -113,44 +114,63 @@ def _read_file(path: str, asof: str | None = None, symbols: list[str] | None = N
     return df
 
 
+def _saved_index_columns(path: str) -> list[str]:
+    """The columns a pandas writer stored as the frame's index (parquet pandas metadata).
+
+    duckdb returns them as plain columns: an unnamed index as ``__index_level_0__``.
+    A RangeIndex is stored as metadata only, not as a column, so it is not listed.
+    """
+    import pyarrow.parquet as pq
+
+    meta = pq.read_schema(path).pandas_metadata or {}
+    return [c for c in meta.get("index_columns", []) if isinstance(c, str)]
+
+
+def _date_column_and_cut(df: pd.DataFrame, index_cols: list[str], asof: str | None) -> pd.DataFrame:
+    """Name the file's date ``date`` and keep the rows on or before *asof*: ONE rule for both readers.
+
+    The date is the ``date`` column, or else the one saved index column that holds
+    datetimes, whatever its name (unnamed, ``timestamp``, ...). Before TOM-1681 only
+    a ``date`` column was cut, so a file saved with an unnamed date index returned
+    rows after asof (a look-ahead) from both readers.
+
+    A row is kept when its UTC instant is ``<= asof`` 00:00 UTC; a naive date counts
+    as UTC. This is done here, not in duckdb SQL: ``date <= 'asof'`` on a tz-aware
+    column compares in the duckdb session's timezone, which is the box's.
+    """
+    if "date" not in df.columns:
+        dated = [c for c in index_cols if c in df.columns and pd.api.types.is_datetime64_any_dtype(df[c])]
+        if len(dated) == 1:
+            df = df.rename(columns={dated[0]: "date"})
+    if asof and "date" in df.columns:
+        if not pd.api.types.is_datetime64_any_dtype(df["date"]):
+            df = df.assign(date=pd.to_datetime(df["date"]))
+        df = df[pd.to_datetime(df["date"], utc=True) <= pd.Timestamp(asof, tz="UTC")]
+    return df
+
+
 def _read_via_duckdb(path: str, ext: str, asof: str | None, symbols: list[str] | None) -> pd.DataFrame:
-    """Read file using DuckDB SQL for efficient filtering."""
+    """Read file using DuckDB SQL; the symbol filter runs in SQL, the date cut in ``_date_column_and_cut``."""
     con = duckdb.connect()
     try:
         if ext == ".parquet":
             read_fn = f"read_parquet('{path}')"
+            index_cols = _saved_index_columns(path)
         elif ext == ".csv":
             read_fn = f"read_csv_auto('{path}')"
+            index_cols = []
         else:
             logger.warning("Unsupported file extension: %s, trying pandas", ext)
             return _read_via_pandas(path, ext, asof, symbols)
 
-        # Build WHERE clause
-        conditions: list[str] = []
-        if asof:
-            conditions.append(f"date <= '{asof}'")
-        if symbols:
-            sym_list = ", ".join(f"'{s}'" for s in symbols)
-            conditions.append(f"symbol IN ({sym_list})")
-
-        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-
-        # Check if columns exist before filtering
-        # First, read schema to see if symbol/date columns exist
-        schema_df = con.execute(f"SELECT * FROM {read_fn} LIMIT 0").fetchdf()
-        cols = set(schema_df.columns)
-
-        # Only apply symbol filter if column exists
-        actual_conditions: list[str] = []
-        if asof and "date" in cols:
-            actual_conditions.append(f"date <= '{asof}'")
+        # Only apply the symbol filter if the column exists.
+        cols = set(con.execute(f"SELECT * FROM {read_fn} LIMIT 0").fetchdf().columns)
+        where = ""
         if symbols and "symbol" in cols:
             sym_list = ", ".join(f"'{s}'" for s in symbols)
-            actual_conditions.append(f"symbol IN ({sym_list})")
-
-        where = f" WHERE {' AND '.join(actual_conditions)}" if actual_conditions else ""
-        sql = f"SELECT * FROM {read_fn}{where}"
-        return con.execute(sql).fetchdf()
+            where = f" WHERE symbol IN ({sym_list})"
+        df = con.execute(f"SELECT * FROM {read_fn}{where}").fetchdf()
+        return _date_column_and_cut(df, index_cols, asof)
     except Exception as exc:
         logger.warning("DuckDB read failed for %s: %s, falling back to pandas", path, exc)
         return _read_via_pandas(path, ext, asof, symbols)
@@ -159,7 +179,7 @@ def _read_via_duckdb(path: str, ext: str, asof: str | None, symbols: list[str] |
 
 
 def _read_via_pandas(path: str, ext: str, asof: str | None, symbols: list[str] | None) -> pd.DataFrame:
-    """Fallback reader using pandas."""
+    """Fallback reader using pandas: the same frame as ``_read_via_duckdb`` on the same file."""
     if ext == ".parquet":
         df = read_parquet(path)
     elif ext == ".csv":
@@ -167,16 +187,17 @@ def _read_via_pandas(path: str, ext: str, asof: str | None, symbols: list[str] |
     else:
         raise ValueError(f"Unsupported file extension: {ext}")
 
-    # A frame saved with its date as the INDEX comes back from pandas with the
-    # date as the index, and from duckdb with it as a column. Make it the column,
-    # as duckdb does, so the date cut below applies to it: before TOM-1451 this
-    # reader skipped the cut on such a file and returned rows after asof.
-    if "date" not in df.columns and df.index.name == "date":
-        df = df.reset_index()
+    # pandas restores a saved index; duckdb returns it as columns, after the data
+    # columns, an unnamed level as ``__index_level_N__``. Do the same, so both
+    # readers hand ``_date_column_and_cut`` the same frame.
+    index_cols: list[str] = []
+    if not isinstance(df.index, pd.RangeIndex):
+        index_cols = [n if n is not None else f"__index_level_{i}__" for i, n in enumerate(df.index.names)]
+        if not set(index_cols) & set(df.columns):
+            df = df.rename_axis(index_cols).reset_index()
+            df = df[[c for c in df.columns if c not in index_cols] + index_cols]
 
-    if asof and "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"])
-        df = df[df["date"] <= asof]
+    df = _date_column_and_cut(df, index_cols, asof)
 
     if symbols and "symbol" in df.columns:
         df = df[df["symbol"].isin(symbols)]
@@ -442,19 +463,11 @@ class LocalFileDataPlugin:
             return None
 
         ext = p.suffix.lower()
-        _log_reader_once()
-        if DUCKDB_AVAILABLE:
-            con = duckdb.connect()
-            try:
-                read_fn = f"read_parquet('{path}')" if ext == ".parquet" else f"read_csv_auto('{path}')"
-                return con.execute(f"SELECT * FROM {read_fn} WHERE date <= '{asof}'").fetchdf()
-            except Exception:
-                pass
-            finally:
-                con.close()
-
-        # Pandas fallback: the same reader as _read_file, so a date-index file
-        # gets the same date column and the same cut as duckdb gives it.
         if ext not in (".parquet", ".csv"):
             return None
+        # The same readers as _read_file: the date as a ``date`` column, cut at asof
+        # by one rule (_date_column_and_cut), whatever the saved index is called.
+        _log_reader_once()
+        if DUCKDB_AVAILABLE:
+            return _read_via_duckdb(str(path), ext, asof, None)
         return _read_via_pandas(str(path), ext, asof, None)
