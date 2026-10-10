@@ -17,4 +17,4 @@ __all__ = [
     "schemas",
     "store",
 ]
-__version__ = "0.11.0"
+__version__ = "0.12.0"
