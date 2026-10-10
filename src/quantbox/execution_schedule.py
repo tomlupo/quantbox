@@ -1,8 +1,8 @@
-"""Moved to :mod:`quantbox.engine.schedule` — the scheduled book is part of the engine seam (docs/adr/0008).
+"""Removed in quantbox 0.13.0 (TOM-1711). Importing this raises ImportError naming the new home.
 
-Kept so ``from quantbox.execution_schedule import schedule_book`` still works.
+The scheduled book is part of the engine seam: :mod:`quantbox.engine.schedule` (docs/adr/0008).
 """
 
-from quantbox.engine.schedule import ScheduledBook, schedule_book
+from quantbox._removed import removed
 
-__all__ = ["ScheduledBook", "schedule_book"]
+removed(__name__)

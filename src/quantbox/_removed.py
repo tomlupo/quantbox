@@ -5,6 +5,13 @@ each old path for one minor version, as a shim with a ``DeprecationWarning``.
 0.13.0 removes those shims. An old path now raises ``ImportError`` and names
 its replacement, so a stale import fails at once and says what to write.
 
+TOM-1711 (the P3+P4 design review, 2026-10-10) adds, in the same release, a
+shim that escaped 4d (``quantbox.execution_schedule``), one pass-through
+function, and ten names that ``quantbox.engine`` re-exported from its
+submodules with no deprecation step. Their messages carry :data:`CARD` like the
+rest: it names the release's contract step, and the card of each entry is the
+comment above it in :data:`REMOVED`.
+
 :data:`REMOVED` is the one list: old path -> what to import instead. It is read
 two ways:
 
@@ -59,6 +66,19 @@ REMOVED: dict[str, str] = {
     "quantbox.simulation.engine": "quantbox.montecarlo.engine (or: from quantbox.simulation import ...)",
     "quantbox.simulation.correlation": "quantbox.montecarlo.correlation (or: from quantbox.simulation import ...)",
     "quantbox.simulation.stress_testing": "quantbox.montecarlo.stress_testing (or: from quantbox.simulation import ...)",
+    # TOM-1711: pass-through code the P3+P4 design review found (2026-10-10).
+    "quantbox.execution_schedule": "quantbox.engine.schedule",
+    "quantbox.execution.materialise_nan_policy": "quantbox.engine.schedule.materialise_nan",
+    "quantbox.engine.NAN_POLICY": "quantbox.engine.schedule.NAN_POLICY",
+    "quantbox.engine.CADENCES": "quantbox.engine.policy.CADENCES",
+    "quantbox.engine.POLICIES": "quantbox.engine.policy.POLICIES",
+    "quantbox.engine.TRIGGERS": "quantbox.engine.policy.TRIGGERS",
+    "quantbox.engine.engine_distribution": "quantbox.engine.registry.engine_distribution",
+    "quantbox.engine.lag_frame": "quantbox.engine._lag.lag_frame",
+    "quantbox.engine.lag_positions": "quantbox.engine._lag.lag_positions",
+    "quantbox.engine.apply_group_limits": "quantbox.engine.groups.apply_group_limits",
+    "quantbox.engine.materialise_nan": "quantbox.engine.schedule.materialise_nan",
+    "quantbox.engine.resolve_group_limits": "quantbox.engine.groups.resolve_group_limits",
 }
 
 

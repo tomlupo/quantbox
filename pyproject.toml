@@ -169,7 +169,7 @@ source_modules = [
   "quantbox.engine.schedule",
   "quantbox.exceptions",
   "quantbox.execution",
-  "quantbox.execution_schedule",
+  "quantbox.execution_schedule",  # a tombstone: raises ImportError naming quantbox.engine.schedule (TOM-1711)
   "quantbox.explain",
   "quantbox.features",
   "quantbox.features.**",

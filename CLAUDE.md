@@ -246,6 +246,11 @@ Quantbox uses custom exceptions (see `quantbox.exceptions`):
 - Broker work starts with `readonly: true` and `--dry-run`; a gated pipeline needs
   `quantbox approve --run-dir artifacts/<run_id>` before live orders
   ([`docs/playbooks/approval-gate.md`](docs/playbooks/approval-gate.md)).
+- **Rule** (Tom, 2026-10-10, EPIC TOM-1445): "Every P5 merge needs a live shadow
+  run." A change to the trade path merges only after the live configs run at
+  base and at head, read-only, and every difference is explained (TOM-1719).
+  New trade modules go under the trade package
+  ([ADR-0011](docs/adr/0011-trade-code-under-quantbox-trade.md)).
 - See [`docs/architecture/principles.md`](docs/architecture/principles.md) for LLM-specific guidelines + anti-patterns
 
 **For any architectural change, the rules in [`docs/architecture/principles.md`](docs/architecture/principles.md) take precedence over this file.** Anti-patterns to refuse, decision rules for new features, and the layer-choice doctrine all live there.

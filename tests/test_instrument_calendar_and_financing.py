@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from quantbox.execution_schedule import schedule_book
+from quantbox.engine.schedule import schedule_book
 from quantbox.financing import BORROW, LEND, resolve_financing
 from quantbox.frequency import rebalancing_dates
 from quantbox.instrument_calendar import execution_bars, instrument_calendar, validate_data_validation

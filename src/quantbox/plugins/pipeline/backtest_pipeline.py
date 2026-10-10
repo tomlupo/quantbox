@@ -76,12 +76,10 @@ from quantbox.decision import (
 )
 from quantbox.engine import (
     DEFAULT_ENGINE,
-    NAN_POLICY,
     Costs,
     TradedBook,
     engine_names,
     get_engine,
-    materialise_nan,
     simulate,
 )
 from quantbox.engine.groups import GROUP_LIMITS_SCHEMA, GroupLimits, resolve_group_limits
@@ -92,6 +90,7 @@ from quantbox.engine.policy import (
     resolve_policy,
     tranches_alias,
 )
+from quantbox.engine.schedule import NAN_POLICY, materialise_nan
 from quantbox.exceptions import DataLoadError, MissingExtraError
 from quantbox.execution import (
     EXECUTION_SCHEMA,
@@ -1348,7 +1347,7 @@ class BacktestPipeline:
     ) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
         """Run the overlay chain on the decided weights; a no-op without overlays.
 
-        The seam's NaN policy is materialised FIRST (:func:`quantbox.engine.materialise_nan`,
+        The seam's NaN policy is materialised FIRST (:func:`quantbox.engine.schedule.materialise_nan`,
         HOLD, the same on every engine): an overlay multiplying a NaN would lose
         its effect on exactly the bars it targets. The policy is idempotent, so
         the seam later builds the same book from it.
