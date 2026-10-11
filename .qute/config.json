@@ -53,5 +53,28 @@
       "branch would diff the whole of dev as if it were the change under review."
     ],
     "base_branch": "dev"
+  },
+
+  "merge_to_dev": {
+    "$comment": [
+      "Read by qute-platform utils/merge_to_dev.py (`merge-to-dev`, TOM-1593) on the",
+      "dev branch: the check runs a PR head must carry, all `success`, before it is",
+      "squash-merged into dev. Absent is a wait, never a pass. The names are the jobs",
+      "of .github/workflows/ci.yml (the `test` matrix reports one run per Python",
+      "version) and lockfile-check.yml, which run on every PR into dev. review-gate.yml",
+      "is left out: it gates main and reaches a dev PR only when a review is posted.",
+      "Rename a job, or change the test matrix, and this list must follow, or every",
+      "dev merge waits (TOM-1623)."
+    ],
+    "required_checks": [
+      "lint",
+      "test (3.10)",
+      "test (3.12)",
+      "no-vectorbt",
+      "pipeline-smoke",
+      "canonical-reproductions",
+      "datasets-lock-check",
+      "uv-lock-in-step"
+    ]
   }
 }
