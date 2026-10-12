@@ -19,6 +19,14 @@ import json
 import pandas as pd
 
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
+from quantbox.trade.notifier import RecordingNotifier
+
+
+def _pipeline() -> TradingPipeline:
+    """A pipeline whose alerts are recorded (TOM-1720: the pipeline alerts, never the broker)."""
+    pipe = TradingPipeline()
+    pipe.notifier = RecordingNotifier()
+    return pipe
 
 
 class _FakeBroker:
@@ -27,17 +35,12 @@ class _FakeBroker:
         self._fills_fn = fills_fn if fills_fn is not None else _fills_all("FILLED")
         self._place_hook = place_hook
         self.placed: list[pd.DataFrame] = []
-        self.alerts: list[str] = []
 
     def get_positions(self):
         return pd.DataFrame(self._positions, columns=["symbol", "qty"]) if self._positions else pd.DataFrame()
 
     def get_market_snapshot(self, symbols):
         return pd.DataFrame({"symbol": list(symbols), "mid": [1.0] * len(list(symbols))})
-
-    def notify(self, msg):
-        self.alerts.append(msg)
-        return True
 
     def place_orders(self, orders):
         if self._place_hook is not None:
@@ -129,7 +132,7 @@ def test_intent_is_on_disk_before_place_orders(tmp_path):
 
     broker = _FakeBroker(fills_fn=_fills_all("FILLED"), place_hook=_hook)
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     _drive_cycle(pipe, params, broker, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1")
 
     assert seen_intent_at_submit["n"] == 1
@@ -141,7 +144,7 @@ def test_capture_records_intent_and_result_and_stage7b_reads_not_rewrites(tmp_pa
     """Stage 7 captures intent+result; Stage 7b must READ them back, not double-write."""
     broker = _FakeBroker(fills_fn=_fills_all("FILLED"))
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     _report, notes, _pre = _drive_cycle(pipe, params, broker, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1")
 
     recs = _ledger_records(tmp_path)
@@ -159,7 +162,7 @@ def test_missed_fill_captured_as_timeout(tmp_path):
     the missed-fill class the ledger exists to prove."""
     broker = _FakeBroker(fills_fn=lambda orders: pd.DataFrame())  # zero fills
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     _report, notes, _pre = _drive_cycle(pipe, params, broker, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1")
 
     results = [r for r in _ledger_records(tmp_path) if r.get("kind") == "result"]
@@ -176,7 +179,7 @@ def test_replay_from_ledger_after_crash_before_stage7b(tmp_path):
     # Stage 7 only: capture intent + (missing) result, then "crash" — no Stage 7b.
     broker = _FakeBroker(fills_fn=lambda orders: pd.DataFrame())  # order never fills
     ctx_params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     ctx = pipe._recon_load(ctx_params, run_id="r1", asof="d")
     pipe._execute_orders(
         broker=broker,
@@ -219,7 +222,7 @@ def test_enforce_without_ack_is_refused(tmp_path):
     """mode=enforce WITHOUT enforce_acknowledged is refused → forced to observe."""
     broker = _FakeBroker(fills_fn=_fills_all("FAILED"))
     params = _enforce_params(tmp_path, ack=False, halt_failed_streak=1)
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     _report, notes, pre = _drive_cycle(pipe, params, broker, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1")
     assert notes["enforce_refused"] is True
     assert notes["mode"] == "observe"
@@ -231,12 +234,14 @@ def test_enforce_halt_gates_next_cycle_before_execution(tmp_path):
     """Cycle 1 fails → persists HALT. Cycle 2 (enforce+ack) reads HALT back and
     blocks ALL orders BEFORE execution — broker.place_orders is never called."""
     params = _enforce_params(tmp_path, ack=True, halt_failed_streak=1)
-    pipe = TradingPipeline()
+    pipe = _pipeline()
 
     # Cycle 1: a failed order drives the machine to HALT (halt_failed_streak=1).
     b1 = _FakeBroker(fills_fn=_fills_all("FAILED"))
     _r1, n1, _p1 = _drive_cycle(pipe, params, b1, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1")
     assert n1["to_state"] == "halt"
+    # Cycle 1's own transition alert names HALT too: only cycle 2's alerts count below.
+    pipe.notifier.messages.clear()
 
     # Cycle 2: enforce reads persisted HALT and gates pre-execution.
     b2 = _FakeBroker(fills_fn=_fills_all("FILLED"))
@@ -246,7 +251,7 @@ def test_enforce_halt_gates_next_cycle_before_execution(tmp_path):
     assert r2.get("recon_gated") == "halt"
     assert b2.placed == []  # NOTHING was sent to the broker
     # Preflight HALT alert fired.
-    assert any("HALT" in a for a in b2.alerts)
+    assert any("HALT" in a for a in pipe.notifier.messages)
 
 
 def test_enforce_flatten_keeps_only_reducing_orders(tmp_path):
@@ -255,7 +260,7 @@ def test_enforce_flatten_keeps_only_reducing_orders(tmp_path):
     # A phantom holding (never intended) is a hard FLATTEN break. Drive cycle 1 to
     # FLATTEN, then check cycle 2's reduce-only gate.
     params = _enforce_params(tmp_path, ack=True)
-    pipe = TradingPipeline()
+    pipe = _pipeline()
 
     # Cycle 1: broker holds XRP we never intended → phantom → FLATTEN.
     b1 = _FakeBroker(positions=[{"symbol": "XRP", "qty": 100.0}], fills_fn=_fills_all("FILLED"))
@@ -288,7 +293,7 @@ def test_failed_intent_write_does_not_leave_a_dangling_result(tmp_path):
     hold a result with no matching intent (review BLOCKER)."""
     broker = _FakeBroker(fills_fn=_fills_all("FILLED"))
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     ctx = pipe._recon_load(params, run_id="r1", asof="d")
 
     # Make the FIRST intent write fail, the rest succeed.
@@ -330,7 +335,7 @@ def test_reduce_only_drops_unknown_action_fail_closed(tmp_path):
     """An unrecognised order action under a FLATTEN gate must be DROPPED, not
     treated as an exposure-reducing sell (review BLOCKER)."""
     params = _enforce_params(tmp_path, ack=True)
-    pipe = TradingPipeline()
+    pipe = _pipeline()
 
     # Cycle 1 → FLATTEN via a phantom holding.
     b1 = _FakeBroker(positions=[{"symbol": "XRP", "qty": 100.0}], fills_fn=_fills_all("FILLED"))
@@ -357,7 +362,7 @@ def test_enforce_drops_order_when_intent_capture_fails(tmp_path):
     """Under enforce, an order whose intent write fails must NOT be submitted —
     we never trade live without the crash-durable intent record (review BLOCKER)."""
     params = _enforce_params(tmp_path, ack=True)
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     ctx = pipe._recon_load(params, run_id="r1", asof="d")
 
     real = ctx.ledger.record_intent
@@ -398,7 +403,7 @@ def test_enforce_state_persist_failure_escapes_and_alerts(tmp_path):
     from quantbox.plugins.pipeline.trading_pipeline import ReconEnforcementError
 
     params = _enforce_params(tmp_path, ack=True, halt_failed_streak=1)
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     broker = _FakeBroker(fills_fn=_fills_all("FAILED"))
 
     orig = tp._atomic_write_text
@@ -414,7 +419,7 @@ def test_enforce_state_persist_failure_escapes_and_alerts(tmp_path):
         tp._atomic_write_text = orig
 
     # A hard operator alert fired before the raise.
-    assert any("state persist FAILED" in a for a in broker.alerts)
+    assert any("state persist FAILED" in a for a in pipe.notifier.messages)
 
 
 def test_enforce_ignores_config_cycle_id_and_uses_run_id(tmp_path):
@@ -429,7 +434,7 @@ def test_enforce_ignores_config_cycle_id_and_uses_run_id(tmp_path):
             "cycle_id": "STATIC",  # must be ignored under enforce
         }
     }
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     ctx = pipe._recon_load(params, run_id="run-unique-123", asof="2026-01-01")
     assert ctx.cycle_id == "run-unique-123"
 
@@ -446,7 +451,7 @@ def test_observe_state_persist_failure_is_non_fatal(tmp_path):
     import quantbox.plugins.pipeline.trading_pipeline as tp
 
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     broker = _FakeBroker(fills_fn=_fills_all("FILLED"))
     orig = tp._atomic_write_text
     tp._atomic_write_text = lambda p, t: (_ for _ in ()).throw(OSError("boom"))
@@ -456,7 +461,7 @@ def test_observe_state_persist_failure_is_non_fatal(tmp_path):
         tp._atomic_write_text = orig
     # No 'error' from a raise — observe swallows the persist failure.
     assert "error" not in notes
-    assert not any("persist FAILED" in a for a in broker.alerts)
+    assert not any("persist FAILED" in a for a in pipe.notifier.messages)
 
 
 def test_gated_cycle_writes_no_synthetic_ledger_records(tmp_path):
@@ -465,7 +470,7 @@ def test_gated_cycle_writes_no_synthetic_ledger_records(tmp_path):
     it must NOT fabricate intents/timeouts from the original orders_df — that would
     corrupt the ledger and escalate failure streaks off a SAFETY GATE."""
     params = _enforce_params(tmp_path, ack=True)
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     notes = pipe._run_reconciliation(
         params=params,
         broker=_FakeBroker(),
@@ -494,7 +499,7 @@ def test_observe_dup_order_intent_failure_no_mis_binding(tmp_path):
     order's intent write fails (observe), the executed fills must still bind to the
     CORRECT surviving intent — not mis-bind the wrong order's fill to it."""
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     ctx = pipe._recon_load(params, run_id="r1", asof="d")
 
     real = ctx.ledger.record_intent
@@ -543,7 +548,7 @@ def test_corrupt_state_fails_closed_to_halt_under_enforce(tmp_path):
     (book_dir / "recon_state.json").write_text("{ this is not valid json ")
 
     params = _enforce_params(tmp_path, ack=True)
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     # Preflight must read the corrupt state as HALT and gate this cycle.
     ctx = pipe._recon_load(params, run_id="r1", asof="d")
     pre = pipe._recon_preflight(ctx, _FakeBroker())
@@ -569,7 +574,7 @@ def test_invalid_state_value_fails_closed_under_enforce(tmp_path):
     (book_dir / "recon_state.json").write_text('{"state": "bogus", "degraded_cycles": 0, "streaks": {}}')
 
     params = _enforce_params(tmp_path, ack=True)
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     ctx = pipe._recon_load(params, run_id="r1", asof="d")
     assert ctx.machine.state == ReconState.HALT
 
@@ -589,7 +594,7 @@ def test_invalid_state_value_in_observe_resets_to_normal(tmp_path):
     (book_dir / "recon_state.json").write_text('{"state": "bogus"}')
 
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     ctx = pipe._recon_load(params, run_id="r1", asof="d")
     assert ctx.machine.state == ReconState.NORMAL
 
@@ -602,7 +607,7 @@ def test_corrupt_state_in_observe_does_not_gate(tmp_path):
     (book_dir / "recon_state.json").write_text("garbage")
 
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     b = _FakeBroker(fills_fn=_fills_all("FILLED"))
     r, _n, p = _drive_cycle(pipe, params, b, [_order("BTC", "Buy")], {"BTC": 0.5}, run_id="r1")
     assert p["applied"] is False
@@ -614,7 +619,7 @@ def test_state_write_is_atomic_no_partial_file(tmp_path):
     """The state file is replaced atomically — after a persist it is always valid
     JSON with the expected keys (temp + fsync + os.replace)."""
     params = _enforce_params(tmp_path, ack=True, halt_failed_streak=1)
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     b = _FakeBroker(fills_fn=_fills_all("FAILED"))
     _drive_cycle(pipe, params, b, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1")
     state = json.loads((tmp_path / "carver-HL" / "recon_state.json").read_text())
@@ -627,7 +632,7 @@ def test_state_write_is_atomic_no_partial_file(tmp_path):
 def test_preflight_exception_fails_closed_under_enforce(tmp_path):
     """If preflight itself raises under acknowledged enforce, run()'s guard must
     fail CLOSED. We assert the decision helper _enforce_requested drives that."""
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     enforce_params = _enforce_params(tmp_path, ack=True)
     observe_params = {"reconciliation": {"book_key": "b", "data_dir": str(tmp_path), "mode": "observe"}}
     no_recon = {}
@@ -642,7 +647,7 @@ def test_observe_mode_never_applies_the_gate(tmp_path):
     """Even with a persisted HALT, OBSERVE mode never gates — orders flow."""
     # Cycle 1 (enforce+ack) → HALT persisted.
     params_enf = _enforce_params(tmp_path, ack=True, halt_failed_streak=1)
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     b1 = _FakeBroker(fills_fn=_fills_all("FAILED"))
     _r1, n1, _p1 = _drive_cycle(pipe, params_enf, b1, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1")
     assert n1["to_state"] == "halt"
@@ -700,7 +705,7 @@ def test_working_order_raises_no_reconciliation_break(tmp_path):
     """
     broker = _FakeBroker(fills_fn=_fills_working)
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     _report, notes, _pre = _drive_cycle(pipe, params, broker, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1")
     assert notes["missed_fills"] == [], f"a resting order was counted as a missed fill: {notes}"
     # DRIFT may legitimately appear: an order that has not filled really does
@@ -715,7 +720,7 @@ def test_working_order_is_recorded_as_a_non_terminal_result(tmp_path):
     # "still working" from "submitted and never heard about again".
     broker = _FakeBroker(fills_fn=_fills_working)
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     _drive_cycle(pipe, params, broker, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1")
 
     results = [r for r in _ledger_records(tmp_path) if r.get("kind") == "result"]
@@ -783,7 +788,7 @@ def test_queued_unknown_orders_never_escalate_to_halt(tmp_path):
     # escalating to hard). DRIFT may still appear — an unfilled order really does
     # leave the book off target — so the streak class is what is asserted.
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     for i in range(3):
         broker = _FakeBroker(fills_fn=_fills_unknown())
         _r, notes, _p = _drive_cycle(
@@ -797,7 +802,7 @@ def test_queued_unknown_order_raises_no_break_on_the_reconstruction_path(tmp_pat
     # (e.g. an observe-mode preflight fault left recon_ctx None) the ledger is
     # rebuilt from orders_details, where an UNKNOWN row reads status FAILED.
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     broker = _FakeBroker(fills_fn=_fills_unknown())
     orders = [_order("DOGE", "Buy")]
     store = _QueueStore()
@@ -852,7 +857,7 @@ def test_a_genuine_missed_fill_is_still_a_missed_fill(tmp_path):
     # reason. A broker that returns NOTHING must still raise the missed fill.
     broker = _FakeBroker(fills_fn=lambda orders: pd.DataFrame())
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     _report, notes, _pre = _drive_cycle(pipe, params, broker, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1")
     assert notes["missed_fills"] == ["DOGE"]
 
@@ -867,7 +872,7 @@ def test_a_failed_order_still_opens_a_break(tmp_path):
     """
     broker = _FakeBroker(fills_fn=_fills_all("FAILED"))
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     _report, notes, _pre = _drive_cycle(pipe, params, broker, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1")
     results = [r for r in _ledger_records(tmp_path) if r.get("kind") == "result"]
     assert results[0]["status"] == "failed"

@@ -97,7 +97,6 @@ def _hyperliquid(result, refetched):
     broker._exchange = _FakeExchange(refetched)
     broker._get_market_symbol = lambda s: f"{s}/USDC:USDC"
     broker.place_order = lambda *a, **k: dict(result)
-    broker._notify_order_outcome = lambda *a, **k: False
     return broker
 
 
@@ -182,11 +181,6 @@ def test_binance_futures_queued_unknown_is_booked_by_the_working_order_resolver(
 class _RowBroker:
     def __init__(self, row):
         self.row = row
-        self.messages: list[str] = []
-
-    def notify(self, message):
-        self.messages.append(message)
-        return True
 
     def place_orders(self, orders):
         return pd.DataFrame([dict(self.row)])
@@ -219,17 +213,19 @@ def _orders_df():
 
 def _run(row, store=None):
     from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
+    from quantbox.trade.notifier import RecordingNotifier
 
-    broker = _RowBroker(row)
-    report = TradingPipeline()._execute_orders(
-        broker=broker,
+    pipe = TradingPipeline()
+    pipe.notifier = RecordingNotifier()  # TOM-1720: the pipeline alerts, never the broker
+    report = pipe._execute_orders(
+        broker=_RowBroker(row),
         orders_df=_orders_df(),
         stable_coin="USDT",
         trading_enabled=True,
         mode="live",
         working_store=store,
     )
-    return report, broker
+    return report, pipe.notifier
 
 
 @pytest.mark.parametrize(
@@ -244,13 +240,13 @@ def _run(row, store=None):
 )
 def test_pipeline_books_no_fill_for_an_unconfirmed_row(row):
     store = _Store()
-    report, broker = _run(row, store)
+    report, notifier = _run(row, store)
 
     assert report["summary"]["total_executed"] == 0
     assert not [d for d in report["orders_details"] if d.get("status") in ("FILLED", "PARTIAL")]
     # Not silently dropped: it is a failure the operator is told about...
     assert report["summary"]["total_failed"] == 1
-    assert any("BTC" in m and "UNCONFIRMED" in m.upper() for m in broker.messages)
+    assert any("BTC" in m and "UNCONFIRMED" in m.upper() for m in notifier.messages)
     # ...and, carrying an order id, it is queued so the next cycle books the
     # venue's real outcome through the working-order path.
     assert [r["order_id"] for r in store.recorded] == ["OID-9"]

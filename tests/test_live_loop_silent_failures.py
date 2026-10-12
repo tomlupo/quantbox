@@ -36,6 +36,7 @@ import pytest
 from quantbox.exceptions import BrokerExecutionError
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
 from quantbox.plugins.rebalancing.futures_rebalancer import FuturesRebalancer
+from quantbox.trade.notifier import RecordingNotifier
 
 MIN_TRADE = 0.01
 MIN_NOTIONAL = 10.0
@@ -147,9 +148,6 @@ def test_no_venue_floor_known_falls_back_to_exemption():
 class _Broker:
     """Broker that fills one order and rejects another — the live pattern."""
 
-    def __init__(self):
-        self.notices: list[str] = []
-
     def place_orders(self, orders: pd.DataFrame) -> pd.DataFrame:
         rows = []
         for _, o in orders.iterrows():
@@ -171,9 +169,12 @@ class _Broker:
     def get_positions(self):
         return pd.DataFrame([{"symbol": "ETH", "qty": 0.0022}])
 
-    def notify(self, message: str) -> bool:
-        self.notices.append(message)
-        return True
+
+def _pipeline() -> TradingPipeline:
+    """A pipeline whose alerts are recorded (TOM-1720: the pipeline alerts, never the broker)."""
+    pipe = TradingPipeline()
+    pipe.notifier = RecordingNotifier()
+    return pipe
 
 
 def _executable(asset: str, action: str, qty: float, price: float) -> dict:
@@ -195,7 +196,7 @@ def test_partial_order_failure_alerts():
     existing freeze guard fires here: ``total_executed`` is non-zero, and the
     broker returns populated rows rather than an empty frame.
     """
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     broker = _Broker()
     orders = pd.DataFrame([_executable("PEPE", "Buy", 100.0, 1.0), _executable("ETH", "Sell", 0.0022, 1930.0)])
 
@@ -212,7 +213,7 @@ def test_partial_order_failure_alerts():
     # The run is NOT frozen (something traded) — but it must still alert.
     assert not report.get("frozen")
     assert report.get("order_failures") == 1
-    assert any("ORDER(S) FAILED" in m for m in broker.notices), (
+    assert any("ORDER(S) FAILED" in m for m in pipe.notifier.messages), (
         "a rejected order must reach a human even when other orders filled"
     )
 
@@ -229,7 +230,7 @@ def test_batch_submission_exception_still_alerts():
         def place_orders(self, orders: pd.DataFrame) -> pd.DataFrame:
             raise ConnectionError("venue unreachable")
 
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     broker = _Exploding()
     orders = pd.DataFrame([_executable("PEPE", "Buy", 100.0, 1.0), _executable("ETH", "Sell", 0.0022, 1930.0)])
 
@@ -244,7 +245,9 @@ def test_batch_submission_exception_still_alerts():
     assert report["summary"]["total_failed"] == 2
     assert report.get("order_failures") == 2
     assert "venue unreachable" in report.get("order_failure_detail", "")
-    assert any("ORDER(S) FAILED" in m for m in broker.notices), "a whole-batch submission failure must reach a human"
+    assert any("ORDER(S) FAILED" in m for m in pipe.notifier.messages), (
+        "a whole-batch submission failure must reach a human"
+    )
 
 
 def test_reduce_only_flag_threads_to_broker():
@@ -265,7 +268,7 @@ def test_reduce_only_flag_threads_to_broker():
                 ]
             )
 
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     broker = _CaptureBroker()
     close = _executable("ETH", "Sell", 0.0022, 1930.0)
     close["reduce_only"] = True
@@ -292,8 +295,7 @@ def test_enforce_dropping_every_order_still_alerts():
 
     Caught in review of #132: that early return also skipped the failure report.
     """
-    pipe = TradingPipeline()
-    broker = _Broker()
+    pipe = _pipeline()
     report = {
         "executed_orders": [],
         "failed_orders": [],
@@ -305,11 +307,11 @@ def test_enforce_dropping_every_order_still_alerts():
         "api_errors": [],
     }
 
-    pipe._report_order_failures(report, broker)
+    pipe._report_order_failures(report)
 
     assert report["order_failures"] == 2
     assert "intent capture failed" in report["order_failure_detail"]
-    assert any("ORDER(S) FAILED" in m for m in broker.notices)
+    assert any("ORDER(S) FAILED" in m for m in pipe.notifier.messages)
 
 
 def test_spot_probe_failure_refuses_to_size_on_perps_residual():
@@ -319,8 +321,6 @@ def test_spot_probe_failure_refuses_to_size_on_perps_residual():
     from quantbox.plugins.broker.hyperliquid import HyperliquidBroker
 
     broker = HyperliquidBroker.__new__(HyperliquidBroker)
-    broker.telegram_token = ""
-    broker.telegram_chat_id = ""
 
     class _SpotDown:
         def fetch_balance(self, params=None):
@@ -339,8 +339,6 @@ def test_get_balance_raises_instead_of_fabricating_zero():
     from quantbox.plugins.broker.hyperliquid import HyperliquidBroker
 
     broker = HyperliquidBroker.__new__(HyperliquidBroker)
-    broker.telegram_token = ""
-    broker.telegram_chat_id = ""
 
     class _Boom:
         def fetch_balance(self, *a, **k):

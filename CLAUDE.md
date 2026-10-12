@@ -206,8 +206,8 @@ Secrets come from the environment variables below, never from YAML.
 | `API_SECRET_BINANCE` | Binance spot/futures brokers | — |
 | `HYPERLIQUID_WALLET` | Hyperliquid perps broker | — |
 | `HYPERLIQUID_PRIVATE_KEY` | Hyperliquid perps broker | — |
-| `TELEGRAM_TOKEN` | Telegram publisher | — |
-| `TELEGRAM_CHAT_ID` | Telegram publisher | — |
+| `TELEGRAM_TOKEN` | Trading-pipeline alerts (`quantbox.trade.notifier`; unset = "alerts off", recorded in the run), Telegram publisher | — |
+| `TELEGRAM_CHAT_ID` | Trading-pipeline alerts, Telegram publisher | — |
 | `QUANTBOX_MANIFEST` | Custom manifest path | `plugins/manifest.yaml` |
 
 None are needed for backtesting or paper trading with simulated brokers.
