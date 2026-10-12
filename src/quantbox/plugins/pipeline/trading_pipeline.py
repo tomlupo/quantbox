@@ -20,7 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import ROUND_DOWN, Decimal, getcontext
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import pandas as pd
@@ -62,6 +62,7 @@ from quantbox.portfolio_value import (
 from quantbox.reconciliation.ledger import EXEC_STATUS_TO_LEDGER, NON_TERMINAL_RESULT_STATUSES
 from quantbox.reconciliation.working_orders import DEFAULT_MAX_AGE_DAYS
 from quantbox.strategy_runner import build_strategy_context, run_strategies
+from quantbox.trade.notifier import Alerts, Notifier
 
 logger = logging.getLogger(__name__)
 
@@ -729,6 +730,22 @@ class TradingPipeline:
     )
     kind = "trading"
 
+    # The one alert channel's notifier (TOM-1720): injected as `run(notifier=...)` or
+    # by setting the attribute (a fake in tests); None reads TELEGRAM_TOKEN /
+    # TELEGRAM_CHAT_ID. Not a constructor param: no YAML can set it. Every alert
+    # goes through `_alert`, on every venue — never through the broker.
+    notifier: ClassVar[Notifier | None] = None
+    _alerts: ClassVar[Alerts | None] = None
+
+    def _alert_channel(self) -> Alerts:
+        if self._alerts is None:
+            self._alerts = Alerts(self.notifier) if self.notifier is not None else Alerts.from_env()
+        return self._alerts
+
+    def _alert(self, message: str, *, site: str) -> bool:
+        """Send one alert; never raises (a failed send is logged and recorded)."""
+        return self._alert_channel().send(message, site=site)
+
     # ==================================================================
     # Main entry point
     # ==================================================================
@@ -748,6 +765,10 @@ class TradingPipeline:
     ) -> RunResult:
         if mode in ("paper", "live") and broker is None:
             raise ValueError("broker_required_for_paper_or_live")
+        # A fresh alert record per run; the channel opens on the live path below.
+        if kwargs.get("notifier") is not None:
+            self.notifier = kwargs["notifier"]
+        self._alerts = None
 
         # Run-state exception inputs the Tier-2 notifier consumes (issue #62):
         # API errors caught (but survived) during the run. Data-staleness and
@@ -1059,7 +1080,10 @@ class TradingPipeline:
                 notes={"kind": "trading", **token_policy_notes, **policy_notes},
             )
 
-        # Live / paper execution path
+        # Live / paper execution path. Open the alert channel now, so "alerts off"
+        # is logged once at the start of every run that could alert, not at the
+        # first alert (which a quiet day never reaches).
+        self._alert_channel()
         stable_coin = str(params.get("stable_coin_symbol", DEFAULT_STABLE_COIN))
         capital_at_risk = float(params.get("capital_at_risk", DEFAULT_CAPITAL_AT_RISK))
 
@@ -1486,6 +1510,9 @@ class TradingPipeline:
                 # default: populated with the classified breaks + would-be action,
                 # but no order gating happens here.
                 "reconciliation": recon_notes,
+                # The alert channel's record (TOM-1720): on/off and why, every
+                # alert sent, failed or dropped — an alert is never silent.
+                "alerts": self._alert_channel().record(),
                 **token_policy_notes,
                 # What the rebalancing policy decided this run (TOM-1518): absent when
                 # the policy trades every bar to the last decided row.
@@ -2258,7 +2285,7 @@ class TradingPipeline:
     # ==================================================================
     # Stage 7: Execution
     # ==================================================================
-    def _report_order_failures(self, report: dict[str, Any], broker: BrokerPlugin | None) -> None:
+    def _report_order_failures(self, report: dict[str, Any]) -> None:
         """Record + alert this cycle's order failures. Idempotent; no-op at zero.
 
         The two freeze guards are both CONJUNCTIONS requiring a total standstill:
@@ -2289,15 +2316,11 @@ class TradingPipeline:
             n_failed + int(report["summary"]["total_executed"]),
             failed_list,
         )
-        notify = getattr(broker, "notify", None)
-        if callable(notify):
-            try:
-                notify(
-                    f"❌ <b>{n_failed} ORDER(S) FAILED</b>\n{failed_list}\n"
-                    "Targets NOT reached for these symbols; exposure is unchanged."
-                )
-            except Exception as exc:  # never let alerting crash the run
-                logger.warning("Order-failure notify failed: %s", exc)
+        self._alert(
+            f"❌ <b>{n_failed} ORDER(S) FAILED</b>\n{failed_list}\n"
+            "Targets NOT reached for these symbols; exposure is unchanged.",
+            site="order_failures",
+        )
 
     def _execute_orders(
         self,
@@ -2377,15 +2400,11 @@ class TradingPipeline:
                 "RECON ENFORCE: %d order(s) HALTED pre-execution by the prior-cycle gate — nothing sent this cycle.",
                 len(orders_df),
             )
-            notify = getattr(broker, "notify", None)
-            if callable(notify):
-                try:
-                    notify(
-                        f"🛑 <b>RECON ENFORCE — HALT</b>\n{len(orders_df)} order(s) NOT sent; "
-                        "book is in HALT from the prior cycle. Manual clear required."
-                    )
-                except Exception as exc:  # never let alerting crash the run
-                    logger.warning("Recon HALT notify failed: %s", exc)
+            self._alert(
+                f"🛑 <b>RECON ENFORCE — HALT</b>\n{len(orders_df)} order(s) NOT sent; "
+                "book is in HALT from the prior cycle. Manual clear required.",
+                site="recon_halt",
+            )
             return report
 
         executable = (
@@ -2559,18 +2578,14 @@ class TradingPipeline:
                     reasons,
                     order_list,
                 )
-                notify = getattr(broker, "notify", None)
-                if notify:
-                    try:
-                        notify(
-                            f"🧊 <b>REBALANCER FROZEN — 0 of {len(orders_df)} orders executable</b>\n"
-                            f"Reasons: {reasons}\n"
-                            "Suppressed:\n" + "\n".join(f"• {line}" for line in order_lines) + "\n"
-                            "Portfolio NOT rebalanced; holding stale positions. "
-                            "Likely min_notional too high for account size (or stale/NaN data)."
-                        )
-                    except Exception as exc:  # never let alerting crash the run
-                        logger.warning("Freeze alert notify failed: %s", exc)
+                self._alert(
+                    f"🧊 <b>REBALANCER FROZEN — 0 of {len(orders_df)} orders executable</b>\n"
+                    f"Reasons: {reasons}\n"
+                    "Suppressed:\n" + "\n".join(f"• {line}" for line in order_lines) + "\n"
+                    "Portfolio NOT rebalanced; holding stale positions. "
+                    "Likely min_notional too high for account size (or stale/NaN data).",
+                    site="frozen",
+                )
             else:
                 logger.warning("All %d orders filtered out: %s", len(orders_df), reasons)
             return report
@@ -2729,7 +2744,7 @@ class TradingPipeline:
                     # method that leaves failures on the report must report them.
                     # Dropping the entire batch under enforce IS a total trading
                     # standstill — precisely when a human must be told.
-                    self._report_order_failures(report, broker)
+                    self._report_order_failures(report)
                     return report
 
         def _record_result(symbol: str, side: str, status: str, filled_qty: Any = None, avg_px: Any = None) -> None:
@@ -2777,7 +2792,7 @@ class TradingPipeline:
             # A batch-level submission failure is the WORST case (nothing traded
             # at all), so it must alert on the same path as a per-order rejection.
             # This early return previously skipped the failure report entirely.
-            self._report_order_failures(report, broker)
+            self._report_order_failures(report)
             return report
 
         # Process fills and failures
@@ -3104,18 +3119,14 @@ class TradingPipeline:
                     failed_note,
                     skipped_list,
                 )
-                notify = getattr(broker, "notify", None)
-                if notify:
-                    try:
-                        notify(
-                            "🧊 <b>REBALANCER FROZEN — trapped residual</b>\n"
-                            f"0 fills; {n_skipped_sell} close-out SELL(s) below exchange "
-                            f"minimum{failed_note}; residual exposure RETAINED.\n"
-                            f"Skipped: {skipped_list}\n"
-                            "Book NOT rebalanced — monitor for a trapped residual."
-                        )
-                    except Exception as exc:  # never let alerting crash the run
-                        logger.warning("Freeze alert notify failed: %s", exc)
+                self._alert(
+                    "🧊 <b>REBALANCER FROZEN — trapped residual</b>\n"
+                    f"0 fills; {n_skipped_sell} close-out SELL(s) below exchange "
+                    f"minimum{failed_note}; residual exposure RETAINED.\n"
+                    f"Skipped: {skipped_list}\n"
+                    "Book NOT rebalanced — monitor for a trapped residual.",
+                    site="trapped_residual",
+                )
         else:
             # Submitted orders but received zero fills — broker-level failure.
             order_list = ", ".join(
@@ -3126,13 +3137,13 @@ class TradingPipeline:
                 len(broker_orders),
                 order_list,
             )
-            notify = getattr(broker, "notify", None)
-            if notify:
-                notify(
-                    f"⚠️ <b>0 FILLS for {len(broker_orders)} orders</b>\n"
-                    f"Submitted: {order_list}\n"
-                    "Check broker connectivity — portfolio NOT rebalanced."
-                )
+            # Was the one unwrapped site: a raising notify here failed the run.
+            self._alert(
+                f"⚠️ <b>0 FILLS for {len(broker_orders)} orders</b>\n"
+                f"Submitted: {order_list}\n"
+                "Check broker connectivity — portfolio NOT rebalanced.",
+                site="zero_fills",
+            )
 
         # Close any INTENT with no observed result as a TIMEOUT (a missed fill:
         # submitted but the broker returned nothing for it). Authority rule: the
@@ -3182,7 +3193,7 @@ class TradingPipeline:
                 len(working_to_queue),
             )
 
-        self._report_order_failures(report, broker)
+        self._report_order_failures(report)
         return report
 
     # ==================================================================
@@ -3410,12 +3421,7 @@ class TradingPipeline:
                 f"'{ctx.machine.state.value}': {action}. This cycle's orders are gated BEFORE execution."
             )
             logger.error(msg)
-            notify = getattr(broker, "notify", None)
-            if callable(notify):
-                try:
-                    notify(msg)
-                except Exception as exc:  # never let alerting crash the run
-                    logger.warning("Recon preflight notify failed: %s", exc)
+            self._alert(msg, site="recon_preflight")
         elif enforced:
             logger.info(
                 "RECON ENFORCE [%s] preflight: prior state '%s' permits normal trading.",
@@ -3848,14 +3854,12 @@ class TradingPipeline:
                     book_key,
                     persist_err,
                 )
-                notify = getattr(broker, "notify", None)
-                if callable(notify):
-                    with contextlib.suppress(Exception):
-                        notify(
-                            f"🛑 <b>RECON ENFORCE [{book_key}] — state persist FAILED</b>\n"
-                            f"Could not write recon_state.json ({persist_err}). The next cycle's "
-                            "enforcement gate cannot be trusted — HALT the book and investigate disk."
-                        )
+                self._alert(
+                    f"🛑 <b>RECON ENFORCE [{book_key}] — state persist FAILED</b>\n"
+                    f"Could not write recon_state.json ({persist_err}). The next cycle's "
+                    "enforcement gate cannot be trusted — HALT the book and investigate disk.",
+                    site="recon_persist",
+                )
                 raise ReconEnforcementError(f"recon state persist failed under enforce: {persist_err}") from persist_err
             logger.warning("Reconciliation state persist failed (observe): %s", persist_err)
 
@@ -3863,12 +3867,8 @@ class TradingPipeline:
         if decision.alert:
             log_fn = logger.error if decision.to_state.value in ("halt", "flatten") else logger.warning
             log_fn("RECON [%s] %s", book_key, decision.alert.replace("\n", " | "))
-            notify = getattr(broker, "notify", None)
-            if callable(notify) and decision.transitioned:
-                try:
-                    notify(decision.alert)
-                except Exception as exc:  # never let alerting crash the run
-                    logger.warning("Reconciliation alert notify failed: %s", exc)
+            if decision.transitioned:
+                self._alert(decision.alert, site="recon_transition")
 
         return {
             "book_key": book_key,

@@ -33,7 +33,7 @@ broker.rebalance_to_weights({"BTC": 0.5, "ETH": -0.3})
 - Handles LONG/SHORT positions natively
 - Tracks funding rates
 - Validates against Binance filters (lot size, min notional)
-- Telegram notifications on trades
+- No alerts of its own: the trading pipeline's notifier alerts (TOM-1720)
 
 ### Risk Controls (Built-in)
 - max_position_pct: Max single position (default: 50%)
@@ -63,11 +63,6 @@ try:
     import ccxt
 except ImportError:  # pragma: no cover
     ccxt = None  # type: ignore
-
-try:
-    import requests
-except ImportError:  # pragma: no cover
-    requests = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -103,32 +98,6 @@ class RiskConfig:
             "max_daily_loss_pct": f"{self.max_daily_loss_pct:.0%}",
             "min_order_notional": f"${self.min_order_notional}",
         }
-
-
-# ============================================================================
-# Telegram Notifications
-# ============================================================================
-
-
-def send_telegram(token: str, chat_id: str, message: str) -> bool:
-    """Send a Telegram message."""
-    if not token or not chat_id:
-        return False
-    try:
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        resp = requests.post(
-            url,
-            json={
-                "chat_id": chat_id,
-                "text": message,
-                "parse_mode": "HTML",
-            },
-            timeout=10,
-        )
-        return resp.status_code == 200
-    except Exception as e:
-        logger.warning(f"Telegram send failed: {e}")
-        return False
 
 
 # ============================================================================
@@ -216,8 +185,6 @@ class BinanceFuturesBroker:
                     "type": "object",
                     "description": "Python-only: a RiskConfig object (position/leverage/loss limits); default limits apply.",
                 },
-                "telegram_token": {"type": "string", "description": "Telegram bot token for fill notifications."},
-                "telegram_chat_id": {"type": "string", "description": "Telegram chat id for fill notifications."},
             },
         },
     )
@@ -233,10 +200,6 @@ class BinanceFuturesBroker:
     # Risk config
     risk: RiskConfig = field(default_factory=RiskConfig)
 
-    # Notifications
-    telegram_token: str = ""
-    telegram_chat_id: str = ""
-
     # State
     _exchange: ccxt.binanceusdm | None = field(default=None, repr=False)
     _markets: dict = field(default_factory=dict, repr=False)
@@ -250,10 +213,6 @@ class BinanceFuturesBroker:
             self.api_key = os.environ.get("API_KEY_BINANCE", "")
         if not self.api_secret:
             self.api_secret = os.environ.get("API_SECRET_BINANCE", "")
-        if not self.telegram_token:
-            self.telegram_token = os.environ.get("TELEGRAM_TOKEN", "")
-        if not self.telegram_chat_id:
-            self.telegram_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
 
         if not self.api_key or not self.api_secret:
             raise ValueError("Binance API credentials required")
@@ -291,7 +250,6 @@ class BinanceFuturesBroker:
             "exchange": "Binance USDⓈ-M Futures",
             "leverage": self.target_leverage,
             "risk_config": self.risk.describe(),
-            "notifications": bool(self.telegram_token),
         }
 
     # ========================================================================
@@ -629,7 +587,6 @@ class BinanceFuturesBroker:
                 # reported as-is, never defaulted to the requested quantity.
                 # What actually filled is decided by ``resolve_fill`` in
                 # ``place_orders``.
-                fill_price = float(order.get("average") or order.get("price") or price)
                 filled = order.get("filled")
 
                 logger.info(
@@ -640,13 +597,6 @@ class BinanceFuturesBroker:
                     order.get("status") or "unknown",
                     "unknown" if filled is None else filled,
                 )
-
-                # Send Telegram notification
-                emoji = "🟢" if side == "buy" else "🔴"
-                msg = f"{emoji} <b>{side.upper()}</b> {adj_qty:.4f} {symbol} submitted\n"
-                msg += f"Filled: {'unconfirmed' if filled is None else filled}\n"
-                msg += f"Price: ${fill_price:,.2f}"
-                send_telegram(self.telegram_token, self.telegram_chat_id, msg)
 
                 return order
 
@@ -706,11 +656,6 @@ class BinanceFuturesBroker:
             daily_return = (balance["total"] - self._starting_balance) / self._starting_balance
             if daily_return < -self.risk.max_daily_loss_pct:
                 logger.error(f"Daily loss {daily_return:.1%} exceeds limit, trading halted")
-                send_telegram(
-                    self.telegram_token,
-                    self.telegram_chat_id,
-                    f"⚠️ <b>TRADING HALTED</b>\nDaily loss limit exceeded: {daily_return:.1%}",
-                )
                 return False
 
         return True
@@ -817,15 +762,6 @@ class BinanceFuturesBroker:
                         "order_id": order.get("id"),
                     }
                 )
-
-        # Summary notification
-        if executed:
-            msg = "📊 <b>Rebalance Complete</b>\n"
-            msg += f"Portfolio: ${portfolio_value:,.2f}\n\n"
-            for ex in executed:
-                emoji = "📈" if ex["side"] == "buy" else "📉"
-                msg += f"{emoji} {ex['side'].upper()} {ex['quantity']:.4f} {ex['symbol']}\n"
-            send_telegram(self.telegram_token, self.telegram_chat_id, msg)
 
         return {
             "portfolio_value": portfolio_value,
