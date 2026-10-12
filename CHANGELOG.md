@@ -29,6 +29,12 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.14.0 (2026-10-12)
+
+### Feat
+
+- **rebalancing**: futures rebalancer writes Min Notional and Min Qty (TOM-1820) (#280)
+
 ## v0.13.0 (2026-10-12)
 
 ### BREAKING CHANGE
