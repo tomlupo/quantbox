@@ -22,7 +22,7 @@ import pandas as pd
 import pytest
 
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
-from quantbox.plugins.rebalancing.futures_rebalancer import FuturesRebalancer
+from quantbox.plugins.rebalancing.futures_rebalancer import RESIDUAL_STATUS, FuturesRebalancer
 
 MIN_TRADE = 0.01
 MIN_NOTIONAL = 10.0
@@ -134,12 +134,15 @@ def test_tiny_close_below_min_trade_size_still_exempt():
 # ---------------------------------------------------------------------------
 
 
-def test_partial_reduce_exempt_from_min_notional():
+def test_partial_reduce_below_min_notional_is_a_residual():
     """A same-sign move toward zero (-100 -> -10 DOGE, $6.30) is exposure-
-    reducing, so it is reduce-only and exempt from the floor.
+    reducing, so it is reduce-only — but it is NOT exempt from the floor.
 
-    Before TOM-402 ``is_closing`` required ``Target Weight == 0`` exactly, so
-    this leg was neither exempt nor reduce-only and froze against the $10 floor.
+    TOM-402 exempted it, on the premise that the venue waives its minimum for
+    reduceOnly. Hyperliquid rejects a PARTIAL reduce below $10 ("Order must
+    have minimum value of $10"); only a full close goes through. Requirement
+    change TOM-1778 (Tom, 2026-10-12, "Skip as residual"): not sent, recorded
+    as a residual.
     """
     orders = _make_orders(
         [
@@ -156,10 +159,65 @@ def test_partial_reduce_exempt_from_min_notional():
         ]
     )
     row = orders.iloc[0]
+    assert row["Order Status"] == RESIDUAL_STATUS, row["Order Status"]
+    assert bool(row["Executable"]) is False
+    assert row["Adjusted Quantity"] == 0.0
+    assert bool(row["reduce_only"]) is True
+    assert "the venue rejects it" in row["Reason"]
+    assert row["Notional Value"] == pytest.approx(6.30)  # the size it would have had, for the report
+
+
+def test_carver_hl_2026_10_12_partial_reduces_are_residuals():
+    """The live rows that Hyperliquid rejected every day since 2026-10-09 (TOM-1778)."""
+    orders = _make_orders(
+        [
+            _rebal_row(
+                "ETH",
+                action="Sell",
+                delta_qty=-0.0024863647912731924,
+                price=2545.65,  # $6.33
+                weight_delta=-0.08609792215620621,
+                target_weight=0.1874635389058823,
+                current_qty=0.0079,
+                target_qty=0.005413635208726808,
+            ),
+            _rebal_row(
+                "NEAR",
+                action="Sell",
+                delta_qty=-0.44893693880181296,
+                price=5.86715,  # $2.63
+                weight_delta=-0.0358295755367635,
+                target_weight=0.1636949703403846,
+                current_qty=2.5,
+                target_qty=2.051063061198187,
+            ),
+        ]
+    )
+    assert list(orders["Order Status"]) == [RESIDUAL_STATUS, RESIDUAL_STATUS]
+    assert not orders["Executable"].any()
+
+
+def test_partial_reduce_above_min_notional_still_placed_reduce_only():
+    """Above the floor nothing changes: the trim goes out, reduce-only."""
+    orders = _make_orders(
+        [
+            _rebal_row(
+                "ETH",
+                action="Sell",
+                delta_qty=-0.006,
+                price=2545.65,  # $15.27
+                weight_delta=-0.2,
+                target_weight=0.1,
+                current_qty=0.0079,
+                target_qty=0.0019,
+            )
+        ]
+    )
+    row = orders.iloc[0]
     assert row["Order Status"] == "To be placed", row["Order Status"]
     assert bool(row["Executable"]) is True
     assert bool(row["reduce_only"]) is True
-    assert row["Reason"] == "Reducing position (min-notional exempt)"
+    assert row["Reason"] == ""
 
 
 def test_partial_add_below_min_notional_still_blocked():
@@ -223,7 +281,9 @@ def test_partial_reduce_clamped_at_zero_on_inconsistent_input():
                 "PENGU",
                 action="Buy",
                 delta_qty=5000.0,  # inconsistent: exceeds |current|
-                price=0.004,
+                # $78.76 clamped: above the floor, so this tests the clamp. At the old
+                # 0.004 ($7.88) a partial reduce is a residual (TOM-1778) and sends nothing.
+                price=0.04,
                 weight_delta=0.06,
                 target_weight=-0.02,
                 current_qty=-1969.0,
@@ -236,16 +296,18 @@ def test_partial_reduce_clamped_at_zero_on_inconsistent_input():
     assert row["Adjusted Quantity"] == 1969.0  # clamped to |current|, never past zero
     # The reported notional must describe the order actually sent, not the
     # unclamped delta — reporting and the dead-man freeze detector read it.
-    assert row["Notional Value"] == pytest.approx(1969.0 * 0.004)
+    assert row["Notional Value"] == pytest.approx(1969.0 * 0.04)
 
 
 def test_clamped_partial_reduce_is_judged_on_the_clamped_size():
     """The clamp runs ABOVE the gate chain, so the floors judge what is sent.
 
     A frame whose raw delta clears ordermin but whose CLAMPED size does not must
-    suppress as "Below min qty". If the clamp ran after the gate the row would be
-    marked Executable and the broker would then silently return None — the
-    send-and-vanish failure the base-unit floor exists to prevent.
+    be suppressed. If the clamp ran after the gate the row would be marked
+    Executable and the broker would then silently return None — the
+    send-and-vanish failure the base-unit floor exists to prevent. The venue
+    minimum includes ``ordermin * price``, so a partial reduce under it is a
+    residual (TOM-1778; it was "Below min qty" before).
     """
     reb = FuturesRebalancer()
     df = pd.DataFrame(
@@ -269,7 +331,7 @@ def test_clamped_partial_reduce_is_judged_on_the_clamped_size():
         min_qty_map={"ADA": 1.0},  # clamped 0.5 < 1.0, raw 2.0 > 1.0
     )
     row = orders.iloc[0]
-    assert row["Order Status"] == "Below min qty", row["Order Status"]
+    assert row["Order Status"] == RESIDUAL_STATUS, row["Order Status"]
     assert bool(row["Executable"]) is False
 
 
@@ -304,9 +366,10 @@ def test_partial_reduce_still_subject_to_churn_band():
 def test_partial_reduce_still_subject_to_base_unit_floor():
     """A partial reduce is NOT exempt from the ordermin base-unit floor.
 
-    Venues waive the min-NOTIONAL floor for reduceOnly but do not waive lot/step
-    size, so exempting it would mark the row Executable and then have the broker
-    silently drop it.
+    Venues do not waive lot/step size for reduceOnly, so exempting it would mark
+    the row Executable and then have the broker silently drop it. The venue
+    minimum includes ``ordermin * price`` ($100 here), so the row is a residual
+    (TOM-1778; it was "Below min qty" before) — never sent either way.
     """
     reb = FuturesRebalancer()
     df = pd.DataFrame(
@@ -330,7 +393,7 @@ def test_partial_reduce_still_subject_to_base_unit_floor():
         min_qty_map={"ADA": 1.0},  # ordermin 1.0 > delta 0.5
     )
     row = orders.iloc[0]
-    assert row["Order Status"] == "Below min qty", row["Order Status"]
+    assert row["Order Status"] == RESIDUAL_STATUS, row["Order Status"]
     assert bool(row["Executable"]) is False
 
 
@@ -909,6 +972,141 @@ def test_pipeline_freeze_survives_broker_without_notify():
         mode="live",
     )
     assert report.get("frozen") is True
+
+
+# ---------------------------------------------------------------------------
+# TOM-1778: a partial reduce below the venue minimum is a residual, not a freeze
+# (Tom, 2026-10-12: "Skip as residual", "Residual is not a freeze")
+# ---------------------------------------------------------------------------
+
+
+def _carver_hl_2026_10_12_orders(extra: list[dict] | None = None) -> pd.DataFrame:
+    """The live carver-HL orders of 2026-10-12 as the rebalancer now writes them."""
+    rows = [
+        {
+            "Asset": "BTC",
+            "Action": "Buy",
+            "Adjusted Quantity": 0.0,
+            "Price": 83571.5,
+            "Notional Value": 1.63,
+            "Order Status": "Below min notional",
+            "reduce_only": False,
+            "Executable": False,
+        },
+        {
+            "Asset": "ETH",
+            "Action": "Sell",
+            "Adjusted Quantity": 0.0,
+            "Price": 2545.65,
+            "Notional Value": 6.33,
+            "Order Status": RESIDUAL_STATUS,
+            "reduce_only": True,
+            "Executable": False,
+        },
+        {
+            "Asset": "NEAR",
+            "Action": "Sell",
+            "Adjusted Quantity": 0.0,
+            "Price": 5.86715,
+            "Notional Value": 2.63,
+            "Order Status": RESIDUAL_STATUS,
+            "reduce_only": True,
+            "Executable": False,
+        },
+    ]
+    return pd.DataFrame(rows + (extra or []))
+
+
+def test_residual_day_is_not_a_freeze():
+    pipe = TradingPipeline()
+    broker = _FakeBrokerWithPositions(positions={"ETH": 0.0079, "NEAR": 2.5, "BTC": 0.0003})
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=_carver_hl_2026_10_12_orders(),
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+    )
+    assert report.get("residual_day") is True
+    assert not report.get("frozen")
+    assert broker.messages == []
+    assert [r["symbol"] for r in report["residuals"]] == ["ETH", "NEAR"]
+    assert report["summary"]["total_failed"] == 0
+
+
+def test_residual_with_a_suppressed_exit_still_freezes():
+    """A reduce-only exit that could not go out is trapped, residuals or not."""
+    pipe = TradingPipeline()
+    broker = _FakeBrokerWithPositions(positions={"ETH": 0.0079, "SOL": 0.1})
+    stuck_exit = {
+        "Asset": "SOL",
+        "Action": "Sell",
+        "Adjusted Quantity": 0.0,
+        "Price": 150.0,
+        "Notional Value": 15.0,
+        "Order Status": "Below min qty",
+        "reduce_only": True,
+        "Executable": False,
+    }
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=_carver_hl_2026_10_12_orders([stuck_exit]),
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+    )
+    assert report.get("frozen") is True
+    assert not report.get("residual_day")
+
+
+def test_residual_with_a_data_fault_still_freezes():
+    pipe = TradingPipeline()
+    broker = _FakeBrokerWithPositions(positions={"ETH": 0.0079})
+    no_price = {
+        "Asset": "SOL",
+        "Action": "Buy",
+        "Adjusted Quantity": 0.0,
+        "Price": 0.0,
+        "Notional Value": 0.0,
+        "Order Status": "Zero price",
+        "reduce_only": False,
+        "Executable": False,
+    }
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=_carver_hl_2026_10_12_orders([no_price]),
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+    )
+    assert report.get("frozen") is True
+    assert not report.get("residual_day")
+
+
+def test_residuals_are_listed_when_other_orders_trade():
+    pipe = TradingPipeline()
+    broker = _FakeBrokerWithPositions(positions={"ETH": 0.0079})
+    tradable = {
+        "Asset": "SOL",
+        "Symbol": "SOL",
+        "Action": "Buy",
+        "Adjusted Quantity": 0.1,
+        "Price": 150.0,
+        "Notional Value": 15.0,
+        "Order Status": "To be placed",
+        "reduce_only": False,
+        "Executable": True,
+    }
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=_carver_hl_2026_10_12_orders([tradable]),
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+    )
+    assert not report.get("residual_day")
+    assert not report.get("frozen")
+    assert [r["symbol"] for r in report["residuals"]] == ["ETH", "NEAR"]
 
 
 # ---------------------------------------------------------------------------
