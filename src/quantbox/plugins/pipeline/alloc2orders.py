@@ -12,14 +12,14 @@ import yaml
 
 from quantbox.contracts import ArtifactStore, BrokerPlugin, DataPlugin, Mode, PluginMeta, RiskPlugin, RunResult
 from quantbox.parquet_io import read_parquet
-from quantbox.portfolio_value import (
+from quantbox.run_history import resolve_latest_artifact
+from quantbox.trade.book import (
     BASIS_MARK,
     DEFAULT_RECONCILIATION_TOLERANCE,
     PortfolioValuation,
     resolve_portfolio_value,
     value_holdings,
 )
-from quantbox.run_history import resolve_latest_artifact
 
 logger = logging.getLogger(__name__)
 

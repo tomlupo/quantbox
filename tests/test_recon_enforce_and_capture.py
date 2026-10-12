@@ -174,7 +174,7 @@ def test_replay_from_ledger_after_crash_before_stage7b(tmp_path):
     """CRASH-DURABILITY REPLAY: if the run dies after Stage 7 but before Stage 7b,
     the ledger alone still proves intent + outcome. Reconstruct the reconciliation
     view purely from the persisted JSONL and confirm the missed fill is provable."""
-    from quantbox.reconciliation import OrderFillLedger
+    from quantbox.trade.reconciliation import OrderFillLedger
 
     # Stage 7 only: capture intent + (missing) result, then "crash" — no Stage 7b.
     broker = _FakeBroker(fills_fn=lambda orders: pd.DataFrame())  # order never fills
@@ -567,7 +567,7 @@ def test_invalid_state_value_fails_closed_under_enforce(tmp_path):
     """A readable JSON state file with a BOGUS state value is as dangerous as
     corrupt JSON — under enforce it must fail CLOSED to HALT, not fall back to the
     default NORMAL (review BLOCKER)."""
-    from quantbox.reconciliation import ReconState
+    from quantbox.trade.reconciliation import ReconState
 
     book_dir = tmp_path / "carver-HL"
     book_dir.mkdir(parents=True)
@@ -587,7 +587,7 @@ def test_invalid_state_value_fails_closed_under_enforce(tmp_path):
 
 def test_invalid_state_value_in_observe_resets_to_normal(tmp_path):
     """In observe a bogus state value resets to NORMAL and never gates."""
-    from quantbox.reconciliation import ReconState
+    from quantbox.trade.reconciliation import ReconState
 
     book_dir = tmp_path / "carver-HL"
     book_dir.mkdir(parents=True)

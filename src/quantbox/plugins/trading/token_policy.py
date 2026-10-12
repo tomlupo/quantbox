@@ -92,7 +92,7 @@ class TokenPolicy:
         # no book declared and no explicit key (backtest/research).
         resolved_key = book_key if book_key and book_key != "default" else _book_key_from_config(config)
         if resolved_key:
-            from quantbox.reconciliation import safe_book_key
+            from quantbox.trade.reconciliation import safe_book_key
 
             seen_dir = data_dir / "seen_tokens"
             safe = safe_book_key(resolved_key, seen_dir)
@@ -139,7 +139,7 @@ class TokenPolicy:
         state_file: Path = legacy_state_file
         legacy_for_migration: Path | None = None
         if book_key and book_key != "default":
-            from quantbox.reconciliation import safe_book_key
+            from quantbox.trade.reconciliation import safe_book_key
 
             seen_dir = base_dir / "seen_tokens"
             safe = safe_book_key(book_key, seen_dir)

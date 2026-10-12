@@ -25,7 +25,7 @@ import pandas as pd
 from quantbox.contracts import BrokerPlugin, PluginMeta
 from quantbox.decision import gross_cap, risk_caps_row
 from quantbox.engine.policy import TRANCHES_MOVED
-from quantbox.portfolio_value import BASIS_MARK, DEFAULT_RECONCILIATION_TOLERANCE, resolve_portfolio_value
+from quantbox.trade.book import BASIS_MARK, DEFAULT_RECONCILIATION_TOLERANCE, resolve_portfolio_value
 
 logger = logging.getLogger(__name__)
 
@@ -252,7 +252,7 @@ class StandardRebalancer:
         # that omits it is GATED, not treated as paper: only a run that
         # positively declares itself a simulation is exempt, so a forgotten
         # `mode` fails closed rather than quietly ungating a live book. See
-        # quantbox.portfolio_value.UNGATED_MODES.
+        # quantbox.trade.book.UNGATED_MODES.
         mode = str(params.get("mode") or "")
 
         price_map: dict[str, float | None] = {}

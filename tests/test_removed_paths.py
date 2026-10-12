@@ -55,6 +55,23 @@ REMOVED_NAMES = {
     ("quantbox.engine", "resolve_group_limits"): "quantbox.engine.groups.resolve_group_limits",
 }
 
+# Removed in 0.16.0 by P5 W3 (TOM-1455, ADR-0011; Tom, 2026-10-10, P5 grilling Q6/Q11):
+# the two trade packages move under quantbox.trade, with no shim release.
+W3_REMOVED_MODULES = {
+    "quantbox.portfolio_value": ("quantbox.trade.book",),
+    "quantbox.reconciliation": ("quantbox.trade.reconciliation",),
+}
+
+# quantbox-live's own imports at the 0.15.0 pin (scripts/resolve_working_orders.py and its
+# test): each must fail at once and name the new package, not end as a ModuleNotFoundError.
+_OLD_TRADE_IMPORTS = [
+    "from quantbox.reconciliation.ledger import OrderFillLedger",
+    "from quantbox.reconciliation.working_orders import WorkingOrderStore, resolve_working_orders",
+    "from quantbox.reconciliation.working_orders import record_age_seconds",
+    "import quantbox.reconciliation.ledger as qledger",
+    "from quantbox.portfolio_value import BASIS_MARK, resolve_portfolio_value",
+]
+
 # Imports a user had before 0.13.0 that reached the analysis package's old submodules.
 _OLD_ANALYSIS_IMPORTS = [
     "import quantbox.analysis.dsr",
@@ -74,9 +91,29 @@ def _resolve(dotted: str) -> object:
         return getattr(importlib.import_module(module), attr)
 
 
-def test_the_table_lists_exactly_what_4d_removes():
-    expected = set(REMOVED_MODULES) | {f"{m}.{n}" for m, n in REMOVED_NAMES}
+def test_the_table_lists_exactly_what_4d_and_w3_remove():
+    expected = set(REMOVED_MODULES) | {f"{m}.{n}" for m, n in REMOVED_NAMES} | set(W3_REMOVED_MODULES)
     assert set(REMOVED) == expected
+
+
+@pytest.mark.parametrize("old", sorted(W3_REMOVED_MODULES))
+def test_a_w3_removed_module_names_its_release_card_and_home(old):
+    with pytest.raises(ImportError) as exc:
+        importlib.import_module(old)
+    msg = str(exc.value)
+    assert f"{old} was removed in quantbox 0.16.0 (TOM-1455)" in msg
+    for new in W3_REMOVED_MODULES[old]:
+        assert new in msg
+    assert not isinstance(exc.value, ModuleNotFoundError)
+
+
+@pytest.mark.parametrize("statement", _OLD_TRADE_IMPORTS)
+def test_every_old_trade_import_names_the_trade_package(statement):
+    with pytest.raises(ImportError) as exc:
+        exec(statement, {})
+    assert "removed in quantbox 0.16.0 (TOM-1455)" in str(exc.value)
+    assert "quantbox.trade." in str(exc.value)
+    assert not isinstance(exc.value, ModuleNotFoundError)
 
 
 @pytest.mark.parametrize("old", sorted(REMOVED_MODULES))
@@ -123,7 +160,16 @@ def test_an_unknown_name_on_a_live_module_is_still_an_attribute_error(module):
     assert not hasattr(mod, "no_such_name")
 
 
-@pytest.mark.parametrize("new", sorted({*REMOVED_NAMES.values(), *(n for v in REMOVED_MODULES.values() for n in v)}))
+@pytest.mark.parametrize(
+    "new",
+    sorted(
+        {
+            *REMOVED_NAMES.values(),
+            *(n for v in REMOVED_MODULES.values() for n in v),
+            *(n for v in W3_REMOVED_MODULES.values() for n in v),
+        }
+    ),
+)
 def test_every_replacement_resolves(new):
     assert _resolve(new) is not None
 

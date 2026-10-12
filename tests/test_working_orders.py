@@ -15,8 +15,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
-from quantbox.reconciliation import working_orders as working_orders_mod
-from quantbox.reconciliation.working_orders import (
+from quantbox.trade.reconciliation import working_orders as working_orders_mod
+from quantbox.trade.reconciliation.working_orders import (
     WorkingOrderResolution,
     WorkingOrderStore,
     resolve_working_orders,

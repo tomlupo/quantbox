@@ -29,7 +29,7 @@ from quantbox.plugins.pipeline.alloc2orders import _summed_holdings, _usd_marks
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline, _valuation_metrics, _valuation_notes
 from quantbox.plugins.rebalancing.futures_rebalancer import FuturesRebalancer
 from quantbox.plugins.rebalancing.standard_rebalancer import StandardRebalancer
-from quantbox.portfolio_value import (
+from quantbox.trade.book import (
     BASIS_ATTR,
     BASIS_MARGIN,
     BASIS_MARK,
@@ -315,7 +315,7 @@ class TestVenueDeclaration:
     @pytest.mark.parametrize("bad", ["spot", "MARK_TO_MARKET", "", 1, True, ["mark_to_market"]], ids=repr)
     def test_unrecognised_declaration_is_undeclared_and_logged(self, bad, caplog):
         """ "A declaration nobody can parse carries no more information than none."""
-        with caplog.at_level(logging.ERROR, logger="quantbox.portfolio_value"):
+        with caplog.at_level(logging.ERROR, logger="quantbox.trade.book"):
             assert venue_valuation_basis(_BrokerBase(basis=bad)) is None
         assert any(BASIS_ATTR in r.getMessage() for r in caplog.records), (
             "an unparseable declaration must be LOUD, not silently undeclared"
@@ -451,7 +451,7 @@ class TestUndeclaredVenue:
         Both arms are asserted so the argument is OBSERVABLE: if the fallback
         were ignored, the two would return the same number.
         """
-        with caplog.at_level(logging.WARNING, logger="quantbox.portfolio_value"):
+        with caplog.at_level(logging.WARNING, logger="quantbox.trade.book"):
             v = resolve_portfolio_value(
                 broker=_BrokerBase(),
                 mode="paper",
@@ -512,7 +512,7 @@ class TestMarkedVenueCompleteness:
         assert "PEPE" in str(exc.value), "the operator must see WHICH name failed"
 
     def test_simulation_warns_and_continues_understated(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="quantbox.portfolio_value"):
+        with caplog.at_level(logging.WARNING, logger="quantbox.trade.book"):
             v = resolve_portfolio_value(
                 broker=_BrokerBase(basis=BASIS_MARK),
                 mode="paper",
@@ -531,7 +531,7 @@ class TestMarkedVenueCompleteness:
         Conflating that with a valuation refusal is what made a spot book look
         like a perps book.
         """
-        with caplog.at_level(logging.WARNING, logger="quantbox.portfolio_value"):
+        with caplog.at_level(logging.WARNING, logger="quantbox.trade.book"):
             v = _must_not_refuse(
                 "a margined venue with an unmarkable name",
                 resolve_portfolio_value,
@@ -605,7 +605,7 @@ class TestBrokerEquityAndReconciliation:
         assert exc.value.broker_equity == pytest.approx(92.0)
 
     def test_reconciliation_mismatch_only_warns_off_live(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="quantbox.portfolio_value"):
+        with caplog.at_level(logging.WARNING, logger="quantbox.trade.book"):
             v = resolve_portfolio_value(
                 broker=self._spot(equity=92.0),
                 mode="paper",
@@ -686,7 +686,7 @@ class TestBrokerEquityAndReconciliation:
 
     def test_reconciliation_is_skipped_when_an_excluded_asset_is_held(self, caplog):
         """The two views measure different books, so comparing them false-alarms."""
-        with caplog.at_level(logging.WARNING, logger="quantbox.portfolio_value"):
+        with caplog.at_level(logging.WARNING, logger="quantbox.trade.book"):
             v = _must_not_refuse(
                 "a fully marked tradable book holding an excluded asset",
                 resolve_portfolio_value,
@@ -790,7 +790,7 @@ class TestBrokerEquityAndReconciliation:
         assert exc.value.computed == pytest.approx(92.0)
 
     def test_broker_equity_raising_only_warns_off_live(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="quantbox.portfolio_value"):
+        with caplog.at_level(logging.WARNING, logger="quantbox.trade.book"):
             v = resolve_portfolio_value(
                 broker=self._spot(equity_error=RuntimeError("venue 503")),
                 mode="paper",
@@ -833,7 +833,7 @@ class TestBrokerEquityAndReconciliation:
         warning, not a stop, exactly as an unreadable `get_equity()` already was.
         """
         inner = PortfolioValuationError("cannot mark XBT", reason=REASON_UNPRICED, unpriced=("XBT",))
-        with caplog.at_level(logging.WARNING, logger="quantbox.portfolio_value"):
+        with caplog.at_level(logging.WARNING, logger="quantbox.trade.book"):
             v = resolve_portfolio_value(
                 broker=self._spot(equity_error=inner),
                 mode="paper",
@@ -861,7 +861,7 @@ class TestBrokerEquityAndReconciliation:
         still refuses.
         """
         inner = PortfolioValuationError("cannot mark LOCKED", reason=REASON_UNPRICED, unpriced=("LOCKED",))
-        with caplog.at_level(logging.WARNING, logger="quantbox.portfolio_value"):
+        with caplog.at_level(logging.WARNING, logger="quantbox.trade.book"):
             v = resolve_portfolio_value(
                 broker=self._spot(equity_error=inner),
                 mode="live",

@@ -22,7 +22,7 @@ from typing import Any
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
-from quantbox.portfolio_value import BASIS_MARGIN
+from quantbox.trade.book import BASIS_MARGIN
 
 logger = logging.getLogger(__name__)
 

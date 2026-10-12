@@ -1,4 +1,4 @@
-"""Import paths removed in quantbox 0.13.0 (TOM-1457, the contract step of ADR-0010).
+"""Import paths removed from quantbox: in 0.13.0 (TOM-1457, the contract step of ADR-0010), then later.
 
 4a and 4b (TOM-1449, TOM-1451) and TOM-1618 moved code to public homes and kept
 each old path for one minor version, as a shim with a ``DeprecationWarning``.
@@ -25,6 +25,13 @@ The module walkers (``tests/test_base_install.py``,
 ``tests/test_without_vectorbt.py``, ``scripts/check_no_vectorbt.sh``) read this
 list to tell a tombstone from a broken module; ``tests/test_removed_paths.py``
 checks each entry.
+
+Later removals carry their own release and card in :data:`REMOVED_LATER`: P5 W3
+(TOM-1455, ADR-0011) moves ``quantbox.portfolio_value`` to the marked book at
+``quantbox.trade.book`` and ``quantbox.reconciliation`` to
+``quantbox.trade.reconciliation`` in 0.16.0, with no shim release (Tom,
+2026-10-10, P5 grilling Q6/Q11). quantbox-live changes its imports in the PR
+that bumps its pin.
 
 YAML plugin-id aliases and call or config aliases are NOT import paths and are
 not here: they keep working, with their warnings (Tom, 2026-10-09).
@@ -79,11 +86,24 @@ REMOVED: dict[str, str] = {
     "quantbox.engine.apply_group_limits": "quantbox.engine.groups.apply_group_limits",
     "quantbox.engine.materialise_nan": "quantbox.engine.schedule.materialise_nan",
     "quantbox.engine.resolve_group_limits": "quantbox.engine.groups.resolve_group_limits",
+    # TOM-1455 (P5 W3, ADR-0011): the two trade packages move under quantbox.trade.
+    "quantbox.portfolio_value": "quantbox.trade.book (the marked book; every name it had keeps its name)",
+    "quantbox.reconciliation": (
+        "quantbox.trade.reconciliation (ledger, state_machine and working_orders keep their names; "
+        "the cycle is quantbox.trade.reconciliation.cycle)"
+    ),
+}
+
+# Entries removed after 0.13.0: old path -> (release, card). Any other entry is REMOVED_IN / CARD.
+REMOVED_LATER: dict[str, tuple[str, str]] = {
+    "quantbox.portfolio_value": ("0.16.0", "TOM-1455"),
+    "quantbox.reconciliation": ("0.16.0", "TOM-1455"),
 }
 
 
 def _error(old: str) -> ImportError:
-    return ImportError(f"{old} was removed in quantbox {REMOVED_IN} ({CARD}): use {REMOVED[old]}", name=old)
+    release, card = REMOVED_LATER.get(old, (REMOVED_IN, CARD))
+    return ImportError(f"{old} was removed in quantbox {release} ({card}): use {REMOVED[old]}", name=old)
 
 
 def removed(module: str) -> NoReturn:

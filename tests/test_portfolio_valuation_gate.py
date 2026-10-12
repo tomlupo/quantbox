@@ -34,7 +34,7 @@ import math
 import pandas as pd
 import pytest
 
-from quantbox.portfolio_value import (
+from quantbox.trade.book import (
     BASIS_MARGIN,
     BASIS_MARK,
     DEFAULT_RECONCILIATION_TOLERANCE,

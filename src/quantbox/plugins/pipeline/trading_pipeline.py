@@ -51,7 +51,8 @@ from quantbox.engine.policy import (
 from quantbox.financing import resolve_leverage
 from quantbox.frequency import _parse_bar_size
 from quantbox.plugins.rebalancing.futures_rebalancer import RESIDUAL_STATUS
-from quantbox.portfolio_value import (
+from quantbox.strategy_runner import build_strategy_context, decided_weights, latest_weights, run_strategies
+from quantbox.trade.book import (
     BASIS_MARK,
     DEFAULT_RECONCILIATION_TOLERANCE,
     PortfolioValuation,
@@ -59,10 +60,9 @@ from quantbox.portfolio_value import (
     resolve_portfolio_value,
     value_holdings,
 )
-from quantbox.reconciliation.ledger import EXEC_STATUS_TO_LEDGER, NON_TERMINAL_RESULT_STATUSES
-from quantbox.reconciliation.working_orders import DEFAULT_MAX_AGE_DAYS
-from quantbox.strategy_runner import build_strategy_context, decided_weights, latest_weights, run_strategies
 from quantbox.trade.notifier import Alerts, Notifier
+from quantbox.trade.reconciliation.ledger import EXEC_STATUS_TO_LEDGER, NON_TERMINAL_RESULT_STATUSES
+from quantbox.trade.reconciliation.working_orders import DEFAULT_MAX_AGE_DAYS
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +187,7 @@ class _ReconCtx:
     gate (preflight) and the post-execution evaluator so config is parsed once and
     the SAME ledger + persisted state back both stages.
 
-    Types are intentionally ``Any`` so the (optional) ``quantbox.reconciliation``
+    Types are intentionally ``Any`` so the (optional) ``quantbox.trade.reconciliation``
     subpackage is imported lazily, never at module load.
     """
 
@@ -1855,7 +1855,7 @@ class TradingPipeline:
         # has one (for derivatives, cash + sum(qty * price) is wrong for
         # shorts); otherwise the book is marked here. Either way an unmarkable
         # holding is a REFUSAL in live mode, never a silently smaller number --
-        # see quantbox.portfolio_value.
+        # see quantbox.trade.book.
         valuation = resolve_portfolio_value(
             broker=broker,
             mode=mode,
@@ -3105,7 +3105,7 @@ class TradingPipeline:
         safe per-book path, so we return None and let the caller say so loudly
         rather than silently share one queue between books.
         """
-        from quantbox.reconciliation.working_orders import WorkingOrderStore
+        from quantbox.trade.reconciliation.working_orders import WorkingOrderStore
 
         recon = params.get("reconciliation") or {}
         book_key = str(params.get("book_key") or recon.get("book_key") or "")
@@ -3124,11 +3124,11 @@ class TradingPipeline:
         Thin delegate. The semantics — unreadable venue keeps the order queued,
         still-working keeps it, terminal books it against the carried order_ref,
         past the cap drops it loudly — live in
-        :func:`quantbox.reconciliation.working_orders.resolve_working_orders`,
+        :func:`quantbox.trade.reconciliation.working_orders.resolve_working_orders`,
         which the out-of-cycle follow-up job calls too. Returns the orders that
         reached a terminal state this cycle.
         """
-        from quantbox.reconciliation.working_orders import resolve_working_orders
+        from quantbox.trade.reconciliation.working_orders import resolve_working_orders
 
         return resolve_working_orders(
             store,
@@ -3155,7 +3155,7 @@ class TradingPipeline:
         import json
         from pathlib import Path
 
-        from quantbox.reconciliation import (
+        from quantbox.trade.reconciliation import (
             BookTolerances,
             OrderFillLedger,
             ReconciliationStateMachine,
@@ -3293,7 +3293,7 @@ class TradingPipeline:
         The gate is only APPLIED in enforce mode; observe mode computes it for the
         record (``applied=False``) and changes no orders.
         """
-        from quantbox.reconciliation import preflight_gate
+        from quantbox.trade.reconciliation import preflight_gate
 
         orders_allowed, reduce_only = preflight_gate(ctx.machine.state)
         enforced = ctx.tol.is_enforce
@@ -3445,7 +3445,7 @@ class TradingPipeline:
         """
         from collections import defaultdict
 
-        from quantbox.reconciliation import KIND_INTENT, classify_breaks
+        from quantbox.trade.reconciliation import KIND_INTENT, classify_breaks
 
         ctx = self._recon_load(params, run_id, asof)
         if ctx is None:

@@ -254,7 +254,6 @@ forbidden_modules = [
   "quantbox.plugins.trading.**",
   "quantbox.portfolio_value",
   "quantbox.reconciliation",
-  "quantbox.reconciliation.**",
   "quantbox.trade",  # new P5 trade modules (ADR-0011)
   "quantbox.trade.**",
 ]
@@ -319,7 +318,6 @@ forbidden_modules = [
   "quantbox.plugins.trading.**",
   "quantbox.portfolio_value",
   "quantbox.reconciliation",
-  "quantbox.reconciliation.**",
   "quantbox.trade",  # new P5 trade modules (ADR-0011)
   "quantbox.trade.**",
 ]
@@ -366,7 +364,6 @@ forbidden_modules = [
   "quantbox.plugins.trading.**",
   "quantbox.portfolio_value",
   "quantbox.reconciliation",
-  "quantbox.reconciliation.**",
   "quantbox.trade",  # new P5 trade modules (ADR-0011)
   "quantbox.trade.**",
 ]
@@ -391,7 +388,6 @@ source_modules = [
   "quantbox.plugins.trading.**",
   "quantbox.portfolio_value",
   "quantbox.reconciliation",
-  "quantbox.reconciliation.**",
   "quantbox.trade",  # new P5 trade modules (ADR-0011)
   "quantbox.trade.**",
 ]

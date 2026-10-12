@@ -17,7 +17,7 @@ held. Whether margin balance is equity is a fact about the VENUE, so it is asked
 of the broker (``valuation_basis``) rather than assumed from this plugin's own
 identity. Against a perps broker the answer is the same number as before; against
 a spot broker it is now cash + holdings, and a live run against a broker that
-does not say refuses rather than guessing. See :mod:`quantbox.portfolio_value`.
+does not say refuses rather than guessing. See :mod:`quantbox.trade.book`.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ import pandas as pd
 from quantbox.contracts import BrokerPlugin, PluginMeta
 from quantbox.decision import gross_cap, risk_caps_row
 from quantbox.engine.policy import TRANCHES_MOVED
-from quantbox.portfolio_value import (
+from quantbox.trade.book import (
     BASIS_MARGIN,
     DEFAULT_RECONCILIATION_TOLERANCE,
     resolve_portfolio_value,
