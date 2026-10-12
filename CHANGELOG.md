@@ -29,6 +29,12 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.15.0 (2026-10-12)
+
+### Feat
+
+- **trade**: P5 W1+W2 — one Telegram notifier on every venue; one strategy aggregation (TOM-1720, TOM-1712) (#282)
+
 ## v0.14.0 (2026-10-12)
 
 ### Feat
