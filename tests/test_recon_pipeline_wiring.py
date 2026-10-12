@@ -11,24 +11,27 @@ import pandas as pd
 import pytest
 
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
+from quantbox.trade.notifier import RecordingNotifier
+
+
+def _pipeline() -> TradingPipeline:
+    """A pipeline whose alerts are recorded (TOM-1720: the pipeline alerts, never the broker)."""
+    pipe = TradingPipeline()
+    pipe.notifier = RecordingNotifier()
+    return pipe
 
 
 class _FakeBroker:
-    """Broker exposing get_positions/get_market_snapshot/notify, like the live ones."""
+    """Broker exposing get_positions/get_market_snapshot, like the live ones."""
 
     def __init__(self, positions):
         self._positions = positions
-        self.alerts: list[str] = []
 
     def get_positions(self):
         return pd.DataFrame(self._positions)
 
     def get_market_snapshot(self, symbols):
         return pd.DataFrame({"symbol": symbols, "mid": [1.0] * len(symbols)})
-
-    def notify(self, msg):
-        self.alerts.append(msg)
-        return True
 
 
 def _orders_df():
@@ -53,7 +56,7 @@ def test_duplicate_symbol_side_results_bind_one_to_one(tmp_path):
     not all to the first — else a fill is duplicated or a missed one is masked."""
     import json
 
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     two_doge = pd.DataFrame(
         [
             {"Asset": "DOGE", "Action": "Buy", "Adjusted Quantity": 5.0, "Price": 1.0, "Executable": True},
@@ -90,7 +93,7 @@ def test_duplicate_symbol_side_results_bind_one_to_one(tmp_path):
 
 
 def test_no_config_is_noop(tmp_path):
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     notes = pipe._run_reconciliation(
         params={},  # no `reconciliation` block
         broker=_FakeBroker([]),
@@ -106,7 +109,7 @@ def test_no_config_is_noop(tmp_path):
 
 
 def test_observe_records_ledger_and_classifies_without_gating(tmp_path):
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     broker = _FakeBroker(
         # DOGE tiny vs 50% target (huge drift) + ETH phantom (no intent).
         [{"symbol": "DOGE", "qty": 1.0}, {"symbol": "ETH", "qty": 100.0}]
@@ -147,11 +150,11 @@ def test_observe_records_ledger_and_classifies_without_gating(tmp_path):
     assert notes["reduce_only"] is False
 
     # Alerted on the transition.
-    assert broker.alerts and "OBSERVE" in broker.alerts[0]
+    assert pipe.notifier.messages and "OBSERVE" in pipe.notifier.messages[0]
 
 
 def test_state_persists_across_cycles(tmp_path):
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     broker = _FakeBroker([{"symbol": "DOGE", "qty": 1.0}])
     params = {
         "reconciliation": {
@@ -185,7 +188,7 @@ def test_missed_fill_is_detected_and_counted(tmp_path):
     exists to prove; it must feed the failure streak and be flagged in notes."""
     import json
 
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
     notes = pipe._run_reconciliation(
         params=params,
@@ -207,7 +210,7 @@ def test_missed_fill_is_detected_and_counted(tmp_path):
 def test_stale_streak_does_not_escalate_when_symbol_untraded(tmp_path):
     """A symbol that fails once then is no longer traded must not keep a stale
     streak that falsely escalates to HALT (codex finding #3)."""
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     params = {
         "reconciliation": {
             "book_key": "carver-HL",
@@ -246,7 +249,7 @@ def test_stale_streak_does_not_escalate_when_symbol_untraded(tmp_path):
 
 def test_recon_never_crashes_the_run(tmp_path):
     """A bad config must be caught by the guard, not propagate out of the run."""
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     params = {
         "reconciliation": {
             "book_key": "carver-HL",
@@ -272,7 +275,7 @@ def test_enforce_mode_is_refused_no_false_safety(tmp_path):
     """mode='enforce' must NOT be honored in this post-execution path — it is
     forced back to observe and flagged, so no config can claim orders are gated
     when they have already been sent (independent-review BLOCKER)."""
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     params = {
         "reconciliation": {
             "book_key": "carver-HL",
@@ -304,7 +307,7 @@ def test_carryover_position_is_not_phantom_but_never_intended_is(tmp_path):
 
     A position intended in a PRIOR cycle (legitimate carryover) is not phantom
     even when absent from this cycle's targets; a holding never intended is."""
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
 
     # Cycle 1: we intend + trade ETH (records an ETH intent in the ledger).
@@ -355,7 +358,7 @@ def test_phantom_uses_recent_intent_window_not_all_history(tmp_path):
     intended within it (carryover) is not. Round-1 used final_weights (reflagged
     every carryover); round-2 used ALL history (a once-traded name could never be
     phantom again). This pins the scoped fix (#88)."""
-    pipe = TradingPipeline()
+    pipe = _pipeline()
     dd = str(tmp_path)
 
     def _cycle(cycle_id, lookback, held, target, order_asset):

@@ -1,6 +1,6 @@
 [project]
 name = "quantbox"
-version = "0.14.0"
+version = "0.15.0"
 description = "Quant research & trading core with plugin marketplace (entry points)."
 requires-python = ">=3.10"
 # The base install is what the CORE layer imports (ADR-0010 decision 4,
@@ -255,6 +255,8 @@ forbidden_modules = [
   "quantbox.portfolio_value",
   "quantbox.reconciliation",
   "quantbox.reconciliation.**",
+  "quantbox.trade",  # new P5 trade modules (ADR-0011)
+  "quantbox.trade.**",
 ]
 
 [[tool.importlinter.contracts]]
@@ -318,6 +320,8 @@ forbidden_modules = [
   "quantbox.portfolio_value",
   "quantbox.reconciliation",
   "quantbox.reconciliation.**",
+  "quantbox.trade",  # new P5 trade modules (ADR-0011)
+  "quantbox.trade.**",
 ]
 
 [[tool.importlinter.contracts]]
@@ -363,6 +367,8 @@ forbidden_modules = [
   "quantbox.portfolio_value",
   "quantbox.reconciliation",
   "quantbox.reconciliation.**",
+  "quantbox.trade",  # new P5 trade modules (ADR-0011)
+  "quantbox.trade.**",
 ]
 
 [[tool.importlinter.contracts]]
@@ -386,6 +392,8 @@ source_modules = [
   "quantbox.portfolio_value",
   "quantbox.reconciliation",
   "quantbox.reconciliation.**",
+  "quantbox.trade",  # new P5 trade modules (ADR-0011)
+  "quantbox.trade.**",
 ]
 forbidden_modules = [
   "quantbox.adapters",
@@ -479,7 +487,7 @@ forbidden_modules = ["vectorbt", "numba", "ccxt"]
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.14.0"
+version = "0.15.0"
 version_files = [
     "pyproject.toml:version",
     "src/quantbox/__init__.py:__version__",

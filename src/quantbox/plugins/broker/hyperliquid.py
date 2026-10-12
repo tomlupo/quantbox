@@ -69,11 +69,6 @@ try:
 except ImportError:  # pragma: no cover
     ccxt = None  # type: ignore
 
-try:
-    import requests
-except ImportError:  # pragma: no cover
-    requests = None  # type: ignore
-
 logger = logging.getLogger(__name__)
 
 # ============================================================================
@@ -114,33 +109,10 @@ class RiskConfig:
 
 
 # ============================================================================
-# Telegram Notifications
-# ============================================================================
-
-
-def send_telegram(token: str, chat_id: str, message: str) -> bool:
-    """Send a Telegram message."""
-    if not token or not chat_id:
-        return False
-    try:
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        resp = requests.post(
-            url,
-            json={
-                "chat_id": chat_id,
-                "text": message,
-                "parse_mode": "HTML",
-            },
-            timeout=10,
-        )
-        return resp.status_code == 200
-    except Exception as e:
-        logger.warning(f"Telegram send failed: {e}")
-        return False
-
-
-# ============================================================================
 # Broker Class
+#
+# The broker sends no alert of its own: the trading pipeline's one notifier
+# (quantbox.trade.notifier, TOM-1720) alerts on every venue.
 # ============================================================================
 
 
@@ -199,8 +171,6 @@ class HyperliquidBroker:
                     "type": "object",
                     "description": "Python-only: a RiskConfig object (position/leverage/loss limits); default limits apply.",
                 },
-                "telegram_token": {"type": "string", "description": "Telegram bot token for fill notifications."},
-                "telegram_chat_id": {"type": "string", "description": "Telegram chat id for fill notifications."},
             },
         },
     )
@@ -215,10 +185,6 @@ class HyperliquidBroker:
     # Risk config
     risk: RiskConfig = field(default_factory=RiskConfig)
 
-    # Notifications
-    telegram_token: str = ""
-    telegram_chat_id: str = ""
-
     # State
     _exchange: ccxt.hyperliquid | None = field(default=None, repr=False)
     _markets: dict = field(default_factory=dict, repr=False)
@@ -232,10 +198,6 @@ class HyperliquidBroker:
             self.wallet_address = os.environ.get("HYPERLIQUID_WALLET", "")
         if not self.private_key:
             self.private_key = os.environ.get("HYPERLIQUID_PRIVATE_KEY", "")
-        if not self.telegram_token:
-            self.telegram_token = os.environ.get("TELEGRAM_TOKEN", "")
-        if not self.telegram_chat_id:
-            self.telegram_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
 
         if not self.wallet_address or not self.private_key:
             raise ValueError(
@@ -310,7 +272,6 @@ class HyperliquidBroker:
             "network": "testnet" if self.testnet else "mainnet",
             "wallet": self.wallet_address[:10] + "..." if self.wallet_address else None,
             "risk_config": self.risk.describe(),
-            "notifications": bool(self.telegram_token),
             "features": [
                 "No geo-restrictions",
                 "No KYC",
@@ -322,10 +283,6 @@ class HyperliquidBroker:
     # ========================================================================
     # Account Methods
     # ========================================================================
-
-    def notify(self, message: str) -> bool:
-        """Send a Telegram alert. Returns True if sent successfully."""
-        return send_telegram(self.telegram_token, self.telegram_chat_id, message)
 
     def get_balance(self) -> dict[str, float]:
         """
@@ -387,12 +344,7 @@ class HyperliquidBroker:
             # generic handler below, which would bury the actual cause.
             raise
         except Exception as e:
-            logger.error("Balance fetch failed: %s", e)
-            send_telegram(
-                self.telegram_token,
-                self.telegram_chat_id,
-                f"⚠️ <b>BALANCE FETCH FAILED</b>\nCannot read account balance: {e}\nNo orders will execute this run.",
-            )
+            logger.error("Balance fetch failed: %s — no orders will execute this run", e)
             # FAIL CLOSED. Returning zeros here is a fabricated value in a POSITION
             # SIZING context: `get_equity()` -> total_value == 0 previously made the
             # run look like a legitimately empty book and no-op with exit 0. An
@@ -547,51 +499,6 @@ class HyperliquidBroker:
         status, qty, price, reason = resolve_fill(order, requested, refetch=None)
         return {"status": status, "qty": qty, "price": price, "error": reason}
 
-    def _notify_order_outcome(
-        self,
-        symbol: str,
-        side: str,
-        status: str,
-        filled_qty: float,
-        fill_price: float,
-        reason: str = "",
-    ) -> bool:
-        """Notify the CONFIRMED outcome of one order.
-
-        Called only after :func:`resolve_fill` has classified the order, so the
-        message can never claim a fill that did not happen (quantbox#87). A FAILED
-        order is notified too — previously a rejection produced no message at all
-        while an acceptance produced a false "filled" one, which is exactly
-        backwards.
-
-        WORKING is deliberately silent. It is not an outcome: the order is alive
-        on the book and this cycle simply stopped waiting for it. The message
-        built below treats anything that is not FILLED/PARTIAL as a failure, so
-        without this guard a resting limit order would send "ORDER FAILED" with a
-        reason that says it is still working — the exact cry-wolf alert this
-        status exists to stop. The run reports it as `n_working`, and the next
-        cycle resolves it and notifies the real outcome then.
-        """
-        st = str(status).strip().upper()
-        if st == STATUS_WORKING:
-            return False
-        if st == "FILLED":
-            head = f"🟢 <b>{side.upper()}</b>" if side == "buy" else f"🔴 <b>{side.upper()}</b>"
-            msg = (
-                f"{head} {filled_qty:.4f} {symbol}\n"
-                f"Price: ${fill_price:,.6f}\n"
-                f"Notional: ${filled_qty * fill_price:,.2f}"
-            )
-        elif st == "PARTIAL":
-            msg = (
-                f"🟡 <b>PARTIAL {side.upper()}</b> {symbol}\n"
-                f"Filled: {filled_qty:.4f} @ ${fill_price:,.6f}\n"
-                f"Unfilled remainder is live exposure. {reason}"
-            )
-        else:
-            msg = f"❌ <b>ORDER FAILED</b> {side.upper()} {symbol}\nReason: {reason or 'unknown'}"
-        return send_telegram(self.telegram_token, self.telegram_chat_id, msg)
-
     def place_orders(self, orders: pd.DataFrame) -> pd.DataFrame:
         """BrokerPlugin-compliant order execution.
 
@@ -651,8 +558,6 @@ class HyperliquidBroker:
                     logger.warning("Order partially filled: %s %s — %s", side, sym, reason)
                 else:
                     logger.info("Order FILLED: %s %s %s @ $%.6f", side.upper(), filled_qty, sym, fill_price)
-                # Notify only AFTER resolve_fill has decided — never on acceptance.
-                self._notify_order_outcome(sym, side, status, filled_qty, fill_price, reason)
             else:
                 rows.append(
                     {
@@ -666,7 +571,6 @@ class HyperliquidBroker:
                     }
                 )
                 n_failed += 1
-                self._notify_order_outcome(sym, side, "FAILED", 0.0, 0.0, "placement failed")
 
         if n_working:
             logger.info(
@@ -1053,11 +957,6 @@ class HyperliquidBroker:
             daily_return = (balance["total"] - self._starting_balance) / self._starting_balance
             if daily_return < -self.risk.max_daily_loss_pct:
                 logger.error(f"Daily loss {daily_return:.1%} exceeds limit, trading halted")
-                send_telegram(
-                    self.telegram_token,
-                    self.telegram_chat_id,
-                    f"⚠️ <b>TRADING HALTED</b>\nDaily loss limit exceeded: {daily_return:.1%}",
-                )
                 return False
 
         return True
@@ -1168,15 +1067,6 @@ class HyperliquidBroker:
                         "order_id": order.get("id"),
                     }
                 )
-
-        # Summary notification
-        if executed:
-            msg = "📊 <b>Rebalance Complete</b>\n"
-            msg += f"Portfolio: ${portfolio_value:,.2f}\n\n"
-            for ex in executed:
-                emoji = "📈" if ex["side"] == "buy" else "📉"
-                msg += f"{emoji} {ex['side'].upper()} {ex['quantity']:.4f} {ex['symbol']}\n"
-            send_telegram(self.telegram_token, self.telegram_chat_id, msg)
 
         return {
             "portfolio_value": portfolio_value,
