@@ -425,6 +425,8 @@ class FuturesRebalancer:
                     "Adjusted Quantity",
                     "Price",
                     "Notional Value",
+                    "Min Notional",
+                    "Min Qty",
                     "Order Status",
                     "Reason",
                     "Executable",
@@ -646,6 +648,14 @@ class FuturesRebalancer:
                     "Adjusted Quantity": adjusted_qty,
                     "Price": price,
                     "Notional Value": notional_value,
+                    # The floor this row was judged against, and the venue's
+                    # base-unit floor: the same columns standard_rebalancer
+                    # writes. Without them the pipeline's suppressed-order
+                    # records (residuals, TOM-1778; frozen legs) carry
+                    # min_notional_usd 0 and no shortfall, so no reader can say
+                    # how far a leg is from tradable (TOM-1820).
+                    "Min Notional": effective_min_notional,
+                    "Min Qty": ordermin,
                     "Order Status": status,
                     "Reason": reason,
                     # An exposure-reducing order (full close or partial reduce) is
