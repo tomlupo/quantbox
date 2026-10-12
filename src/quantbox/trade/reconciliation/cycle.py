@@ -466,7 +466,7 @@ class ReconCycle:
 
         # --- Reconcile against external truth (holdings), from the marked book ---
         pv = float(portfolio_value) if portfolio_value else 0.0
-        actual_wt, unpriced = _held_weights(broker, pv, stable_coin)
+        actual_wt, unpriced = _actual_weights(broker, pv, stable_coin)
         if unpriced:
             logger.warning(
                 "RECON [%s]: drift UNKNOWN for %d unmarkable holding(s): %s",
@@ -637,7 +637,7 @@ class ReconCycle:
         }
 
 
-def _held_weights(broker: Any, pv: float, stable_coin: str) -> tuple[dict[str, float], list[str]]:
+def _actual_weights(broker: Any, pv: float, stable_coin: str) -> tuple[dict[str, float], list[str]]:
     """The held book as weights of ``pv``, read as a marked book; plus the held names with no mark.
 
     A held name with no mark has an UNKNOWN weight (TOM-1335): it is kept out of

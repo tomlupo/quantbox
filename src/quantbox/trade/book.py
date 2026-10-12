@@ -105,7 +105,7 @@ import logging
 import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal
+from typing import Any
 
 import pandas as pd
 
@@ -114,7 +114,6 @@ from quantbox.exceptions import QuantboxError
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "ALL_CASH",
     "BASIS_MARGIN",
     "BASIS_MARK",
     "DEFAULT_RECONCILIATION_TOLERANCE",
@@ -598,10 +597,6 @@ def resolve_portfolio_value(
 # assembly — one book read from one venue
 # ----------------------------------------------------------------------
 
-#: ``read_book(cash=ALL_CASH)``: the sum of every balance the broker reports,
-#: the post-trade NAV's cash. A tuple of keys reads one balance instead.
-ALL_CASH: Literal["all"] = "all"
-
 
 @dataclass(frozen=True)
 class MarkedBook:
@@ -616,8 +611,9 @@ class MarkedBook:
     ``min_qty``).
 
     The book values a position (:meth:`value_of`) and the whole book
-    (:meth:`marked`, :meth:`valuation`). No other site multiplies a held
-    quantity by a price.
+    (:meth:`marked`, :meth:`valuation`). No pipeline, rebalancer or
+    reconciliation site multiplies a held quantity by a price; a broker's own
+    view of its account (``get_equity``) is the venue's, not this module's.
     """
 
     positions: Mapping[str, float] = field(default_factory=dict)
@@ -677,10 +673,16 @@ class MarkedBook:
         mark = self.mark(symbol)
         return None if mark is None else q * mark
 
+    def _cash_read(self) -> float:
+        """The cash this book was read with. A book read WITHOUT cash cannot be valued: unread is not zero."""
+        if self.cash is None:
+            raise ValueError("this MarkedBook was read without cash (read_book(cash=None)); it cannot be valued")
+        return self.cash
+
     def marked(self, *, stable_coin: str | None = None, exclusions: Iterable[str] = ()) -> PortfolioValuation:
         """Mark the whole book, collecting what could not be marked (:func:`value_holdings`)."""
         return value_holdings(
-            cash=self.cash or 0.0,
+            cash=self._cash_read(),
             holdings=self.held,
             get_price=self.mark,
             stable_coin=stable_coin,
@@ -702,7 +704,7 @@ class MarkedBook:
         return resolve_portfolio_value(
             broker=broker,
             mode=mode,
-            cash=self.cash or 0.0,
+            cash=self._cash_read(),
             holdings=self.held,
             get_price=self.mark,
             fallback_basis=fallback_basis,
@@ -723,14 +725,14 @@ def read_book(
     *,
     wanted: Iterable[str] = (),
     exclude: Iterable[str] = (),
-    cash: Sequence[str] | Literal["all"] | None = None,
+    cash: Sequence[str] | None = None,
 ) -> MarkedBook:
     """Read one book from ``broker``: positions, then cash, then one market snapshot.
 
     - ``wanted``: symbols to mark besides the held ones (the targets).
     - ``exclude``: symbols never requested (the stable coin, the exclusions).
-    - ``cash``: ``None`` reads no cash; :data:`ALL_CASH` sums every balance; a
-      tuple of keys reads the first key the broker reports, else 0.0.
+    - ``cash``: ``None`` reads no cash (the book then cannot be valued); a tuple
+      of keys reads the first key the broker reports, else 0.0.
 
     The snapshot request is ``sorted((wanted | held) - exclude)``; nothing is
     requested when that is empty. A failed snapshot is logged and leaves every
@@ -741,10 +743,7 @@ def read_book(
     cash_value: float | None = None
     if cash is not None:
         balances = broker.get_cash() or {}
-        if cash == ALL_CASH:
-            cash_value = sum(float(v) for v in balances.values())
-        else:
-            cash_value = next((float(balances[k]) for k in cash if k in balances), 0.0)
+        cash_value = next((float(balances[k]) for k in cash if k in balances), 0.0)
     book = MarkedBook.of(positions=positions_df, cash=cash_value)
 
     excluded = set(exclude)
@@ -777,8 +776,10 @@ def _summed_positions(positions: pd.DataFrame | Mapping[str, float] | None) -> d
             return {}
         frame = positions
     qty = pd.to_numeric(frame["qty"], errors="coerce")
-    # `sort=False` keeps the venue's row order, so a book is marked (summed) in
-    # the order the sites marked it before; float addition is order-sensitive.
+    # `sort=False` keeps the venue's row order: the pre-trade sites marked (summed)
+    # the book in that order, and float addition is order-sensitive. The old
+    # post-trade NAV of a broker without get_equity summed in SYMBOL order; it now
+    # sums in venue order too, a last-ulp difference (paper/sim brokers only).
     summed = qty.groupby(frame["symbol"].astype(str), sort=False).sum(min_count=1)
     return {str(s): float(q) for s, q in summed.items()}
 

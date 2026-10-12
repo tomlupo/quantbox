@@ -2,7 +2,7 @@
 
 Written WITHOUT reading the branch's own test file, from the stated contract:
 
-* ``src/quantbox/portfolio_value.py`` module docstring and per-function
+* ``src/quantbox/trade/book.py`` (``quantbox.portfolio_value`` until 0.16.0) module docstring and per-function
   docstrings (the only written statement of the rule);
 * ``BrokerPlugin.valuation_basis`` in ``src/quantbox/contracts.py``;
 * ``KrakenBroker.get_equity`` docstring;

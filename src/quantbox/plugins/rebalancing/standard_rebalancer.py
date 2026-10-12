@@ -428,6 +428,14 @@ class StandardRebalancer:
             if action == "hold" or delta_qty == 0:
                 status = "Zero delta"
                 reason = "No trade needed"
+            elif price is None or pd.isna(price) or price == 0:
+                # No mark: the held name's value and weight are UNKNOWN (NaN, the
+                # marked book), so no threshold, notional or scaling can judge
+                # it. Before TOM-1455 its weight read as 0 -- a short slipped into
+                # buy scaling with a NaN price, and a long close was "To be
+                # placed" at a NaN price.
+                status = "Zero price"
+                reason = "No price available"
             else:
                 zero_target_sell = (
                     action == "sell" and row.get("Target Weight", 0) == 0 and row.get("Current Quantity", 0) > 0

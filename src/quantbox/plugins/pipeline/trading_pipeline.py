@@ -1182,6 +1182,12 @@ class TradingPipeline:
                 # marked part. A snapshot with no `mid` used to make the NAV
                 # plain cash, silently; it now reports every holding unmarked.
                 post_book = replace(read_book(broker), cash=cash_usd_post)
+                if post_book.held and post_book.snapshot is None:
+                    # The snapshot itself failed: that is a failed read, not a
+                    # book of unmarked names. Recording cash alone would write a
+                    # false NAV, so the pre-trade value stays, as it always did
+                    # on a failed read, and the error is recorded below.
+                    raise RuntimeError("post-trade market snapshot failed; NAV not re-marked")
                 post_snapshot = post_book.marked(
                     # Same two arguments as the PRE-trade call. Without them the
                     # stable coin and every excluded asset read as unmarkable,
@@ -1880,6 +1886,14 @@ class TradingPipeline:
             if action == "hold" or delta_qty == 0:
                 status = "Zero delta"
                 reason = "No trade needed"
+            elif price is None or pd.isna(price) or price == 0:
+                # No mark: the held name's value and weight are UNKNOWN (NaN, the
+                # marked book), so no threshold, notional or scaling can judge
+                # it. Before TOM-1455 its weight read as 0 -- a short slipped into
+                # buy scaling with a NaN price, and a long close was "To be
+                # placed" at a NaN price.
+                status = "Zero price"
+                reason = "No price available"
             else:
                 zero_target_sell = (
                     action == "sell" and row.get("Target Weight", 0) == 0 and row.get("Current Quantity", 0) > 0

@@ -27,7 +27,7 @@ from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
 from quantbox.plugins.rebalancing.futures_rebalancer import FuturesRebalancer
 from quantbox.plugins.rebalancing.standard_rebalancer import StandardRebalancer
 from quantbox.store import FileArtifactStore
-from quantbox.trade.book import ALL_CASH, BASIS_MARGIN, BASIS_MARK, MarkedBook, read_book
+from quantbox.trade.book import BASIS_MARGIN, BASIS_MARK, MarkedBook, read_book
 
 
 class _Broker:
@@ -86,9 +86,18 @@ def test_a_position_is_qty_times_mark_and_a_missing_mark_is_unknown_not_zero():
 
 
 def test_an_unreadable_quantity_is_unknown_not_zero():
-    book = MarkedBook.of(positions={"X": float("nan")}, marks={"X": 1.0})
+    book = MarkedBook.of(positions={"X": float("nan")}, cash=0.0, marks={"X": 1.0})
     assert book.value_of("X") is None
     assert book.marked().unpriced == ("X",)
+
+
+def test_a_book_read_without_cash_cannot_be_valued():
+    """Unread cash is not zero cash: `marked()` and `valuation()` refuse rather than value it at 0."""
+    book = MarkedBook.of(positions={"X": 1.0}, marks={"X": 1.0})
+    with pytest.raises(ValueError, match="without cash"):
+        book.marked()
+    with pytest.raises(ValueError, match="without cash"):
+        book.valuation(broker=None, mode="paper", fallback_basis=BASIS_MARK)
 
 
 @pytest.mark.parametrize("bad", [0.0, -1.0, float("nan"), float("inf"), None, "n/a"])
@@ -120,7 +129,6 @@ def test_read_book_cash_rules():
     broker = _Broker(positions=[], marks={}, cash={"USDT": 3.0, "USD": 7.0})
     assert read_book(broker, cash=("USDC", "USD", "USDT")).cash == pytest.approx(7.0)  # first key present
     assert read_book(broker, cash=("USDC",)).cash == 0.0  # none present
-    assert read_book(broker, cash=ALL_CASH).cash == pytest.approx(10.0)  # every balance
     calls_before = broker.calls.get("get_cash", 0)
     assert read_book(broker).cash is None  # not read at all
     assert broker.calls.get("get_cash", 0) == calls_before
@@ -250,7 +258,12 @@ class _NoOrders:
     """An injected order generator that sizes nothing, so the run reaches post-trade untouched."""
 
     def generate_orders(self, weights, broker, params):
-        return {"weights": weights, "rebalancing": pd.DataFrame(), "orders": pd.DataFrame(), "total_value": 0.0}
+        return {
+            "weights": weights,
+            "rebalancing": pd.DataFrame(),
+            "orders": pd.DataFrame(),
+            "total_value": 2000.0,
+        }  # a pre-trade value, as a real generator reports
 
 
 class _NavBroker(_Broker):
@@ -302,6 +315,21 @@ def test_post_trade_nav_with_a_snapshot_lacking_mid_reports_every_holding(tmp_pa
     result, _ = _run(broker, tmp_path)
     errors = result.notes["exceptions"]["api_errors"]
     assert {"stage": "portfolio_snapshot", "error": "unmarkable holdings: BTC"} in errors
+
+
+def test_post_trade_nav_after_a_failed_snapshot_keeps_the_pre_trade_value(tmp_path):
+    """A failed read is not a book of unmarked names: the NAV is not re-marked to cash alone."""
+    broker = _NavBroker(
+        positions=[{"symbol": "BTC", "qty": 10.0}],
+        marks={},
+        cash={"USDC": 1000.0},
+        snapshot_raises=RuntimeError("venue down"),
+    )
+    result, store = _run(broker, tmp_path)
+    nav = store.written["portfolio_daily"]["portfolio_value_usd"].iloc[0]
+    assert nav == result.metrics["portfolio_value_usd_pre"]  # not 1000.0, the cash alone
+    stages = [e["stage"] for e in result.notes["exceptions"]["api_errors"]]
+    assert "portfolio_snapshot" in stages
 
 
 def test_reconciliation_drift_of_an_unmarked_holding_is_unknown_not_a_break(tmp_path):
