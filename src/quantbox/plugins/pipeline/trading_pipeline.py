@@ -61,7 +61,7 @@ from quantbox.portfolio_value import (
 )
 from quantbox.reconciliation.ledger import EXEC_STATUS_TO_LEDGER, NON_TERMINAL_RESULT_STATUSES
 from quantbox.reconciliation.working_orders import DEFAULT_MAX_AGE_DAYS
-from quantbox.strategy_runner import build_strategy_context, run_strategies
+from quantbox.strategy_runner import build_strategy_context, decided_weights, latest_weights, run_strategies
 from quantbox.trade.notifier import Alerts, Notifier
 
 logger = logging.getLogger(__name__)
@@ -891,7 +891,8 @@ class TradingPipeline:
                 last = agg_history.iloc[-1]
                 final_weights = {str(k): float(v) for k, v in last.items()}
         else:
-            final_weights = self._aggregate_strategies(strategy_results, params)
+            agg_history = decided_weights(strategy_results, params.get("strategy_weights"))
+            final_weights = latest_weights(agg_history)
         agg_records = [{"symbol": str(k), "weight": float(v)} for k, v in final_weights.items()]
         a_agg_w = store.put_parquet("aggregated_weights", pd.DataFrame(agg_records))
         logger.info("Aggregated weights: %d assets", len(final_weights))
@@ -949,7 +950,11 @@ class TradingPipeline:
         live_book = mode not in ("backtest",) and broker is not None
         order_result: dict[str, Any] | None = None
         if not trades_every_bar(policy):
-            history = agg_history if agg_history is not None else self._aggregate_history(strategy_results, params)
+            history = (
+                agg_history
+                if agg_history is not None
+                else decided_weights(strategy_results, params.get("strategy_weights"))
+            )
             if history is None or history.empty:
                 raise ValueError(
                     f"rebalancing_policy {policy.policy!r} reads the decided weights HISTORY, and the aggregation "
@@ -1538,111 +1543,6 @@ class TradingPipeline:
         for key in ("prices", "volume", "market_cap", "funding_rates"):
             result.setdefault(key, pd.DataFrame())
         return result
-
-    # ==================================================================
-    # Stage 2: Strategy execution
-    # ==================================================================
-    # ==================================================================
-    # Stage 3: Strategy aggregation
-    # ==================================================================
-    def _aggregate_strategies(
-        self,
-        strategy_results: dict[str, dict[str, Any]],
-        params: dict[str, Any],
-    ) -> dict[str, float]:
-        """Aggregate multi-strategy weights into a single weight per asset.
-
-        Ported from quantlab trading.py aggregation logic:
-        1. Concat weights with MultiIndex columns (strategy, ticker)
-        2. Multiply by account-level strategy weights
-        3. Sum to single weight per ticker
-        """
-        names = list(strategy_results.keys())
-        if not names:
-            return {}
-
-        weight_overrides = params.get("strategy_weights", {})
-
-        weight_dfs = []
-        account_weights = []
-        for sname in names:
-            sinfo = strategy_results[sname]
-            w_df = sinfo["result"].get("weights", pd.DataFrame())
-            if w_df is None or (isinstance(w_df, pd.DataFrame) and w_df.empty):
-                continue
-
-            weight_dfs.append(w_df)
-            w = float(weight_overrides.get(sname, sinfo["weight"]))
-            account_weights.append(w)
-
-        if not weight_dfs:
-            return {}
-
-        if len(weight_dfs) == 1:
-            # Single strategy: just use last row scaled by weight
-            df = weight_dfs[0]
-            last = df.iloc[-1] if isinstance(df, pd.DataFrame) else df
-            return {str(k): float(v) * account_weights[0] for k, v in last.items()}
-
-        # Multi-strategy aggregation
-        try:
-            combined = pd.concat(weight_dfs, axis=1, keys=names[: len(weight_dfs)], names=["strategy"])
-            acct_w = pd.Series(
-                account_weights,
-                index=pd.Index(names[: len(weight_dfs)], name="strategy"),
-            )
-            weighted = combined.mul(acct_w, level="strategy")
-            # Drop strategy level and sum per ticker
-            flat = weighted.droplevel(0, axis=1)
-            # If multiple strategies have the same ticker, sum their weights
-            if isinstance(flat.columns, pd.MultiIndex) or flat.columns.duplicated().any():
-                flat = flat.T.groupby(level=0).sum().T
-            aggregated = flat.iloc[-1]
-        except Exception:
-            # Fallback: manual aggregation
-            agg: dict[str, float] = {}
-            for i, df in enumerate(weight_dfs):
-                last = df.iloc[-1] if isinstance(df, pd.DataFrame) else df
-                w = account_weights[i]
-                for ticker, val in last.items():
-                    ticker_str = str(ticker)
-                    agg[ticker_str] = agg.get(ticker_str, 0.0) + float(val) * w
-            return agg
-
-        return {str(k): float(v) for k, v in aggregated.items()}
-
-    def _aggregate_history(
-        self,
-        strategy_results: dict[str, dict[str, Any]],
-        params: dict[str, Any],
-    ) -> pd.DataFrame | None:
-        """The aggregated decided weights HISTORY (date x symbol): what the rebalancing policy reads.
-
-        The same aggregation as :meth:`_aggregate_strategies` (each strategy's
-        weights times its account weight, summed per ticker), on every row
-        instead of the last one. It is the frame the rebalancers' rolling-mean
-        tranches used to build for themselves (TOM-1518 moved it here).
-        """
-        weight_overrides = params.get("strategy_weights", {})
-        names: list[str] = []
-        frames: list[pd.DataFrame] = []
-        account_weights: list[float] = []
-        for sname, sinfo in strategy_results.items():
-            w_df = sinfo["result"].get("weights", pd.DataFrame())
-            if isinstance(w_df, pd.DataFrame) and not w_df.empty:
-                names.append(sname)
-                frames.append(w_df)
-                account_weights.append(float(weight_overrides.get(sname, sinfo["weight"])))
-        if not frames:
-            return None
-        if len(frames) == 1:
-            return frames[0] * account_weights[0]
-        combined = pd.concat(frames, axis=1, keys=names, names=["strategy"])
-        weighted = combined.mul(pd.Series(account_weights, index=pd.Index(names, name="strategy")), level="strategy")
-        flat = weighted.droplevel(0, axis=1)
-        if isinstance(flat.columns, pd.MultiIndex) or flat.columns.duplicated().any():
-            flat = flat.T.groupby(level=0).sum().T
-        return flat
 
     # ==================================================================
     # Stage 4: Rebalancing policy (TOM-1518)

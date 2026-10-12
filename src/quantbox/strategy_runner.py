@@ -7,10 +7,15 @@ the same bars-per-year, as-of date, calendar and frequency in its backtest and
 in paper/live; only ``mode`` differs. TOM-1338 fixed the symptom (live handed
 252 where the backtest handed 365); this removes the cause, two runners.
 
-The runner returns DECIDED weights. Both pipelines then turn them into the
-final TARGET weights with the one decision, :func:`quantbox.decision.final_targets`
-(short clip, gross cap, group limits, ``venue.leverage`` normalisation;
-TOM-1520), before any rebalancing policy reads them.
+The runner returns DECIDED weights: per strategy from :func:`run_strategies`,
+and combined across strategies by :func:`decided_weights`, the ONE aggregation
+(TOM-1712; there were three copies, plus a fourth in the weighted-average
+aggregator). The backtest reads the whole history; live reads the history for
+its rebalancing policy and the last row for its orders. Both pipelines then turn
+them into the final TARGET weights with the one decision,
+:func:`quantbox.decision.final_targets` (short clip, gross cap, group limits,
+``venue.leverage`` normalisation; TOM-1520), before any rebalancing policy
+reads them.
 
 A strategy reads its annualisation through :func:`resolve_annualize`, the one
 annualisation block: an explicit per-strategy value wins, else the context's
@@ -37,6 +42,8 @@ __all__ = [
     "LEGACY_ANNUALIZE_KEY",
     "build_strategy_context",
     "call_strategy",
+    "decided_weights",
+    "latest_weights",
     "resolve_annualize",
     "run_strategies",
 ]
@@ -178,3 +185,45 @@ def run_strategies(
         results[name] = {"result": result, "weight": weight}
         logger.info("Strategy '%s' completed (weight=%.2f)", name, weight)
     return results
+
+
+def decided_weights(
+    strategy_results: dict[str, dict[str, Any]],
+    strategy_weights: dict[str, float] | None = None,
+) -> pd.DataFrame:
+    """The run's decided weights HISTORY (date x ticker), all strategies combined.
+
+    Each strategy's weights times its account weight (``strategy_weights[name]``
+    overrides the config ``weight``), summed per ticker. A strategy that returned
+    no weights is left out. No strategy with weights -> an empty frame. The ONE
+    aggregation: the backtest reads all of it, live reads it for the rebalancing
+    policy and :func:`latest_weights` of it for orders, and the weighted-average
+    aggregator plugin returns it.
+    """
+    overrides = strategy_weights or {}
+    names: list[str] = []
+    frames: list[pd.DataFrame] = []
+    account: list[float] = []
+    for name, info in strategy_results.items():
+        weights = info["result"].get("weights")
+        if isinstance(weights, pd.DataFrame) and not weights.empty:
+            names.append(name)
+            frames.append(weights)
+            account.append(float(overrides.get(name, info["weight"])))
+    if not frames:
+        return pd.DataFrame()
+    if len(frames) == 1:
+        return frames[0] * account[0]
+    combined = pd.concat(frames, axis=1, keys=names, names=["strategy"])
+    weighted = combined.mul(pd.Series(account, index=pd.Index(names, name="strategy")), level="strategy")
+    flat = weighted.droplevel(0, axis=1)
+    if isinstance(flat.columns, pd.MultiIndex) or flat.columns.duplicated().any():
+        flat = flat.T.groupby(level=0).sum().T
+    return flat
+
+
+def latest_weights(history: pd.DataFrame) -> dict[str, float]:
+    """The last decided row as ``{ticker: weight}``: what a live run trades to. Empty history -> {}."""
+    if history.empty:
+        return {}
+    return {str(k): float(v) for k, v in history.iloc[-1].items()}

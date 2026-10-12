@@ -115,7 +115,7 @@ from quantbox.funding_guard import (
 from quantbox.instrument_calendar import calendar_summary
 from quantbox.overlays import OverlayLink, apply_overlays
 from quantbox.plugins.datasources._utils import interval_step, normalize_data_frequency
-from quantbox.strategy_runner import build_strategy_context, run_strategies
+from quantbox.strategy_runner import build_strategy_context, decided_weights, run_strategies
 
 logger = logging.getLogger(__name__)
 
@@ -772,7 +772,7 @@ class BacktestPipeline:
         a_strat_w = store.put_parquet("strategy_weights", pd.DataFrame(strat_weights_records))
 
         # --- Stage 3: Aggregate weights → full time series ---
-        weights_history = self._aggregate_weights_history(strategy_results, params)
+        weights_history = decided_weights(strategy_results, params.get("strategy_weights"))
         logger.info(
             "Aggregated weights: %d dates x %d assets",
             weights_history.shape[0],
@@ -964,67 +964,6 @@ class BacktestPipeline:
         )
 
     # ==================================================================
-    # Stage 3: Aggregate weights → full time series
-    # ==================================================================
-    def _aggregate_weights_history(
-        self,
-        strategy_results: dict[str, dict[str, Any]],
-        params: dict[str, Any],
-    ) -> pd.DataFrame:
-        """Aggregate multi-strategy weights into a single DataFrame over
-        the full historical period (not just the last row)."""
-        weight_overrides = params.get("strategy_weights", {})
-        names = list(strategy_results.keys())
-
-        weight_dfs: list[pd.DataFrame] = []
-        account_weights: list[float] = []
-
-        for sname in names:
-            sinfo = strategy_results[sname]
-            w_df = sinfo["result"].get("weights", pd.DataFrame())
-            if w_df is None or (isinstance(w_df, pd.DataFrame) and w_df.empty):
-                continue
-            weight_dfs.append(w_df)
-            account_weights.append(float(weight_overrides.get(sname, sinfo["weight"])))
-
-        if not weight_dfs:
-            return pd.DataFrame()
-
-        if len(weight_dfs) == 1:
-            return weight_dfs[0] * account_weights[0]
-
-        # Multi-strategy: concat, scale, sum
-        try:
-            combined = pd.concat(
-                weight_dfs,
-                axis=1,
-                keys=names[: len(weight_dfs)],
-                names=["strategy"],
-            )
-            acct_w = pd.Series(
-                account_weights,
-                index=pd.Index(names[: len(weight_dfs)], name="strategy"),
-            )
-            weighted = combined.mul(acct_w, level="strategy")
-            flat = weighted.droplevel(0, axis=1)
-            if isinstance(flat.columns, pd.MultiIndex) or flat.columns.duplicated().any():
-                flat = flat.T.groupby(level=0).sum().T
-            return flat
-        except Exception:
-            logger.warning("Multi-strategy concat failed, using manual fallback")
-            # Manual fallback
-            all_idx = weight_dfs[0].index
-            all_cols: set = set()
-            for df in weight_dfs:
-                all_idx = all_idx.union(df.index)
-                all_cols.update(df.columns.tolist())
-            result = pd.DataFrame(0.0, index=all_idx, columns=sorted(all_cols))
-            for df, w in zip(weight_dfs, account_weights, strict=False):
-                aligned = df.reindex(index=all_idx, columns=sorted(all_cols)).fillna(0)
-                result += aligned * w
-            return result
-
-    # ==================================================================
     # Multi-variant orchestration
     # ==================================================================
     def _run_variants_flow(
@@ -1052,7 +991,7 @@ class BacktestPipeline:
 
         Each variant has: name, strategy (registry name), optional strategy.params,
         optional overrides (fees, threshold, rebalancing_freq, rebalancing_policy, risk: {...}).
-        Reuses the one strategy runner, _aggregate_weights_history,
+        Reuses the one strategy runner and its one aggregation (decided_weights),
         the decision (:meth:`_decide`) and the engine seam (:meth:`_simulate`) for
         parity with the single-variant path — on either engine.
         """
@@ -1090,7 +1029,7 @@ class BacktestPipeline:
             s_results = run_strategies(market_data, v_strategies_cfg, context, plugins=[splugin])
 
             # Stage 3: aggregate (trivial for single strategy)
-            wh = self._aggregate_weights_history(s_results, {"_strategies_cfg": v_strategies_cfg})
+            wh = decided_weights(s_results)
             # Stage 3b: the overlay chain is run-level — every variant gets the same one.
             wh, overlays_applied = self._apply_overlay_stage(wh, market_data, overlay_chain)
 
