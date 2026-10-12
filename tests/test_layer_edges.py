@@ -1,4 +1,4 @@
-"""TOM-1451 (4b-1): the edges that crossed the layer map are cut, and the old paths still work.
+"""TOM-1451 (4b-1): the edges that crossed the layer map are cut.
 
 Layers (ADR-0010): core < plugins < research, trade. These tests pin the cuts
 by what a fresh interpreter IMPORTS, so an eager import that comes back goes
@@ -9,15 +9,16 @@ red here before import-linter (4b-3) exists:
 - the engine seam does not import the vectorbt adapter until it is named;
 - ``quantbox.plugins.pipeline`` imports neither the backtest nor the trading
   pipeline until one is named, and neither drags the other;
-- ``from quantbox import *`` imports core only;
-- every moved module keeps its old path as a shim (same object, DeprecationWarning).
+- ``from quantbox import *`` imports core only.
+
+The moved modules' old paths were shims until 0.13.0; their removal is checked
+in ``tests/test_removed_paths.py``.
 """
 
 from __future__ import annotations
 
 import importlib
 import json
-import re
 import subprocess
 import sys
 import warnings
@@ -233,61 +234,9 @@ def test_load_returns_a_module_or_a_dotted_attribute():
 
 
 # ----------------------------------------------------------------------
-# Shims: every old path resolves to the new object and warns
+# The moved modules' old paths were shims until 0.13.0; their removal is
+# checked in tests/test_removed_paths.py (TOM-1457).
 # ----------------------------------------------------------------------
-
-_MOVED = [
-    *(
-        ("quantbox.plugins.backtesting.rsims_engine", name, "quantbox.engine.rsims_sim")
-        for name in ("fixed_commission_backtest_with_funding", "positions_from_no_trade_buffer")
-    ),
-    *(
-        ("quantbox.simulation.models", name, "quantbox.montecarlo.models")
-        for name in ("GBM", "GBMParams", "GARCH", "JumpDiffusion", "MeanReversion", "RegimeSwitching", "BaseModel")
-    ),
-    *(
-        ("quantbox.simulation.engine", name, "quantbox.montecarlo.engine")
-        for name in ("MarketSimulator", "SimulationConfig", "SimulationResult", "generate_correlated_returns")
-    ),
-    *(
-        ("quantbox.simulation.correlation", name, "quantbox.montecarlo.correlation")
-        for name in ("CorrelationEngine", "CorrelationResult", "generate_random_correlation_matrix")
-    ),
-    *(
-        ("quantbox.simulation.stress_testing", name, "quantbox.montecarlo.stress_testing")
-        for name in (
-            "StressTestEngine",
-            "StressTestResult",
-            "StressScenario",
-            "HistoricalScenario",
-            "HISTORICAL_SCENARIOS",
-        )
-    ),
-]
-
-
-@pytest.mark.parametrize(("old", "name", "new"), _MOVED)
-def test_an_old_path_resolves_to_the_new_object_with_a_deprecation_warning(old, name, new):
-    module = importlib.import_module(old)
-    pattern = re.escape(f"{old}.{name} is deprecated: ") + ".*" + re.escape(new) + r".*TOM-1451"
-    with pytest.warns(DeprecationWarning, match=pattern):
-        obj = getattr(module, name)
-    assert obj is getattr(importlib.import_module(new), name)
-
-
-@pytest.mark.parametrize(
-    "old",
-    [
-        "quantbox.plugins.backtesting.rsims_engine",
-        "quantbox.simulation.models",
-        "quantbox.simulation.engine",
-        "quantbox.simulation.correlation",
-        "quantbox.simulation.stress_testing",
-    ],
-)
-def test_an_unknown_name_on_an_old_path_is_still_an_attribute_error(old):
-    with pytest.raises(AttributeError):
-        _ = importlib.import_module(old).no_such_name
 
 
 def test_the_research_package_re_exports_the_kernels_without_a_warning():

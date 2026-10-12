@@ -23,8 +23,9 @@ Optional dependencies:
 The models, the simulator, correlation and stress testing live in
 :mod:`quantbox.montecarlo` (plugins layer, TOM-1451): a builtin datasource and a
 trade risk plugin use them, and neither may import research. This package
-re-exports them unchanged; ``quantbox.simulation.{models,engine,correlation,stress_testing}``
-are deprecation shims.
+re-exports them unchanged. Since 0.13.0 the submodules
+``quantbox.simulation.{models,engine,correlation,stress_testing}`` raise
+``ImportError`` naming their ``quantbox.montecarlo`` home (TOM-1457).
 """
 
 from __future__ import annotations

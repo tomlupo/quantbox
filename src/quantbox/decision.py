@@ -38,7 +38,7 @@ normalisation (a group minimum can fall below its bound by the normalisation
 scale, as before).
 
 **NaN cells.** The seam's NaN policy (HOLD: a NaN cell keeps the last decided
-target, :func:`quantbox.engine.materialise_nan`) is applied first, so a row's
+target, :func:`quantbox.engine.schedule.materialise_nan`) is applied first, so a row's
 gross and net count what the book would really hold. A cell that came in NaN
 and that no step changed goes back to NaN, so the rows the strategy did not
 write stay unwritten (the seam reindexes onto the price bars and fills them

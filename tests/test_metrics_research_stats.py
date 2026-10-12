@@ -63,24 +63,6 @@ def test_newey_west_matches_robo_labs_bartlett_sandwich():
     assert out["nw_tstat"] == pytest.approx(b[0] / se, rel=1e-10)
 
 
-def test_every_old_newey_west_path_is_the_inference_object_with_a_deprecation_warning():
-    """TOM-1618: Newey-West lives in quantbox.inference; the three old paths still resolve to it."""
-    import quantbox.analysis as analysis
-    from quantbox.analysis import hac
-
-    for module, name in (
-        (metrics, "newey_west_tstat"),
-        (metrics, "newey_west_auto_lags"),
-        (metrics, "hac_ols"),
-        (metrics, "require_finite"),
-        (hac, "newey_west_tstat"),
-        (hac, "newey_west_auto_lags"),
-        (analysis, "newey_west_tstat"),
-    ):
-        with pytest.warns(DeprecationWarning, match="quantbox.inference"):
-            assert getattr(module, name) is getattr(inference, name), (module.__name__, name)
-
-
 # ---------------------------------------------------------------------------
 # IC and ICIR
 # ---------------------------------------------------------------------------

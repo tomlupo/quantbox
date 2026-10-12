@@ -30,10 +30,10 @@ import pandas as pd
 import pytest
 
 from quantbox.engine import simulate
+from quantbox.engine.schedule import materialise_nan
 from quantbox.execution import (
     apply_execution_lag,
     exposure_metrics,
-    materialise_nan_policy,
     resolve_allow_shorts,
     resolve_execution,
     resolve_lag_bars,
@@ -575,7 +575,7 @@ def test_materialising_the_nan_policy_does_not_change_vectorbt_numbers():
     w.iloc[15:21] = np.nan
     prices = _prices()
     raw_prices, raw = prices, apply_execution_lag(w, 1)
-    materialised = materialise_nan_policy(raw, "vectorbt")
+    materialised = materialise_nan(raw)
     assert raw.isna().any().any() and not materialised.isna().any().any()
     a = run_vectorbt(raw_prices, raw, fees=0.001).value()
     b = run_vectorbt(raw_prices, materialised, fees=0.001).value()

@@ -81,6 +81,9 @@ The duplication guard of #236 matched metric NAMES. It did not see these copies:
    emit a `DeprecationWarning` that names it (`quantbox._deprecation.moved`).
    `analysis.gates.max_drawdown` and `analysis.gates.largest_drawdown_episode`
    keep their old positive sign on the old path only.
+   *Amended by TOM-1457 (4d, v0.13.0):* the shims are removed. Each old path
+   raises `ImportError` naming its new home (`quantbox._removed`, which replaces
+   `quantbox._deprecation`). The positive-sign drawdowns are gone with them.
 7. **Overlapping observations set a lag floor.** *Added by TOM-1644
    (2026-10-08), Tom: "Tak + do quantbox"; from robo-lab#16.* A series of
    overlapping h-period observations (an IC on h-day forward returns, a

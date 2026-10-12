@@ -337,7 +337,7 @@ and an override next to `lag_bars >= 1`.
 
 **NaN weight rows — one policy, every engine.** A NaN weight cell mid-series
 means "the strategy said nothing for this bar". The seam answers it once
-(`quantbox.engine.materialise_nan`, docs/adr/0008): the cell HOLDS the last
+(`quantbox.engine.schedule.materialise_nan`, docs/adr/0008): the cell HOLDS the last
 decided target; a leading NaN is 0. Every engine receives the materialised
 book, so `traded_weights` never contains NaN and the same config gives the same
 book on both engines. (Until TOM-1450 rsims treated NaN as 0 — went flat — so an

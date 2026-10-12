@@ -13,8 +13,8 @@ beta to a benchmark, hit rate, active share and risk decomposition.
 Metrics DESCRIBE; :mod:`quantbox.inference` TESTS (Newey-West, factor
 regression, DSR, bootstrap) and :mod:`quantbox.gates` DECIDES (TOM-1618).
 ``newey_west_tstat``, ``newey_west_auto_lags``, ``hac_ols`` and
-``require_finite`` moved to :mod:`quantbox.inference`; the old names here still
-resolve, with a ``DeprecationWarning``.
+``require_finite`` moved to :mod:`quantbox.inference`; since 0.13.0 the old
+names here raise ``ImportError`` naming that home (TOM-1457).
 
 Core: numpy and pandas only (scipy is imported lazily for parametric VaR).
 ``quantbox.plugins.backtesting.metrics`` re-exports the same objects for the
@@ -41,7 +41,6 @@ Conventions, stated once:
 from __future__ import annotations
 
 import logging
-import warnings
 from collections.abc import Mapping
 from typing import Any
 
@@ -52,6 +51,7 @@ import pandas as pd
 # the measurement behind DEGENERATE_RTOL is in quantbox._numerics.
 from ._numerics import DEGENERATE_RTOL  # noqa: F401 — public re-export, imported from here before TOM-1618
 from ._numerics import flat as _flat
+from ._removed import removed_names
 
 __all__ = [
     "DEGENERATE_RTOL",
@@ -83,22 +83,9 @@ logger = logging.getLogger(__name__)
 
 TRADING_DAYS_PER_YEAR = 365  # crypto default; callers can override
 
-# Inference that lived here until TOM-1618: the old names resolve to
-# quantbox.inference, with a DeprecationWarning.
-_MOVED_TO_INFERENCE = ("hac_ols", "newey_west_auto_lags", "newey_west_tstat", "require_finite")
-
-
-def __getattr__(name: str) -> Any:
-    if name in _MOVED_TO_INFERENCE:
-        warnings.warn(
-            f"quantbox.metrics.{name} is deprecated: import it from quantbox.inference (TOM-1618)",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        from . import inference
-
-        return getattr(inference, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+# Inference that lived here until TOM-1618 (newey_west_tstat, ...): removed in
+# 0.13.0, each old name raises ImportError naming quantbox.inference (TOM-1457).
+__getattr__ = removed_names(__name__)
 
 
 def sharpe_ratio(

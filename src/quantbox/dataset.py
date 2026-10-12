@@ -35,7 +35,7 @@ def load_pinned_dataset(
     Resolved by :func:`quantbox.dataset_lock.resolve_dataset` (unless *resolved*
     already is) and refused before any read when the bytes are not the pinned
     build. This was ``quantbox.plugins.datasources.local_file_data._load_pinned_dataset``
-    (TOM-1449); that name still works, with a ``DeprecationWarning``.
+    (TOM-1449); since 0.13.0 that name raises ``ImportError`` naming this one (TOM-1457).
     """
     if resolved is None:
         resolved = _resolve_pinned(name, lock)

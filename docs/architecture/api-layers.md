@@ -105,6 +105,8 @@ L2 was never built. The field and its rules are owned by [skills.md](skills.md).
 
 ## Stability and moved names
 
-A public module declares `__all__`. When a name moves, its old import path
-keeps working for one minor version and emits a `DeprecationWarning` that
-names the new path (ADR-0010 decision 7). YAML plugin ids keep their aliases.
+A public module declares `__all__`. Since 0.13.0 a moved name has no import
+shim. Its old import path raises `ImportError` and names the new path, from
+one list, `quantbox._removed.REMOVED` (ADR-0010 decision 7, as amended by
+TOM-1457). YAML plugin ids keep their aliases: a config written today keeps
+running.

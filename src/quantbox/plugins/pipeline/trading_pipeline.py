@@ -50,6 +50,7 @@ from quantbox.engine.policy import (
 )
 from quantbox.financing import resolve_leverage
 from quantbox.frequency import _parse_bar_size
+from quantbox.plugins.rebalancing.futures_rebalancer import RESIDUAL_STATUS
 from quantbox.portfolio_value import (
     BASIS_MARK,
     DEFAULT_RECONCILIATION_TOLERANCE,
@@ -1433,6 +1434,10 @@ class TradingPipeline:
             # (staying in cash). This is INFO-level, NOT a freeze — monitors must
             # NOT alarm on it.
             "quiet_day": 1.0 if execution_report.get("quiet_day") else 0.0,
+            # Residual-day signal (TOM-1778): nothing sent because every exit was a
+            # partial reduce below the venue minimum. INFO-level, NOT a freeze.
+            "residual_day": 1.0 if execution_report.get("residual_day") else 0.0,
+            "residual_count": float(len(execution_report.get("residuals", []))),
             # Tier-2 exception inputs (#62).
             "data_stale": 1.0 if data_stale else 0.0,
             "data_age_seconds": float(data_age_seconds) if data_age_seconds is not None else -1.0,
@@ -1468,6 +1473,9 @@ class TradingPipeline:
                 "frozen_orders": execution_report.get("frozen_orders", []),
                 "quiet_day": bool(execution_report.get("quiet_day", False)),
                 "quiet_reasons": execution_report.get("quiet_reasons", {}),
+                # Partial reduces below the venue minimum, not sent (TOM-1778).
+                "residual_day": bool(execution_report.get("residual_day", False)),
+                "residuals": execution_report.get("residuals", []),
                 # This cycle's order failures (#87) — a first-class exception input
                 # the notifier must alert on, from every exit of _execute_orders.
                 "order_failures": int(execution_report.get("order_failures", 0)),
@@ -2386,6 +2394,21 @@ class TradingPipeline:
             else orders_df
         )
 
+        # Partial reduces below the venue minimum (TOM-1778): never sent, because
+        # the venue rejects them. A known residual — listed, never a freeze.
+        residuals = (
+            orders_df[orders_df["Order Status"] == RESIDUAL_STATUS]
+            if "Order Status" in orders_df.columns
+            else pd.DataFrame()
+        )
+        if not residuals.empty:
+            report["residuals"] = _suppressed_order_records(residuals)
+            logger.info(
+                "RESIDUAL: %d partial reduce(s) below the venue minimum not sent, residual retained: %s",
+                len(residuals),
+                "; ".join(_format_suppressed_line(r) for r in report["residuals"]),
+            )
+
         # --- Pre-execution FLATTEN gate (enforce mode, issue #90) ----------
         # Keep only exposure-reducing orders (clamped so they never cross zero).
         if gate_reduce_only and isinstance(executable, pd.DataFrame) and not executable.empty:
@@ -2420,6 +2443,37 @@ class TradingPipeline:
             if "Order Status" in orders_df.columns:
                 reasons = orders_df["Order Status"].value_counts().to_dict()
                 suppressed = orders_df[orders_df["Order Status"].isin(suppressed_statuses)]
+
+            # RESIDUAL DAY (TOM-1778; Tom, 2026-10-12: "Residual is not a freeze").
+            # When the book's only untraded EXITS are partial reduces below the
+            # venue minimum, and everything else suppressed is a sub-min ENTRY (an
+            # open from flat or a same-side add, flagged `opens_exposure` by the
+            # rebalancer), nothing is trapped: the venue cannot take those trims at
+            # this book size. Drift stays recon's job. Anything else suppressed —
+            # a close, a flip through zero, a reduce, a data fault (zero price,
+            # NaN), or a row without the flag — still goes to the dead-man below.
+            if not residuals.empty:
+                opens = (
+                    suppressed["opens_exposure"].eq(True)
+                    if "opens_exposure" in suppressed.columns
+                    else pd.Series(False, index=suppressed.index)
+                )
+                only_entries = bool(
+                    (
+                        suppressed["Order Status"].isin({"Below min notional", "Below threshold", "Below min qty"})
+                        & opens
+                    ).all()
+                )
+                if only_entries:
+                    report["residual_day"] = True
+                    report["residual_reasons"] = reasons
+                    logger.info(
+                        "RESIDUAL DAY: no order to send — %d residual partial reduce(s) below the venue "
+                        "minimum and %d sub-min entry leg(s). Not a freeze.",
+                        len(residuals),
+                        len(suppressed),
+                    )
+                    return report
 
             if len(suppressed) > 0:
                 # Distinguish a TRAPPED book (real freeze) from a QUIET DAY

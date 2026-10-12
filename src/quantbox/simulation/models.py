@@ -1,10 +1,8 @@
-"""Deprecated: the stochastic price models moved to :mod:`quantbox.montecarlo.models` (TOM-1451).
+"""Removed in quantbox 0.13.0 (TOM-1457): the price models are :mod:`quantbox.montecarlo.models` (TOM-1451).
 
-Every name resolves to the SAME object and emits a ``DeprecationWarning`` that
-names the new path. ``from quantbox.simulation import GBM`` still works with no
-warning. This shim stays for one minor version.
+``from quantbox.simulation import GBM`` still works.
 """
 
-from quantbox._deprecation import moved
+from quantbox._removed import removed
 
-__getattr__ = moved("quantbox.simulation.models", "quantbox.montecarlo.models", card="TOM-1451")
+removed(__name__)

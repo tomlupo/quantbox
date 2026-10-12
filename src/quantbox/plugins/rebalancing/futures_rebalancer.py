@@ -41,6 +41,10 @@ from quantbox.portfolio_value import (
 
 logger = logging.getLogger(__name__)
 
+#: ``Order Status`` of a partial reduce below the venue minimum (TOM-1778): not
+#: sent, because the venue rejects it, and a known residual, not a freeze.
+RESIDUAL_STATUS = "Residual below min notional"
+
 DEFAULT_CAPITAL_AT_RISK = 1.0
 DEFAULT_STABLE_COIN = "USDT"
 
@@ -484,12 +488,17 @@ class FuturesRebalancer:
             # same-sign target. On a diversified book that describes the winning
             # names on essentially every run — not a rare event.
             #
-            # So a partial reduce earns exactly the two exemptions the reduce-only
-            # argument actually supports:
-            #   * the min-notional floor  — the venue genuinely waives it for
-            #     reduceOnly (binance_futures.py:501, hyperliquid.py:733)
-            #   * the `reduce_only` flag itself
-            # and NOT the other two, which that argument does not support:
+            # So a partial reduce earns exactly ONE exemption, the `reduce_only`
+            # flag itself (it can never flip the position through zero), and NOT
+            # the other three:
+            #   * the min-notional floor — TOM-402 exempted it on the premise that
+            #     the venue waives the floor for reduceOnly. Only a FULL close was
+            #     ever verified (SOL, 2026-07-22). Hyperliquid REJECTS a partial
+            #     reduce below $10: "Order must have minimum value of $10" on ETH
+            #     $6.33 and NEAR $2.63, every carver-HL run since 2026-10-09
+            #     (TOM-1778). Such a reduce is now RESIDUAL_STATUS: not sent, and
+            #     a known residual the dead-man freeze does not count (Tom,
+            #     2026-10-12: "Skip as residual", "Residual is not a freeze").
             #   * the min_trade_size churn band — exempting a recurring, price-
             #     driven trim while adds stay banded would trim winners at any size
             #     and never re-add, drifting the book to under-exposure and paying
@@ -507,16 +516,22 @@ class FuturesRebalancer:
                 # reduce. NaN is surfaced loudly below.
                 is_flat_target = row.get("Target Weight", 0) == 0 and cur_qty != 0 and not _is_nan(cur_qty)
                 is_partial_reduce = False
+                opens_exposure = False
             else:
                 is_flat_target = row.get("Target Weight", 0) == 0 and cur_qty != 0
                 # Sign comparison rather than a product: no multiply, and it reads
                 # as the question being asked.
                 same_sign = (tgt_qty > 0) == (cur_qty > 0)
                 is_partial_reduce = cur_qty != 0 and same_sign and abs(tgt_qty) < abs(cur_qty)
+                # An open from flat or an add on the same side: the only rows a
+                # residual day may leave unsent (TOM-1778). A flip through zero is NOT
+                # one — it exits the held side.
+                opens_exposure = bool(tgt_qty != 0 and (cur_qty == 0 or (same_sign and abs(tgt_qty) > abs(cur_qty))))
 
-            # Exempt from the min-notional floor and sent reduce-only.
+            # Sent reduce-only.
             is_exposure_reducing = bool(is_flat_target or is_partial_reduce)
-            # Exempt from the churn band and the base-unit floor — closes only.
+            # Exempt from the min-notional floor, the churn band and the base-unit
+            # floor — closes only.
             is_closing = bool(is_flat_target)
 
             adjusted_qty = abs(delta_qty)
@@ -582,6 +597,29 @@ class FuturesRebalancer:
                     notional_value,
                     effective_min_notional,
                 )
+            elif notional_value < effective_min_notional and not is_closing:
+                # A partial reduce below the floor: the venue rejects it (TOM-1778),
+                # so it is not sent. It stays reduce-only in the record and is a
+                # known residual, which the dead-man freeze does not count.
+                status = RESIDUAL_STATUS
+                if ordermin > 0 and adjusted_qty < ordermin:
+                    # The base-unit floor binds: name it, not a derived notional.
+                    shortfall = f"qty {adjusted_qty:.8f} < min_qty {ordermin:.8f}"
+                else:
+                    shortfall = f"{notional_value:.2f} < {effective_min_notional:.2f}"
+                if min_notional_configured is not None and notional_value >= per_pair_min:
+                    blocker = "the configured min_notional blocks it"
+                else:
+                    blocker = "the venue rejects it"
+                reason = f"Partial reduce {shortfall}: {blocker}, residual retained"
+                adjusted_qty = 0.0
+                logger.info(
+                    "Residual %s %s: partial reduce $%.2f < $%.2f venue minimum — not sent, residual retained.",
+                    action,
+                    asset,
+                    notional_value,
+                    effective_min_notional,
+                )
             elif ordermin > 0 and adjusted_qty < ordermin and not is_closing:
                 # Base-unit floor: even if the notional clears, an order below the
                 # venue's ordermin (e.g. ADA/DOGE sub-base-unit size) is rejected
@@ -592,7 +630,7 @@ class FuturesRebalancer:
                 adjusted_qty = 0.0
             else:
                 status = "To be placed"
-                if is_exposure_reducing and notional_value < effective_min_notional:
+                if is_closing and notional_value < effective_min_notional:
                     reason = "Reducing position (min-notional exempt)"
                 else:
                     reason = ""
@@ -611,11 +649,14 @@ class FuturesRebalancer:
                     "Order Status": status,
                     "Reason": reason,
                     # An exposure-reducing order (full close or partial reduce) is
-                    # sent reduce-only: the venue exempts it from the min-notional
-                    # floor and it can't flip through zero. Note this is a WIDER
-                    # set than `is_closing`, which additionally waives the churn
-                    # band and the base-unit floor and so stays closes-only.
+                    # sent reduce-only: it can't flip through zero. Note this is a
+                    # WIDER set than `is_closing`, which additionally waives the
+                    # min-notional floor, the churn band and the base-unit floor and
+                    # so stays closes-only.
                     "reduce_only": is_exposure_reducing,
+                    # True only for an open from flat or a same-side add (see above);
+                    # the dead-man reads it to tell a residual day from a trapped book.
+                    "opens_exposure": opens_exposure,
                 }
             )
 

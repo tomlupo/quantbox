@@ -59,6 +59,7 @@ def test_every_module_imports_or_names_a_declared_extra():
             import importlib, importlib.metadata, json
             from pathlib import Path
             import quantbox
+            from quantbox._removed import REMOVED
             from quantbox.exceptions import MissingExtraError
 
             root = Path(quantbox.__file__).parent
@@ -68,22 +69,29 @@ def test_every_module_imports_or_names_a_declared_extra():
                 if parts[-1] == "__init__":
                     parts = parts[:-1]
                 names.append(".".join(parts))
-            ok, refused, failed = [], {}, {}
+            ok, refused, failed, tombstones = [], {}, {}, []
             for name in names:
                 try:
                     importlib.import_module(name)
                     ok.append(name)
                 except MissingExtraError as exc:
                     refused[name] = exc.extra
+                except ImportError as exc:
+                    # A tombstone of a path removed in 0.13.0 (TOM-1457) refuses by design.
+                    if name in REMOVED and "removed in quantbox" in str(exc):
+                        tombstones.append(name)
+                    else:
+                        failed[name] = f"{type(exc).__name__}: {exc}"
                 except BaseException as exc:  # noqa: BLE001 - report every other failure
                     failed[name] = f"{type(exc).__name__}: {exc}"
             extras = importlib.metadata.metadata("quantbox").get_all("Provides-Extra")
-            print(json.dumps({"ok": ok, "refused": refused, "failed": failed, "extras": extras}))
+            print(json.dumps({"ok": ok, "refused": refused, "failed": failed, "tombstones": tombstones, "extras": extras}))
             """,
             blocked=NOT_IN_BASE,
         )
     )
     assert result["failed"] == {}, "a bare import failure on a base install (never a MissingExtraError)"
+    assert result["tombstones"], "the walk met no tombstone of a removed path"
     assert result["refused"] == REFUSES_ON_BASE
     assert set(result["refused"].values()) <= set(result["extras"])
     assert len(result["ok"]) >= 150, "the walk did not look"

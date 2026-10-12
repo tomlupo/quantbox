@@ -6,9 +6,9 @@ Provides:
 - DuckDB-backed Parquet OHLCV cache for incremental fetching (duckdb: the ``[data]`` extra)
 - The mode-aware universe-screen inputs (:func:`resolve_screen_inputs`)
 
-Market cap moved to :mod:`quantbox.market_cap` (TOM-1449). ``MarketCapProvider``,
-``load_pit_market_cap`` and ``CMCMarketCapProvider`` still import from here, with a
-``DeprecationWarning`` that names the new path, for one minor version.
+Market cap moved to :mod:`quantbox.market_cap` (TOM-1449). Since 0.13.0,
+importing ``MarketCapProvider``, ``CMCMarketCapProvider`` or ``load_pit_market_cap``
+from here raises ``ImportError`` naming the new path (TOM-1457).
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from quantbox._deprecation import moved
 from quantbox._lazy import load
+from quantbox._removed import removed_names
 from quantbox.frequency import FREQUENCY_ALIASES
 from quantbox.market_cap import MarketCapProvider as _MarketCapProvider
 from quantbox.market_cap import load_pit_market_cap as _load_pit_market_cap
@@ -32,17 +32,8 @@ from quantbox.retry import is_transient, retry_transient, with_retry  # noqa: F4
 
 logger = logging.getLogger(__name__)
 
-# The old market-cap names, resolved from quantbox.market_cap with a DeprecationWarning.
-__getattr__ = moved(
-    "quantbox.plugins.datasources._utils",
-    "quantbox.market_cap",
-    card="TOM-1449",
-    names={
-        "MarketCapProvider": "MarketCapProvider",
-        "CMCMarketCapProvider": "MarketCapProvider",
-        "load_pit_market_cap": "load_pit_market_cap",
-    },
-)
+# The old market-cap names raise ImportError naming quantbox.market_cap (TOM-1457).
+__getattr__ = removed_names(__name__)
 
 
 # ============================================================================

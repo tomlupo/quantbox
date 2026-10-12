@@ -5,8 +5,8 @@ with or without market-cap data.  When ``market_cap`` is ``None`` (e.g.
 Hyperliquid), the mcap tier is skipped and assets are ranked directly by
 dollar volume.
 
-This module was ``quantbox.plugins.strategies._universe``; that path is now a
-deprecation shim that resolves to the objects here.
+This module was ``quantbox.plugins.strategies._universe``; since 0.13.0 that
+path raises ``ImportError`` naming this one (TOM-1457).
 """
 
 from __future__ import annotations

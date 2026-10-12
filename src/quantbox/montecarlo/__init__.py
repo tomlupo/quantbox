@@ -7,8 +7,8 @@ sit below research and trade. They import core only (numpy, pandas,
 
 They lived in :mod:`quantbox.simulation` until TOM-1451. That package stays the
 research home: it re-exports every name below and adds forecasting and the
-plotter. ``quantbox.simulation.{models,engine,correlation,stress_testing}`` are
-deprecation shims now.
+plotter. Since 0.13.0 ``quantbox.simulation.{models,engine,correlation,stress_testing}``
+raise ``ImportError`` naming the modules here (TOM-1457).
 """
 
 from __future__ import annotations
