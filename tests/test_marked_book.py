@@ -27,7 +27,7 @@ from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
 from quantbox.plugins.rebalancing.futures_rebalancer import FuturesRebalancer
 from quantbox.plugins.rebalancing.standard_rebalancer import StandardRebalancer
 from quantbox.store import FileArtifactStore
-from quantbox.trade.book import BASIS_MARGIN, BASIS_MARK, MarkedBook, read_book
+from quantbox.trade.book import BASIS_MARGIN, BASIS_MARK, MarkedBook, PortfolioValuationError, read_book
 
 
 class _Broker:
@@ -155,6 +155,28 @@ def test_the_first_usable_mark_wins_on_a_duplicated_snapshot_row():
             return pd.DataFrame({"symbol": ["BTC", "BTC", "BTC"], "mid": [float("nan"), 101.0, 102.0]})
 
     assert read_book(_Dup(positions=[{"symbol": "BTC", "qty": 1.0}], marks={})).mark("BTC") == 101.0
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [[{"asset": "BTC", "qty": 10.0}], [{"symbol": "BTC", "size": 10.0}]],
+    ids=["no-symbol-column", "no-qty-column"],
+)
+def test_an_unreadable_positions_frame_is_unknown_holdings_not_an_empty_book(rows):
+    """Replay of independent-review round 1, PR #284 (FINDING 101): a frame with rows but
+    no `symbol` column was valued as an EMPTY book, so a live spot run sized off cash
+    alone and ignored 10 BTC. The base refused. Unread is not empty."""
+
+    class _OddBroker(_SpotBroker):
+        def get_positions(self):
+            return pd.DataFrame(rows)
+
+    broker = _OddBroker(positions=[], marks={"BTC": 100.0}, cash={"USDC": 1000.0})
+    with pytest.raises(PortfolioValuationError) as exc:
+        StandardRebalancer().generate_orders(
+            weights={"BTC": 0.5}, broker=broker, params={"mode": "live", "stable_coin_symbol": "USDC"}
+        )
+    assert exc.value.reason == "unpriced_holdings"
 
 
 def test_positions_keep_the_venue_row_order():

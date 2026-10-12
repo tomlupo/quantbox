@@ -772,9 +772,18 @@ def _summed_positions(positions: pd.DataFrame | Mapping[str, float] | None) -> d
     if isinstance(positions, Mapping):
         frame = pd.DataFrame({"symbol": list(positions.keys()), "qty": list(positions.values())})
     else:
-        if len(positions) == 0 or "symbol" not in positions.columns:
+        if len(positions) == 0:
             return {}
-        frame = positions
+        frame = positions.copy()
+        # A frame with rows is a book with holdings, even when a column the
+        # contract does not pin is missing. Rows without `symbol` read as the
+        # unmarkable symbol "" (as the hand-rolled sites read them) and rows
+        # without `qty` as NaN: both are UNKNOWN, so a live marked book refuses.
+        # Returning {} here valued a held book at cash alone.
+        if "symbol" not in frame.columns:
+            frame["symbol"] = ""
+        if "qty" not in frame.columns:
+            frame["qty"] = math.nan
     qty = pd.to_numeric(frame["qty"], errors="coerce")
     # `sort=False` keeps the venue's row order: the pre-trade sites marked (summed)
     # the book in that order, and float addition is order-sensitive. The old
