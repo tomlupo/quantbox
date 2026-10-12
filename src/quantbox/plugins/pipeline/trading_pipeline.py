@@ -2446,22 +2446,24 @@ class TradingPipeline:
 
             # RESIDUAL DAY (TOM-1778; Tom, 2026-10-12: "Residual is not a freeze").
             # When the book's only untraded EXITS are partial reduces below the
-            # venue minimum, and everything else suppressed is a sub-min ENTRY
-            # (an open or add, never reduce-only), nothing is trapped: the venue
-            # cannot take those trims at this book size. Drift stays recon's job.
-            # Any suppressed exit (reduce-only) or data fault (zero price, NaN)
-            # still goes to the dead-man below.
+            # venue minimum, and everything else suppressed is a sub-min ENTRY (an
+            # open from flat or a same-side add, flagged `opens_exposure` by the
+            # rebalancer), nothing is trapped: the venue cannot take those trims at
+            # this book size. Drift stays recon's job. Anything else suppressed —
+            # a close, a flip through zero, a reduce, a data fault (zero price,
+            # NaN), or a row without the flag — still goes to the dead-man below.
             if not residuals.empty:
-                entry_statuses = {"Below min notional", "Below threshold", "Below min qty"}
-                if "reduce_only" in suppressed.columns:
-                    exits = suppressed["reduce_only"].eq(True)  # NaN or missing reads as not reduce-only
-                else:
-                    # No reduce-only flag to read: fail safe, a suppressed SELL is an exit.
-                    exits = (
-                        suppressed.get("Action", pd.Series("", index=suppressed.index)).astype(str).str.lower()
-                        == "sell"
-                    )
-                only_entries = bool((suppressed["Order Status"].isin(entry_statuses) & ~exits).all())
+                opens = (
+                    suppressed["opens_exposure"].eq(True)
+                    if "opens_exposure" in suppressed.columns
+                    else pd.Series(False, index=suppressed.index)
+                )
+                only_entries = bool(
+                    (
+                        suppressed["Order Status"].isin({"Below min notional", "Below threshold", "Below min qty"})
+                        & opens
+                    ).all()
+                )
                 if only_entries:
                     report["residual_day"] = True
                     report["residual_reasons"] = reasons

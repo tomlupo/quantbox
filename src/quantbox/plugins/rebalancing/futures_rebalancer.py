@@ -516,12 +516,17 @@ class FuturesRebalancer:
                 # reduce. NaN is surfaced loudly below.
                 is_flat_target = row.get("Target Weight", 0) == 0 and cur_qty != 0 and not _is_nan(cur_qty)
                 is_partial_reduce = False
+                opens_exposure = False
             else:
                 is_flat_target = row.get("Target Weight", 0) == 0 and cur_qty != 0
                 # Sign comparison rather than a product: no multiply, and it reads
                 # as the question being asked.
                 same_sign = (tgt_qty > 0) == (cur_qty > 0)
                 is_partial_reduce = cur_qty != 0 and same_sign and abs(tgt_qty) < abs(cur_qty)
+                # An open from flat or an add on the same side: the only rows a
+                # residual day may leave unsent (TOM-1778). A flip through zero is NOT
+                # one — it exits the held side.
+                opens_exposure = bool(tgt_qty != 0 and (cur_qty == 0 or (same_sign and abs(tgt_qty) > abs(cur_qty))))
 
             # Sent reduce-only.
             is_exposure_reducing = bool(is_flat_target or is_partial_reduce)
@@ -597,10 +602,16 @@ class FuturesRebalancer:
                 # so it is not sent. It stays reduce-only in the record and is a
                 # known residual, which the dead-man freeze does not count.
                 status = RESIDUAL_STATUS
-                reason = (
-                    f"Partial reduce {notional_value:.2f} < {effective_min_notional:.2f}: "
-                    "the venue rejects it, residual retained"
-                )
+                if ordermin > 0 and adjusted_qty < ordermin:
+                    # The base-unit floor binds: name it, not a derived notional.
+                    shortfall = f"qty {adjusted_qty:.8f} < min_qty {ordermin:.8f}"
+                else:
+                    shortfall = f"{notional_value:.2f} < {effective_min_notional:.2f}"
+                if min_notional_configured is not None and notional_value >= per_pair_min:
+                    blocker = "the configured min_notional blocks it"
+                else:
+                    blocker = "the venue rejects it"
+                reason = f"Partial reduce {shortfall}: {blocker}, residual retained"
                 adjusted_qty = 0.0
                 logger.info(
                     "Residual %s %s: partial reduce $%.2f < $%.2f venue minimum — not sent, residual retained.",
@@ -643,6 +654,9 @@ class FuturesRebalancer:
                     # min-notional floor, the churn band and the base-unit floor and
                     # so stays closes-only.
                     "reduce_only": is_exposure_reducing,
+                    # True only for an open from flat or a same-side add (see above);
+                    # the dead-man reads it to tell a residual day from a trapped book.
+                    "opens_exposure": opens_exposure,
                 }
             )
 

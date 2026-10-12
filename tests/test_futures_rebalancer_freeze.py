@@ -991,6 +991,7 @@ def _carver_hl_2026_10_12_orders(extra: list[dict] | None = None) -> pd.DataFram
             "Notional Value": 1.63,
             "Order Status": "Below min notional",
             "reduce_only": False,
+            "opens_exposure": True,  # an add to the BTC long
             "Executable": False,
         },
         {
@@ -1107,6 +1108,114 @@ def test_residuals_are_listed_when_other_orders_trade():
     assert not report.get("residual_day")
     assert not report.get("frozen")
     assert [r["symbol"] for r in report["residuals"]] == ["ETH", "NEAR"]
+
+
+def test_residual_with_a_suppressed_flip_still_freezes():
+    """A sub-min flip (long -> short) is not reduce-only, but it EXITS the held
+    side: it must not pass as an entry on a residual day (review of 04cee28)."""
+    pipe = TradingPipeline()
+    broker = _FakeBrokerWithPositions(positions={"ETH": 0.0079, "ARB": 100.0})
+    flip = {
+        "Asset": "ARB",
+        "Action": "Sell",
+        "Adjusted Quantity": 0.0,
+        "Price": 0.05,
+        "Notional Value": 7.0,
+        "Order Status": "Below min notional",
+        "reduce_only": False,
+        "opens_exposure": False,
+        "Executable": False,
+    }
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=_carver_hl_2026_10_12_orders([flip]),
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+    )
+    assert report.get("frozen") is True
+    assert not report.get("residual_day")
+
+
+def test_residual_with_an_unflagged_suppressed_row_still_freezes():
+    """A suppressed row with no opens_exposure flag is not proven to be an entry."""
+    pipe = TradingPipeline()
+    broker = _FakeBrokerWithPositions(positions={"ETH": 0.0079})
+    orders = _carver_hl_2026_10_12_orders().drop(columns=["opens_exposure"])
+    report = pipe._execute_orders(
+        broker=broker,
+        orders_df=orders,
+        stable_coin="USDC",
+        trading_enabled=True,
+        mode="live",
+    )
+    assert report.get("frozen") is True
+    assert not report.get("residual_day")
+
+
+def test_opens_exposure_flag():
+    """Open from flat and same-side add: True. Flip, close, partial reduce: False."""
+    orders = _make_orders(
+        [
+            _rebal_row(
+                "A",
+                action="Buy",
+                delta_qty=1.0,
+                price=100.0,
+                weight_delta=0.1,
+                target_weight=0.1,
+                current_qty=0.0,
+                target_qty=1.0,
+            ),  # open
+            _rebal_row(
+                "B",
+                action="Buy",
+                delta_qty=1.0,
+                price=100.0,
+                weight_delta=0.1,
+                target_weight=0.2,
+                current_qty=1.0,
+                target_qty=2.0,
+            ),  # add
+            _rebal_row(
+                "C",
+                action="Sell",
+                delta_qty=-140.0,
+                price=0.05,
+                weight_delta=-0.07,
+                target_weight=-0.04,
+                current_qty=100.0,
+                target_qty=-40.0,
+            ),  # flip
+            _rebal_row(
+                "D",
+                action="Sell",
+                delta_qty=-1.0,
+                price=100.0,
+                weight_delta=-0.1,
+                target_weight=0.0,
+                current_qty=1.0,
+                target_qty=0.0,
+            ),  # close
+            _rebal_row(
+                "E",
+                action="Sell",
+                delta_qty=-0.5,
+                price=100.0,
+                weight_delta=-0.05,
+                target_weight=0.05,
+                current_qty=1.0,
+                target_qty=0.5,
+            ),  # partial reduce
+        ]
+    )
+    assert dict(zip(orders["Asset"], orders["opens_exposure"], strict=True)) == {
+        "A": True,
+        "B": True,
+        "C": False,
+        "D": False,
+        "E": False,
+    }
 
 
 # ---------------------------------------------------------------------------
