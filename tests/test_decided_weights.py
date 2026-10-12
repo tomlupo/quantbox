@@ -64,6 +64,12 @@ def test_an_empty_strategy_before_a_live_one_keeps_the_weights_paired():
     assert latest_weights(decided_weights(results)) == pytest.approx({"BTC": 0.3, "ETH": 0.7})
 
 
+def test_weights_that_are_not_a_frame_are_refused_never_dropped():
+    """A dropped strategy would trade its live book to zero; the old live copy took a Series."""
+    with pytest.raises(TypeError, match="'a' returned weights as Series"):
+        decided_weights({"a": _result(pd.Series({"BTC": 0.5}))})
+
+
 def test_no_strategy_with_weights_is_an_empty_history():
     history = decided_weights({"a": _result(pd.DataFrame()), "b": _result(None)})
     assert history.empty

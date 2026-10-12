@@ -206,7 +206,13 @@ def decided_weights(
     account: list[float] = []
     for name, info in strategy_results.items():
         weights = info["result"].get("weights")
-        if isinstance(weights, pd.DataFrame) and not weights.empty:
+        if weights is not None and not isinstance(weights, pd.DataFrame):
+            # Refused, never dropped: a dropped strategy trades its book to zero.
+            raise TypeError(
+                f"strategy {name!r} returned weights as {type(weights).__name__}; "
+                "the contract is a DataFrame (date x ticker)"
+            )
+        if weights is not None and not weights.empty:
             names.append(name)
             frames.append(weights)
             account.append(float(overrides.get(name, info["weight"])))
