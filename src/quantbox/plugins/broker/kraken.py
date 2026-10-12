@@ -43,14 +43,14 @@ from typing import Any
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
-from quantbox.portfolio_value import (
+from quantbox.retry import with_retry
+from quantbox.trade.book import (
     BASIS_MARK,
     REASON_BROKER_EQUITY_FAILED,
     REASON_UNPRICED,
     PortfolioValuationError,
     value_holdings,
 )
-from quantbox.retry import with_retry
 
 from ..datasources.kraken_data import KRAKEN_BALANCE_SUFFIXES, normalize_kraken_asset
 from ._fills import STATUS_UNKNOWN, STATUS_WORKING, resolve_fill, trade_fee, trade_fee_currency

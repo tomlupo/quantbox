@@ -1,6 +1,9 @@
 """Submission-time intent capture + REAL pre-execution enforcement (issue #90).
 
-Covers the two #90 deliverables end-to-end at the pipeline-helper level:
+Covers the two #90 deliverables end-to-end through the reconciliation cycle's
+interface (``quantbox.trade.reconciliation``: ``open_cycle`` → the pipeline's
+``_execute_orders`` → ``CycleRun.close``, the wiring ``run()`` uses; TOM-1455
+moved the cycle out of the pipeline's private methods):
 
 1. Intent is captured INSIDE ``_execute_orders`` at the broker submission call —
    on disk (fsynced) BEFORE ``place_orders`` runs — so the ledger is a
@@ -20,6 +23,9 @@ import pandas as pd
 
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
 from quantbox.trade.notifier import RecordingNotifier
+from quantbox.trade.reconciliation import ReconCycle, ReconEnforcementError, open_cycle
+from quantbox.trade.reconciliation import cycle as cycle_mod
+from quantbox.trade.reconciliation.cycle import enforce_requested
 
 
 def _pipeline() -> TradingPipeline:
@@ -76,35 +82,31 @@ def _order(asset, action, qty=10.0, price=1.0):
 def _drive_cycle(
     pipe, params, broker, orders, final_weights, run_id, asof="d", portfolio_value=1000.0, working_store=None
 ):
-    """Replicate run()'s recon wiring: preflight → execute → evaluate."""
-    ctx = pipe._recon_load(params, run_id, asof)
-    pre = pipe._recon_preflight(ctx, broker) if ctx is not None else {}
-    applied = bool(pre.get("applied"))
+    """run()'s recon wiring: open the cycle (load + gate) → execute → close."""
+    recon = open_cycle(params, run_id=run_id, asof=asof, alert=pipe._alert)
     report = pipe._execute_orders(
         broker=broker,
         orders_df=pd.DataFrame(orders),
         stable_coin="USDC",
         trading_enabled=True,
         mode="live",
-        ledger=ctx.ledger if ctx is not None else None,
-        cycle_id=ctx.cycle_id if ctx is not None else None,
-        gate_orders_allowed=pre.get("orders_allowed", True) if applied else True,
-        gate_reduce_only=pre.get("reduce_only", False) if applied else False,
+        ledger=recon.ledger,
+        cycle_id=recon.cycle_id,
+        gate_orders_allowed=recon.orders_allowed,
+        gate_reduce_only=recon.reduce_only,
+        capture_fail_closed=recon.capture_fail_closed,
         working_store=working_store,
     )
-    notes = pipe._run_reconciliation(
-        params=params,
+    notes = recon.close(
         broker=broker,
         final_weights=final_weights,
         orders_df=pd.DataFrame(orders),
         execution_report=report,
         portfolio_value=portfolio_value,
         stable_coin="USDC",
-        asof=asof,
-        run_id=run_id,
-        intent_captured=ctx is not None,
+        alert=pipe._alert,
     )
-    return report, notes, pre
+    return report, notes, recon.preflight
 
 
 def _ledger_records(tmp_path, book="carver-HL"):
@@ -174,13 +176,13 @@ def test_replay_from_ledger_after_crash_before_stage7b(tmp_path):
     """CRASH-DURABILITY REPLAY: if the run dies after Stage 7 but before Stage 7b,
     the ledger alone still proves intent + outcome. Reconstruct the reconciliation
     view purely from the persisted JSONL and confirm the missed fill is provable."""
-    from quantbox.reconciliation import OrderFillLedger
+    from quantbox.trade.reconciliation import OrderFillLedger
 
     # Stage 7 only: capture intent + (missing) result, then "crash" — no Stage 7b.
     broker = _FakeBroker(fills_fn=lambda orders: pd.DataFrame())  # order never fills
     ctx_params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
     pipe = _pipeline()
-    ctx = pipe._recon_load(ctx_params, run_id="r1", asof="d")
+    ctx = ReconCycle.load(ctx_params, run_id="r1", asof="d")
     pipe._execute_orders(
         broker=broker,
         orders_df=pd.DataFrame([_order("DOGE", "Buy"), _order("ETH", "Buy")]),
@@ -294,7 +296,7 @@ def test_failed_intent_write_does_not_leave_a_dangling_result(tmp_path):
     broker = _FakeBroker(fills_fn=_fills_all("FILLED"))
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
     pipe = _pipeline()
-    ctx = pipe._recon_load(params, run_id="r1", asof="d")
+    ctx = ReconCycle.load(params, run_id="r1", asof="d")
 
     # Make the FIRST intent write fail, the rest succeed.
     real_record_intent = ctx.ledger.record_intent
@@ -363,7 +365,7 @@ def test_enforce_drops_order_when_intent_capture_fails(tmp_path):
     we never trade live without the crash-durable intent record (review BLOCKER)."""
     params = _enforce_params(tmp_path, ack=True)
     pipe = _pipeline()
-    ctx = pipe._recon_load(params, run_id="r1", asof="d")
+    ctx = ReconCycle.load(params, run_id="r1", asof="d")
 
     real = ctx.ledger.record_intent
     calls = {"n": 0}
@@ -399,24 +401,21 @@ def test_enforce_state_persist_failure_escapes_and_alerts(tmp_path):
     run) and alert hard — not be swallowed into a success (review BLOCKER)."""
     import pytest
 
-    import quantbox.plugins.pipeline.trading_pipeline as tp
-    from quantbox.plugins.pipeline.trading_pipeline import ReconEnforcementError
-
     params = _enforce_params(tmp_path, ack=True, halt_failed_streak=1)
     pipe = _pipeline()
     broker = _FakeBroker(fills_fn=_fills_all("FAILED"))
 
-    orig = tp._atomic_write_text
+    orig = cycle_mod.atomic_write_text
 
     def _boom(path, text):
         raise OSError("read-only filesystem")
 
-    tp._atomic_write_text = _boom
+    cycle_mod.atomic_write_text = _boom
     try:
         with pytest.raises(ReconEnforcementError, match="persist failed under enforce"):
             _drive_cycle(pipe, params, broker, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1")
     finally:
-        tp._atomic_write_text = orig
+        cycle_mod.atomic_write_text = orig
 
     # A hard operator alert fired before the raise.
     assert any("state persist FAILED" in a for a in pipe.notifier.messages)
@@ -434,31 +433,28 @@ def test_enforce_ignores_config_cycle_id_and_uses_run_id(tmp_path):
             "cycle_id": "STATIC",  # must be ignored under enforce
         }
     }
-    pipe = _pipeline()
-    ctx = pipe._recon_load(params, run_id="run-unique-123", asof="2026-01-01")
+    ctx = ReconCycle.load(params, run_id="run-unique-123", asof="2026-01-01")
     assert ctx.cycle_id == "run-unique-123"
 
     # Observe, by contrast, honours the config cycle_id (backfill/testing).
     params["reconciliation"]["mode"] = "observe"
     params["reconciliation"].pop("enforce_acknowledged")
-    ctx_obs = pipe._recon_load(params, run_id="run-unique-123", asof="2026-01-01")
+    ctx_obs = ReconCycle.load(params, run_id="run-unique-123", asof="2026-01-01")
     assert ctx_obs.cycle_id == "STATIC"
 
 
 def test_observe_state_persist_failure_is_non_fatal(tmp_path):
     """In observe mode a persist failure is a warning, not fatal, and does not
     alert as an enforcement failure."""
-    import quantbox.plugins.pipeline.trading_pipeline as tp
-
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
     pipe = _pipeline()
     broker = _FakeBroker(fills_fn=_fills_all("FILLED"))
-    orig = tp._atomic_write_text
-    tp._atomic_write_text = lambda p, t: (_ for _ in ()).throw(OSError("boom"))
+    orig = cycle_mod.atomic_write_text
+    cycle_mod.atomic_write_text = lambda p, t: (_ for _ in ()).throw(OSError("boom"))
     try:
         _report, notes, _pre = _drive_cycle(pipe, params, broker, [_order("DOGE", "Buy")], {"DOGE": 0.5}, run_id="r1")
     finally:
-        tp._atomic_write_text = orig
+        cycle_mod.atomic_write_text = orig
     # No 'error' from a raise — observe swallows the persist failure.
     assert "error" not in notes
     assert not any("persist FAILED" in a for a in pipe.notifier.messages)
@@ -471,19 +467,17 @@ def test_gated_cycle_writes_no_synthetic_ledger_records(tmp_path):
     corrupt the ledger and escalate failure streaks off a SAFETY GATE."""
     params = _enforce_params(tmp_path, ack=True)
     pipe = _pipeline()
-    notes = pipe._run_reconciliation(
-        params=params,
+    notes = ReconCycle.load(params, run_id="r1", asof="d").close(
         broker=_FakeBroker(),
         final_weights={"DOGE": 0.5},
         orders_df=pd.DataFrame([_order("DOGE", "Buy"), _order("ETH", "Buy")]),
-        # HALT gate blocked execution; nothing was sent. recon_ctx was None in run(),
-        # so Stage 7b is called with intent_captured=False.
+        # HALT gate blocked execution; nothing was sent. the cycle was not armed (a gate fault),
+        # so the close runs with intent_captured=False.
         execution_report={"recon_gated": "halt", "orders_details": [], "summary": {}},
         portfolio_value=1000.0,
         stable_coin="USDC",
-        asof="d",
-        run_id="r1",
         intent_captured=False,
+        alert=pipe._alert,
     )
     # No synthetic ledger records for the never-submitted orders.
     ledger_file = tmp_path / "carver-HL" / "orders.jsonl"
@@ -500,7 +494,7 @@ def test_observe_dup_order_intent_failure_no_mis_binding(tmp_path):
     CORRECT surviving intent — not mis-bind the wrong order's fill to it."""
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
     pipe = _pipeline()
-    ctx = pipe._recon_load(params, run_id="r1", asof="d")
+    ctx = ReconCycle.load(params, run_id="r1", asof="d")
 
     real = ctx.ledger.record_intent
     calls = {"n": 0}
@@ -550,8 +544,8 @@ def test_corrupt_state_fails_closed_to_halt_under_enforce(tmp_path):
     params = _enforce_params(tmp_path, ack=True)
     pipe = _pipeline()
     # Preflight must read the corrupt state as HALT and gate this cycle.
-    ctx = pipe._recon_load(params, run_id="r1", asof="d")
-    pre = pipe._recon_preflight(ctx, _FakeBroker())
+    ctx = ReconCycle.load(params, run_id="r1", asof="d")
+    pre = ctx.gate(alert=pipe._alert)
     assert pre["applied"] is True
     assert pre["orders_allowed"] is False
 
@@ -567,7 +561,7 @@ def test_invalid_state_value_fails_closed_under_enforce(tmp_path):
     """A readable JSON state file with a BOGUS state value is as dangerous as
     corrupt JSON — under enforce it must fail CLOSED to HALT, not fall back to the
     default NORMAL (review BLOCKER)."""
-    from quantbox.reconciliation import ReconState
+    from quantbox.trade.reconciliation import ReconState
 
     book_dir = tmp_path / "carver-HL"
     book_dir.mkdir(parents=True)
@@ -575,7 +569,7 @@ def test_invalid_state_value_fails_closed_under_enforce(tmp_path):
 
     params = _enforce_params(tmp_path, ack=True)
     pipe = _pipeline()
-    ctx = pipe._recon_load(params, run_id="r1", asof="d")
+    ctx = ReconCycle.load(params, run_id="r1", asof="d")
     assert ctx.machine.state == ReconState.HALT
 
     b = _FakeBroker(fills_fn=_fills_all("FILLED"))
@@ -587,15 +581,14 @@ def test_invalid_state_value_fails_closed_under_enforce(tmp_path):
 
 def test_invalid_state_value_in_observe_resets_to_normal(tmp_path):
     """In observe a bogus state value resets to NORMAL and never gates."""
-    from quantbox.reconciliation import ReconState
+    from quantbox.trade.reconciliation import ReconState
 
     book_dir = tmp_path / "carver-HL"
     book_dir.mkdir(parents=True)
     (book_dir / "recon_state.json").write_text('{"state": "bogus"}')
 
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
-    pipe = _pipeline()
-    ctx = pipe._recon_load(params, run_id="r1", asof="d")
+    ctx = ReconCycle.load(params, run_id="r1", asof="d")
     assert ctx.machine.state == ReconState.NORMAL
 
 
@@ -631,16 +624,15 @@ def test_state_write_is_atomic_no_partial_file(tmp_path):
 
 def test_preflight_exception_fails_closed_under_enforce(tmp_path):
     """If preflight itself raises under acknowledged enforce, run()'s guard must
-    fail CLOSED. We assert the decision helper _enforce_requested drives that."""
-    pipe = _pipeline()
+    fail CLOSED. We assert the decision helper enforce_requested drives that."""
     enforce_params = _enforce_params(tmp_path, ack=True)
     observe_params = {"reconciliation": {"book_key": "b", "data_dir": str(tmp_path), "mode": "observe"}}
     no_recon = {}
     enforce_no_ack = _enforce_params(tmp_path, ack=False)
-    assert pipe._enforce_requested(enforce_params) is True
-    assert pipe._enforce_requested(observe_params) is False
-    assert pipe._enforce_requested(no_recon) is False
-    assert pipe._enforce_requested(enforce_no_ack) is False
+    assert enforce_requested(enforce_params) is True
+    assert enforce_requested(observe_params) is False
+    assert enforce_requested(no_recon) is False
+    assert enforce_requested(enforce_no_ack) is False
 
 
 def test_observe_mode_never_applies_the_gate(tmp_path):
@@ -799,7 +791,7 @@ def test_queued_unknown_orders_never_escalate_to_halt(tmp_path):
 
 def test_queued_unknown_order_raises_no_break_on_the_reconstruction_path(tmp_path):
     # Same class, other branch of Stage 7b: when intent capture was not active
-    # (e.g. an observe-mode preflight fault left recon_ctx None) the ledger is
+    # (e.g. an observe-mode preflight fault left the cycle unarmed) the ledger is
     # rebuilt from orders_details, where an UNKNOWN row reads status FAILED.
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
     pipe = _pipeline()
@@ -814,17 +806,15 @@ def test_queued_unknown_order_raises_no_break_on_the_reconstruction_path(tmp_pat
         mode="live",
         working_store=store,
     )
-    notes = pipe._run_reconciliation(
-        params=params,
+    notes = ReconCycle.load(params, run_id="r1", asof="d").close(
         broker=broker,
         final_weights={"DOGE": 0.5},
         orders_df=pd.DataFrame(orders),
         execution_report=report,
         portfolio_value=1000.0,
         stable_coin="USDC",
-        asof="d",
-        run_id="r1",
         intent_captured=False,
+        alert=pipe._alert,
     )
     assert [r["order_id"] for r in store.recorded] == ["OID-DOGE"]
     assert "consecutive_failed" not in [b["class"] for b in notes["breaks"]], notes["breaks"]

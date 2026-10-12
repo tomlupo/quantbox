@@ -17,13 +17,12 @@ held. Whether margin balance is equity is a fact about the VENUE, so it is asked
 of the broker (``valuation_basis``) rather than assumed from this plugin's own
 identity. Against a perps broker the answer is the same number as before; against
 a spot broker it is now cash + holdings, and a live run against a broker that
-does not say refuses rather than guessing. See :mod:`quantbox.portfolio_value`.
+does not say refuses rather than guessing. See :mod:`quantbox.trade.book`.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -33,10 +32,12 @@ import pandas as pd
 from quantbox.contracts import BrokerPlugin, PluginMeta
 from quantbox.decision import gross_cap, risk_caps_row
 from quantbox.engine.policy import TRANCHES_MOVED
-from quantbox.portfolio_value import (
+from quantbox.trade.book import (
     BASIS_MARGIN,
     DEFAULT_RECONCILIATION_TOLERANCE,
-    resolve_portfolio_value,
+    MarkedBook,
+    nan_if_unknown,
+    read_book,
 )
 
 logger = logging.getLogger(__name__)
@@ -200,75 +201,45 @@ class FuturesRebalancer:
         exclusions = list(params.get("exclusions", [])) + [stable_coin]
         exclusions = list(set(exclusions))
 
-        positions_df = broker.get_positions()
-        cash = broker.get_cash() or {}
-
-        # The margin/cash balance. Whether it IS the portfolio value is the
-        # venue's answer, not this plugin's — resolved below, once prices exist.
+        # The marked book: signed positions, the margin/cash balance, and one
+        # snapshot of marks for the targets and the held names. Whether the
+        # balance IS the portfolio value is the venue's answer, not this
+        # plugin's -- resolved below by the book's valuation.
         quote = stable_coin
-        cash_available = float(cash.get(quote, cash.get("USD", cash.get("USDC", cash.get("USDT", 0.0)))))
+        book = read_book(
+            broker,
+            wanted=weights.keys(),
+            exclude=exclusions,
+            cash=(quote, "USD", "USDC", "USDT"),
+        )
+        cash_available = float(book.cash or 0.0)
 
-        # Current holdings: signed qty
-        current_holdings: dict[str, float] = {}
-        if positions_df is not None and not positions_df.empty:
-            for _, row in positions_df.iterrows():
-                sym = str(row.get("symbol", ""))
-                qty = float(row.get("qty", 0))
-                if qty != 0:
-                    current_holdings[sym] = qty
-
-        all_symbols = sorted(set(list(weights.keys()) + list(current_holdings.keys())))
-        all_symbols = [s for s in all_symbols if s not in exclusions]
-
-        # Fetch prices + per-pair exchange minimums. The broker snapshot carries
-        # the venue's REAL per-symbol floors (Kraken: costmin via limits.cost.min,
+        # Per-pair exchange minimums from the same snapshot. It carries the
+        # venue's REAL per-symbol floors (Kraken: costmin via limits.cost.min,
         # base-unit ordermin via limits.amount.min). Capturing them here is what
         # lets a small book (e.g. the $278 Kraken-USD book) trade $4-8 deltas that
         # a flat $10 min_notional would freeze — while still respecting each
         # pair's true ordermin so ADA/DOGE-style sub-base-unit orders stay gated.
-        price_map: dict[str, float | None] = {}
         min_notional_map: dict[str, float] = {}
         min_qty_map: dict[str, float] = {}
-        if all_symbols:
-            try:
-                snap = broker.get_market_snapshot(all_symbols)
-                if snap is not None and not snap.empty:
-                    for _, row in snap.iterrows():
-                        sym = str(row.get("symbol", ""))
-                        mid = row.get("mid")
-                        if mid is not None and not (isinstance(mid, float) and np.isnan(mid)):
-                            price_map[sym] = float(mid)
-                        mn = row.get("min_notional")
-                        if mn is not None and not _is_nan(float(mn)) and float(mn) > 0:
-                            min_notional_map[sym] = float(mn)
-                        mq = row.get("min_qty")
-                        if mq is not None and not _is_nan(float(mq)) and float(mq) > 0:
-                            min_qty_map[sym] = float(mq)
-            except Exception as exc:
-                # Previously `pass`. On a MARGINED venue an empty price map does
-                # not understate equity, but it silently drops every target; on a
-                # spot venue -- which this plugin can be pointed at, and was --
-                # it also collapses the portfolio value to cash. Either way the
-                # cause belongs in the log rather than being swallowed.
-                logger.error(
-                    "Market snapshot failed for %d symbol(s): %r — targets will be dropped for unpriced names",
-                    len(all_symbols),
-                    exc,
-                )
-
-        def get_price(asset: str) -> float | None:
-            return price_map.get(asset)
+        snap = book.snapshot
+        if snap is not None and not snap.empty:
+            for _, row in snap.iterrows():
+                sym = str(row.get("symbol", ""))
+                mn = row.get("min_notional")
+                if mn is not None and not _is_nan(float(mn)) and float(mn) > 0:
+                    min_notional_map[sym] = float(mn)
+                mq = row.get("min_qty")
+                if mq is not None and not _is_nan(float(mq)) and float(mq) > 0:
+                    min_qty_map[sym] = float(mq)
 
         # Portfolio value, per the VENUE's rule rather than this plugin's name.
         # `mode` is threaded by `trade.full_pipeline.v1`; a caller that omits it
-        # is gated, so a forgotten mode fails closed (portfolio_value.is_gated).
+        # is gated, so a forgotten mode fails closed (book.is_gated).
         mode = str(params.get("mode") or "")
-        valuation = resolve_portfolio_value(
+        valuation = book.valuation(
             broker=broker,
             mode=mode,
-            cash=cash_available,
-            holdings=current_holdings,
-            get_price=get_price,
             # Before venue declarations existed this call site always used the
             # margin balance. That stays the answer for a SIMULATION against an
             # undeclared broker; on live an undeclared broker refuses.
@@ -292,14 +263,13 @@ class FuturesRebalancer:
         # Target positions: signed qty
         target_positions: dict[str, float] = {}
         for asset, weight in adjusted_weights.items():
-            p = get_price(asset)
-            if p is not None and p > 0:
+            p = book.mark(asset)
+            if p is not None:
                 target_positions[asset] = (total_value * weight) / p
 
         rebalancing_df = self._build_rebalancing(
-            current_holdings=current_holdings,
+            book=book,
             target_positions=target_positions,
-            get_price=get_price,
             total_value=total_value,
             strategy_weights=adjusted_weights,
             exclusions=exclusions,
@@ -327,25 +297,29 @@ class FuturesRebalancer:
 
     def _build_rebalancing(
         self,
-        current_holdings: dict[str, float],
+        book: MarkedBook,
         target_positions: dict[str, float],
-        get_price: Callable[[str], float | None],
         total_value: float,
         strategy_weights: dict[str, float],
         exclusions: list[str],
     ) -> pd.DataFrame:
-        """Build the rebalancing analysis DataFrame with signed positions."""
+        """Build the rebalancing analysis DataFrame with signed positions.
+
+        Values come from the marked book. A held name with no mark has an
+        UNKNOWN current value and weight (NaN), never 0 (TOM-1455).
+        """
+        current_holdings = book.held
         assets = sorted(set(current_holdings.keys()) | set(target_positions.keys()))
         assets = [a for a in assets if a not in exclusions]
 
         rows: list[dict[str, Any]] = []
         for asset in assets:
             current_qty = current_holdings.get(asset, 0.0)
-            price = get_price(asset)
+            price = book.mark(asset)
             # Signed current value
-            current_value = current_qty * price if price else 0
+            current_value = nan_if_unknown(book.value_of(asset))
             target_qty = target_positions.get(asset, 0.0)
-            target_value = target_qty * price if price else 0
+            target_value = nan_if_unknown(book.value_of(asset, target_qty))
             current_weight = current_value / total_value if total_value > 0 else 0
             target_weight = target_value / total_value if total_value > 0 else 0
             weight_delta = strategy_weights.get(asset, 0) - current_weight

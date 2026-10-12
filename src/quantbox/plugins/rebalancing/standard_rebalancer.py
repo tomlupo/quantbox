@@ -14,18 +14,22 @@ Ported from ``TradingPipeline._apply_risk_transforms()``,
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal, getcontext
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 from quantbox.contracts import BrokerPlugin, PluginMeta
 from quantbox.decision import gross_cap, risk_caps_row
 from quantbox.engine.policy import TRANCHES_MOVED
-from quantbox.portfolio_value import BASIS_MARK, DEFAULT_RECONCILIATION_TOLERANCE, resolve_portfolio_value
+from quantbox.trade.book import (
+    BASIS_MARK,
+    DEFAULT_RECONCILIATION_TOLERANCE,
+    MarkedBook,
+    nan_if_unknown,
+    read_book,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -232,60 +236,24 @@ class StandardRebalancer:
         exclusions = list(params.get("exclusions", [])) + [stable_coin]
         exclusions = list(set(exclusions))
 
-        positions_df = broker.get_positions()
-        cash = broker.get_cash() or {}
-        cash_available = float(cash.get(stable_coin, cash.get("USD", 0.0)))
-
-        current_holdings: dict[str, float] = {}
-        if positions_df is not None and not positions_df.empty:
-            for _, row in positions_df.iterrows():
-                sym = str(row.get("symbol", ""))
-                qty = float(row.get("qty", 0))
-                if qty != 0:
-                    current_holdings[sym] = qty
-
-        all_symbols = sorted(set(list(weights.keys()) + list(current_holdings.keys())))
-        all_symbols = [s for s in all_symbols if s not in exclusions]
+        # The marked book: positions, quote cash and one snapshot of marks for
+        # the targets and the held names. A failed snapshot leaves the held
+        # names UNMARKED, and the valuation below refuses on them (live) rather
+        # than collapsing the portfolio value to cash.
+        book = read_book(broker, wanted=weights.keys(), exclude=exclusions, cash=(stable_coin, "USD"))
+        cash_available = float(book.cash or 0.0)
 
         # The run mode drives the pre-trade valuation gate. The production
         # caller (`trade.full_pipeline.v1`) always threads it through. A caller
         # that omits it is GATED, not treated as paper: only a run that
         # positively declares itself a simulation is exempt, so a forgotten
         # `mode` fails closed rather than quietly ungating a live book. See
-        # quantbox.portfolio_value.UNGATED_MODES.
+        # quantbox.trade.book.UNGATED_MODES.
         mode = str(params.get("mode") or "")
 
-        price_map: dict[str, float | None] = {}
-        if all_symbols:
-            try:
-                snap = broker.get_market_snapshot(all_symbols)
-                if snap is not None and not snap.empty:
-                    for _, row in snap.iterrows():
-                        sym = str(row.get("symbol", ""))
-                        mid = row.get("mid")
-                        if mid is not None and not (isinstance(mid, float) and np.isnan(mid)):
-                            price_map[sym] = float(mid)
-            except Exception as exc:
-                # Previously `pass`. A swallowed snapshot error left `price_map`
-                # empty, which made the portfolio value collapse to cash with
-                # nothing in the log to say so. The valuation below now refuses
-                # on the resulting unmarkable holdings, but the cause belongs in
-                # the log either way.
-                logger.error(
-                    "Market snapshot failed for %d symbol(s): %r — held positions may be unmarkable",
-                    len(all_symbols),
-                    exc,
-                )
-
-        def get_price(asset: str) -> float | None:
-            return price_map.get(asset)
-
-        valuation = resolve_portfolio_value(
+        valuation = book.valuation(
             broker=broker,
             mode=mode,
-            cash=cash_available,
-            holdings=current_holdings,
-            get_price=get_price,
             # This rebalancer is the spot/cash path, so an undeclared broker in
             # a SIMULATION keeps being marked the way this call site always
             # marked it. On live an undeclared broker refuses instead.
@@ -315,14 +283,13 @@ class StandardRebalancer:
 
         target_positions: dict[str, float] = {}
         for asset, weight in adjusted_weights.items():
-            p = get_price(asset)
-            if p is not None and p > 0:
+            p = book.mark(asset)
+            if p is not None:
                 target_positions[asset] = (total_value * weight) / p
 
         rebalancing_df = self._build_rebalancing(
-            current_holdings=current_holdings,
+            book=book,
             target_positions=target_positions,
-            get_price=get_price,
             total_value=total_value,
             strategy_weights=adjusted_weights,
             exclusions=exclusions,
@@ -356,24 +323,28 @@ class StandardRebalancer:
 
     def _build_rebalancing(
         self,
-        current_holdings: dict[str, float],
+        book: MarkedBook,
         target_positions: dict[str, float],
-        get_price: Callable[[str], float | None],
         total_value: float,
         strategy_weights: dict[str, float],
         exclusions: list[str],
     ) -> pd.DataFrame:
-        """Build the rebalancing analysis DataFrame."""
+        """Build the rebalancing analysis DataFrame.
+
+        Values come from the marked book. A held name with no mark has an
+        UNKNOWN current value and weight (NaN), never 0 (TOM-1455).
+        """
+        current_holdings = book.held
         assets = sorted(set(current_holdings.keys()) | set(target_positions.keys()))
         assets = [a for a in assets if a not in exclusions]
 
         rows: list[dict[str, Any]] = []
         for asset in assets:
             current_qty = current_holdings.get(asset, 0.0)
-            price = get_price(asset)
-            current_value = current_qty * price if price else 0
+            price = book.mark(asset)
+            current_value = nan_if_unknown(book.value_of(asset))
             target_qty = target_positions.get(asset, 0.0)
-            target_value = target_qty * price if price else 0
+            target_value = nan_if_unknown(book.value_of(asset, target_qty))
             current_weight = current_value / total_value if total_value > 0 else 0
             target_weight = target_value / total_value if total_value > 0 else 0
             weight_delta = strategy_weights.get(asset, 0) - current_weight
@@ -457,6 +428,14 @@ class StandardRebalancer:
             if action == "hold" or delta_qty == 0:
                 status = "Zero delta"
                 reason = "No trade needed"
+            elif price is None or pd.isna(price) or price == 0:
+                # No mark: the held name's value and weight are UNKNOWN (NaN, the
+                # marked book), so no threshold, notional or scaling can judge
+                # it. Before TOM-1455 its weight read as 0 -- a short slipped into
+                # buy scaling with a NaN price, and a long close was "To be
+                # placed" at a NaN price.
+                status = "Zero price"
+                reason = "No price available"
             else:
                 zero_target_sell = (
                     action == "sell" and row.get("Target Weight", 0) == 0 and row.get("Current Quantity", 0) > 0

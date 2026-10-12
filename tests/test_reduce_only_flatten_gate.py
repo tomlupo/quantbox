@@ -1,6 +1,6 @@
 """FLATTEN reduce-only gate against the REAL broker position schemas (issue #93).
 
-`TradingPipeline._filter_reduce_only` decides which orders reduce exposure by
+`quantbox.trade.reconciliation.filter_reduce_only` (the FLATTEN gate's filter) decides which orders reduce exposure by
 reading `broker.get_positions()`. The #92 review (SHIP-WITH-NITS) flagged that
 this consumed a non-protocol `get_positions()` whose signed-qty semantics were
 never confirmed against the live brokers. These tests feed the clamp the ACTUAL
@@ -18,7 +18,7 @@ import pandas as pd
 
 from quantbox.plugins.broker.hyperliquid import HyperliquidBroker
 from quantbox.plugins.broker.kraken import KrakenBroker
-from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
+from quantbox.trade.reconciliation import filter_reduce_only
 
 # --- Kraken fake exchange (mirrors tests/test_kraken_broker.py) -------------
 
@@ -73,7 +73,7 @@ def _order(asset, action, qty):
 
 
 def _clamp(orders, broker):
-    return TradingPipeline()._filter_reduce_only(pd.DataFrame(orders), broker)
+    return filter_reduce_only(pd.DataFrame(orders), broker)
 
 
 # ===========================================================================

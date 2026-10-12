@@ -82,7 +82,7 @@ from typing import Any
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
-from quantbox.portfolio_value import BASIS_MARK
+from quantbox.trade.book import BASIS_MARK
 
 logger = logging.getLogger(__name__)
 

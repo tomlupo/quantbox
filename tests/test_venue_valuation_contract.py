@@ -2,7 +2,7 @@
 
 Written WITHOUT reading the branch's own test file, from the stated contract:
 
-* ``src/quantbox/portfolio_value.py`` module docstring and per-function
+* ``src/quantbox/trade/book.py`` (``quantbox.portfolio_value`` until 0.16.0) module docstring and per-function
   docstrings (the only written statement of the rule);
 * ``BrokerPlugin.valuation_basis`` in ``src/quantbox/contracts.py``;
 * ``KrakenBroker.get_equity`` docstring;
@@ -25,11 +25,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from quantbox.plugins.pipeline.alloc2orders import _summed_holdings, _usd_marks
+from quantbox.plugins.pipeline.alloc2orders import _usd_marks
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline, _valuation_metrics, _valuation_notes
 from quantbox.plugins.rebalancing.futures_rebalancer import FuturesRebalancer
 from quantbox.plugins.rebalancing.standard_rebalancer import StandardRebalancer
-from quantbox.portfolio_value import (
+from quantbox.trade.book import (
     BASIS_ATTR,
     BASIS_MARGIN,
     BASIS_MARK,
@@ -38,6 +38,7 @@ from quantbox.portfolio_value import (
     REASON_MISMATCH,
     REASON_UNKNOWN_BASIS,
     REASON_UNPRICED,
+    MarkedBook,
     PortfolioValuationError,
     is_gated,
     resolve_portfolio_value,
@@ -315,7 +316,7 @@ class TestVenueDeclaration:
     @pytest.mark.parametrize("bad", ["spot", "MARK_TO_MARKET", "", 1, True, ["mark_to_market"]], ids=repr)
     def test_unrecognised_declaration_is_undeclared_and_logged(self, bad, caplog):
         """ "A declaration nobody can parse carries no more information than none."""
-        with caplog.at_level(logging.ERROR, logger="quantbox.portfolio_value"):
+        with caplog.at_level(logging.ERROR, logger="quantbox.trade.book"):
             assert venue_valuation_basis(_BrokerBase(basis=bad)) is None
         assert any(BASIS_ATTR in r.getMessage() for r in caplog.records), (
             "an unparseable declaration must be LOUD, not silently undeclared"
@@ -451,7 +452,7 @@ class TestUndeclaredVenue:
         Both arms are asserted so the argument is OBSERVABLE: if the fallback
         were ignored, the two would return the same number.
         """
-        with caplog.at_level(logging.WARNING, logger="quantbox.portfolio_value"):
+        with caplog.at_level(logging.WARNING, logger="quantbox.trade.book"):
             v = resolve_portfolio_value(
                 broker=_BrokerBase(),
                 mode="paper",
@@ -512,7 +513,7 @@ class TestMarkedVenueCompleteness:
         assert "PEPE" in str(exc.value), "the operator must see WHICH name failed"
 
     def test_simulation_warns_and_continues_understated(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="quantbox.portfolio_value"):
+        with caplog.at_level(logging.WARNING, logger="quantbox.trade.book"):
             v = resolve_portfolio_value(
                 broker=_BrokerBase(basis=BASIS_MARK),
                 mode="paper",
@@ -531,7 +532,7 @@ class TestMarkedVenueCompleteness:
         Conflating that with a valuation refusal is what made a spot book look
         like a perps book.
         """
-        with caplog.at_level(logging.WARNING, logger="quantbox.portfolio_value"):
+        with caplog.at_level(logging.WARNING, logger="quantbox.trade.book"):
             v = _must_not_refuse(
                 "a margined venue with an unmarkable name",
                 resolve_portfolio_value,
@@ -605,7 +606,7 @@ class TestBrokerEquityAndReconciliation:
         assert exc.value.broker_equity == pytest.approx(92.0)
 
     def test_reconciliation_mismatch_only_warns_off_live(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="quantbox.portfolio_value"):
+        with caplog.at_level(logging.WARNING, logger="quantbox.trade.book"):
             v = resolve_portfolio_value(
                 broker=self._spot(equity=92.0),
                 mode="paper",
@@ -686,7 +687,7 @@ class TestBrokerEquityAndReconciliation:
 
     def test_reconciliation_is_skipped_when_an_excluded_asset_is_held(self, caplog):
         """The two views measure different books, so comparing them false-alarms."""
-        with caplog.at_level(logging.WARNING, logger="quantbox.portfolio_value"):
+        with caplog.at_level(logging.WARNING, logger="quantbox.trade.book"):
             v = _must_not_refuse(
                 "a fully marked tradable book holding an excluded asset",
                 resolve_portfolio_value,
@@ -790,7 +791,7 @@ class TestBrokerEquityAndReconciliation:
         assert exc.value.computed == pytest.approx(92.0)
 
     def test_broker_equity_raising_only_warns_off_live(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="quantbox.portfolio_value"):
+        with caplog.at_level(logging.WARNING, logger="quantbox.trade.book"):
             v = resolve_portfolio_value(
                 broker=self._spot(equity_error=RuntimeError("venue 503")),
                 mode="paper",
@@ -833,7 +834,7 @@ class TestBrokerEquityAndReconciliation:
         warning, not a stop, exactly as an unreadable `get_equity()` already was.
         """
         inner = PortfolioValuationError("cannot mark XBT", reason=REASON_UNPRICED, unpriced=("XBT",))
-        with caplog.at_level(logging.WARNING, logger="quantbox.portfolio_value"):
+        with caplog.at_level(logging.WARNING, logger="quantbox.trade.book"):
             v = resolve_portfolio_value(
                 broker=self._spot(equity_error=inner),
                 mode="paper",
@@ -861,7 +862,7 @@ class TestBrokerEquityAndReconciliation:
         still refuses.
         """
         inner = PortfolioValuationError("cannot mark LOCKED", reason=REASON_UNPRICED, unpriced=("LOCKED",))
-        with caplog.at_level(logging.WARNING, logger="quantbox.portfolio_value"):
+        with caplog.at_level(logging.WARNING, logger="quantbox.trade.book"):
             v = resolve_portfolio_value(
                 broker=self._spot(equity_error=inner),
                 mode="live",
@@ -1535,6 +1536,8 @@ class TestKrakenEquity:
 # ======================================================================
 # 10. alloc2orders NAV helpers -- the number written to portfolio_daily
 # ======================================================================
+# The lot summing moved into the marked book (TOM-1455): alloc2orders builds a
+# MarkedBook from its positions frame, so these cases are asked of the book.
 
 
 class TestAllocationNavHelpers:
@@ -1542,21 +1545,21 @@ class TestAllocationNavHelpers:
         """Two lots / two accounts for one symbol. ``dict(zip(...))`` kept the
         LAST row, where the ``value_usd`` sum it replaced added them."""
         pos = pd.DataFrame({"symbol": ["AAPL", "AAPL", "MSFT"], "qty": [10.0, 5.0, 2.0]})
-        assert _summed_holdings(pos) == {"AAPL": 15.0, "MSFT": 2.0}
+        assert MarkedBook.of(positions=pos).positions == {"AAPL": 15.0, "MSFT": 2.0}
 
     def test_an_all_nan_quantity_stays_nan_rather_than_becoming_zero(self):
         """``min_count=1`` is load bearing: a bare ``.sum()`` returns 0.0 for an
         all-NaN group, turning an unreadable quantity into a position worth
         nothing and hiding it from the non-finite branch."""
         pos = pd.DataFrame({"symbol": ["X", "X"], "qty": [np.nan, np.nan]})
-        out = _summed_holdings(pos)
-        assert math.isnan(out["X"])
-        v = value_holdings(cash=0.0, holdings=out, get_price=_price_fn({"X": 1.0}))
+        book = MarkedBook.of(positions=pos, cash=0.0, marks={"X": 1.0})
+        assert math.isnan(book.positions["X"])
+        v = book.marked()
         assert v.unpriced == ("X",), "the NaN must survive to the refusal branch"
 
     def test_a_partially_nan_quantity_still_sums(self):
         pos = pd.DataFrame({"symbol": ["X", "X"], "qty": [np.nan, 4.0]})
-        assert _summed_holdings(pos) == {"X": 4.0}
+        assert MarkedBook.of(positions=pos).positions == {"X": 4.0}
 
     def test_duplicate_marks_keep_the_last_because_a_price_does_not_accumulate(self):
         pos = pd.DataFrame(

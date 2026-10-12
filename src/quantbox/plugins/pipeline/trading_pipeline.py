@@ -13,11 +13,10 @@ can invoke via ``pipeline.run()``.
 
 from __future__ import annotations
 
-import contextlib
 import logging
 from collections import defaultdict, deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import ROUND_DOWN, Decimal, getcontext
 from typing import Any, ClassVar
@@ -51,18 +50,25 @@ from quantbox.engine.policy import (
 from quantbox.financing import resolve_leverage
 from quantbox.frequency import _parse_bar_size
 from quantbox.plugins.rebalancing.futures_rebalancer import RESIDUAL_STATUS
-from quantbox.portfolio_value import (
+from quantbox.strategy_runner import build_strategy_context, decided_weights, latest_weights, run_strategies
+from quantbox.trade.book import (
     BASIS_MARK,
     DEFAULT_RECONCILIATION_TOLERANCE,
+    REASON_UNPRICED,
+    MarkedBook,
     PortfolioValuation,
     PortfolioValuationError,
-    resolve_portfolio_value,
-    value_holdings,
+    nan_if_unknown,
+    read_book,
 )
-from quantbox.reconciliation.ledger import EXEC_STATUS_TO_LEDGER, NON_TERMINAL_RESULT_STATUSES
-from quantbox.reconciliation.working_orders import DEFAULT_MAX_AGE_DAYS
-from quantbox.strategy_runner import build_strategy_context, decided_weights, latest_weights, run_strategies
 from quantbox.trade.notifier import Alerts, Notifier
+from quantbox.trade.reconciliation.cycle import filter_reduce_only, open_cycle
+from quantbox.trade.reconciliation.ledger import EXEC_STATUS_TO_LEDGER
+from quantbox.trade.reconciliation.working_orders import (
+    DEFAULT_MAX_AGE_DAYS,
+    WorkingOrderStore,
+    resolve_working_orders,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +116,10 @@ DEFAULT_MIN_NOTIONAL = 1.0
 DEFAULT_MIN_TRADE_SIZE = 0.01
 DEFAULT_STABLE_COIN = "USDC"
 
+#: The universe screen's inputs, stored next to ``prices.parquet`` in every run
+#: dir (TOM-1420), so a run's selection can be replayed config-only (TOM-1722).
+SCREEN_INPUTS = ("volume", "market_cap", "screen_volume")
+
 # ---------------------------------------------------------------------------
 # Low-level helpers (ported from quantlab orders.py / portfolio.py)
 # ---------------------------------------------------------------------------
@@ -125,50 +135,6 @@ def _safe_float(v: Any) -> float | None:
         return None
 
 
-class ReconEnforcementError(RuntimeError):
-    """A CRITICAL enforce-mode reconciliation failure that must NOT be swallowed.
-
-    Raised when the enforcement authority itself is untrustworthy under acknowledged
-    enforce (e.g. the persisted state file cannot be written). Unlike ordinary recon
-    faults — which are observability losses and never fatal — this must escape the
-    guard and fail the run, so the book stops rather than silently trading the next
-    cycle from stale/absent enforcement state.
-    """
-
-
-def _atomic_write_text(path: Any, text: str) -> None:
-    """Durably replace ``path`` with ``text``: write a temp file in the same dir,
-    fsync it, then ``os.replace`` (atomic on POSIX). A crash can never leave the
-    target truncated/half-written — the reader sees either the old file or the new
-    one, never a corrupt one. Used for the recon state file, which IS the
-    enforcement authority (a corrupt state must never silently fail open).
-    """
-    import os
-    import tempfile
-    from pathlib import Path
-
-    path = Path(path)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(text)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, path)
-        # fsync the parent directory so the rename itself is crash-durable on POSIX
-        # (a bare os.replace is not persisted until the dir entry is synced).
-        with contextlib.suppress(OSError, AttributeError):
-            dir_fd = os.open(str(path.parent), os.O_RDONLY)
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
-    except Exception:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
-
-
 # Ledger result status mapped from an execution ``orders_details`` row status.
 # Backwards-compatible alias. The map itself now lives in
 # ``reconciliation.ledger`` beside the vocabulary it targets, because the
@@ -179,28 +145,6 @@ _EXEC_STATUS_TO_LEDGER = EXEC_STATUS_TO_LEDGER
 # The statuses a broker row may carry that the execution loop acts on. Anything
 # else — absent, empty, or a word outside this set — is UNKNOWN (TOM-1336).
 _EXEC_STATUSES = frozenset({"FILLED", "PARTIAL", "WORKING", "FAILED", "SKIPPED", "UNKNOWN"})
-
-
-@dataclass
-class _ReconCtx:
-    """Per-cycle reconciliation context, built once and shared by the pre-execution
-    gate (preflight) and the post-execution evaluator so config is parsed once and
-    the SAME ledger + persisted state back both stages.
-
-    Types are intentionally ``Any`` so the (optional) ``quantbox.reconciliation``
-    subpackage is imported lazily, never at module load.
-    """
-
-    book_key: str
-    root: Any
-    tol: Any
-    cycle_id: str
-    mode: str
-    enforce_refused: bool
-    ledger: Any
-    machine: Any
-    state_path: Any
-    persisted: dict[str, Any]
 
 
 def _adjust_quantity(qty: float, step_size: float) -> float:
@@ -844,14 +788,18 @@ class TradingPipeline:
 
         market_data_dict = data.load_market_data(fetch_universe, asof, prices_params)
         store.put_parquet("universe", universe)
-        # Store prices as wide-format parquet
-        prices_wide = market_data_dict.get("prices", pd.DataFrame())
-        if not prices_wide.empty:
-            store.put_parquet(
-                "prices", prices_wide.reset_index() if isinstance(prices_wide.index, pd.DatetimeIndex) else prices_wide
-            )
-        else:
-            store.put_parquet("prices", pd.DataFrame())
+        # Store prices, and the universe screen's inputs beside them (TOM-1420),
+        # as wide-format parquet. With `volume`, `market_cap` and `screen_volume`
+        # a run's top-N selection can be replayed from its run dir alone: Kraken
+        # serves only 720 hourly candles, so a screen older than ~30 days could
+        # not be rebuilt from the venue (TOM-1411). A key the data plugin did not
+        # return is stored empty, as `prices` always was.
+        for key in ("prices", *SCREEN_INPUTS):
+            wide = market_data_dict.get(key, pd.DataFrame())
+            if not isinstance(wide, pd.DataFrame) or wide.empty:
+                store.put_parquet(key, pd.DataFrame())
+            else:
+                store.put_parquet(key, wide.reset_index() if isinstance(wide.index, pd.DatetimeIndex) else wide)
 
         # Build data dict for strategies (quantlab convention)
         market_data = self._build_market_data(market_data_dict, universe)
@@ -1137,37 +1085,9 @@ class TradingPipeline:
         # enforce mode this gate can HALT (send nothing) or FLATTEN (reduce-only)
         # THIS cycle's orders BEFORE they are executed — the real, crash-durable
         # enforcement touchpoint. In observe mode the gate is computed but never
-        # applied. Guarded so a recon fault fails safe to no-gate (never fatal).
-        recon_ctx = None
-        recon_preflight: dict[str, Any] = {}
-        try:
-            recon_ctx = self._recon_load(params, store.run_id, asof)
-            if recon_ctx is not None:
-                recon_preflight = self._recon_preflight(recon_ctx, broker)
-        except Exception as exc:  # noqa: BLE001 - recon must never be fatal
-            recon_ctx = None
-            if self._enforce_requested(params):
-                # FAIL CLOSED: under acknowledged enforce, an inability to load or
-                # compute the persisted gate must NOT let orders through — block
-                # this cycle. (Observe mode fails open to no-gate: no gating claimed.)
-                logger.error(
-                    "RECON ENFORCE: preflight failed under acknowledged enforce — failing CLOSED (HALT) "
-                    "this cycle; no orders will be sent. Error: %s",
-                    exc,
-                )
-                recon_preflight = {
-                    "applied": True,
-                    "orders_allowed": False,
-                    "reduce_only": False,
-                    "enforced": True,
-                    "gate_from_state": "unknown",
-                    "fail_closed": True,
-                }
-            else:
-                logger.error("Recon preflight failed (observe, non-fatal, fail-safe to no-gate): %s", exc)
-                recon_preflight = {}
-
-        gate_applied = bool(recon_preflight.get("applied"))
+        # applied. Guarded so a recon fault fails safe to no-gate (never fatal),
+        # and CLOSED under acknowledged enforce (quantbox.trade.reconciliation.cycle).
+        recon = open_cycle(params, run_id=store.run_id, asof=asof, alert=self._alert)
 
         # --- Stage 6c: resolve orders left WORKING by a previous cycle ---
         # A priced order goes to the venue as a LIMIT order and may rest on the
@@ -1178,13 +1098,18 @@ class TradingPipeline:
         working_store = None
         resolved_working: list[dict[str, Any]] = []
         try:
-            working_store = self._working_store(params)
+            working_store = WorkingOrderStore.for_book(params)
             if working_store is not None:
-                resolved_working = self._resolve_working_orders(
+                # The semantics (unreadable venue keeps the order queued, still
+                # working keeps it, terminal books it against the carried
+                # order_ref, past the cap drops it loudly) are the queue's own,
+                # shared with quantbox-live's out-of-cycle job.
+                resolved_working = resolve_working_orders(
                     working_store,
                     broker,
-                    ledger=recon_ctx.ledger if recon_ctx is not None else None,
-                )
+                    ledger=recon.ledger,
+                    max_age_days=DEFAULT_MAX_AGE_DAYS,
+                ).resolved
         except Exception as exc:  # noqa: BLE001 - bookkeeping must never be fatal
             logger.error("Working-order resolution failed (non-fatal): %s", exc)
 
@@ -1198,14 +1123,14 @@ class TradingPipeline:
             mode=mode,
             # Submission-time intent capture: thread the SAME ledger so intent is
             # recorded at the broker call (crash-durable), and Stage 7b reads it back.
-            ledger=recon_ctx.ledger if recon_ctx is not None else None,
-            cycle_id=recon_ctx.cycle_id if recon_ctx is not None else None,
+            ledger=recon.ledger,
+            cycle_id=recon.cycle_id,
             # Enforce-mode pre-execution gate (permissive defaults when not applied).
-            gate_orders_allowed=recon_preflight.get("orders_allowed", True) if gate_applied else True,
-            gate_reduce_only=recon_preflight.get("reduce_only", False) if gate_applied else False,
+            gate_orders_allowed=recon.orders_allowed,
+            gate_reduce_only=recon.reduce_only,
             # Under enforce, a failed intent write drops the order (fail closed) —
             # never trade live without the durable intent record.
-            capture_fail_closed=bool(recon_ctx is not None and recon_ctx.tol.is_enforce),
+            capture_fail_closed=recon.capture_fail_closed,
             working_store=working_store,
         )
 
@@ -1251,63 +1176,40 @@ class TradingPipeline:
             if hasattr(broker, "get_equity"):
                 portfolio_value_post = float(broker.get_equity())
             else:
-                pos2 = broker.get_positions()
-                if pos2 is not None and len(pos2) > 0:
-                    snap = broker.get_market_snapshot(pos2["symbol"].tolist())
-                    if snap is not None and "mid" in snap.columns:
-                        pos2 = pos2.copy()
-                        pos2["symbol"] = pos2["symbol"].astype(str)
-                        pos2["qty"] = pos2["qty"].astype(float)
-                        # Summed, not `dict(zip(...))` -- that keeps only the
-                        # last row where the `(qty * mid).sum()` it replaced
-                        # added them -- and summed BEFORE the merge.
-                        # `get_market_snapshot` emits one row per REQUESTED
-                        # element (sim.py, binance_live.py) and the request is
-                        # `pos2["symbol"].tolist()`, so a position reported on
-                        # two lots fans the left-merge out and summing
-                        # afterwards DOUBLES it -- into the `portfolio_daily`
-                        # equity curve and into `_run_reconciliation`, which
-                        # drives NORMAL -> DEGRADED -> HALT. Same rule, same
-                        # reason, as the alloc2orders twin. `min_count=1` keeps
-                        # an all-NaN quantity NaN rather than 0.0, so it still
-                        # reads as unmarkable.
-                        post_qty = pos2.groupby("symbol", as_index=False)["qty"].sum(min_count=1)
-
-                        merged = pos2.merge(snap[["symbol", "mid"]], on="symbol", how="left")
-                        # NOT `fillna(0)`: an unmarkable holding is worth an
-                        # UNKNOWN amount, not nothing, and this number is the NAV
-                        # written to portfolio_daily. Zero-filling here is the
-                        # same understatement the pre-trade path just stopped.
-                        merged["mid"] = merged["mid"].astype(float)
-                        post_snapshot = value_holdings(
-                            cash=cash_usd_post,
-                            holdings=dict(zip(post_qty["symbol"], post_qty["qty"], strict=False)),
-                            get_price=dict(zip(merged["symbol"], merged["mid"], strict=False)).get,
-                            # Same two arguments as the PRE-trade call. Without
-                            # them the stable coin and every excluded asset read
-                            # as unmarkable, and a healthy run would log an
-                            # understatement and push an api_error every time.
-                            stable_coin=stable_coin,
-                            exclusions=list(params.get("exclusions", [])),
-                        )
-                        portfolio_value_post = post_snapshot.value
-                        if post_snapshot.unpriced:
-                            logger.error(
-                                "Post-trade NAV is UNDERSTATED: %d of %d holding(s) unmarkable (%s).",
-                                len(post_snapshot.unpriced),
-                                post_snapshot.n_holdings,
-                                ", ".join(post_snapshot.unpriced),
-                            )
-                            api_errors.append(
-                                {
-                                    "stage": "portfolio_snapshot",
-                                    "error": f"unmarkable holdings: {', '.join(post_snapshot.unpriced)}",
-                                }
-                            )
-                    else:
-                        portfolio_value_post = cash_usd_post
-                else:
-                    portfolio_value_post = cash_usd_post
+                # The marked book after the orders (lots summed, one snapshot of
+                # the held names). An unmarkable holding is worth an UNKNOWN
+                # amount, not nothing: it is reported, and this NAV is the
+                # marked part. A snapshot with no `mid` used to make the NAV
+                # plain cash, silently; it now reports every holding unmarked.
+                post_book = replace(read_book(broker), cash=cash_usd_post)
+                if post_book.held and post_book.snapshot is None:
+                    # The snapshot itself failed: that is a failed read, not a
+                    # book of unmarked names. Recording cash alone would write a
+                    # false NAV, so the pre-trade value stays, as it always did
+                    # on a failed read, and the error is recorded below.
+                    raise RuntimeError("post-trade market snapshot failed; NAV not re-marked")
+                post_snapshot = post_book.marked(
+                    # Same two arguments as the PRE-trade call. Without them the
+                    # stable coin and every excluded asset read as unmarkable,
+                    # and a healthy run would log an understatement and push an
+                    # api_error every time.
+                    stable_coin=stable_coin,
+                    exclusions=list(params.get("exclusions", [])),
+                )
+                portfolio_value_post = post_snapshot.value
+                if post_snapshot.unpriced:
+                    logger.error(
+                        "Post-trade NAV is UNDERSTATED: %d of %d holding(s) unmarkable (%s).",
+                        len(post_snapshot.unpriced),
+                        post_snapshot.n_holdings,
+                        ", ".join(post_snapshot.unpriced),
+                    )
+                    api_errors.append(
+                        {
+                            "stage": "portfolio_snapshot",
+                            "error": f"unmarkable holdings: {', '.join(post_snapshot.unpriced)}",
+                        }
+                    )
         except Exception as exc:  # noqa: BLE001 - snapshot is best-effort, never fatal
             # A broker read failing here is a (survived) API error — surface it as
             # an exception input for the notifier rather than swallowing it (#62).
@@ -1333,26 +1235,16 @@ class TradingPipeline:
         # captured at submission (Stage 7). No-op unless a `reconciliation` block is
         # present. Runs after the portfolio snapshot so drift/phantom are computed
         # against the reconciled real book (authority: exchange = truth for holdings).
-        recon_notes = self._run_reconciliation(
-            params=params,
+        # Never fatal, except an unwritable enforcement authority under enforce.
+        recon_notes = recon.close(
             broker=broker,
             final_weights=final_weights,
             orders_df=orders_df,
             execution_report=execution_report,
             portfolio_value=portfolio_value_post,
             stable_coin=stable_coin,
-            asof=asof,
-            run_id=store.run_id,
-            # Intent was captured at submission (Stage 7) whenever recon is active,
-            # so Stage 7b reads the ledger back instead of reconstructing it.
-            intent_captured=recon_ctx is not None,
+            alert=self._alert,
         )
-        # Attach this cycle's pre-execution gate outcome for observability.
-        if recon_preflight and isinstance(recon_notes, dict):
-            recon_notes["preflight_gate"] = recon_preflight
-            recon_notes["gate_applied"] = gate_applied
-            if execution_report.get("recon_gated"):
-                recon_notes["recon_gated"] = execution_report["recon_gated"]
 
         # Collect fee/funding metrics from broker.
         #
@@ -1638,15 +1530,28 @@ class TradingPipeline:
         Read from the order generator's own valuation (the venue's basis), so
         the policy compares the held book to the targets exactly as the orders
         will size them. Cash and the excluded assets are the remainder.
+
+        A held name with no mark has an UNKNOWN weight (NaN in ``Current
+        Weight``). It used to be read as 0, so on a margin-basis book an
+        unpriced name reached the trigger and ``min_trade`` as flat. It is now a
+        valuation refusal (:class:`PortfolioValuationError`): the policy cannot
+        judge a book it cannot see, and the caller sizes nothing this cycle
+        (TOM-1455).
         """
         if not isinstance(rebalancing_df, pd.DataFrame) or rebalancing_df.empty:
             return pd.Series(dtype=float)
         if not {"Asset", "Current Weight"} <= set(rebalancing_df.columns):
             raise ValueError("rebalancing_policy: the order generator returned no Asset / Current Weight columns")
-        held = pd.Series(
-            pd.to_numeric(rebalancing_df["Current Weight"], errors="coerce").fillna(0.0).to_numpy(dtype=float),
-            index=rebalancing_df["Asset"].astype(str),
-        )
+        weights = pd.to_numeric(rebalancing_df["Current Weight"], errors="coerce")
+        unknown = sorted(rebalancing_df.loc[weights.isna().to_numpy(), "Asset"].astype(str))
+        if unknown:
+            raise PortfolioValuationError(
+                f"rebalancing_policy: the held weight of {', '.join(unknown)} is UNKNOWN (no mark), "
+                "so the trigger and min_trade cannot be judged. Sizing nothing this cycle.",
+                reason=REASON_UNPRICED,
+                unpriced=unknown,
+            )
+        held = pd.Series(weights.to_numpy(dtype=float), index=rebalancing_df["Asset"].astype(str))
         held = held.groupby(level=0).sum()
         return held / capital_at_risk if capital_at_risk > 0 else held
 
@@ -1809,59 +1714,19 @@ class TradingPipeline:
         exclusions = list(params.get("exclusions", [])) + [stable_coin]
         exclusions = list(set(exclusions))
 
-        # Fetch current state from broker
-        positions_df = broker.get_positions()
-        cash = broker.get_cash() or {}
-        cash_available = float(cash.get(stable_coin, cash.get("USD", 0.0)))
-
-        # Build holdings dict
-        current_holdings: dict[str, float] = {}
-        if positions_df is not None and not positions_df.empty:
-            for _, row in positions_df.iterrows():
-                sym = str(row.get("symbol", ""))
-                qty = float(row.get("qty", 0))
-                if qty != 0:
-                    current_holdings[sym] = qty
-
-        # Get prices via broker market snapshot
-        all_symbols = sorted(set(list(weights.keys()) + list(current_holdings.keys())))
-        all_symbols = [s for s in all_symbols if s not in exclusions]
-
-        price_map: dict[str, float | None] = {}
-        if all_symbols:
-            try:
-                snap = broker.get_market_snapshot(all_symbols)
-                if snap is not None and not snap.empty:
-                    for _, row in snap.iterrows():
-                        sym = str(row.get("symbol", ""))
-                        mid = row.get("mid")
-                        if mid is not None and not (isinstance(mid, float) and np.isnan(mid)):
-                            price_map[sym] = float(mid)
-            except Exception as exc:
-                # Previously `pass`. A swallowed snapshot error left `price_map`
-                # empty, and the valuation loop below then added exactly zero
-                # for every held position -- collapsing the portfolio value to
-                # cash with nothing in the log to say so.
-                logger.error(
-                    "Market snapshot failed for %d symbol(s): %r — held positions may be unmarkable",
-                    len(all_symbols),
-                    exc,
-                )
-
-        def get_price(asset: str) -> float | None:
-            return price_map.get(asset)
+        # The marked book: positions, quote cash and one snapshot of marks for
+        # the targets and the held names (quantbox.trade.book).
+        book = read_book(broker, wanted=weights.keys(), exclude=exclusions, cash=(stable_coin, "USD"))
+        cash_available = float(book.cash or 0.0)
 
         # Portfolio value. `broker.get_equity()` is preferred where the broker
         # has one (for derivatives, cash + sum(qty * price) is wrong for
-        # shorts); otherwise the book is marked here. Either way an unmarkable
+        # shorts); otherwise the book is marked. Either way an unmarkable
         # holding is a REFUSAL in live mode, never a silently smaller number --
-        # see quantbox.portfolio_value.
-        valuation = resolve_portfolio_value(
+        # see quantbox.trade.book.
+        valuation = book.valuation(
             broker=broker,
             mode=mode,
-            cash=cash_available,
-            holdings=current_holdings,
-            get_price=get_price,
             # This path marks a spot/cash book, so an undeclared broker in a
             # SIMULATION keeps being valued the way it always was here. On live
             # an undeclared broker refuses.
@@ -1893,15 +1758,14 @@ class TradingPipeline:
         # Target positions
         target_positions: dict[str, float] = {}
         for asset, weight in adjusted_weights.items():
-            p = get_price(asset)
-            if p is not None and p > 0:
+            p = book.mark(asset)
+            if p is not None:
                 target_positions[asset] = (total_value * weight) / p
 
         # Rebalancing DataFrame
         rebalancing_df = self._build_rebalancing(
-            current_holdings=current_holdings,
+            book=book,
             target_positions=target_positions,
-            get_price=get_price,
             total_value=total_value,
             strategy_weights=adjusted_weights,
             exclusions=exclusions,
@@ -1929,9 +1793,8 @@ class TradingPipeline:
 
     def _build_rebalancing(
         self,
-        current_holdings: dict[str, float],
+        book: MarkedBook,
         target_positions: dict[str, float],
-        get_price: Callable[[str], float | None],
         total_value: float,
         strategy_weights: dict[str, float],
         exclusions: list[str],
@@ -1939,17 +1802,20 @@ class TradingPipeline:
         """Build the rebalancing analysis DataFrame.
 
         Ported from quantlab ``orders.py:generate_rebalancing_dataframe()``.
+        Values come from the marked book. A held name with no mark has an
+        UNKNOWN current value and weight (NaN), never 0 (TOM-1455).
         """
+        current_holdings = book.held
         assets = sorted(set(current_holdings.keys()) | set(target_positions.keys()))
         assets = [a for a in assets if a not in exclusions]
 
         rows: list[dict[str, Any]] = []
         for asset in assets:
             current_qty = current_holdings.get(asset, 0.0)
-            price = get_price(asset)
-            current_value = current_qty * price if price else 0
+            price = book.mark(asset)
+            current_value = nan_if_unknown(book.value_of(asset))
             target_qty = target_positions.get(asset, 0.0)
-            target_value = target_qty * price if price else 0
+            target_value = nan_if_unknown(book.value_of(asset, target_qty))
             current_weight = current_value / total_value if total_value > 0 else 0
             target_weight = target_value / total_value if total_value > 0 else 0
             weight_delta = strategy_weights.get(asset, 0) - current_weight
@@ -2020,6 +1886,14 @@ class TradingPipeline:
             if action == "hold" or delta_qty == 0:
                 status = "Zero delta"
                 reason = "No trade needed"
+            elif price is None or pd.isna(price) or price == 0:
+                # No mark: the held name's value and weight are UNKNOWN (NaN, the
+                # marked book), so no threshold, notional or scaling can judge
+                # it. Before TOM-1455 its weight read as 0 -- a short slipped into
+                # buy scaling with a NaN price, and a long close was "To be
+                # placed" at a NaN price.
+                status = "Zero price"
+                reason = "No price available"
             else:
                 zero_target_sell = (
                     action == "sell" and row.get("Target Weight", 0) == 0 and row.get("Current Quantity", 0) > 0
@@ -2323,7 +2197,7 @@ class TradingPipeline:
         # Keep only exposure-reducing orders (clamped so they never cross zero).
         if gate_reduce_only and isinstance(executable, pd.DataFrame) and not executable.empty:
             before_n = len(executable)
-            executable = self._filter_reduce_only(executable, broker)
+            executable = filter_reduce_only(executable, broker)
             report["recon_gated"] = "flatten"
             logger.warning(
                 "RECON ENFORCE: reduce-only gate — %d of %d order(s) retained (exposure-reducing only).",
@@ -3086,714 +2960,6 @@ class TradingPipeline:
 
         self._report_order_failures(report)
         return report
-
-    # ==================================================================
-    # Reconciliation context + PRE-EXECUTION gate (issue #90)
-    # ==================================================================
-    # ==================================================================
-    # Working orders left resting at the venue (cross-cycle resolution)
-    # ==================================================================
-    # Retention cap for the queue; rationale lives with the constant in
-    # ``reconciliation.working_orders``.
-    _WORKING_MAX_AGE_DAYS = DEFAULT_MAX_AGE_DAYS
-
-    def _working_store(self, params: dict[str, Any]) -> Any:
-        """Build the per-book working-order queue, or None when unidentifiable.
-
-        Needs a ``book_key`` to namespace the queue — the same key the token
-        policy store and the reconciliation ledger use. Without one there is no
-        safe per-book path, so we return None and let the caller say so loudly
-        rather than silently share one queue between books.
-        """
-        from quantbox.reconciliation.working_orders import WorkingOrderStore
-
-        recon = params.get("reconciliation") or {}
-        book_key = str(params.get("book_key") or recon.get("book_key") or "")
-        if not book_key:
-            logger.warning(
-                "No book_key configured — orders left working at the venue cannot be "
-                "queued for resolution, and a late fill will not be booked automatically"
-            )
-            return None
-        root = str(recon.get("data_dir") or params.get("data_dir") or "data")
-        return WorkingOrderStore(book_key=book_key, root=root)
-
-    def _resolve_working_orders(self, store: Any, broker: BrokerPlugin, ledger: Any = None) -> list[dict[str, Any]]:
-        """Stage 6c: ask the venue what became of orders a previous cycle left working.
-
-        Thin delegate. The semantics — unreadable venue keeps the order queued,
-        still-working keeps it, terminal books it against the carried order_ref,
-        past the cap drops it loudly — live in
-        :func:`quantbox.reconciliation.working_orders.resolve_working_orders`,
-        which the out-of-cycle follow-up job calls too. Returns the orders that
-        reached a terminal state this cycle.
-        """
-        from quantbox.reconciliation.working_orders import resolve_working_orders
-
-        return resolve_working_orders(
-            store,
-            broker,
-            ledger=ledger,
-            max_age_days=self._WORKING_MAX_AGE_DAYS,
-        ).resolved
-
-    def _recon_load(self, params: dict[str, Any], run_id: str, asof: str) -> _ReconCtx | None:
-        """Parse the `reconciliation` config block ONCE and build the per-cycle
-        context (tolerances, ledger, persisted state, state machine).
-
-        Returns ``None`` when no `reconciliation` block is present (no-op default).
-        Raises on a bad config (bad tolerance key, unsafe book_key) — callers guard
-        it so a recon fault is never fatal to the trading run.
-
-        ENFORCE IS TOM-GATED. ``mode="enforce"`` is honored ONLY when the book
-        config also carries ``enforce_acknowledged: true`` — an explicit, auditable
-        opt-in that no casual config flip satisfies. Absent the acknowledgment,
-        enforce is refused and forced back to observe (``enforce_refused=True``), so
-        a book can never silently start gating live capital. Enabling enforce on a
-        live book remains a deliberate action (this ack + a deploy), never automatic.
-        """
-        import json
-        from pathlib import Path
-
-        from quantbox.reconciliation import (
-            BookTolerances,
-            OrderFillLedger,
-            ReconciliationStateMachine,
-            ReconState,
-        )
-
-        cfg = params.get("reconciliation")
-        if not cfg:
-            return None
-
-        book_key = str(cfg.get("book_key") or params.get("book_key") or "default")
-        root = Path(str(cfg.get("data_dir", "data")))
-        tol_cfg = dict(cfg.get("tolerances", {}))
-        # `mode` may sit at the block top-level or inside tolerances; block wins.
-        mode = str(cfg.get("mode", tol_cfg.pop("mode", "observe")))
-
-        enforce_refused = False
-        if mode == "enforce" and not bool(cfg.get("enforce_acknowledged", False)):
-            enforce_refused = True
-            logger.error(
-                "RECON [%s]: mode='enforce' requested WITHOUT enforce_acknowledged=true — "
-                "refusing to gate live capital on an unacknowledged config. Forcing OBSERVE. "
-                "Enabling enforce is a deliberate, Tom-gated action.",
-                book_key,
-            )
-            mode = "observe"
-
-        tol = BookTolerances(mode=mode, **tol_cfg)
-        # cycle_id namespaces order_refs in the ledger. A STATIC/reused cycle_id
-        # conflates old and new intents/results (ledger matching is by order_ref),
-        # which corrupts the failure/missed-fill signals the enforcement gate acts
-        # on. Under enforce we therefore IGNORE any config-supplied cycle_id and
-        # force the run-unique run_id (issue #90 review). Observe keeps the flexible
-        # config override for testing/backfills.
-        cfg_cycle = cfg.get("cycle_id")
-        if tol.is_enforce:
-            if cfg_cycle:
-                logger.warning(
-                    "RECON ENFORCE [%s]: ignoring config cycle_id %r — forcing run-unique run_id for live gating.",
-                    book_key,
-                    cfg_cycle,
-                )
-            if not run_id:
-                raise ReconEnforcementError("enforce mode requires a run-unique run_id for cycle_id; none was provided")
-            cycle_id = str(run_id)
-        else:
-            cycle_id = str(cfg_cycle or run_id or asof)
-        ledger = OrderFillLedger(book_key=book_key, root=root)
-        state_path = ledger.path.parent / "recon_state.json"
-
-        persisted: dict[str, Any] = {}
-        state_corrupt = False
-        if state_path.exists():
-            try:
-                persisted = json.loads(state_path.read_text())
-                if not isinstance(persisted, dict):
-                    raise ValueError("recon state is not a JSON object")
-            except Exception as exc:
-                state_corrupt = True
-                persisted = {}
-                logger.error("Reconciliation state at %s is unreadable/corrupt: %s", state_path, exc)
-
-        # FAIL CLOSED under enforce: the persisted state IS the enforcement
-        # authority, so a corrupt/unreadable state must NOT silently reset to
-        # NORMAL and let the next cycle trade freely. Force HALT so the book stops
-        # until Tom clears it. In observe mode a corrupt state is only an
-        # observability loss, so we fall back to a fresh NORMAL.
-        if state_corrupt and tol.is_enforce:
-            logger.error(
-                "RECON ENFORCE [%s]: corrupt persisted state — failing CLOSED to HALT until manually cleared.",
-                book_key,
-            )
-            persisted = {"state": "halt", "degraded_cycles": 0, "streaks": {}}
-
-        machine = ReconciliationStateMachine(book_key=book_key, tol=tol)
-        # Validate the persisted STATE VALUE (not just JSON well-formedness): a
-        # readable file with a bogus state like {"state": "bogus"} is just as
-        # dangerous as corrupt JSON — under enforce it must fail CLOSED to HALT,
-        # never silently fall back to the default NORMAL and permit trading.
-        raw_state = persisted.get("state", "normal")
-        try:
-            machine.state = ReconState(raw_state)
-        except (ValueError, KeyError):
-            if tol.is_enforce:
-                logger.error(
-                    "RECON ENFORCE [%s]: invalid persisted state value %r — failing CLOSED to HALT.",
-                    book_key,
-                    raw_state,
-                )
-                machine.state = ReconState.HALT
-            else:
-                logger.warning("Reconciliation state value %r invalid — resetting to NORMAL (observe).", raw_state)
-                machine.state = ReconState.NORMAL
-        try:
-            machine.degraded_cycles = int(persisted.get("degraded_cycles", 0))
-        except (TypeError, ValueError):
-            machine.degraded_cycles = 0
-
-        return _ReconCtx(
-            book_key=book_key,
-            root=root,
-            tol=tol,
-            cycle_id=cycle_id,
-            mode=mode,
-            enforce_refused=enforce_refused,
-            ledger=ledger,
-            machine=machine,
-            state_path=state_path,
-            persisted=persisted,
-        )
-
-    def _enforce_requested(self, params: dict[str, Any]) -> bool:
-        """True iff the config asks for acknowledged enforce, WITHOUT loading the
-        ledger. Used to decide fail-open vs fail-closed when `_recon_load` itself
-        raised (so we cannot trust its parsed mode)."""
-        cfg = params.get("reconciliation")
-        if not isinstance(cfg, dict):
-            return False
-        tol_cfg = cfg.get("tolerances")
-        tol_mode = tol_cfg.get("mode") if isinstance(tol_cfg, dict) else None
-        mode = str(cfg.get("mode", tol_mode or "observe"))
-        return mode == "enforce" and bool(cfg.get("enforce_acknowledged", False))
-
-    def _recon_preflight(self, ctx: _ReconCtx, broker: BrokerPlugin | None) -> dict[str, Any]:
-        """Compute the PRE-EXECUTION gate from the PERSISTED (prior-cycle) state.
-
-        This is the real enforcement touchpoint (issue #90): the state machine
-        persisted the outcome of the PREVIOUS cycle, and we read it back HERE,
-        before this cycle's orders are constructed/executed. A HALT persisted last
-        cycle blocks all orders now; a FLATTEN persisted last cycle makes this
-        cycle reduce-only. Because the decision is durable state consumed strictly
-        before execution, enforcing it is real safety, not the post-execution false
-        safety #87 rejected.
-
-        The gate is only APPLIED in enforce mode; observe mode computes it for the
-        record (``applied=False``) and changes no orders.
-        """
-        from quantbox.reconciliation import preflight_gate
-
-        orders_allowed, reduce_only = preflight_gate(ctx.machine.state)
-        enforced = ctx.tol.is_enforce
-        applied = bool(enforced and (not orders_allowed or reduce_only))
-        note = {
-            "gate_from_state": ctx.machine.state.value,
-            "orders_allowed": orders_allowed,
-            "reduce_only": reduce_only,
-            "enforced": enforced,
-            "applied": applied,
-        }
-        if applied:
-            action = "HALT (no new orders)" if not orders_allowed else "FLATTEN (reduce-only)"
-            msg = (
-                f"🛑 RECON ENFORCE [{ctx.book_key}] PRE-EXECUTION gate from prior state "
-                f"'{ctx.machine.state.value}': {action}. This cycle's orders are gated BEFORE execution."
-            )
-            logger.error(msg)
-            self._alert(msg, site="recon_preflight")
-        elif enforced:
-            logger.info(
-                "RECON ENFORCE [%s] preflight: prior state '%s' permits normal trading.",
-                ctx.book_key,
-                ctx.machine.state.value,
-            )
-        return note
-
-    def _filter_reduce_only(self, executable: pd.DataFrame, broker: BrokerPlugin | None) -> pd.DataFrame:
-        """Keep only orders that REDUCE existing exposure, clamped so they never
-        flip a position past zero. Used by the FLATTEN gate.
-
-        An order reduces |position| iff its signed delta opposes the current
-        signed position. Opening/increasing legs are dropped; a reducing leg is
-        clamped to at most the current position magnitude. Fails SAFE: if we cannot
-        read positions, we drop everything (send nothing) rather than risk opening.
-        """
-        positions: dict[str, float] = {}
-        get_positions = getattr(broker, "get_positions", None)
-        if callable(get_positions):
-            try:
-                pos = get_positions()
-                if pos is not None and len(pos) > 0:
-                    for _, r in pos.iterrows():
-                        positions[str(r.get("symbol", ""))] = float(r.get("qty", 0) or 0)
-            except Exception as exc:  # fail safe: no positions → reduce nothing
-                logger.warning("Reduce-only gate could not read positions (dropping all orders): %s", exc)
-                return executable.iloc[0:0]
-        else:
-            logger.warning("Reduce-only gate: broker exposes no get_positions — dropping all orders (fail safe).")
-            return executable.iloc[0:0]
-
-        kept: list[Any] = []
-        for _, row in executable.iterrows():
-            sym = str(row.get("Asset", ""))
-            action = str(row.get("Action", "")).strip().lower()
-            qty = float(row.get("Adjusted Quantity", 0) or 0)
-            cur = positions.get(sym, 0.0)
-            if qty <= 0 or cur == 0:
-                continue
-            # FAIL CLOSED: only a recognised buy/sell can be judged reduce-or-not.
-            # An unknown action under a FLATTEN gate must be DROPPED, never assumed
-            # to be exposure-reducing (assuming sell could send an opening order).
-            if action not in ("buy", "sell"):
-                logger.warning(
-                    "Reduce-only gate: dropping order with unrecognised action %r for %s (fail closed).",
-                    action,
-                    sym,
-                )
-                continue
-            delta = qty if action == "buy" else -qty
-            # Reduces only if the order's signed delta opposes the current position.
-            if (delta > 0) == (cur > 0):
-                continue
-            new_qty = min(qty, abs(cur))  # clamp: never cross zero
-            if new_qty <= 0:
-                continue
-            r = row.copy()
-            r["Adjusted Quantity"] = new_qty
-            # Exposure-reducing under a FLATTEN gate, i.e. an emergency exit. Mark
-            # reduce_only so the broker sends reduceOnly: the venue exempts a
-            # sub-min close from its min-notional floor and it can never flip
-            # through zero. Without this the gate's own exits could be rejected as
-            # ordinary sub-min orders (quantbox#87 / #138 review).
-            r["reduce_only"] = True
-            kept.append(r)
-        return pd.DataFrame(kept) if kept else executable.iloc[0:0]
-
-    # ==================================================================
-    # Stage 7b helper: reconciliation ledger + break enforcement (#87, #90)
-    # ==================================================================
-    def _run_reconciliation(self, **kwargs: Any) -> dict[str, Any]:
-        """Guarded wrapper: reconciliation must NEVER crash the trading run.
-
-        This runs AFTER orders have already executed. A config typo, a bad
-        tolerance key, a permission/disk-full error on the ledger write, or any
-        other fault inside the reconciliation layer must not abort the run and
-        lose the run's artifacts. On any failure we log, surface an `error` note,
-        and return — observe mode changes no orders, so a recon crash is strictly
-        an observability loss, never a trading fault.
-        """
-        try:
-            return self._run_reconciliation_impl(**kwargs)
-        except ReconEnforcementError:
-            # CRITICAL under enforce (e.g. unwritable enforcement authority): must
-            # NOT be swallowed. Let it escape and fail the run so the book stops,
-            # rather than completing "successfully" while the next cycle trades from
-            # stale/absent enforcement state. The impl already alerted hard.
-            raise
-        except Exception as exc:  # noqa: BLE001 - ordinary recon faults are never fatal
-            logger.error("Reconciliation stage failed (non-fatal to the run): %s", exc)
-            return {"error": str(exc)}
-
-    def _run_reconciliation_impl(
-        self,
-        *,
-        params: dict[str, Any],
-        broker: BrokerPlugin | None,
-        final_weights: dict[str, float],
-        orders_df: pd.DataFrame,
-        execution_report: dict[str, Any],
-        portfolio_value: float,
-        stable_coin: str,
-        asof: str,
-        run_id: str,
-        intent_captured: bool = False,
-    ) -> dict[str, Any]:
-        """Evaluate the break state machine against the order/fill ledger.
-
-        Observe by default (default mode); ``enforce`` is Tom-gated (see
-        :meth:`_recon_load`). This stage classifies breaks and computes the
-        NORMAL→DEGRADED→HALT/FLATTEN transition, logs/alerts, and PERSISTS the
-        resulting state. The persisted state is what the NEXT cycle's
-        pre-execution gate (:meth:`_recon_preflight`) reads back — that
-        persist-then-read is the real enforcement path (issue #90). No-op unless a
-        `reconciliation` config block is present.
-
-        Authority rule: exchange = truth for holdings (drift/phantom are computed
-        against the broker's real positions); the ledger = the intent record
-        (surfaces a submitted order that produced no fill).
-
-        LEDGER SOURCE (issue #90): when the execution stage captured intent at the
-        broker submission call (the crash-durable path — `ledger` was threaded into
-        ``_execute_orders``), this stage READS those records back rather than
-        reconstructing them, so the audit trail reflects the exact submission path.
-        When intent was NOT pre-captured (e.g. a direct unit-test call, or a run
-        where execution recorded nothing), it falls back to reconstructing intent +
-        result from ``orders_df`` / ``execution_report`` so observe-mode shadow
-        detection still works.
-        """
-        from collections import defaultdict
-
-        from quantbox.reconciliation import KIND_INTENT, classify_breaks
-
-        ctx = self._recon_load(params, run_id, asof)
-        if ctx is None:
-            return {}
-
-        book_key = ctx.book_key
-        tol = ctx.tol
-        cycle_id = ctx.cycle_id
-        ledger = ctx.ledger
-        machine = ctx.machine
-        state_path = ctx.state_path
-        persisted = ctx.persisted
-        enforce_refused = ctx.enforce_refused
-
-        # Failed/zero-fill counting for the consecutive-failure break class.
-        # `attempted_syms` = every symbol we submitted an intent for THIS cycle;
-        # only these keep/accrue a streak, so a symbol that is simply no longer
-        # traded cannot leave a stale streak that falsely escalates to HALT.
-        this_cycle_failed: dict[str, int] = {}
-        filled_syms: set[str] = set()
-        attempted_syms: set[str] = set()
-        missed_fills: list[str] = []
-
-        # Did the execution stage already capture intent at submission for THIS
-        # cycle? The caller (run()) says so explicitly via `intent_captured` — we do
-        # NOT infer it from the presence of same-cycle_id intents, because a bare
-        # cycle_id can be reused across cycles. When capture was active we ALWAYS
-        # read the ledger back (never reconstruct), so a HALTED cycle that submitted
-        # nothing correctly reads as zero attempts rather than re-recording orders
-        # that were never sent.
-        already_captured = bool(intent_captured)
-
-        if already_captured:
-            # --- Read the submission-time-captured ledger (authoritative) ---
-            matched = ledger.match_intents_to_results()
-            for _ref, slot in matched.items():
-                intent = slot.get("intent")
-                if intent is None or str(intent.get("cycle_id")) != cycle_id:
-                    continue
-                sym = str(intent.get("symbol", ""))
-                attempted_syms.add(sym)
-                result = slot.get("result")
-                status = str(result.get("status")).lower() if result else None
-                if status in ("filled", "partial"):
-                    filled_syms.add(sym)
-                elif status in NON_TERMINAL_RESULT_STATUSES:
-                    # `working`: accepted and still live on the book. `unknown`:
-                    # unconfirmed but queued for resolution (TOM-1336). Neither is
-                    # a fill (nothing confirmed executed) nor a missed fill
-                    # (nothing is known to have gone wrong) -- so it must touch
-                    # neither `filled_syms` nor the failure streak. Stage 6c
-                    # resolves it against the venue next cycle and records the
-                    # terminal result against this same ref.
-                    continue
-                elif status in ("timeout", None):
-                    # Submitted but no (real) result observed = missed fill.
-                    this_cycle_failed[sym] = this_cycle_failed.get(sym, 0) + 1
-                    missed_fills.append(sym)
-                else:  # failed / skipped / rejected / anything non-fill
-                    this_cycle_failed[sym] = this_cycle_failed.get(sym, 0) + 1
-        elif execution_report.get("recon_gated"):
-            # --- Cycle was GATED pre-execution: submit-set is NOT orders_df -----
-            # The pre-execution gate blocked orders (HALT) or filtered them
-            # (FLATTEN), so the broker never received orders_df. Reconstructing
-            # intents/results from orders_df here would fabricate ledger records for
-            # orders that were NEVER submitted — corrupting the audit trail and
-            # escalating failure/missed-fill streaks off a SAFETY GATE rather than
-            # real broker behavior. Record NOTHING; leave attempted_syms empty so no
-            # streak accrues. (This is the enforce fail-closed path where run() sets
-            # recon_ctx=None → intent_captured=False, so `already_captured` is False
-            # but nothing was actually sent.)
-            logger.info(
-                "RECON [%s]: cycle gated pre-execution (%s) — no orders submitted; "
-                "skipping ledger reconstruction (no synthetic intents/results).",
-                book_key,
-                execution_report.get("recon_gated"),
-            )
-        else:
-            # --- Reconstruction fallback: record intent + result here -------
-            details = execution_report.get("orders_details", [])
-            executable = (
-                orders_df[orders_df.get("Executable", pd.Series(dtype=bool))]
-                if isinstance(orders_df, pd.DataFrame) and "Executable" in orders_df.columns
-                else orders_df
-            )
-            # Match results to intents by (symbol, side) CONSUMING each result once,
-            # so N same-(symbol, side) orders in a cycle can't all bind to the first
-            # result (duplicating a fill or masking a missed one).
-            details_pool: dict[tuple[str, str], list[dict]] = defaultdict(list)
-            for d in details:
-                k = (str(d.get("symbol", "")), str(d.get("side", d.get("action", ""))).lower())
-                details_pool[k].append(d)
-
-            if isinstance(executable, pd.DataFrame) and not executable.empty:
-                for i, (_, row) in enumerate(executable.iterrows()):
-                    sym = str(row.get("Asset", ""))
-                    side = str(row.get("Action", "")).lower()
-                    attempted_syms.add(sym)
-                    order_ref = f"{cycle_id}:{i}:{sym}:{side}"
-                    ledger.record_intent(
-                        cycle_id=cycle_id,
-                        symbol=sym,
-                        side=side,
-                        order_ref=order_ref,
-                        target_qty=_safe_float(row.get("Adjusted Quantity")),
-                        target_wt=final_weights.get(sym),
-                        limit_px=_safe_float(row.get("Price")),
-                    )
-                    pool = details_pool.get((sym, side))
-                    match = pool.pop(0) if pool else None
-                    if match is not None:
-                        status = str(match.get("status", "failed")).upper()
-                        if str(match.get("fill_status", "")).upper() == "UNKNOWN" and match.get("queued"):
-                            # Unconfirmed but queued for next-cycle resolution: the
-                            # same non-terminal rule as the captured path (TOM-1336).
-                            status = "UNKNOWN"
-                        ledger.record_result(
-                            order_ref=order_ref,
-                            cycle_id=cycle_id,
-                            status=status.lower(),
-                            filled_qty=_safe_float(match.get("executed_quantity")),
-                            avg_px=_safe_float(match.get("executed_price")),
-                        )
-                        if status in ("FILLED", "PARTIAL"):
-                            filled_syms.add(sym)
-                        elif status.lower() in NON_TERMINAL_RESULT_STATUSES:
-                            # WORKING: accepted, still live on the book. UNKNOWN
-                            # (queued): unconfirmed, resolved next cycle. Neither a
-                            # fill nor a failure — the same rule as the captured-
-                            # intent path above. Without this the reconstruction
-                            # path would count every resting limit order, and every
-                            # queued unconfirmed one, as a failed order.
-                            pass
-                        else:  # FAILED / SKIPPED / anything non-fill
-                            this_cycle_failed[sym] = this_cycle_failed.get(sym, 0) + 1
-                    else:
-                        # Intent written but NO result observed = missed fill.
-                        ledger.record_result(order_ref=order_ref, cycle_id=cycle_id, status="timeout")
-                        this_cycle_failed[sym] = this_cycle_failed.get(sym, 0) + 1
-                        missed_fills.append(sym)
-
-        # --- Reconcile against external truth (holdings) -------------------
-        actual_wt: dict[str, float] = {}
-        # Held symbols whose mark is missing: their weight is UNKNOWN, not zero
-        # (TOM-1335). Reading a missing mid as 0 made a fully-held name a -100%
-        # drift, a hard break that alone sends the book to FLATTEN. They are
-        # kept out of `actual_wt` and out of the drift map, and reported.
-        unpriced: list[str] = []
-        phantom: list[str] = []
-        get_positions = getattr(broker, "get_positions", None)
-        pv = float(portfolio_value) if portfolio_value else 0.0
-        if callable(get_positions) and pv > 0:
-            try:
-                pos = get_positions()
-                if pos is not None and len(pos) > 0 and hasattr(broker, "get_market_snapshot"):
-                    # Lots summed per symbol BEFORE marking — the same rule #204
-                    # applied to the pre- and post-trade NAV. Keyed per merged row,
-                    # the last lot won; and `get_market_snapshot` emits one row per
-                    # REQUESTED element, so a duplicate request fans a merge out.
-                    # `min_count=1` keeps an all-NaN quantity NaN (unknown), not 0.
-                    held = (
-                        pd.to_numeric(pos["qty"], errors="coerce").groupby(pos["symbol"].astype(str)).sum(min_count=1)
-                    )
-                    snap = broker.get_market_snapshot(held.index.tolist())
-                    marks = pd.Series(dtype=float)
-                    if snap is not None and "mid" in snap.columns and len(snap) > 0:
-                        # One mark per symbol; `first()` takes the first non-null.
-                        marks = pd.to_numeric(snap["mid"], errors="coerce").groupby(snap["symbol"].astype(str)).first()
-                    values = held * marks.reindex(held.index)
-                    values[held == 0] = 0.0  # a flat position is known zero whatever its mark
-                    for sym, val in values.items():
-                        if pd.notna(val):
-                            actual_wt[sym] = float(val) / pv
-                        elif sym != stable_coin:
-                            unpriced.append(sym)
-            except Exception as exc:  # never let recon crash the run
-                logger.warning("Reconciliation position read failed: %s", exc)
-        unpriced.sort()
-        if unpriced:
-            logger.warning(
-                "RECON [%s]: drift UNKNOWN for %d unmarkable holding(s): %s",
-                book_key,
-                len(unpriced),
-                ", ".join(unpriced),
-            )
-
-        # Drift must be FRACTIONAL (|actual - target| / |target|), because that is
-        # what BookTolerances documents and what `max_drift=0.10` / `drift_halt=0.25`
-        # mean. The previous absolute weight delta made both tolerances wrong in
-        # opposite directions: on a book whose largest target is ~5% of equity an
-        # absolute delta can never reach 0.25 (the halt was dead), while a 30%
-        # holding against a zero target tripped FLATTEN instantly.
-        #
-        # `drift_notional_floor` keeps dust out of the signal: a $2 residual against
-        # a zero target is fractionally infinite but economically irrelevant, and a
-        # book that halts on dust is a book whose halt gets switched off.
-        drift_floor = float(getattr(tol, "drift_notional_floor", 10.0))
-        drifts: dict[str, float] = {}
-        for sym in set(final_weights) | set(actual_wt):
-            if sym == stable_coin or sym in unpriced:
-                continue
-            actual = actual_wt.get(sym, 0.0)
-            target = float(final_weights.get(sym, 0.0))
-            # Ignore positions too small to matter (both legs sub-floor in notional).
-            if pv > 0 and max(abs(actual), abs(target)) * pv < drift_floor:
-                continue
-            denom = abs(target)
-            if denom < 1e-9:
-                # No target at all: any real holding is a 100% drift (fully
-                # un-intended exposure), which is the honest fractional reading.
-                drifts[sym] = 1.0 if abs(actual) > 1e-9 else 0.0
-            else:
-                drifts[sym] = (actual - target) / denom
-
-        # Phantom = an exchange holding with no matching intent in the ledger over
-        # a RECENT window (authority rule: internal ledger is truth for intent).
-        # Scoping matters both ways: using final_weights (round-1 logic) reflags
-        # every legitimate carryover/residual as phantom; using ALL history
-        # (round-2 logic) means a name traded once can NEVER be phantom again,
-        # masking a genuine re-appearing phantom on a rotating book. So we count a
-        # holding as explained only if it was intended within the last
-        # `phantom_lookback` cycles (default 2) — recent carryover is explained, a
-        # stale reappearance is not. The current cycle's intents were just written.
-        recs = ledger.read_all()
-        cycle_order = sorted(
-            {r.get("cycle_id") for r in recs if r.get("cycle_id")},
-            key=lambda c: max((r.get("ts", "") for r in recs if r.get("cycle_id") == c), default=""),
-        )
-        recent_cycles = set(cycle_order[-max(1, tol.phantom_lookback) :])
-        intended_symbols = {
-            r.get("symbol") for r in recs if r.get("kind") == KIND_INTENT and r.get("cycle_id") in recent_cycles
-        }
-        for sym in actual_wt:
-            if sym == stable_coin:
-                continue
-            # Same dust guard as drift: a sub-floor residual is not a phantom worth
-            # flattening the book over. Every phantom is a HARD break, so without
-            # this one stray $0.30 dust position sends the book to FLATTEN.
-            if pv > 0 and abs(actual_wt.get(sym, 0.0)) * pv < drift_floor:
-                continue
-            if sym not in intended_symbols and abs(actual_wt.get(sym, 0.0)) > 1e-6:
-                phantom.append(sym)
-
-        # --- Persistent per-book state (streaks + machine state) -----------
-        # `persisted` / `state_path` / `machine` (with prior state loaded) all come
-        # from the shared _ReconCtx so the preflight gate and this evaluator agree
-        # on the same prior state. Only carry a streak forward for a symbol we
-        # ATTEMPTED again this cycle; a symbol we stopped trading has, by
-        # definition, no *consecutive* failure to escalate on (prevents a stale
-        # streak from falsely reaching HALT).
-        prior_streaks: dict[str, int] = dict(persisted.get("streaks", {}))
-        streaks: dict[str, int] = {s: n for s, n in prior_streaks.items() if s in attempted_syms}
-        for sym in filled_syms:
-            streaks.pop(sym, None)  # a fill breaks the failure streak
-        for sym, n in this_cycle_failed.items():
-            streaks[sym] = streaks.get(sym, 0) + n
-
-        breaks = classify_breaks(
-            tol=tol,
-            drifts=drifts,
-            failed_streaks=streaks,
-            phantom_symbols=phantom,
-        )
-
-        decision = machine.evaluate(breaks)
-
-        import json
-
-        state_payload = json.dumps(
-            {
-                "state": machine.state.value,
-                "degraded_cycles": machine.degraded_cycles,
-                "streaks": streaks,
-            }
-        )
-        # Atomic write (temp + fsync + os.replace): the state file is the
-        # enforcement authority, so a crash mid-persist must never leave it
-        # truncated/corrupt. Retry once on failure.
-        persist_err: Exception | None = None
-        for _attempt in range(2):
-            try:
-                _atomic_write_text(state_path, state_payload)
-                persist_err = None
-                break
-            except Exception as exc:  # noqa: BLE001
-                persist_err = exc
-        if persist_err is not None:
-            if tol.is_enforce:
-                # ENFORCE: the next cycle's gate reads this file. If we cannot
-                # persist a (possibly more severe) state, the enforcement authority
-                # is unwritable — do NOT continue silently. Alert hard and RAISE so
-                # the run surfaces as failed and the operator halts the book; a
-                # silent continue would let the next cycle trade from stale state.
-                logger.error(
-                    "RECON ENFORCE [%s]: could not persist recon state (%s) — enforcement "
-                    "authority unwritable. Raising to fail the run.",
-                    book_key,
-                    persist_err,
-                )
-                self._alert(
-                    f"🛑 <b>RECON ENFORCE [{book_key}] — state persist FAILED</b>\n"
-                    f"Could not write recon_state.json ({persist_err}). The next cycle's "
-                    "enforcement gate cannot be trusted — HALT the book and investigate disk.",
-                    site="recon_persist",
-                )
-                raise ReconEnforcementError(f"recon state persist failed under enforce: {persist_err}") from persist_err
-            logger.warning("Reconciliation state persist failed (observe): %s", persist_err)
-
-        # --- Alert (observe = log/alert only, no gating) -------------------
-        if decision.alert:
-            log_fn = logger.error if decision.to_state.value in ("halt", "flatten") else logger.warning
-            log_fn("RECON [%s] %s", book_key, decision.alert.replace("\n", " | "))
-            if decision.transitioned:
-                self._alert(decision.alert, site="recon_transition")
-
-        return {
-            "book_key": book_key,
-            "mode": decision.mode,
-            "enforced": decision.enforced,
-            # True iff a config asked for enforce WITHOUT enforce_acknowledged=true
-            # and we forced it back to observe. Surfaced so a monitor can flag a
-            # misconfigured book that believes it is gating when it is not.
-            "enforce_refused": enforce_refused,
-            # Whether the ledger for this cycle was captured at submission time
-            # (crash-durable) vs reconstructed post-execution (fallback).
-            "intent_captured_at_submission": already_captured,
-            "from_state": decision.from_state.value,
-            "to_state": decision.to_state.value,
-            "would_be_action": decision.would_be_action.value,
-            "transitioned": decision.transitioned,
-            "orders_allowed": decision.orders_allowed,
-            "reduce_only": decision.reduce_only,
-            "n_breaks": len(breaks),
-            "breaks": [
-                {
-                    "class": b.klass.value,
-                    "symbol": b.symbol,
-                    "severity": b.severity,
-                    "detail": b.detail,
-                    "recommended_action": b.recommended_action.value,
-                }
-                for b in breaks
-            ],
-            "missed_fills": missed_fills,
-            # Held symbols whose drift is UNKNOWN (no mark) — not breaks, not zero.
-            "unpriced": unpriced,
-            "ledger_path": str(ledger.path),
-        }
 
     # ==================================================================
     # Artifact payload builder (for publisher plugins)

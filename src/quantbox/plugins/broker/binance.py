@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
-from quantbox.portfolio_value import BASIS_MARK
+from quantbox.trade.book import BASIS_MARK
 
 try:
     from binance.client import Client

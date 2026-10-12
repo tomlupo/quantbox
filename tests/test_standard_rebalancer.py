@@ -14,7 +14,7 @@ import pytest
 
 from quantbox.contracts import PluginMeta
 from quantbox.plugins.rebalancing.standard_rebalancer import StandardRebalancer
-from quantbox.portfolio_value import BASIS_MARK
+from quantbox.trade.book import BASIS_MARK
 
 # ---------------------------------------------------------------------------
 # Fake broker

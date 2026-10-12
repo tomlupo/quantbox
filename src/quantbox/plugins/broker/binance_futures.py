@@ -54,8 +54,8 @@ from typing import Any
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
-from quantbox.portfolio_value import BASIS_MARGIN
 from quantbox.retry import with_retry
+from quantbox.trade.book import BASIS_MARGIN
 
 from ._fills import resolve_fill, trade_fee, trade_fee_currency
 

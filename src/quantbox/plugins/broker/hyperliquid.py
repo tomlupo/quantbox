@@ -58,8 +58,8 @@ import pandas as pd
 
 from quantbox.contracts import PluginMeta
 from quantbox.exceptions import BrokerExecutionError
-from quantbox.portfolio_value import BASIS_MARGIN
 from quantbox.retry import with_retry
+from quantbox.trade.book import BASIS_MARGIN
 
 from ._fills import STATUS_UNKNOWN, STATUS_WORKING, resolve_fill, trade_fee, trade_fee_currency
 from ._funding import net_funding, select_window

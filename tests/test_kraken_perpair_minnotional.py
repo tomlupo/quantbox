@@ -27,7 +27,7 @@ from __future__ import annotations
 import pandas as pd
 
 from quantbox.plugins.rebalancing.futures_rebalancer import FuturesRebalancer
-from quantbox.portfolio_value import BASIS_MARK
+from quantbox.trade.book import BASIS_MARK
 
 # Prices chosen so ordermin * price matches the task's stated per-pair notionals.
 _PRICES = {

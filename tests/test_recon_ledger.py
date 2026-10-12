@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from quantbox.reconciliation import KIND_INTENT, KIND_RESULT, OrderFillLedger
+from quantbox.trade.reconciliation import KIND_INTENT, KIND_RESULT, OrderFillLedger
 
 
 def _ledger(tmp_path, clock=None):
@@ -93,7 +93,7 @@ def test_book_key_cannot_escape_root(tmp_path):
     '../x' or an absolute path must be rejected, not written outside root (#88)."""
     import pytest
 
-    from quantbox.reconciliation import OrderFillLedger
+    from quantbox.trade.reconciliation import OrderFillLedger
 
     for bad in ("../evil", "..", "a/b", "/tmp/foo", "."):
         with pytest.raises(ValueError):
