@@ -88,3 +88,80 @@ def test_one_aggregation_in_src():
         for name in ("_aggregate_strategies", "_aggregate_history", "_aggregate_weights_history"):
             assert name not in source, f"{module.__name__} still has {name}"
         assert "decided_weights(" in source
+
+
+# ── through the trading pipeline's run(): the built-in path and an injected aggregator ──
+
+
+class _Store:
+    run_id = "testrun"
+
+    def __init__(self):
+        self.written: dict = {}
+
+    def put_parquet(self, name, df):
+        self.written[name] = df
+        return f"artifacts/{name}.parquet"
+
+    def put_json(self, name, obj):
+        self.written[name] = obj
+        return f"artifacts/{name}.json"
+
+
+class _Data:
+    def load_universe(self, params):
+        return pd.DataFrame({"symbol": ["BTC", "ETH"]})
+
+    def load_market_data(self, universe, asof, params):
+        return {"prices": _w(BTC=[100.0, 101.0, 102.0], ETH=[10.0, 10.5, 11.0])}
+
+
+def _strategy(name: str, frame: pd.DataFrame):
+    class _S:
+        meta = type("M", (), {"name": name})()
+
+        def run(self, *, data, params, context=None):
+            return {"weights": frame}
+
+    return _S()
+
+
+def _run_pipeline(pipe=None, **kwargs) -> dict:
+    store = _Store()
+    (pipe or trading_pipeline.TradingPipeline()).run(
+        mode="backtest",
+        asof=str(IDX[-1].date()),
+        params={"strategies": [{"name": "a", "weight": 0.6}, {"name": "b", "weight": 0.4}]},
+        data=_Data(),
+        store=store,
+        broker=None,
+        risk=[],
+        strategies=[
+            _strategy("a", _w(BTC=[0.5, 0.5, 0.5], ETH=[0.1, 0.2, 0.3])),
+            _strategy("b", _w(BTC=[-0.5, 0.0, 0.5])),
+        ],
+        **kwargs,
+    )
+    agg = store.written["aggregated_weights"]
+    return dict(zip(agg["symbol"], agg["weight"], strict=True))
+
+
+def test_the_pipeline_and_an_injected_aggregator_decide_the_same_weights():
+    built_in = _run_pipeline()
+    injected = _run_pipeline(aggregator=WeightedAverageAggregator())
+    assert built_in == pytest.approx({"BTC": 0.6 * 0.5 + 0.4 * 0.5, "ETH": 0.6 * 0.3})
+    assert injected == pytest.approx(built_in)
+
+
+def test_a_run_notifier_serves_that_run_only():
+    """TOM-1720: run(notifier=...) opens that run's channel and never sticks to the pipeline."""
+    from quantbox.trade.notifier import RecordingNotifier
+
+    pipe = trading_pipeline.TradingPipeline()
+    fake = RecordingNotifier()
+    _run_pipeline(pipe, notifier=fake)
+    assert pipe._alert("during", site="frozen") is True
+    assert fake.messages == ["during"]
+    assert pipe.notifier is None and trading_pipeline.TradingPipeline.notifier is None
+    _run_pipeline(pipe)  # the next run, no notifier: the fake is gone
+    assert pipe._alerts is None

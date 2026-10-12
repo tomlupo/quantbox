@@ -730,10 +730,11 @@ class TradingPipeline:
     )
     kind = "trading"
 
-    # The one alert channel's notifier (TOM-1720): injected as `run(notifier=...)` or
-    # by setting the attribute (a fake in tests); None reads TELEGRAM_TOKEN /
-    # TELEGRAM_CHAT_ID. Not a constructor param: no YAML can set it. Every alert
-    # goes through `_alert`, on every venue — never through the broker.
+    # The one alert channel's notifier (TOM-1720): injected per run as
+    # `run(notifier=...)`, or on an instance by setting `pipeline.notifier` (a fake in
+    # tests); None reads TELEGRAM_TOKEN / TELEGRAM_CHAT_ID. ClassVar only so it is not
+    # a constructor param that YAML could set; the class default is never assigned.
+    # Every alert goes through `_alert`, on every venue — never through the broker.
     notifier: ClassVar[Notifier | None] = None
     _alerts: ClassVar[Alerts | None] = None
 
@@ -765,10 +766,10 @@ class TradingPipeline:
     ) -> RunResult:
         if mode in ("paper", "live") and broker is None:
             raise ValueError("broker_required_for_paper_or_live")
-        # A fresh alert record per run; the channel opens on the live path below.
-        if kwargs.get("notifier") is not None:
-            self.notifier = kwargs["notifier"]
-        self._alerts = None
+        # A fresh alert record per run; the channel opens on the live path below. A
+        # `run(notifier=...)` serves THIS run only — it never sticks to the pipeline.
+        injected = kwargs.get("notifier")
+        self._alerts = Alerts(injected) if injected is not None else None
 
         # Run-state exception inputs the Tier-2 notifier consumes (issue #62):
         # API errors caught (but survived) during the run. Data-staleness and
@@ -874,22 +875,16 @@ class TradingPipeline:
         a_strat_w = store.put_parquet("strategy_weights", pd.DataFrame(strat_weights_records))
 
         # --- Stage 3: Strategy Aggregation ---
-        # Use injected aggregator if provided via kwargs, else fallback
+        # The decided weights HISTORY: the strategy runner's one aggregation (TOM-1712), or an
+        # injected aggregator's `weights` frame. The rebalancing policy reads the history
+        # (TOM-1518); orders trade to its last row.
         _aggregator = kwargs.get("aggregator")
-        # The decided weights HISTORY the rebalancing policy reads (TOM-1518); None = build it from
-        # the strategy results (the built-in aggregation), and only when the policy needs it.
-        agg_history: pd.DataFrame | None = None
         if _aggregator is not None:
             agg_data = {**market_data, "strategy_results": strategy_results}
             agg_result = _aggregator.run(data=agg_data, params=aggregator_cfg.get("params", {}))
-            final_weights = agg_result.get("simple_weights", {})
-            w_df = agg_result.get("weights", pd.DataFrame())
-            if isinstance(w_df, pd.DataFrame) and not w_df.empty:
-                agg_history = w_df
-            if not final_weights and agg_history is not None:
-                # Try extracting from weights DataFrame
-                last = agg_history.iloc[-1]
-                final_weights = {str(k): float(v) for k, v in last.items()}
+            w_df = agg_result.get("weights")
+            agg_history = w_df if isinstance(w_df, pd.DataFrame) else pd.DataFrame()
+            final_weights = agg_result.get("simple_weights") or latest_weights(agg_history)
         else:
             agg_history = decided_weights(strategy_results, params.get("strategy_weights"))
             final_weights = latest_weights(agg_history)
@@ -950,12 +945,8 @@ class TradingPipeline:
         live_book = mode not in ("backtest",) and broker is not None
         order_result: dict[str, Any] | None = None
         if not trades_every_bar(policy):
-            history = (
-                agg_history
-                if agg_history is not None
-                else decided_weights(strategy_results, params.get("strategy_weights"))
-            )
-            if history is None or history.empty:
+            history = agg_history
+            if history.empty:
                 raise ValueError(
                     f"rebalancing_policy {policy.policy!r} reads the decided weights HISTORY, and the aggregation "
                     "returned none (an injected aggregator must return a `weights` frame)"
