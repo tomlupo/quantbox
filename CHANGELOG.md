@@ -29,6 +29,28 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.13.0 (2026-10-12)
+
+### BREAKING CHANGE
+
+- the removed paths are listed in quantbox._removed.REMOVED.
+- quantbox.analysis (and analysis.dsr, analysis.hac, analysis.gates, analysis.parameter_grid) is removed: import from quantbox.inference, quantbox.gates or quantbox.sweep
+- quantbox.metrics.{newey_west_tstat, newey_west_auto_lags, hac_ols, require_finite} are removed: import them from quantbox.inference
+- quantbox.plugins.strategies._universe is removed: import from quantbox.universe
+- quantbox.plugins.datasources._utils.{MarketCapProvider, CMCMarketCapProvider, load_pit_market_cap} are removed: import MarketCapProvider and load_pit_market_cap from quantbox.market_cap
+- quantbox.plugins.datasources.local_file_data._load_pinned_dataset is removed: use quantbox.dataset.load_pinned_dataset
+- quantbox.plugins.backtesting.rsims_engine is removed: import from quantbox.engine.rsims_sim
+- quantbox.simulation.{models, engine, correlation, stress_testing} are removed: import from quantbox.montecarlo.<same name>, or from quantbox.simulation itself
+
+### Fix
+
+- **live**: a partial reduce below the venue minimum is a residual, not a sent order or a freeze (TOM-1778) (#278)
+
+### Refactor
+
+- delete pass-through code the P3+P4 design review found (TOM-1711) (#277)
+- remove the deprecated import shims (TOM-1457, 4d) (#274)
+
 ## v0.12.0 (2026-10-10)
 
 ### Feat
