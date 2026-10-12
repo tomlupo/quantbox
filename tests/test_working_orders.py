@@ -14,13 +14,17 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
-from quantbox.trade.reconciliation import working_orders as working_orders_mod
 from quantbox.trade.reconciliation.working_orders import (
-    WorkingOrderResolution,
+    DEFAULT_MAX_AGE_DAYS,
     WorkingOrderStore,
     resolve_working_orders,
 )
+
+
+def _resolve(store, broker, ledger=None):
+    """Stage 6c as the trading pipeline calls it (TOM-1455: no pipeline delegate any more)."""
+    return resolve_working_orders(store, broker, ledger=ledger, max_age_days=DEFAULT_MAX_AGE_DAYS).resolved
+
 
 # ---------------------------------------------------------------------------
 # The store
@@ -110,7 +114,7 @@ def test_a_late_fill_is_booked_and_dropped_from_the_queue(tmp_path):
     broker = _Broker({"OID1": {"status": "FILLED", "qty": 94.25, "price": 0.0897354, "error": ""}})
     ledger = _Ledger()
 
-    resolved = TradingPipeline()._resolve_working_orders(store, broker, ledger=ledger)
+    resolved = _resolve(store, broker, ledger=ledger)
 
     assert len(resolved) == 1
     assert resolved[0]["status"] == "FILLED"
@@ -128,7 +132,7 @@ def test_an_unreadable_venue_keeps_the_order_queued(tmp_path):
     store = _queued(tmp_path)
     broker = _Broker({"OID1": None})
 
-    resolved = TradingPipeline()._resolve_working_orders(store, broker)
+    resolved = _resolve(store, broker)
 
     assert resolved == []
     assert [r["order_id"] for r in store.load()] == ["OID1"]
@@ -138,7 +142,7 @@ def test_an_order_still_working_stays_queued(tmp_path):
     store = _queued(tmp_path)
     broker = _Broker({"OID1": {"status": "WORKING", "qty": 0.0, "price": 0.0, "error": "still working"}})
 
-    resolved = TradingPipeline()._resolve_working_orders(store, broker)
+    resolved = _resolve(store, broker)
 
     assert resolved == []
     assert [r["order_id"] for r in store.load()] == ["OID1"]
@@ -148,7 +152,7 @@ def test_a_late_failure_is_booked_as_a_failure_not_a_fill(tmp_path):
     store = _queued(tmp_path)
     broker = _Broker({"OID1": {"status": "FAILED", "qty": 0.0, "price": 0.0, "error": "canceled"}})
 
-    resolved = TradingPipeline()._resolve_working_orders(store, broker)
+    resolved = _resolve(store, broker)
 
     assert [r["status"] for r in resolved] == ["FAILED"]
     assert resolved[0]["quantity"] == 0.0
@@ -158,7 +162,7 @@ def test_a_late_failure_is_booked_as_a_failure_not_a_fill(tmp_path):
 def test_a_broker_that_cannot_resolve_leaves_the_queue_intact(tmp_path):
     store = _queued(tmp_path)
 
-    resolved = TradingPipeline()._resolve_working_orders(store, _NoResolveBroker())
+    resolved = _resolve(store, _NoResolveBroker())
 
     assert resolved == []
     assert [r["order_id"] for r in store.load()] == ["OID1"]
@@ -172,7 +176,7 @@ def test_an_order_unresolved_past_the_retention_cap_is_dropped_loudly(tmp_path, 
     broker = _Broker({"OID1": None})
 
     with caplog.at_level("ERROR"):
-        TradingPipeline()._resolve_working_orders(store, broker)
+        _resolve(store, broker)
 
     assert store.load() == []  # queue cannot grow without bound
     assert "reconcile it by hand" in caplog.text
@@ -181,7 +185,7 @@ def test_an_order_unresolved_past_the_retention_cap_is_dropped_loudly(tmp_path, 
 def test_an_empty_queue_does_not_touch_the_broker(tmp_path):
     store = WorkingOrderStore(book_key="book-a", root=tmp_path)
     broker = _Broker({})
-    assert TradingPipeline()._resolve_working_orders(store, broker) == []
+    assert _resolve(store, broker) == []
     assert broker.calls == []
 
 
@@ -191,37 +195,21 @@ def test_an_empty_queue_does_not_touch_the_broker(tmp_path):
 
 
 def test_working_store_is_none_without_a_book_key(tmp_path):
-    assert TradingPipeline()._working_store({"data_dir": str(tmp_path)}) is None
+    assert WorkingOrderStore.for_book({"data_dir": str(tmp_path)}) is None
 
 
 def test_working_store_uses_the_reconciliation_book_key_when_present(tmp_path):
-    store = TradingPipeline()._working_store({"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path)}})
+    store = WorkingOrderStore.for_book({"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path)}})
     assert store is not None
     assert store.book_key == "carver-HL"
 
 
 # ---------------------------------------------------------------------------
-# The resolver as a FUNCTION — the surface the out-of-cycle follow-up job uses.
-#
-# The pipeline tests above exercise the same code through Stage 6c's delegate,
-# which is the positive control that one implementation really serves both
-# callers: break the function and both halves of this file go red.
+# The resolver as a FUNCTION — the surface the out-of-cycle follow-up job uses,
+# and the one Stage 6c calls. The pipeline delegate these tests once went
+# through (`TradingPipeline._resolve_working_orders`) is gone (TOM-1455): there
+# is no second door to pin, so its delegation test went with it.
 # ---------------------------------------------------------------------------
-
-
-def test_the_pipeline_stage_delegates_to_the_shared_function(monkeypatch, tmp_path):
-    """No second copy of the semantics: Stage 6c is a call, not a reimplementation."""
-    calls = []
-
-    def _spy(store, broker, *, ledger=None, max_age_days=7, now=None):
-        calls.append((store, broker, ledger, max_age_days))
-        return WorkingOrderResolution(queued=0, checked=True)
-
-    monkeypatch.setattr(working_orders_mod, "resolve_working_orders", _spy)
-    store = _queued(tmp_path)
-    assert TradingPipeline()._resolve_working_orders(store, _Broker({}), ledger=None) == []
-    assert len(calls) == 1
-    assert calls[0][3] == TradingPipeline._WORKING_MAX_AGE_DAYS
 
 
 def test_every_queued_order_lands_in_exactly_one_bucket(tmp_path):

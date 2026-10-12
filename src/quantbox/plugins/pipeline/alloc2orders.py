@@ -16,9 +16,8 @@ from quantbox.run_history import resolve_latest_artifact
 from quantbox.trade.book import (
     BASIS_MARK,
     DEFAULT_RECONCILIATION_TOLERANCE,
+    MarkedBook,
     PortfolioValuation,
-    resolve_portfolio_value,
-    value_holdings,
 )
 
 logger = logging.getLogger(__name__)
@@ -111,7 +110,7 @@ def _usd_marks(pos: pd.DataFrame) -> dict[str, float]:
     """Per-unit USD mark per symbol, NaN where the price is unknown.
 
     A duplicated symbol keeps the LAST row's mark, which is correct: a per-unit
-    price does not accumulate. Quantities do — see :func:`_summed_holdings`.
+    price does not accumulate. Quantities do — see :func:`_by_symbol`.
     """
     return dict(
         zip(
@@ -122,25 +121,19 @@ def _usd_marks(pos: pd.DataFrame) -> dict[str, float]:
     )
 
 
-def _summed_holdings(pos: pd.DataFrame) -> dict[str, float]:
-    """Total quantity per symbol, ADDING duplicate rows.
+def _by_symbol(pos: pd.DataFrame) -> pd.DataFrame:
+    """The POSITIONS frame (``symbol``, ``qty``) in symbol order, for the marked book.
 
-    A plain ``dict(zip(...))`` keeps only the last row, where the ``value_usd``
-    sum this replaced added them — so a position reported across two rows (two
-    accounts, two lots) silently lost all but one, understating the book. That
-    is the same defect class this module exists to close, so it is summed here.
+    The book (:meth:`quantbox.trade.book.MarkedBook.of`) ADDS duplicate rows —
+    two accounts, two lots — and keeps an all-NaN quantity NaN. The stable sort
+    keeps each symbol's lots in their order and marks the book in symbol order,
+    as this pipeline always did.
 
-    ``min_count=1`` is load bearing: a bare ``.sum()`` returns **0.0** for an
-    all-NaN group, which would turn a quantity nobody could read into a position
-    worth nothing and hide it from ``value_holdings``' non-finite branch. With
-    it the NaN survives, reaches that branch, and refuses a live run.
-
-    Call this on the POSITIONS frame, before any merge with allocations: a
+    Take it from the POSITIONS frame, before any merge with allocations: a
     duplicated symbol on the allocations side fans a left-merge out and summing
     afterwards double-counts the position.
     """
-    grouped = pos.groupby("symbol", as_index=False)["qty"].sum(min_count=1)
-    return dict(zip(grouped["symbol"], grouped["qty"].astype(float), strict=False))
+    return pos[["symbol", "qty"]].sort_values("symbol", kind="stable")
 
 
 def _fx_rate_to_usd(fx: pd.DataFrame | None, ccy: str) -> float:
@@ -393,7 +386,7 @@ class AllocationsToOrdersPipeline:
         # out into several rows carrying the same position, and summing after
         # that double-counts it -- overstating NAV and oversizing live targets,
         # which is worse than the under-count this summing exists to fix.
-        holdings = _summed_holdings(pos)
+        held_positions = _by_symbol(pos)
 
         pos = pos.merge(alloc[["symbol", "price", "multiplier", "currency"]], on="symbol", how="left")
         # A held symbol that is not in today's allocations has NO price here.
@@ -406,18 +399,13 @@ class AllocationsToOrdersPipeline:
         pos["currency"] = pos["currency"].fillna("USD").astype(str)
         pos["fx_to_usd"] = pos["currency"].apply(lambda c: _fx_rate_to_usd(fx, c)).astype(float)
 
-        pos_price_usd = _usd_marks(pos)
+        # The marked book: the summed positions, USD cash, and a per-unit USD
+        # mark per held symbol from today's allocations (price * multiplier * fx).
+        book = MarkedBook.of(positions=held_positions, cash=cash_usd, marks=_usd_marks(pos))
 
-        def _held_price(symbol: str) -> float | None:
-            px = pos_price_usd.get(symbol)
-            return None if px is None or not np.isfinite(px) else float(px)
-
-        valuation = resolve_portfolio_value(
+        valuation = book.valuation(
             broker=broker,
             mode=mode,
-            cash=cash_usd,
-            holdings=holdings,
-            get_price=_held_price,
             # Allocations carry a per-unit USD mark (price * multiplier * fx), so
             # this path is mark-to-market. That stays the answer for a SIMULATION
             # against an undeclared broker; on live an undeclared broker refuses.
@@ -582,14 +570,14 @@ class AllocationsToOrdersPipeline:
                     pos2["qty"] = pos2["qty"].astype(float)
 
                     # BEFORE the merge, exactly as the pre-trade path does and
-                    # as `_summed_holdings`' own docstring requires. Summing
+                    # as `_by_symbol`'s docstring requires. Summing
                     # AFTER a left-merge with `alloc` double-counts a position
                     # whenever the allocations file carries a duplicated symbol
                     # — the merge fans one position out into several rows each
                     # holding the full quantity — and nothing in this pipeline
                     # de-duplicates `alloc`. That overstates the NAV written to
                     # `portfolio_daily` by a multiple of the held quantity.
-                    post_holdings = _summed_holdings(pos2)
+                    post_positions = _by_symbol(pos2)
 
                     pos2 = pos2.merge(alloc[["symbol", "price", "multiplier", "currency"]], on="symbol", how="left")
                     # NOT `fillna(0.0)`: that is the defect this change exists to
@@ -602,12 +590,8 @@ class AllocationsToOrdersPipeline:
                     pos2["currency"] = pos2["currency"].fillna("USD").astype(str)
                     pos2["fx_to_usd"] = pos2["currency"].apply(lambda c: _fx_rate_to_usd(fx, c)).astype(float)
 
-                    post_marks = _usd_marks(pos2)
-                    post_valuation = value_holdings(
-                        cash=cash_usd_post,
-                        holdings=post_holdings,
-                        get_price=lambda s: post_marks.get(s),
-                    )
+                    post_book = MarkedBook.of(positions=post_positions, cash=cash_usd_post, marks=_usd_marks(pos2))
+                    post_valuation = post_book.marked()
                     portfolio_value_usd_post = float(post_valuation.value)
                     if post_valuation.unpriced:
                         logger.error(

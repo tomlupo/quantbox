@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from quantbox.plugins.pipeline.alloc2orders import _summed_holdings, _usd_marks
+from quantbox.plugins.pipeline.alloc2orders import _usd_marks
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline, _valuation_metrics, _valuation_notes
 from quantbox.plugins.rebalancing.futures_rebalancer import FuturesRebalancer
 from quantbox.plugins.rebalancing.standard_rebalancer import StandardRebalancer
@@ -38,6 +38,7 @@ from quantbox.trade.book import (
     REASON_MISMATCH,
     REASON_UNKNOWN_BASIS,
     REASON_UNPRICED,
+    MarkedBook,
     PortfolioValuationError,
     is_gated,
     resolve_portfolio_value,
@@ -1535,6 +1536,8 @@ class TestKrakenEquity:
 # ======================================================================
 # 10. alloc2orders NAV helpers -- the number written to portfolio_daily
 # ======================================================================
+# The lot summing moved into the marked book (TOM-1455): alloc2orders builds a
+# MarkedBook from its positions frame, so these cases are asked of the book.
 
 
 class TestAllocationNavHelpers:
@@ -1542,21 +1545,21 @@ class TestAllocationNavHelpers:
         """Two lots / two accounts for one symbol. ``dict(zip(...))`` kept the
         LAST row, where the ``value_usd`` sum it replaced added them."""
         pos = pd.DataFrame({"symbol": ["AAPL", "AAPL", "MSFT"], "qty": [10.0, 5.0, 2.0]})
-        assert _summed_holdings(pos) == {"AAPL": 15.0, "MSFT": 2.0}
+        assert MarkedBook.of(positions=pos).positions == {"AAPL": 15.0, "MSFT": 2.0}
 
     def test_an_all_nan_quantity_stays_nan_rather_than_becoming_zero(self):
         """``min_count=1`` is load bearing: a bare ``.sum()`` returns 0.0 for an
         all-NaN group, turning an unreadable quantity into a position worth
         nothing and hiding it from the non-finite branch."""
         pos = pd.DataFrame({"symbol": ["X", "X"], "qty": [np.nan, np.nan]})
-        out = _summed_holdings(pos)
-        assert math.isnan(out["X"])
-        v = value_holdings(cash=0.0, holdings=out, get_price=_price_fn({"X": 1.0}))
+        book = MarkedBook.of(positions=pos, cash=0.0, marks={"X": 1.0})
+        assert math.isnan(book.positions["X"])
+        v = book.marked()
         assert v.unpriced == ("X",), "the NaN must survive to the refusal branch"
 
     def test_a_partially_nan_quantity_still_sums(self):
         pos = pd.DataFrame({"symbol": ["X", "X"], "qty": [np.nan, 4.0]})
-        assert _summed_holdings(pos) == {"X": 4.0}
+        assert MarkedBook.of(positions=pos).positions == {"X": 4.0}
 
     def test_duplicate_marks_keep_the_last_because_a_price_does_not_accumulate(self):
         pos = pd.DataFrame(

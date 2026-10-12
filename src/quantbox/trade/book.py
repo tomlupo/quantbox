@@ -123,6 +123,7 @@ __all__ = [
     "PortfolioValuation",
     "PortfolioValuationError",
     "is_gated",
+    "nan_if_unknown",
     "read_book",
     "resolve_portfolio_value",
     "value_holdings",
@@ -710,6 +711,11 @@ class MarkedBook:
             tolerance=tolerance,
             require_reconciliation=require_reconciliation,
         )
+
+
+def nan_if_unknown(value: float | None) -> float:
+    """A value for a frame column: ``None`` (UNKNOWN, :meth:`MarkedBook.value_of`) becomes NaN, never 0."""
+    return math.nan if value is None else float(value)
 
 
 def read_book(

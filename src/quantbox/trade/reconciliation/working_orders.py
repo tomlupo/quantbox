@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -116,6 +117,27 @@ class WorkingOrderStore:
         if not order_ids:
             return
         self.save([r for r in self.load() if str(r.get("order_id")) not in order_ids])
+
+    @classmethod
+    def for_book(cls, params: Mapping[str, Any]) -> WorkingOrderStore | None:
+        """The book's queue from the pipeline params, or ``None`` when the book is unidentifiable.
+
+        Needs a ``book_key`` to namespace the queue — the same key the token
+        policy store and the reconciliation ledger use. Without one there is no
+        safe per-book path, so this returns ``None`` and says so loudly rather
+        than silently share one queue between books. (``TradingPipeline._working_store``
+        until 0.16.0.)
+        """
+        recon = params.get("reconciliation") or {}
+        book_key = str(params.get("book_key") or recon.get("book_key") or "")
+        if not book_key:
+            logger.warning(
+                "No book_key configured — orders left working at the venue cannot be "
+                "queued for resolution, and a late fill will not be booked automatically"
+            )
+            return None
+        root = str(recon.get("data_dir") or params.get("data_dir") or "data")
+        return cls(book_key=book_key, root=root)
 
 
 # ===========================================================================
