@@ -632,7 +632,7 @@ class MarkedBook:
     ) -> MarkedBook:
         """Build a book from a positions frame (``symbol``, ``qty``) or map, and raw marks.
 
-        Lots are summed per symbol with ``min_count=1``, so an all-NaN quantity
+        Lots are summed per symbol; one unreadable (NaN) lot makes the total NaN, so a quantity
         stays NaN (unknown) instead of becoming 0.0. A mark that is not finite
         and positive is no mark.
         """
@@ -766,7 +766,7 @@ def read_book(
 
 
 def _summed_positions(positions: pd.DataFrame | Mapping[str, float] | None) -> dict[str, float]:
-    """Signed quantity per symbol, lots ADDED; an all-NaN group stays NaN (``min_count=1``)."""
+    """Signed quantity per symbol, lots ADDED; any unreadable (NaN) lot makes the total NaN."""
     if positions is None:
         return {}
     if isinstance(positions, Mapping):
@@ -789,7 +789,14 @@ def _summed_positions(positions: pd.DataFrame | Mapping[str, float] | None) -> d
     # the book in that order, and float addition is order-sensitive. The old
     # post-trade NAV of a broker without get_equity summed in SYMBOL order; it now
     # sums in venue order too, a last-ulp difference (paper/sim brokers only).
-    summed = qty.groupby(frame["symbol"].astype(str), sort=False).sum(min_count=1)
+    groups = qty.groupby(frame["symbol"].astype(str), sort=False)
+    summed = groups.sum(min_count=1)
+    # One unreadable lot makes the symbol's total UNKNOWN: `sum` skips a NaN
+    # beside a readable lot, which read [1.0, NaN] as a known 1.0 and let a live
+    # marked book size off part of a position (promotion review of v0.16.0;
+    # Tom, 2026-10-13: "Fix -> v0.16.1"). The pre-trade sites on 0.15.0 refused
+    # that input; alloc2orders and the post-trade NAV summed it.
+    summed[groups.apply(lambda q: bool(q.isna().any()))] = math.nan
     return {str(s): float(q) for s, q in summed.items()}
 
 
