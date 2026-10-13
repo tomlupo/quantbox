@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,6 +18,7 @@ from quantbox.trade.book import (
     MarkedBook,
     PortfolioValuation,
 )
+from quantbox.trade.lots import floor_to_multiple, round_to_multiple
 
 logger = logging.getLogger(__name__)
 
@@ -158,18 +158,13 @@ def _fx_rate_to_usd(fx: pd.DataFrame | None, ccy: str) -> float:
     return 1.0
 
 
-def _round_down_to_step(x: float, step: float) -> float:
-    if step <= 0:
-        return x
-    return math.floor(x / step) * step
-
-
 def _apply_qty_rules(qty: float, lot_size: float, min_qty: float, qty_step: float) -> float:
+    """The venue's lot rules on a target quantity; the rounding is :mod:`quantbox.trade.lots`."""
     q = qty
     if lot_size and lot_size > 0:
-        q = round(q / lot_size) * lot_size
+        q = round_to_multiple(q, lot_size)
     if qty_step and qty_step > 0:
-        q = _round_down_to_step(q, qty_step)
+        q = floor_to_multiple(q, qty_step)
     if min_qty and min_qty > 0 and abs(q) < min_qty:
         return 0.0
     return float(q)

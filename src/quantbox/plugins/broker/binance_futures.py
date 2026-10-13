@@ -48,7 +48,6 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from decimal import ROUND_DOWN, Decimal, getcontext
 from typing import Any
 
 import pandas as pd
@@ -56,6 +55,7 @@ import pandas as pd
 from quantbox.contracts import PluginMeta
 from quantbox.retry import with_retry
 from quantbox.trade.book import BASIS_MARGIN
+from quantbox.trade.lots import floor_to_step, round_to_decimals
 
 from ._fills import resolve_fill, trade_fee, trade_fee_currency
 
@@ -105,15 +105,11 @@ class RiskConfig:
 # ============================================================================
 
 
-def adjust_quantity(qty: float, step_size: float, precision: int = 8) -> float:
-    """Adjust quantity to Binance step size."""
+def adjust_quantity(qty: float, step_size: float) -> float:
+    """*qty* floored to the Binance step (:mod:`quantbox.trade.lots`); no step known: 8 decimals, nearest."""
     if step_size <= 0:
-        return round(qty, precision)
-    getcontext().rounding = ROUND_DOWN
-    step_str = f"{step_size:.{precision}f}".rstrip("0")
-    decimal_places = len(step_str.split(".")[-1]) if "." in step_str else 0
-    adjusted = Decimal(str(qty)).quantize(Decimal(f"1e-{decimal_places}"))
-    return float(adjusted)
+        return round_to_decimals(qty, 8)
+    return floor_to_step(qty, step_size)
 
 
 def adjust_price(price: float, tick_size: float) -> float:

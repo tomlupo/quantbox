@@ -60,6 +60,7 @@ from quantbox.contracts import PluginMeta
 from quantbox.exceptions import BrokerExecutionError
 from quantbox.retry import with_retry
 from quantbox.trade.book import BASIS_MARGIN
+from quantbox.trade.lots import amount_decimals, round_to_decimals
 
 from ._fills import STATUS_UNKNOWN, STATUS_WORKING, resolve_fill, trade_fee, trade_fee_currency
 from ._funding import net_funding, select_window
@@ -844,15 +845,12 @@ class HyperliquidBroker:
             logger.warning(f"Order notional ${notional:.2f} below minimum ${self.risk.min_order_notional}")
             return None
 
-        # Adjust quantity to precision
-        # ccxt may return precision as a float step size (e.g. 0.001)
-        # or as an int number of decimals (e.g. 3)
-        precision = market.get("precision", {}).get("amount", 8)
-        if isinstance(precision, float) and precision < 1:
-            import math
-
-            precision = max(0, -int(math.floor(math.log10(precision))))
-        quantity = round(quantity, int(precision))
+        # Adjust quantity to precision (quantbox.trade.lots). ccxt may return
+        # precision as a float step size (e.g. 0.001) or an int number of
+        # decimals (e.g. 3). Hyperliquid rounds to the NEAREST step today; the
+        # switch to round-down is TOM-1721.
+        precision = amount_decimals(market.get("precision", {}).get("amount", 8))
+        quantity = round_to_decimals(quantity, precision)
 
         if quantity <= 0:
             logger.warning(f"Quantity rounds to zero for {symbol} (precision={precision})")
