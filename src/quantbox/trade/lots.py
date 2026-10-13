@@ -63,11 +63,13 @@ def floor_to_step(qty: float, step: float) -> float:
 def amount_decimals(precision: Any) -> int:
     """A ccxt ``precision["amount"]`` as a number of decimal places.
 
-    ccxt gives either a step (a float below 1, e.g. ``0.001``) or a number of
-    decimals (e.g. ``3``). A step becomes its decimal places; anything else is
-    read as a number of decimals.
+    ccxt gives either a step (a float, e.g. ``0.001``, or ``1.0`` for a whole-unit
+    coin) or a number of decimals (an int, e.g. ``3``). A step up to 1 becomes
+    its decimal places (``1.0`` → 0); anything else is read as a number of
+    decimals. Reading ``1.0`` as one decimal left a whole-unit order off the
+    grid, and ccxt then rounded it to the nearest unit (TOM-1721).
     """
-    if isinstance(precision, float) and 0 < precision < 1:
+    if isinstance(precision, float) and 0 < precision <= 1:
         return max(0, -int(math.floor(math.log10(precision))))
     return int(precision)
 
