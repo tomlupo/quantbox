@@ -120,3 +120,14 @@ def test_a_full_close_on_the_grid_is_sent_whole(precision, units):
 @pytest.mark.parametrize(("precision", "qty"), CASES)
 def test_binance_futures_with_no_known_step_never_rounds_up(precision, qty):
     assert adjust_quantity(qty, 0.0) <= qty
+
+
+@pytest.mark.parametrize("units", [1, 2, 7, 12, 153, 9999])
+@pytest.mark.parametrize("fraction", [0.0, 0.25, 0.5, 0.7, 0.999])
+def test_a_whole_unit_step_sends_whole_units(units, fraction):
+    # ccxt (TICK_SIZE) gives a Hyperliquid coin with szDecimals 0 a step of 1.0,
+    # a float. Read as "1 decimal" the order leaves quantbox off the grid, and
+    # ccxt rounds it to the NEAREST unit on send: 12.7 goes out as 13.
+    qty = units + fraction
+    sent = _sent(1.0, qty)
+    assert sent == float(units)
