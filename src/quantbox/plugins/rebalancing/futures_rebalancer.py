@@ -35,8 +35,6 @@ from quantbox.engine.policy import TRANCHES_MOVED
 from quantbox.trade.book import (
     BASIS_MARGIN,
     DEFAULT_RECONCILIATION_TOLERANCE,
-    MarkedBook,
-    nan_if_unknown,
     read_book,
 )
 
@@ -284,8 +282,8 @@ class FuturesRebalancer:
             if p is not None:
                 target_positions[asset] = (total_value * weight) / p
 
-        rebalancing_df = self._build_rebalancing(
-            book=book,
+        # Signed quantities and values: the book's one frame builder (TOM-1859).
+        rebalancing_df = book.rebalancing_frame(
             target_positions=target_positions,
             total_value=total_value,
             strategy_weights=adjusted_weights,
@@ -309,63 +307,6 @@ class FuturesRebalancer:
             # what it could not mark, rather than only the resulting number.
             "valuation": valuation,
         }
-
-    # ------------------------------------------------------------------
-
-    def _build_rebalancing(
-        self,
-        book: MarkedBook,
-        target_positions: dict[str, float],
-        total_value: float,
-        strategy_weights: dict[str, float],
-        exclusions: list[str],
-    ) -> pd.DataFrame:
-        """Build the rebalancing analysis DataFrame with signed positions.
-
-        Values come from the marked book. A held name with no mark has an
-        UNKNOWN current value and weight (NaN), never 0 (TOM-1455).
-        """
-        current_holdings = book.held
-        assets = sorted(set(current_holdings.keys()) | set(target_positions.keys()))
-        assets = [a for a in assets if a not in exclusions]
-
-        rows: list[dict[str, Any]] = []
-        for asset in assets:
-            current_qty = current_holdings.get(asset, 0.0)
-            price = book.mark(asset)
-            # Signed current value
-            current_value = nan_if_unknown(book.value_of(asset))
-            target_qty = target_positions.get(asset, 0.0)
-            target_value = nan_if_unknown(book.value_of(asset, target_qty))
-            current_weight = current_value / total_value if total_value > 0 else 0
-            target_weight = target_value / total_value if total_value > 0 else 0
-            weight_delta = strategy_weights.get(asset, 0) - current_weight
-            delta_qty = target_qty - current_qty
-
-            if delta_qty > 0:
-                trade_action = "Buy"
-            elif delta_qty < 0:
-                trade_action = "Sell"
-            else:
-                trade_action = "Hold"
-
-            rows.append(
-                {
-                    "Asset": asset,
-                    "Current Quantity": current_qty,
-                    "Current Value": current_value,
-                    "Current Weight": current_weight,
-                    "Target Quantity": target_qty,
-                    "Target Value": target_value,
-                    "Target Weight": target_weight,
-                    "Weight Delta": weight_delta,
-                    "Delta Quantity": delta_qty,
-                    "Price": price,
-                    "Trade Action": trade_action,
-                }
-            )
-
-        return pd.DataFrame(rows)
 
     # ------------------------------------------------------------------
 
