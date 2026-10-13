@@ -29,6 +29,12 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.16.1 (2026-10-13)
+
+### Fix
+
+- **trade**: one unreadable lot makes a position's quantity unknown (TOM-1455, v0.16.0 promotion review) (#286)
+
 ## v0.16.0 (2026-10-13)
 
 ### BREAKING CHANGE
