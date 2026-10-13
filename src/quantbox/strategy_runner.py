@@ -194,7 +194,8 @@ def decided_weights(
     """The run's decided weights HISTORY (date x ticker), all strategies combined.
 
     Each strategy's weights times its account weight (``strategy_weights[name]``
-    overrides the config ``weight``), summed per ticker. A strategy that returned
+    overrides the config ``weight``), summed per ticker. A strategy with no row
+    on a date contributes 0 on that date (TOM-1844). A strategy that returned
     no weights is left out. No strategy with weights -> an empty frame. The ONE
     aggregation: the backtest reads all of it, live reads it for the rebalancing
     policy and :func:`latest_weights` of it for orders, and the weighted-average
@@ -221,6 +222,14 @@ def decided_weights(
     if len(frames) == 1:
         return frames[0] * account[0]
     combined = pd.concat(frames, axis=1, keys=names, names=["strategy"])
+    # A strategy with no row on a date contributes 0 on that date, for
+    # overlapping and disjoint tickers alike (TOM-1844). The per-ticker sum below
+    # already did this for overlapping tickers; disjoint ones kept the outer
+    # join's NaN, and latest_weights handed `nan` to live orders. Only the
+    # missing ROWS are filled: a NaN a strategy itself returned is left as it is.
+    if any(len(frame.index) != len(combined.index) for frame in frames):
+        frames = [frame.reindex(combined.index, fill_value=0.0) for frame in frames]
+        combined = pd.concat(frames, axis=1, keys=names, names=["strategy"])
     weighted = combined.mul(pd.Series(account, index=pd.Index(names, name="strategy")), level="strategy")
     flat = weighted.droplevel(0, axis=1)
     if isinstance(flat.columns, pd.MultiIndex) or flat.columns.duplicated().any():

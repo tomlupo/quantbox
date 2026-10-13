@@ -15,10 +15,17 @@ Two rules hold for every alert:
 
 The notifier is injected: :class:`TradingPipeline` takes ``notifier=`` (a fake in
 tests) and otherwise reads the environment.
+
+Every alert is sent in Telegram's HTML parse mode, so the message owns its
+``<b>`` markup and every DYNAMIC part (a venue error, a symbol, a reason, a book
+key) goes through :func:`escape_html`. One unescaped ``<`` or ``&`` makes
+Telegram answer 400 and the alert lands in ``failed`` instead of the chat
+(TOM-1843).
 """
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import os
@@ -31,6 +38,15 @@ logger = logging.getLogger(__name__)
 
 TOKEN_ENV = "TELEGRAM_TOKEN"
 CHAT_ENV = "TELEGRAM_CHAT_ID"
+
+
+def escape_html(value: Any) -> str:
+    """*value* as text that Telegram's HTML parse mode shows as written.
+
+    Escapes ``&``, ``<`` and ``>`` — the three characters Telegram's HTML parser
+    reads as markup. Quotes stay as they are: they mean nothing outside a tag.
+    """
+    return html.escape(str(value), quote=False)
 
 
 class Notifier(Protocol):
