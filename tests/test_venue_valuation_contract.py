@@ -1557,9 +1557,17 @@ class TestAllocationNavHelpers:
         v = book.marked()
         assert v.unpriced == ("X",), "the NaN must survive to the refusal branch"
 
-    def test_a_partially_nan_quantity_still_sums(self):
-        pos = pd.DataFrame({"symbol": ["X", "X"], "qty": [np.nan, 4.0]})
-        assert MarkedBook.of(positions=pos).positions == {"X": 4.0}
+    @pytest.mark.parametrize("lots", [[np.nan, 4.0], [4.0, np.nan]], ids=["nan-first", "nan-last"])
+    def test_a_partially_nan_quantity_is_unknown_not_its_readable_part(self, lots):
+        """Requirement change (Tom, 2026-10-13, promotion review of v0.16.0: "Fix -> v0.16.1").
+
+        This used to assert that [NaN, 4.0] sums to 4.0. One unreadable lot means
+        nobody knows the position, so the total is NaN and a live marked book
+        refuses, in either lot order."""
+        pos = pd.DataFrame({"symbol": ["X", "X"], "qty": lots})
+        book = MarkedBook.of(positions=pos, cash=0.0, marks={"X": 1.0})
+        assert math.isnan(book.positions["X"])
+        assert book.marked().unpriced == ("X",)
 
     def test_duplicate_marks_keep_the_last_because_a_price_does_not_accumulate(self):
         pos = pd.DataFrame(

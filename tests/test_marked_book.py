@@ -179,6 +179,22 @@ def test_an_unreadable_positions_frame_is_unknown_holdings_not_an_empty_book(row
     assert exc.value.reason == "unpriced_holdings"
 
 
+def test_a_position_with_one_unreadable_lot_refuses_a_live_run():
+    """Replay of the independent review of promotion PR #285 (v0.16.0): BTC on two lots,
+    [1.0, NaN], was summed to a known 1.0, so a live spot run sized where 0.15.0 refused."""
+
+    class _Lots(_SpotBroker):
+        def get_positions(self):
+            return pd.DataFrame({"symbol": ["BTC", "BTC"], "qty": [1.0, float("nan")]})
+
+    broker = _Lots(positions=[], marks={"BTC": 100.0}, cash={"USDC": 1000.0})
+    with pytest.raises(PortfolioValuationError) as exc:
+        StandardRebalancer().generate_orders(
+            weights={"BTC": 0.5}, broker=broker, params={"mode": "live", "stable_coin_symbol": "USDC"}
+        )
+    assert exc.value.unpriced == ("BTC",)
+
+
 def test_positions_keep_the_venue_row_order():
     """Float addition is order-sensitive: the book is marked in the order the sites marked it."""
     book = MarkedBook.of(positions=pd.DataFrame({"symbol": ["SOL", "BTC", "SOL"], "qty": [1.0, 2.0, 3.0]}))
