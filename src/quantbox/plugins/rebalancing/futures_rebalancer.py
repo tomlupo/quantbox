@@ -439,7 +439,7 @@ class FuturesRebalancer:
             #     the fees the band exists to prevent.
             #   * the `ordermin` base-unit floor — venues do NOT waive lot size or
             #     step size for reduceOnly (binance_futures.py:487 adjust_quantity,
-            #     hyperliquid.py:755 precision round, neither with a reduce_only
+            #     hyperliquid.py place_order precision floor, neither with a reduce_only
             #     escape). Exempting it would mark the row Executable, then have the
             #     broker silently return None — the exact send-and-vanish failure
             #     the floor exists to prevent.

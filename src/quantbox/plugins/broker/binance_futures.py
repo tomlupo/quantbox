@@ -55,7 +55,7 @@ import pandas as pd
 from quantbox.contracts import PluginMeta
 from quantbox.retry import with_retry
 from quantbox.trade.book import BASIS_MARGIN
-from quantbox.trade.lots import floor_to_step, round_to_decimals
+from quantbox.trade.lots import floor_to_decimals, floor_to_step
 
 from ._fills import resolve_fill, trade_fee, trade_fee_currency
 
@@ -106,9 +106,9 @@ class RiskConfig:
 
 
 def adjust_quantity(qty: float, step_size: float) -> float:
-    """*qty* floored to the Binance step (:mod:`quantbox.trade.lots`); no step known: 8 decimals, nearest."""
+    """*qty* floored to the Binance step (:mod:`quantbox.trade.lots`); no step known: floored to 8 decimals."""
     if step_size <= 0:
-        return round_to_decimals(qty, 8)
+        return floor_to_decimals(qty, 8)
     return floor_to_step(qty, step_size)
 
 

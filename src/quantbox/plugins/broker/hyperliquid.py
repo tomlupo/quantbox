@@ -60,7 +60,7 @@ from quantbox.contracts import PluginMeta
 from quantbox.exceptions import BrokerExecutionError
 from quantbox.retry import with_retry
 from quantbox.trade.book import BASIS_MARGIN
-from quantbox.trade.lots import amount_decimals, round_to_decimals
+from quantbox.trade.lots import amount_decimals, floor_to_decimals
 
 from ._fills import STATUS_UNKNOWN, STATUS_WORKING, resolve_fill, trade_fee, trade_fee_currency
 from ._funding import net_funding, select_window
@@ -847,10 +847,12 @@ class HyperliquidBroker:
 
         # Adjust quantity to precision (quantbox.trade.lots). ccxt may return
         # precision as a float step size (e.g. 0.001) or an int number of
-        # decimals (e.g. 3). Hyperliquid rounds to the NEAREST step today; the
-        # switch to round-down is TOM-1721.
+        # decimals (e.g. 3). Rounded DOWN, as on every venue (TOM-1721): an order
+        # never exceeds its target or the cash behind it. A full close stays
+        # whole: the position size the venue reports is on this grid already,
+        # and flooring an on-grid quantity returns it unchanged.
         precision = amount_decimals(market.get("precision", {}).get("amount", 8))
-        quantity = round_to_decimals(quantity, precision)
+        quantity = floor_to_decimals(quantity, precision)
 
         if quantity <= 0:
             logger.warning(f"Quantity rounds to zero for {symbol} (precision={precision})")

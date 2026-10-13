@@ -9,8 +9,8 @@ Pinned here:
 * the trapped-residual counter reads the order's DECLARED intent, never its
   side: a declined OPEN is not a stuck close (TOM-901);
 * a paper or live config without ``plugins.rebalancing`` is refused (Q4);
-* the lot rules keep each venue's behaviour (Q5): Binance floors, Hyperliquid
-  rounds to nearest.
+* the Binance lot rule floors (Q5); every venue floors since TOM-1721
+  (``test_lot_rounding_floor.py``).
 """
 
 from __future__ import annotations

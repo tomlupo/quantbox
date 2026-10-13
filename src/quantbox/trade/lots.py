@@ -3,13 +3,16 @@
 Before this module the rounding existed eight times: in the trading pipeline's
 private rebalancer, the standard rebalancer, three brokers and the
 allocations-to-orders pipeline, each a copy of the last with small drifts. Every
-caller now rounds here; WHICH rule a caller uses is still its own, because the
-rule is a fact about its venue.
+caller now rounds here; WHICH step or precision a caller uses is still its own,
+because that is a fact about its venue.
 
-**Per-venue behaviour is today's** (Tom, 2026-10-10, P5 grilling Q5): Binance
-spot, Binance futures, the spot rebalancer and Kraken's fallback floor;
-Hyperliquid rounds to the NEAREST step (:func:`round_to_decimals`). The switch
-of Hyperliquid to round-down is its own slice, TOM-1721.
+**An order quantity is rounded DOWN on every venue** (Tom, 2026-10-10, P5
+grilling Q5; TOM-1721): Binance spot, Binance futures, the spot rebalancer,
+Kraken and Hyperliquid. A rounded order never exceeds its target or the cash
+behind it. A full close is not cut short: a position size the venue reports is
+on the venue's grid, and flooring an on-grid quantity returns it unchanged.
+:func:`round_to_multiple` is not an order rule: the allocations-to-orders
+pipeline rounds a TARGET position to its lot with it.
 
 Only quantities are rounded here. Whether an order clears a venue minimum
 (``min_qty``, ``min_notional``) is decided by the caller, because the exemptions
@@ -55,11 +58,6 @@ def floor_to_step(qty: float, step: float) -> float:
     if step <= 0:
         return qty
     return floor_to_decimals(qty, step_decimals(step))
-
-
-def round_to_decimals(qty: float, decimals: int) -> float:
-    """*qty* rounded to the NEAREST *decimals* decimal places (Hyperliquid today; TOM-1721 changes it)."""
-    return round(qty, int(decimals))
 
 
 def amount_decimals(precision: Any) -> int:
