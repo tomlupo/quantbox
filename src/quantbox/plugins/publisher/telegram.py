@@ -16,6 +16,7 @@ import pandas as pd
 
 from quantbox.contracts import PluginMeta, RunResult
 from quantbox.exceptions import MissingExtraError
+from quantbox.trade.notifier import escape_html
 
 try:
     import httpx
@@ -40,14 +41,14 @@ def _format_execution_summary(
     mode_label = "Paper Trading" if paper_trading else "Live Trading"
     return (
         "<b>Trading Bot Report</b>\n"
-        f"Pipeline: <b>{pipeline_name}</b>\n\n"
+        f"Pipeline: <b>{escape_html(pipeline_name)}</b>\n\n"
         "Execution Summary\n"
         f"Total Executed: {summary.get('total_executed', 0)}\n"
         f"Total Failed: {summary.get('total_failed', 0)}\n"
         f"Total Value Traded: ${summary.get('total_value_traded', 0):,.2f}\n"
         f"Total Cost: ${summary.get('total_cost', 0):,.4f}\n"
         f"Portfolio Value: ${portfolio_value:,.2f}\n"
-        f"Mode: {mode_label} ({mode})\n"
+        f"Mode: {mode_label} ({escape_html(mode)})\n"
         f"Run completed at: {pd.Timestamp.now()}"
     )
 
@@ -58,7 +59,7 @@ def _format_portfolio_rebalancing(
 ) -> str:
     header = (
         "<b>Trading Bot Report</b>\n"
-        f"Pipeline: <b>{pipeline_name}</b>\n\n"
+        f"Pipeline: <b>{escape_html(pipeline_name)}</b>\n\n"
         "Portfolio Rebalancing\n"
         "\n"
         "<pre>"
@@ -75,7 +76,7 @@ def _format_portfolio_rebalancing(
         tgt_w = float(entry.get("target_weight", 0))
         delta_w = float(entry.get("weight_delta", 0))
         if curr_w != 0 or tgt_w != 0:
-            asset = str(entry.get("asset", ""))[:6].ljust(6)
+            asset = escape_html(str(entry.get("asset", ""))[:6].ljust(6))
             rows.append(f"{asset}{curr_w * 100:6.1f}%{tgt_w * 100:7.1f}%{delta_w * 100:+7.1f}%")
             total_curr += curr_w
             total_tgt += tgt_w
@@ -90,11 +91,11 @@ def _format_executed_orders(
     orders: list[dict[str, Any]],
     pipeline_name: str,
 ) -> str:
-    header = f"<b>Trading Bot Report</b>\nPipeline: <b>{pipeline_name}</b>\n\nExecuted Orders\n<pre>"
+    header = f"<b>Trading Bot Report</b>\nPipeline: <b>{escape_html(pipeline_name)}</b>\n\nExecuted Orders\n<pre>"
     rows: list[str] = []
     for o in orders:
-        action = str(o.get("action", "")).upper()
-        symbol = str(o.get("symbol", ""))
+        action = escape_html(str(o.get("action", "")).upper())
+        symbol = escape_html(o.get("symbol", ""))
         qty = float(o.get("quantity", o.get("executed_quantity", 0)))
         price = float(o.get("executed_price", 0))
         spread_bps = float(o.get("spread_bps", 0))
@@ -106,13 +107,13 @@ def _format_failed_orders(
     orders: list[dict[str, Any]],
     pipeline_name: str,
 ) -> str:
-    header = f"<b>Trading Bot Report</b>\nPipeline: <b>{pipeline_name}</b>\n\nFailed Orders\n<pre>"
+    header = f"<b>Trading Bot Report</b>\nPipeline: <b>{escape_html(pipeline_name)}</b>\n\nFailed Orders\n<pre>"
     rows: list[str] = []
     for o in orders:
-        action = str(o.get("action", "")).upper()
-        symbol = str(o.get("symbol", ""))
+        action = escape_html(str(o.get("action", "")).upper())
+        symbol = escape_html(o.get("symbol", ""))
         qty = float(o.get("quantity", o.get("adjusted_qty", 0)))
-        reason = str(o.get("error", o.get("reason", "Unknown")))
+        reason = escape_html(o.get("error", o.get("reason", "Unknown")))
         rows.append(f"{action}: {symbol} {qty:g} ({reason})")
     return header + "\n".join(rows) + "\n</pre>\n\n<i>quantity (reason)</i>\n"
 
@@ -235,7 +236,8 @@ class TelegramPublisher:
         # 5. New token alerts (from TokenPolicy)
         new_token_alert = notes.get("new_token_alert")
         if new_token_alert:
-            alert_msg = _convert_md_bold_to_html(new_token_alert)
+            # Escape first: the alert's own markup is the **bold** it converts.
+            alert_msg = _convert_md_bold_to_html(escape_html(new_token_alert))
             _send_telegram_message(token, chat_id, alert_msg, parse_mode="HTML")
 
         logger.info("Telegram notifications sent for %s", result.run_id)

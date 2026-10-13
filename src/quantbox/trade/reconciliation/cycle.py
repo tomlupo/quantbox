@@ -46,6 +46,7 @@ from typing import Any
 import pandas as pd
 
 from quantbox.trade.book import read_book
+from quantbox.trade.notifier import escape_html
 from quantbox.trade.reconciliation.ledger import KIND_INTENT, NON_TERMINAL_RESULT_STATUSES, OrderFillLedger
 from quantbox.trade.reconciliation.state_machine import (
     BookTolerances,
@@ -296,7 +297,7 @@ class ReconCycle:
                 f"'{self.machine.state.value}': {action}. This cycle's orders are gated BEFORE execution."
             )
             logger.error(msg)
-            alert(msg, site="recon_preflight")
+            alert(escape_html(msg), site="recon_preflight")
         elif enforced:
             logger.info(
                 "RECON ENFORCE [%s] preflight: prior state '%s' permits normal trading.",
@@ -587,8 +588,8 @@ class ReconCycle:
                     persist_err,
                 )
                 alert(
-                    f"🛑 <b>RECON ENFORCE [{book_key}] — state persist FAILED</b>\n"
-                    f"Could not write recon_state.json ({persist_err}). The next cycle's "
+                    f"🛑 <b>RECON ENFORCE [{escape_html(book_key)}] — state persist FAILED</b>\n"
+                    f"Could not write recon_state.json ({escape_html(persist_err)}). The next cycle's "
                     "enforcement gate cannot be trusted — HALT the book and investigate disk.",
                     site="recon_persist",
                 )
@@ -600,7 +601,7 @@ class ReconCycle:
             log_fn = logger.error if decision.to_state.value in ("halt", "flatten") else logger.warning
             log_fn("RECON [%s] %s", book_key, decision.alert.replace("\n", " | "))
             if decision.transitioned:
-                alert(decision.alert, site="recon_transition")
+                alert(escape_html(decision.alert), site="recon_transition")
 
         return {
             "book_key": book_key,

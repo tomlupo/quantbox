@@ -61,7 +61,7 @@ from quantbox.trade.book import (
     nan_if_unknown,
     read_book,
 )
-from quantbox.trade.notifier import Alerts, Notifier
+from quantbox.trade.notifier import Alerts, Notifier, escape_html
 from quantbox.trade.reconciliation.cycle import filter_reduce_only, open_cycle
 from quantbox.trade.reconciliation.ledger import EXEC_STATUS_TO_LEDGER
 from quantbox.trade.reconciliation.working_orders import (
@@ -2082,7 +2082,7 @@ class TradingPipeline:
             failed_list,
         )
         self._alert(
-            f"❌ <b>{n_failed} ORDER(S) FAILED</b>\n{failed_list}\n"
+            f"❌ <b>{n_failed} ORDER(S) FAILED</b>\n{escape_html(failed_list)}\n"
             "Targets NOT reached for these symbols; exposure is unchanged.",
             site="order_failures",
         )
@@ -2345,8 +2345,8 @@ class TradingPipeline:
                 )
                 self._alert(
                     f"🧊 <b>REBALANCER FROZEN — 0 of {len(orders_df)} orders executable</b>\n"
-                    f"Reasons: {reasons}\n"
-                    "Suppressed:\n" + "\n".join(f"• {line}" for line in order_lines) + "\n"
+                    f"Reasons: {escape_html(reasons)}\n"
+                    "Suppressed:\n" + "\n".join(f"• {escape_html(line)}" for line in order_lines) + "\n"
                     "Portfolio NOT rebalanced; holding stale positions. "
                     "Likely min_notional too high for account size (or stale/NaN data).",
                     site="frozen",
@@ -2888,7 +2888,7 @@ class TradingPipeline:
                     "🧊 <b>REBALANCER FROZEN — trapped residual</b>\n"
                     f"0 fills; {n_skipped_sell} close-out SELL(s) below exchange "
                     f"minimum{failed_note}; residual exposure RETAINED.\n"
-                    f"Skipped: {skipped_list}\n"
+                    f"Skipped: {escape_html(skipped_list)}\n"
                     "Book NOT rebalanced — monitor for a trapped residual.",
                     site="trapped_residual",
                 )
@@ -2905,7 +2905,7 @@ class TradingPipeline:
             # Was the one unwrapped site: a raising notify here failed the run.
             self._alert(
                 f"⚠️ <b>0 FILLS for {len(broker_orders)} orders</b>\n"
-                f"Submitted: {order_list}\n"
+                f"Submitted: {escape_html(order_list)}\n"
                 "Check broker connectivity — portfolio NOT rebalanced.",
                 site="zero_fills",
             )
