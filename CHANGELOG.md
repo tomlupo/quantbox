@@ -29,6 +29,21 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.16.0 (2026-10-13)
+
+### BREAKING CHANGE
+
+- quantbox.portfolio_value and quantbox.reconciliation raise
+ImportError; import quantbox.trade.book and quantbox.trade.reconciliation.
+- TradingPipeline._recon_load, _recon_preflight,
+_run_reconciliation, _filter_reduce_only, _working_store,
+_resolve_working_orders and ReconEnforcementError leave the pipeline module;
+use quantbox.trade.reconciliation.
+
+### Feat
+
+- **trade**: one marked book values every book; the reconciliation package owns its cycle; screen inputs stored (TOM-1455, TOM-1420) (#284)
+
 ## v0.15.0 (2026-10-12)
 
 ### Feat
