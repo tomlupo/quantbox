@@ -1,6 +1,6 @@
 """Real-broker coverage for HyperliquidBroker.get_positions() (issue #93).
 
-The FLATTEN reduce-only gate (`TradingPipeline._filter_reduce_only`) reads
+The FLATTEN reduce-only gate (`quantbox.trade.reconciliation.filter_reduce_only`) reads
 `broker.get_positions()` and relies on the returned `DataFrame[symbol, qty]`
 with **signed** qty (perp shorts negative). Before enforce is armed on a live
 book we lock down that schema + sign convention here.

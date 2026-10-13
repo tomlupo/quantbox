@@ -34,7 +34,7 @@ import math
 import pandas as pd
 import pytest
 
-from quantbox.portfolio_value import (
+from quantbox.trade.book import (
     BASIS_MARGIN,
     BASIS_MARK,
     DEFAULT_RECONCILIATION_TOLERANCE,
@@ -1216,9 +1216,11 @@ def test_a_symbol_held_across_two_rows_is_summed_not_overwritten():
     lose all but one -- an understatement, which is the same defect class this
     module exists to close.
 
-    Mutation target: `.sum()` -> `.last()` in `_summed_holdings`.
+    Mutation target: `.sum()` -> `.last()` in `quantbox.trade.book._summed_positions`
+    (the lot summing moved into the marked book, TOM-1455).
     """
-    from quantbox.plugins.pipeline.alloc2orders import _summed_holdings, _usd_marks
+    from quantbox.plugins.pipeline.alloc2orders import _usd_marks
+    from quantbox.trade.book import MarkedBook
 
     pos = pd.DataFrame(
         {
@@ -1230,7 +1232,7 @@ def test_a_symbol_held_across_two_rows_is_summed_not_overwritten():
         }
     )
 
-    assert _summed_holdings(pos) == {"BTC": 4.0, "ETH": 10.0}
+    assert MarkedBook.of(positions=pos).positions == {"BTC": 4.0, "ETH": 10.0}
     # A per-unit PRICE, unlike a quantity, does not accumulate.
     assert _usd_marks(pos)["BTC"] == pytest.approx(100.0)
 
@@ -1243,16 +1245,17 @@ def test_an_unreadable_quantity_survives_summing():
     refusing a live run. This is the understatement the whole change exists to
     stop, re-entering through the aggregation added to fix a different one.
 
-    Mutation target: drop `min_count=1` in `_summed_holdings`.
+    Mutation target: drop `min_count=1` in `quantbox.trade.book._summed_positions`.
     """
-    from quantbox.plugins.pipeline.alloc2orders import _summed_holdings
+    from quantbox.trade.book import MarkedBook
 
     pos = pd.DataFrame({"symbol": ["GHOST", "GHOST"], "qty": [float("nan"), float("nan")]})
+    summed = MarkedBook.of(positions=pos).positions
 
-    assert math.isnan(_summed_holdings(pos)["GHOST"])
+    assert math.isnan(summed["GHOST"])
 
     # ...and that NaN must still read as unmarkable, not as an empty book.
-    v = value_holdings(cash=100.0, holdings=_summed_holdings(pos), get_price=_price_map({}))
+    v = value_holdings(cash=100.0, holdings=summed, get_price=_price_map({}))
     assert v.unpriced == ("GHOST",)
     assert v.state == REASON_UNPRICED
 

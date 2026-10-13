@@ -11,7 +11,7 @@ status the ledger will see is a recognised RESULT_STATUS (no spurious warning).
 from __future__ import annotations
 
 from quantbox.plugins.pipeline.trading_pipeline import _EXEC_STATUS_TO_LEDGER
-from quantbox.reconciliation.ledger import RESULT_STATUSES
+from quantbox.trade.reconciliation.ledger import RESULT_STATUSES
 
 
 def _to_ledger(status: str) -> str:

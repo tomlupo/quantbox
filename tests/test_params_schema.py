@@ -82,7 +82,12 @@ _PIPELINE_INJECTED = {"rebalancing": {"mode", "strategy_results"}}
 _READ_ELSEWHERE = {
     # The rsims adapter reads its own params (docs/adr/0008).
     "backtest.pipeline.v1": ("quantbox.frequency", "quantbox.engine.rsims"),
-    "trade.full_pipeline.v1": ("quantbox.frequency",),
+    # The reconciliation cycle and the working-order queue read their own blocks (TOM-1455).
+    "trade.full_pipeline.v1": (
+        "quantbox.frequency",
+        "quantbox.trade.reconciliation.cycle",
+        "quantbox.trade.reconciliation.working_orders",
+    ),
     # max_leverage is read by the one reader of the gross cap (TOM-1525).
     "rebalancing.futures.v1": ("quantbox.decision",),
     "rebalancing.standard.v1": ("quantbox.decision",),

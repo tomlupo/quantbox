@@ -1,8 +1,13 @@
-"""Pipeline wiring for reconciliation (issue #87), OBSERVE-mode only.
+"""The reconciliation cycle's close (issue #87), OBSERVE-mode only.
 
-Proves _run_reconciliation records the ledger + classifies breaks + alerts, and
-that in observe mode it never reports a gating action (zero order-behavior
-change). Also proves it is a no-op when no `reconciliation` config block exists.
+Proves the close records the ledger + classifies breaks + alerts, and that in
+observe mode it never reports a gating action (zero order-behavior change). Also
+proves it is a no-op when no `reconciliation` config block exists.
+
+Asked through the package's interface (TOM-1455): ``open_cycle`` then
+``CycleRun.close``, the two calls the trading pipeline makes, on the path where
+the execution stage captured nothing (so the close reconstructs the ledger) —
+the path these tests always drove through the private ``_run_reconciliation``.
 """
 
 from __future__ import annotations
@@ -12,6 +17,7 @@ import pytest
 
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
 from quantbox.trade.notifier import RecordingNotifier
+from quantbox.trade.reconciliation import open_cycle
 
 
 def _pipeline() -> TradingPipeline:
@@ -19,6 +25,17 @@ def _pipeline() -> TradingPipeline:
     pipe = TradingPipeline()
     pipe.notifier = RecordingNotifier()
     return pipe
+
+
+def _close(pipe, *, params, asof, run_id, intent_captured=False, **close_kw):
+    """One cycle: load + gate (``open_cycle``), then ``close``, alerting on the pipeline's channel.
+
+    ``armed=False`` is a cycle whose execution stage wrote no ledger records, so
+    the close reconstructs intent and result from the orders and the report.
+    """
+    run = open_cycle(params, run_id=run_id, asof=asof, alert=pipe._alert)
+    run.armed = intent_captured
+    return run.close(alert=pipe._alert, **close_kw)
 
 
 class _FakeBroker:
@@ -71,7 +88,8 @@ def test_duplicate_symbol_side_results_bind_one_to_one(tmp_path):
         "summary": {},
     }
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
-    pipe._run_reconciliation(
+    _close(
+        pipe,
         params=params,
         broker=_FakeBroker([]),
         final_weights={"DOGE": 0.5},
@@ -94,7 +112,8 @@ def test_duplicate_symbol_side_results_bind_one_to_one(tmp_path):
 
 def test_no_config_is_noop(tmp_path):
     pipe = _pipeline()
-    notes = pipe._run_reconciliation(
+    notes = _close(
+        pipe,
         params={},  # no `reconciliation` block
         broker=_FakeBroker([]),
         final_weights={"DOGE": 0.5},
@@ -121,7 +140,8 @@ def test_observe_records_ledger_and_classifies_without_gating(tmp_path):
             "mode": "observe",
         }
     }
-    notes = pipe._run_reconciliation(
+    notes = _close(
+        pipe,
         params=params,
         broker=broker,
         final_weights={"DOGE": 0.5},
@@ -166,7 +186,8 @@ def test_state_persists_across_cycles(tmp_path):
     }
     # Three cycles of failed DOGE orders -> streak accrues in persisted state.
     for _ in range(3):
-        notes = pipe._run_reconciliation(
+        notes = _close(
+            pipe,
             params=params,
             broker=broker,
             final_weights={"DOGE": 0.001},
@@ -190,7 +211,8 @@ def test_missed_fill_is_detected_and_counted(tmp_path):
 
     pipe = _pipeline()
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
-    notes = pipe._run_reconciliation(
+    notes = _close(
+        pipe,
         params=params,
         broker=_FakeBroker([]),
         final_weights={"DOGE": 0.5},
@@ -220,7 +242,8 @@ def test_stale_streak_does_not_escalate_when_symbol_untraded(tmp_path):
         }
     }
     # Cycle 1: DOGE fails once.
-    pipe._run_reconciliation(
+    _close(
+        pipe,
         params=params,
         broker=_FakeBroker([]),
         final_weights={"DOGE": 0.5},
@@ -233,7 +256,8 @@ def test_stale_streak_does_not_escalate_when_symbol_untraded(tmp_path):
     )
     # Cycles 2 & 3: DOGE no longer traded (empty order set) -> streak must drop.
     for _ in range(2):
-        notes = pipe._run_reconciliation(
+        notes = _close(
+            pipe,
             params=params,
             broker=_FakeBroker([]),
             final_weights={},
@@ -257,7 +281,8 @@ def test_recon_never_crashes_the_run(tmp_path):
             "tolerances": {"not_a_real_key": 123},  # TypeError in BookTolerances
         }
     }
-    notes = pipe._run_reconciliation(
+    notes = _close(
+        pipe,
         params=params,
         broker=_FakeBroker([]),
         final_weights={"DOGE": 0.5},
@@ -283,7 +308,8 @@ def test_enforce_mode_is_refused_no_false_safety(tmp_path):
             "mode": "enforce",  # requested — must be refused here
         }
     }
-    notes = pipe._run_reconciliation(
+    notes = _close(
+        pipe,
         params=params,
         broker=_FakeBroker([{"symbol": "DOGE", "qty": 1.0}, {"symbol": "ETH", "qty": 100.0}]),
         final_weights={"DOGE": 0.5},
@@ -314,7 +340,8 @@ def test_carryover_position_is_not_phantom_but_never_intended_is(tmp_path):
     eth_orders = pd.DataFrame(
         [{"Asset": "ETH", "Action": "Buy", "Adjusted Quantity": 5.0, "Price": 1.0, "Executable": True}]
     )
-    pipe._run_reconciliation(
+    _close(
+        pipe,
         params=params,
         broker=_FakeBroker([]),
         final_weights={"ETH": 0.5},
@@ -333,7 +360,8 @@ def test_carryover_position_is_not_phantom_but_never_intended_is(tmp_path):
 
     # Cycle 2: target is only DOGE now; the book still holds ETH (carryover) and
     # an unexpected XRP that was NEVER intended.
-    notes = pipe._run_reconciliation(
+    notes = _close(
+        pipe,
         params=params,
         broker=_FakeBroker([{"symbol": "ETH", "qty": 5.0}, {"symbol": "XRP", "qty": 50.0}]),
         final_weights={"DOGE": 0.5},
@@ -362,7 +390,8 @@ def test_phantom_uses_recent_intent_window_not_all_history(tmp_path):
     dd = str(tmp_path)
 
     def _cycle(cycle_id, lookback, held, target, order_asset):
-        return pipe._run_reconciliation(
+        return _close(
+            pipe,
             params={
                 "reconciliation": {
                     "book_key": "b",
@@ -408,7 +437,8 @@ def test_phantom_uses_recent_intent_window_not_all_history(tmp_path):
     pipe2 = TradingPipeline()
 
     def _cycle2(cycle_id, held, target, order_asset):
-        return pipe2._run_reconciliation(
+        return _close(
+            pipe2,
             params={
                 "reconciliation": {
                     "book_key": "b2",
@@ -470,7 +500,8 @@ class _SnapshotBroker(_FakeBroker):
 
 def _recon(tmp_path, broker, final_weights):
     params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
-    return TradingPipeline()._run_reconciliation(
+    return _close(
+        TradingPipeline(),
         params=params,
         broker=broker,
         final_weights=final_weights,

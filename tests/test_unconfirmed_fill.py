@@ -160,7 +160,7 @@ def test_live_broker_unreadable_venue_resolves_to_none(make):
 
 
 def test_binance_futures_queued_unknown_is_booked_by_the_working_order_resolver(tmp_path):
-    from quantbox.reconciliation.working_orders import WorkingOrderStore, resolve_working_orders
+    from quantbox.trade.reconciliation.working_orders import WorkingOrderStore, resolve_working_orders
 
     store = WorkingOrderStore(book_key="book-bf", root=tmp_path)
     store.record(symbol="BTC", side="buy", order_id="OID-2", requested_qty=1.0, cycle_id="c1", order_ref="r1")
@@ -265,8 +265,7 @@ def test_pipeline_still_books_an_explicit_fill():
 
 @pytest.mark.parametrize("late_status", [STATUS_UNKNOWN, None, ""], ids=["unknown", "none", "empty"])
 def test_working_order_resolver_keeps_an_unknown_outcome_queued(tmp_path, late_status):
-    from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
-    from quantbox.reconciliation.working_orders import WorkingOrderStore
+    from quantbox.trade.reconciliation.working_orders import WorkingOrderStore, resolve_working_orders
 
     store = WorkingOrderStore(book_key="book-a", root=tmp_path)
     store.record(symbol="BTC", side="buy", order_id="OID1", requested_qty=1.0, cycle_id="c1", order_ref="r1")
@@ -275,7 +274,7 @@ def test_working_order_resolver_keeps_an_unknown_outcome_queued(tmp_path, late_s
         def fetch_order_result(self, order_id, symbol):
             return {"status": late_status, "qty": 0.0, "price": 0.0, "error": "not confirmed"}
 
-    resolved = TradingPipeline()._resolve_working_orders(store, _B())
+    resolved = resolve_working_orders(store, _B()).resolved
     assert resolved == []
     assert [r["order_id"] for r in store.load()] == ["OID1"]
 

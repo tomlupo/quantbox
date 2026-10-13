@@ -7,7 +7,7 @@ machine WOULD have transitioned to HALT/FLATTEN instead of limping.
 
 from __future__ import annotations
 
-from quantbox.reconciliation import (
+from quantbox.trade.reconciliation import (
     BookTolerances,
     BreakClass,
     ReconciliationStateMachine,
@@ -144,7 +144,7 @@ def test_enforce_mode_is_accepted_and_gates(the_state=None):
     (persist-then-read next cycle), so BookTolerances accepts it and an enforcing
     machine's resulting HALT/FLATTEN state DOES set the gate. (Enabling it on a
     live book stays Tom-gated at the pipeline layer via an explicit ack.)"""
-    from quantbox.reconciliation import preflight_gate
+    from quantbox.trade.reconciliation import preflight_gate
 
     tol = BookTolerances(mode="enforce")
     assert tol.is_enforce is True

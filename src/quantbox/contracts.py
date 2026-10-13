@@ -282,7 +282,7 @@ class BrokerPlugin(Protocol):
             a held position it could not price. Equity feeds live position
             sizing, so an understated figure under-sizes every target silently;
             "could not value" has to exit differently from "the book is small".
-            See :mod:`quantbox.portfolio_value`.
+            See :mod:`quantbox.trade.book`.
 
     Class attributes:
         valuation_basis: HOW THIS VENUE VALUES A BOOK — the one declaration that
@@ -290,8 +290,8 @@ class BrokerPlugin(Protocol):
             (value is cash + sum(qty * price), so every held position must be
             markable); ``"margin_balance"`` for a derivatives venue (value is
             the margin balance plus unrealised PnL, and leveraged positions do
-            not add to it). Use the :data:`~quantbox.portfolio_value.BASIS_MARK`
-            / :data:`~quantbox.portfolio_value.BASIS_MARGIN` constants.
+            not add to it). Use the :data:`~quantbox.trade.book.BASIS_MARK`
+            / :data:`~quantbox.trade.book.BASIS_MARGIN` constants.
 
             It is a plain class attribute, not a ``describe()`` key: reading it
             must be free of API calls and must not vary with account state.
