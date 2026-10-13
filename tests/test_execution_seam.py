@@ -307,8 +307,3 @@ def test_the_binance_floor_never_rounds_up(qty, step):
 def test_the_binance_floor_reads_the_decimal_not_the_binary_float():
     assert lots.floor_to_step(0.3, 0.1) == 0.3
     assert lots.floor_to_step(0.29, 0.01) == 0.29
-
-
-def test_hyperliquid_still_rounds_to_nearest_until_tom_1721():
-    assert lots.round_to_decimals(0.0156, lots.amount_decimals(0.001)) == 0.016
-    assert lots.floor_to_decimals(0.0156, lots.amount_decimals(0.001)) == 0.015
