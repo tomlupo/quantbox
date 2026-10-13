@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass, field
@@ -81,7 +82,15 @@ from typing import Any
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
-from quantbox.trade.book import BASIS_MARK
+from quantbox.trade.book import (
+    BASIS_MARK,
+    REASON_UNPRICED,
+    MarkedBook,
+    PortfolioValuation,
+    PortfolioValuationError,
+    nan_if_unknown,
+    value_holdings,
+)
 from quantbox.trade.lots import binance_filters, floor_to_step
 
 from ._fills import binance_commission, binance_order, resolve_fill
@@ -594,35 +603,48 @@ class BinanceLiveBroker:
             }
 
         LLM Note: Call this first to understand the current state before making decisions.
+
+        A held position with no usable mark is REPORTED, never valued at 0
+        (TOM-1860): its ``value`` and ``weight`` are ``None``, ``marked`` is
+        False, and its symbol is listed under ``unmarked``. A book that holds
+        one has an UNKNOWN total, so ``portfolio_value`` and every ``weight``
+        are ``None`` too. ``get_portfolio_value()`` refuses the same book.
         """
         holdings = self._get_holdings_dict()
-        total_value = self.get_portfolio_value()
+        valuation, short_pnl, unmarked = self._mark_book(holdings)
+        total_value = None if unmarked else self._total_value(valuation, short_pnl)
+
+        held = {a: q for a, q in holdings.items() if a != self.stable_coin and a not in self.exclusions}
+        book = MarkedBook.of(positions=held, marks=self._marks(held))
 
         positions = []
-        for asset, qty in holdings.items():
-            if asset == self.stable_coin or asset in self.exclusions:
-                continue
-            price = self._get_price_cached(asset)
-            value = qty * price if price else 0
-            weight = value / total_value if total_value > 0 else 0
+        for asset, qty in held.items():
+            price = book.mark(asset)
+            value = book.value_of(asset, qty)
+            if value is None or total_value is None:
+                weight = None
+            else:
+                weight = round(value / total_value if total_value > 0 else 0, 4)
             positions.append(
                 {
                     "symbol": asset,
                     "qty": round(qty, 8),
-                    "value": round(value, 2),
-                    "weight": round(weight, 4),
+                    "value": None if value is None else round(value, 2),
+                    "weight": weight,
                     "price": round(price, 2) if price else None,
+                    "marked": value is not None,
                 }
             )
 
-        # Sort by value descending
-        positions.sort(key=lambda x: x["value"], reverse=True)
+        # Sort by value descending; an unmarked position (value unknown) goes last
+        positions.sort(key=lambda x: (x["value"] is not None, x["value"] or 0), reverse=True)
 
         result = {
             "mode": "paper" if self.paper_trading else "live",
             "account": self.account_name,
             "stable_coin": self.stable_coin,
-            "portfolio_value": round(total_value, 2),
+            "portfolio_value": None if total_value is None else round(total_value, 2),
+            "unmarked": list(unmarked),
             "positions": positions,
             "cash": self.get_cash(),
             "config": {
@@ -657,44 +679,93 @@ class BinanceLiveBroker:
 
         LLM Note: Use this to calculate position sizes.
         If you want 10% in BTC: target_value = 0.10 * get_portfolio_value()
+
+        **It raises rather than understating** (TOM-1860), as
+        ``KrakenBroker.get_equity`` does. A held position with no usable mark
+        is not a position worth 0: the book is UNKNOWN, not smaller.
+
+        Raises:
+            PortfolioValuationError: a held, non-excluded position has no
+                usable mark (``reason="unpriced_holdings"``, ``unpriced`` names it).
         """
-        holdings = self._get_holdings_dict()
-        total = 0.0
-        long_value = 0.0
-        short_unrealized_pnl = 0.0
+        return self._portfolio_value(self._get_holdings_dict())
 
-        # Get short entries for P&L calculation
-        short_entries = {}
-        if self.paper_trading:
-            short_entries = self._get_paper_short_entries()
+    def _portfolio_value(self, holdings: dict[str, float]) -> float:
+        """The total value of ``holdings``; refuses (raises) when a held position cannot be marked."""
+        valuation, short_pnl, unmarked = self._mark_book(holdings)
+        if unmarked:
+            raise PortfolioValuationError(
+                f"Cannot mark {len(unmarked)} held Binance position(s) ({', '.join(unmarked)}); "
+                "the portfolio value would be understated. Refusing to value.",
+                reason=REASON_UNPRICED,
+                unpriced=unmarked,
+            )
+        return self._total_value(valuation, short_pnl)
 
-        for asset, amount in holdings.items():
-            if asset == self.stable_coin:
-                total += amount  # Cash balance
-            elif asset in self.exclusions:
-                continue
-            else:
-                price = self._get_price_cached(asset)
-                if price is not None:
-                    if amount > 0:
-                        # Long position
-                        long_value += amount * price
-                    elif amount < 0:
-                        # Short position - calculate unrealized P&L
-                        short_qty = abs(amount)
-                        entry = short_entries.get(asset, {})
-                        entry_price = entry.get("price", price)
-                        # Unrealized P&L = (entry - current) × qty
-                        unrealized = (entry_price - price) * short_qty
-                        short_unrealized_pnl += unrealized
-
-        # Total = cash + long_value + short_unrealized_pnl
-        total += long_value + short_unrealized_pnl
-
+    def _total_value(self, valuation: PortfolioValuation, short_pnl: float) -> float:
+        """Cash + longs at their mark + shorts' unrealized P&L, floored at 0, from a complete marking."""
+        total = valuation.cash + (valuation.marked_value + short_pnl)
         logger.info(
-            f"Portfolio value: {total:.2f} {self.stable_coin} (longs: {long_value:.2f}, short P&L: {short_unrealized_pnl:.2f})"
+            f"Portfolio value: {total:.2f} {self.stable_coin} "
+            f"(longs: {valuation.marked_value:.2f}, short P&L: {short_pnl:.2f})"
         )
         return max(0, total)
+
+    def _marks(self, assets: Any) -> dict[str, float]:
+        """The current mark of each asset that has one (``_get_price_cached``); an asset without one is absent."""
+        marks: dict[str, float] = {}
+        for asset in assets:
+            price = self._get_price_cached(asset)
+            if price is not None:
+                marks[asset] = price
+        return marks
+
+    def _mark_book(self, holdings: dict[str, float]) -> tuple[PortfolioValuation, float, tuple[str, ...]]:
+        """Mark the book through ``quantbox.trade.book``, COLLECTING what cannot be marked.
+
+        The stable coin is cash; excluded assets are outside the book. Longs
+        (and any quantity nobody could read) are marked by
+        :func:`~quantbox.trade.book.value_holdings`. Shorts are valued at their
+        unrealized P&L, ``(entry - mark) * |qty|``, so they need a mark too.
+
+        Returns:
+            ``(longs valuation, short unrealized P&L, unmarked symbols)``. The
+            caller decides what an unmarked symbol means: ``describe()``
+            reports it, ``get_portfolio_value()`` refuses it. Neither reads it as 0.
+        """
+        longs: dict[str, float] = {}
+        shorts: dict[str, float] = {}
+        for asset, amount in holdings.items():
+            if asset == self.stable_coin or asset in self.exclusions:
+                continue
+            try:
+                qty = float(amount)
+            except (TypeError, ValueError):
+                qty = math.nan
+            # A NaN quantity goes to the longs: value_holdings reports it unmarked.
+            (shorts if qty < 0 else longs)[asset] = qty
+
+        marks = self._marks([*longs, *shorts])
+        valuation = value_holdings(
+            cash=float(holdings.get(self.stable_coin, 0.0)),
+            holdings=longs,
+            get_price=marks.get,
+        )
+
+        unmarked = list(valuation.unpriced)
+        short_pnl = 0.0
+        short_entries = self._get_paper_short_entries() if (shorts and self.paper_trading) else {}
+        book = MarkedBook.of(positions=shorts, marks=marks)
+        for asset, qty in shorts.items():
+            price = book.mark(asset)
+            if price is None:
+                unmarked.append(asset)
+                continue
+            entry_price = short_entries.get(asset, {}).get("price", price)
+            # Unrealized P&L = (entry - current) × qty
+            short_pnl += (entry_price - price) * abs(qty)
+
+        return valuation, short_pnl, tuple(sorted(unmarked))
 
     def generate_rebalancing(self, target_weights: dict[str, float]) -> pd.DataFrame:
         """
@@ -731,9 +802,14 @@ class BinanceLiveBroker:
         - Call this BEFORE execute_rebalancing() to preview trades
         - Check the 'Action' column to see what will happen
         - If Delta_Qty is very small, the trade may be skipped (below threshold)
+
+        Raises:
+            PortfolioValuationError: a held, non-excluded position has no usable
+                mark (TOM-1860). Weights against an understated total would size
+                every trade wrong, so there is no plan to return.
         """
         holdings = self._get_holdings_dict()
-        total_value = self.get_portfolio_value()
+        total_value = self._portfolio_value(holdings)
 
         if total_value <= 0:
             logger.error("Portfolio value is zero or negative")
@@ -745,12 +821,15 @@ class BinanceLiveBroker:
         # Build analysis
         assets = sorted(set(holdings.keys()) | set(adjusted_weights.keys()))
         assets = [a for a in assets if a not in self.exclusions]
+        book = MarkedBook.of(positions=holdings, marks=self._marks(assets))
 
         data = []
         for asset in assets:
             current_qty = holdings.get(asset, 0.0)
             price = self._get_price_cached(asset)
-            current_value = current_qty * price if price else 0
+            # Every held asset here was marked (``_portfolio_value`` refused otherwise);
+            # an unknown value would be NaN, never 0.
+            current_value = nan_if_unknown(book.value_of(asset, current_qty))
             current_weight = current_value / total_value if total_value > 0 else 0
 
             target_weight = adjusted_weights.get(asset, 0.0)
@@ -845,7 +924,14 @@ class BinanceLiveBroker:
 
         execution_report["orders"] = orders_df
         execution_report["rebalancing"] = rebal_df
-        execution_report["total_value"] = self.get_portfolio_value()
+        try:
+            execution_report["total_value"] = self.get_portfolio_value()
+        except PortfolioValuationError as exc:
+            # The orders already ran: raising here would lose their report. The
+            # post-trade value is REPORTED as unknown (None), never 0 (TOM-1860).
+            logger.error("Post-trade portfolio value unknown: %s", exc)
+            execution_report["total_value"] = None
+            execution_report["unmarked"] = list(exc.unpriced)
 
         return execution_report
 
