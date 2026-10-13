@@ -1374,13 +1374,6 @@ class TestPipelineModeThreading:
         }[key]
         assert self._params({key: sentinel}, "live")[key] == sentinel
 
-    def test_a_forgotten_mode_argument_is_impossible_at_this_seam(self):
-        """``_generate_orders`` requires ``mode`` rather than defaulting it."""
-        import inspect
-
-        sig = inspect.signature(TradingPipeline._generate_orders)
-        assert sig.parameters["mode"].default is inspect.Parameter.empty
-
 
 # ======================================================================
 # 9. Kraken: the venue the incident was on

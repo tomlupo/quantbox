@@ -21,6 +21,7 @@ from quantbox.plugins.broker.binance_futures import BinanceFuturesBroker
 from quantbox.plugins.broker.hyperliquid import HyperliquidBroker
 from quantbox.plugins.broker.kraken import KrakenBroker
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
+from quantbox.trade.executor import execute_orders
 from quantbox.trade.notifier import Alerts, RecordingNotifier, TelegramNotifier
 
 
@@ -88,12 +89,11 @@ def _frozen_orders() -> pd.DataFrame:
 @pytest.mark.parametrize("venue", sorted(VENUES))
 def test_a_recon_halt_alerts_on_every_venue(venue):
     pipe = _pipeline()
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=VENUES[venue](),
         orders_df=_orders(),
-        stable_coin="USD",
         trading_enabled=True,
-        mode="live",
         gate_orders_allowed=False,
     )
     assert report["recon_gated"] == "halt"
@@ -104,12 +104,11 @@ def test_a_recon_halt_alerts_on_every_venue(venue):
 @pytest.mark.parametrize("venue", sorted(VENUES))
 def test_a_frozen_book_alerts_on_every_venue(venue):
     pipe = _pipeline()
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=VENUES[venue](),
         orders_df=_frozen_orders(),
-        stable_coin="USD",
         trading_enabled=True,
-        mode="live",
     )
     assert report.get("frozen") is True
     assert len(pipe.notifier.messages) == 1
@@ -140,8 +139,8 @@ def test_a_working_order_is_not_alerted_as_a_failure():
             )
 
     pipe = _pipeline()
-    report = pipe._execute_orders(
-        broker=_Venue(), orders_df=_orders(), stable_coin="USD", trading_enabled=True, mode="live"
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send, broker=_Venue(), orders_df=_orders(), trading_enabled=True
     )
     assert report["summary"]["total_working"] == 1
     assert len(pipe.notifier.messages) == 1
@@ -168,18 +167,16 @@ def test_a_failing_notifier_never_fails_the_run():
         def send(self, message):
             raise ConnectionError("telegram unreachable")
 
-    pipe = TradingPipeline()
-    pipe.notifier = _Down()
+    alerts = Alerts(_Down())
     # The 0-fills site was the one unwrapped alert: a raising notify failed the run.
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=alerts.send,
         broker=type("_Empty", (), {"place_orders": lambda self, o: pd.DataFrame()})(),
         orders_df=_orders(),
-        stable_coin="USD",
         trading_enabled=True,
-        mode="live",
     )
     assert report["summary"]["total_executed"] == 0
-    record = pipe._alert_channel().record()
+    record = alerts.record()
     assert record["sent"] == []
     assert [f["site"] for f in record["failed"]] == ["zero_fills"]
 

@@ -27,7 +27,7 @@ Runner (DI container)
         ├── risk.check_targets()
         ├── rebalancer.generate_orders()
         ├── risk.check_orders()
-        ├── broker.place_orders()
+        ├── execute_orders() → broker.place_orders()   (quantbox.trade.executor)
         └── store.put_parquet() / store.put_json()
 ```
 

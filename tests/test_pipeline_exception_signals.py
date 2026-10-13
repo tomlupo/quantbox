@@ -12,6 +12,8 @@ from __future__ import annotations
 import pandas as pd
 
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline, _compute_data_age
+from quantbox.trade.executor import execute_orders
+from quantbox.trade.notifier import Alerts
 
 # ---------------------------------------------------------------------------
 # Data-staleness input: _compute_data_age
@@ -100,12 +102,11 @@ def _executable_order_df() -> pd.DataFrame:
 
 def test_broker_api_error_captured_as_exception_input():
     pipe = TradingPipeline()
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=_RaisingBroker(),
         orders_df=_executable_order_df(),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
     assert report["api_errors"], "broker API error must be captured, not swallowed"
     assert report["api_errors"][0]["stage"] == "place_orders"
@@ -133,12 +134,11 @@ def test_no_api_error_on_clean_execution():
             return pd.DataFrame(rows, columns=cols)
 
     pipe = TradingPipeline()
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=_FillBroker(),
         orders_df=_executable_order_df(),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
     assert report["api_errors"] == []
     assert report["summary"]["total_executed"] == 1
@@ -178,12 +178,11 @@ def test_partial_fill_surfaced_as_total_partial():
             )
 
     pipe = TradingPipeline()
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=_PartialBroker(),
         orders_df=_executable_order_df(),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
     assert report["summary"]["total_executed"] == 1
     assert report["summary"]["total_partial"] == 1

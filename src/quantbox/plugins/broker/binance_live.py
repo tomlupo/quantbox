@@ -76,13 +76,15 @@ import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from decimal import ROUND_DOWN, Decimal, getcontext
 from typing import Any
 
 import pandas as pd
 
 from quantbox.contracts import PluginMeta
 from quantbox.trade.book import BASIS_MARK
+from quantbox.trade.lots import binance_filters, floor_to_step
+
+from ._fills import binance_commission, binance_order, resolve_fill
 
 logger = logging.getLogger(__name__)
 
@@ -265,46 +267,6 @@ def calculate_commission(
 # ============================================================================
 # Utility Functions (ported from quantlab)
 # ============================================================================
-
-
-def adjust_quantity(qty: float, step_size: float) -> float:
-    """
-    Adjust quantity to conform to Binance step size requirement.
-    Uses Decimal for proper precision handling.
-
-    Args:
-        qty: Raw quantity
-        step_size: Binance LOT_SIZE stepSize filter
-
-    Returns:
-        Adjusted quantity rounded down to valid step
-    """
-    if step_size <= 0:
-        return qty
-    step_size_str = f"{step_size:.8f}"
-    decimal_places = step_size_str.rstrip("0").split(".")[-1]
-    precision = len(decimal_places)
-    getcontext().rounding = ROUND_DOWN
-    adjusted_qty = Decimal(str(qty)).quantize(Decimal("1." + "0" * precision))
-    return float(adjusted_qty)
-
-
-def get_lot_size_and_min_notional(symbol_info: dict | None) -> tuple[float, float, float]:
-    """
-    Extract LOT_SIZE and NOTIONAL filters from Binance symbol info.
-
-    Returns:
-        Tuple of (min_qty, step_size, min_notional)
-    """
-    min_qty, step_size, min_notional = 0.0, 0.0, 0.0
-    if symbol_info:
-        for f in symbol_info.get("filters", []):
-            if f["filterType"] == "LOT_SIZE":
-                min_qty = float(f["minQty"])
-                step_size = float(f["stepSize"])
-            if f["filterType"] == "NOTIONAL":
-                min_notional = float(f["minNotional"])
-    return min_qty, step_size, min_notional
 
 
 def _is_transient_error(e: Exception) -> bool:
@@ -570,9 +532,7 @@ class BinanceLiveBroker:
             qty = float(o["qty"])
             price = o.get("price", None)
 
-            fill = self._execute_single_order(sym, side, qty, price)
-            if fill:
-                fills.append(fill)
+            fills.append(self._execute_single_order(sym, side, qty, price))
 
         return pd.DataFrame(fills)
 
@@ -1083,7 +1043,7 @@ class BinanceLiveBroker:
 
         # Get symbol constraints
         symbol_info = self._get_symbol_info(symbol)
-        min_qty, step_size, min_notional = get_lot_size_and_min_notional(symbol_info)
+        min_qty, step_size, min_notional = binance_filters(symbol_info)
         if min_notional == 0:
             min_notional = self.min_notional
 
@@ -1111,7 +1071,7 @@ class BinanceLiveBroker:
         qty = raw_qty * scaling_factor if is_buy else raw_qty
 
         # Adjust to step size
-        adjusted_qty = adjust_quantity(qty, step_size) if step_size else qty
+        adjusted_qty = floor_to_step(qty, step_size)
         notional_value = adjusted_qty * price if price else 0.0
 
         # Validate
@@ -1147,10 +1107,16 @@ class BinanceLiveBroker:
             "Scaling_Factor": scaling_factor if is_buy else None,
         }
 
-    def _execute_single_order(
-        self, symbol: str, side: str, qty: float, price: float | None = None
-    ) -> dict[str, Any] | None:
-        """Execute a single order."""
+    def _execute_single_order(self, symbol: str, side: str, qty: float, price: float | None = None) -> dict[str, Any]:
+        """Execute a single order; the row says what the venue confirmed (TOM-1458).
+
+        A live order is read through :func:`resolve_fill` like every other venue
+        (Q9, Tom 2026-10-10): the row carries the whole order's filled quantity
+        and average price (every fill, not the first), a resting GTC limit is
+        WORKING with its order id, an unconfirmed reply is UNKNOWN, and a failed
+        submission is FAILED. Before, only the first fill was returned and a
+        resting limit or a failed submission dropped out of the report.
+        """
         qty_str = format_quantity_for_binance(qty)
 
         try:
@@ -1163,26 +1129,42 @@ class BinanceLiveBroker:
                 res = self._client.create_order(
                     symbol=symbol, side=side, type="LIMIT", timeInForce="GTC", quantity=qty_str, price=str(price)
                 )
-
-            # Parse fills
-            for f in res.get("fills", []) or []:
-                return {
-                    "symbol": symbol,
-                    "side": side.lower(),
-                    "qty": float(f.get("qty", 0.0)),
-                    "price": float(f.get("price", 0.0)),
-                    "commission": float(f.get("commission", 0.0)),
-                    "commission_asset": f.get("commissionAsset"),
-                    "execution_mode": "LIVE",
-                    # An executed fill says so: a status-less row is UNKNOWN to the pipeline (TOM-1336).
-                    "status": "FILLED",
-                }
-
-            return None
-
         except Exception as e:
             logger.error(f"Order execution failed for {symbol}: {e}")
-            return None
+            return {
+                "symbol": symbol,
+                "side": side.lower(),
+                "qty": 0.0,
+                "price": 0.0,
+                "requested_qty": qty,
+                "execution_mode": "LIVE",
+                "status": "FAILED",
+                "error": str(e),
+            }
+
+        order = binance_order(res)
+        order_id = (order or {}).get("id")
+
+        def refetch() -> dict | None:
+            if order_id is None:
+                return None
+            return binance_order(self._client.get_order(symbol=symbol, orderId=order_id))
+
+        status, filled_qty, fill_price, reason = resolve_fill(order, qty, refetch=refetch)
+        commission, commission_asset = binance_commission(res)
+        return {
+            "symbol": symbol,
+            "side": side.lower(),
+            "qty": filled_qty,
+            "price": fill_price,
+            "requested_qty": qty,
+            "order_id": "" if order_id is None else str(order_id),
+            "commission": commission,
+            "commission_asset": commission_asset,
+            "execution_mode": "LIVE",
+            "status": status,
+            "error": reason,
+        }
 
     def _execute_paper_order(self, symbol: str, side: str, qty: float, price: float | None) -> dict[str, Any]:
         """
@@ -1346,7 +1328,7 @@ class BinanceLiveBroker:
 
             fill = self._execute_single_order(symbol, side, qty)
 
-            if fill:
+            if fill.get("status") in ("FILLED", "PARTIAL"):
                 report["executed_orders"].append(fill)
                 report["summary"]["total_executed"] += 1
                 report["summary"]["total_value"] += fill.get("qty", 0) * fill.get("price", 0)

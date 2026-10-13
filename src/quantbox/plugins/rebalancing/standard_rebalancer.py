@@ -6,16 +6,15 @@ weights in, orders out. WHEN to rebalance and to WHICH targets (the tranche
 cadence, the trigger, ``min_trade``) is the rebalancing policy's, decided by
 the backtest's own code (``quantbox.engine.policy``, TOM-1518).
 
-Ported from ``TradingPipeline._apply_risk_transforms()``,
-``_generate_orders()``, ``_build_rebalancing()``, and
-``_create_executable_orders()``.
+Since TOM-1458 it is the trading pipeline's order generator for a spot book:
+the pipeline's private copy is deleted, and a paper or live config names
+``plugins.rebalancing``. Step rounding is :mod:`quantbox.trade.lots`.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from decimal import ROUND_DOWN, Decimal, getcontext
 from typing import Any
 
 import pandas as pd
@@ -23,6 +22,7 @@ import pandas as pd
 from quantbox.contracts import BrokerPlugin, PluginMeta
 from quantbox.decision import gross_cap, risk_caps_row
 from quantbox.engine.policy import TRANCHES_MOVED
+from quantbox.plugins.rebalancing.futures_rebalancer import declares_open
 from quantbox.trade.book import (
     BASIS_MARK,
     DEFAULT_RECONCILIATION_TOLERANCE,
@@ -30,6 +30,7 @@ from quantbox.trade.book import (
     nan_if_unknown,
     read_book,
 )
+from quantbox.trade.lots import floor_to_step
 
 logger = logging.getLogger(__name__)
 
@@ -42,36 +43,12 @@ DEFAULT_MIN_TRADE_SIZE = 0.01
 DEFAULT_STABLE_COIN = "USDC"
 
 
-# ---------------------------------------------------------------------------
-# Low-level helpers (from quantlab orders.py / portfolio.py)
-# ---------------------------------------------------------------------------
-
-
-def _adjust_quantity(qty: float, step_size: float) -> float:
-    """Round *qty* down to the nearest *step_size* (Binance-style)."""
-    if step_size <= 0:
-        return qty
-    step_str = f"{step_size:.8f}"
-    decimal_places = step_str.rstrip("0").split(".")[-1]
-    precision = len(decimal_places)
-    getcontext().rounding = ROUND_DOWN
-    return float(Decimal(qty).quantize(Decimal("1." + "0" * precision)))
-
-
-def _get_lot_size_and_min_notional(
-    symbol_info: dict | None,
-) -> tuple[float, float, float]:
-    """Extract (min_qty, step_size, min_notional) from Binance symbol info."""
-    min_qty, step_size, min_notional = 0.0, 0.0, 0.0
-    if not symbol_info:
-        return min_qty, step_size, min_notional
-    for f in symbol_info.get("filters", []):
-        if f.get("filterType") == "LOT_SIZE":
-            min_qty = float(f.get("minQty", 0))
-            step_size = float(f.get("stepSize", 0))
-        if f.get("filterType") == "NOTIONAL":
-            min_notional = float(f.get("minNotional", 0))
-    return min_qty, step_size, min_notional
+def _opens_exposure(row: pd.Series) -> bool:
+    """The row's declared intent (:func:`declares_open`); an unknown quantity is no open."""
+    cur, tgt = row.get("Current Quantity", 0.0), row.get("Target Quantity", 0.0)
+    if cur is None or tgt is None or pd.isna(cur) or pd.isna(tgt):
+        return False
+    return declares_open(float(cur), float(tgt))
 
 
 # ---------------------------------------------------------------------------
@@ -457,7 +434,7 @@ class StandardRebalancer:
                         pass
 
                     if action == "sell":
-                        adjusted_qty = _adjust_quantity(abs(delta_qty), step_size) if step_size > 0 else abs(delta_qty)
+                        adjusted_qty = floor_to_step(abs(delta_qty), step_size)
                         notional_value = adjusted_qty * price if price else 0.0
 
                         if price is None or price == 0:
@@ -494,6 +471,9 @@ class StandardRebalancer:
                     "Order Status": status,
                     "Reason": reason,
                     "Scaling Factor": scaling_factor,
+                    # The order's declared intent (TOM-901): the execution stage
+                    # reads it instead of guessing intent from the side.
+                    "opens_exposure": _opens_exposure(row),
                 }
             )
 
@@ -521,11 +501,7 @@ class StandardRebalancer:
                 mn = rec["Min Notional"]
                 raw_qty = rec["Raw Quantity"]
 
-                scaled_qty = (
-                    _adjust_quantity(raw_qty * scaling_factor, step_size)
-                    if step_size and price
-                    else raw_qty * scaling_factor
-                )
+                scaled_qty = floor_to_step(raw_qty * scaling_factor, step_size) if price else raw_qty * scaling_factor
                 scaled_notional = scaled_qty * price if price else 0.0
                 rec["Scaling Factor"] = scaling_factor
                 rec["Adjusted Quantity"] = scaled_qty
@@ -570,6 +546,7 @@ class StandardRebalancer:
             "Scaling Factor",
             "Order Status",
             "Reason",
+            "opens_exposure",
         ]
         order_df = pd.DataFrame(order_records, columns=columns)
         order_df["Executable"] = (order_df["Adjusted Quantity"] > 0) & (order_df["Order Status"] == "To be placed")

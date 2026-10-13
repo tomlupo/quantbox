@@ -42,6 +42,23 @@ from quantbox.trade.book import (
 
 logger = logging.getLogger(__name__)
 
+
+def declares_open(current_qty: float, target_qty: float) -> bool:
+    """The order's declared intent: True for an open from flat or an add on the same side.
+
+    The one definition every builtin rebalancer writes as ``opens_exposure`` on
+    an order row (TOM-1778, TOM-901). A flip through zero is NOT an open: it
+    exits the held side first. The execution stage (:mod:`quantbox.trade.executor`)
+    reads the flag instead of guessing intent from the order's side.
+    """
+    if target_qty == 0:
+        return False
+    if current_qty == 0:
+        return True
+    same_sign = (target_qty > 0) == (current_qty > 0)
+    return bool(same_sign and abs(target_qty) > abs(current_qty))
+
+
 #: ``Order Status`` of a partial reduce below the venue minimum (TOM-1778): not
 #: sent, because the venue rejects it, and a known residual, not a freeze.
 RESIDUAL_STATUS = "Residual below min notional"
@@ -500,9 +517,10 @@ class FuturesRebalancer:
                 same_sign = (tgt_qty > 0) == (cur_qty > 0)
                 is_partial_reduce = cur_qty != 0 and same_sign and abs(tgt_qty) < abs(cur_qty)
                 # An open from flat or an add on the same side: the only rows a
-                # residual day may leave unsent (TOM-1778). A flip through zero is NOT
-                # one — it exits the held side.
-                opens_exposure = bool(tgt_qty != 0 and (cur_qty == 0 or (same_sign and abs(tgt_qty) > abs(cur_qty))))
+                # residual day may leave unsent (TOM-1778), and the declared intent
+                # the trapped-residual counter reads (TOM-901). A flip through zero
+                # is NOT one — it exits the held side.
+                opens_exposure = declares_open(cur_qty, tgt_qty)
 
             # Sent reduce-only.
             is_exposure_reducing = bool(is_flat_target or is_partial_reduce)
@@ -520,7 +538,7 @@ class FuturesRebalancer:
                 # `target - current` from the same two columns (line 285), but
                 # this method accepts those columns independently and nothing else
                 # checks them for mutual consistency. Mirrors the gate-path clamp
-                # in trading_pipeline.py:2528.
+                # in quantbox.trade.reconciliation.cycle.filter_reduce_only.
                 clamped_qty = min(adjusted_qty, abs(cur_qty))
                 if clamped_qty != adjusted_qty:
                     logger.warning(

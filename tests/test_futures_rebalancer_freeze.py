@@ -23,7 +23,8 @@ import pytest
 
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
 from quantbox.plugins.rebalancing.futures_rebalancer import RESIDUAL_STATUS, FuturesRebalancer
-from quantbox.trade.notifier import RecordingNotifier
+from quantbox.trade.executor import execute_orders
+from quantbox.trade.notifier import Alerts, RecordingNotifier
 
 
 def _pipeline() -> TradingPipeline:
@@ -615,12 +616,11 @@ def test_broker_side_freeze_recovers_notional_from_intent():
     """
     pipe = _pipeline()
     broker = _SkippingBroker()
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=_executable_sell_df(),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
 
     assert report.get("frozen") is True, "0 fills + a skipped close-out SELL must freeze"
@@ -661,12 +661,11 @@ def test_broker_side_freeze_recovers_notional_from_padded_broker_side():
 
     pipe = _pipeline()
     broker = _PaddedSkippingBroker()
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=_executable_sell_df(),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
 
     assert report.get("frozen") is True
@@ -689,12 +688,11 @@ def test_broker_side_freeze_keeps_duplicate_same_side_intents_distinct():
     orders = pd.concat([_executable_sell_df(), _executable_sell_df()], ignore_index=True)
     orders.loc[1, ["Adjusted Quantity", "Notional Value"]] = [10.0, 1.2]
 
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=orders,
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
 
     assert report.get("frozen") is True
@@ -730,12 +728,11 @@ def _frozen_orders_df() -> pd.DataFrame:
 def test_pipeline_flags_freeze_and_alerts():
     pipe = _pipeline()
     broker = _FakeBroker()
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=_frozen_orders_df(),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
     assert report.get("frozen") is True
     assert report["summary"]["total_executed"] == 0
@@ -756,12 +753,11 @@ def test_freeze_report_carries_per_order_detail():
     pipe = _pipeline()
     orders = _frozen_orders_df()
     orders["Min Notional"] = MIN_NOTIONAL
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=_FakeBroker(),
         orders_df=orders,
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
 
     detail = report.get("frozen_orders")
@@ -783,12 +779,11 @@ def test_freeze_alert_message_names_each_order():
     broker = _FakeBroker()
     orders = _frozen_orders_df()
     orders["Min Notional"] = MIN_NOTIONAL
-    pipe._execute_orders(
+    execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=orders,
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
 
     assert len(pipe.notifier.messages) == 1
@@ -808,12 +803,11 @@ def test_freeze_detail_omits_shortfall_when_not_a_minimum_breach():
     pipe = _pipeline()
     orders = _frozen_orders_df()
     orders["Min Notional"] = 0.0  # venue minimum unknown
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=_FakeBroker(),
         orders_df=orders,
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
     assert all("shortfall_usd" not in r for r in report["frozen_orders"])
 
@@ -836,12 +830,11 @@ def test_pipeline_quiet_day_not_flagged():
             }
         ]
     )
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=orders_df,
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
     assert not report.get("frozen")
     assert pipe.notifier.messages == []
@@ -885,12 +878,11 @@ def test_pipeline_quiet_day_all_cash_sub_min_targets():
     """All-cash + every target leg sub-min => QUIET DAY, no freeze alert."""
     pipe = _pipeline()
     broker = _FakeBrokerWithPositions(positions={})  # flat book
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=_quiet_day_orders_df(),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
     assert report.get("quiet_day") is True
     assert not report.get("frozen")
@@ -906,12 +898,11 @@ def test_pipeline_quiet_day_without_get_positions_fails_safe_to_freeze():
     quiet — fail safe to FROZEN and alert."""
     pipe = _pipeline()
     broker = _FakeBroker()  # no get_positions
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=_quiet_day_orders_df(),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
     assert report.get("frozen") is True
     assert not report.get("quiet_day")
@@ -924,12 +915,11 @@ def test_pipeline_trapped_position_with_only_buy_orders_still_freezes():
     a liquidatable position means the book is NOT flat => FREEZE, not quiet."""
     pipe = _pipeline()
     broker = _FakeBrokerWithPositions(positions={"ADA": 1000.0})
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=_quiet_day_orders_df(),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
     assert report.get("frozen") is True
     assert not report.get("quiet_day")
@@ -947,12 +937,11 @@ def test_pipeline_quiet_day_boundary_one_leg_executable():
     orders_df.loc[0, "Notional Value"] = 25.0
     orders_df.loc[0, "Order Status"] = "To be placed"
     orders_df.loc[0, "Executable"] = True
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=orders_df,
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
     assert not report.get("quiet_day")
     assert not report.get("frozen")
@@ -966,12 +955,11 @@ def test_pipeline_freeze_survives_broker_without_notify():
         pass
 
     pipe = _pipeline()
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=_Mute(),
         orders_df=_frozen_orders_df(),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
     assert report.get("frozen") is True
 
@@ -1023,12 +1011,11 @@ def _carver_hl_2026_10_12_orders(extra: list[dict] | None = None) -> pd.DataFram
 def test_residual_day_is_not_a_freeze():
     pipe = _pipeline()
     broker = _FakeBrokerWithPositions(positions={"ETH": 0.0079, "NEAR": 2.5, "BTC": 0.0003})
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=_carver_hl_2026_10_12_orders(),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
     assert report.get("residual_day") is True
     assert not report.get("frozen")
@@ -1051,12 +1038,11 @@ def test_residual_with_a_suppressed_exit_still_freezes():
         "reduce_only": True,
         "Executable": False,
     }
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=_carver_hl_2026_10_12_orders([stuck_exit]),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
     assert report.get("frozen") is True
     assert not report.get("residual_day")
@@ -1075,12 +1061,11 @@ def test_residual_with_a_data_fault_still_freezes():
         "reduce_only": False,
         "Executable": False,
     }
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=_carver_hl_2026_10_12_orders([no_price]),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
     assert report.get("frozen") is True
     assert not report.get("residual_day")
@@ -1100,12 +1085,11 @@ def test_residuals_are_listed_when_other_orders_trade():
         "reduce_only": False,
         "Executable": True,
     }
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=_carver_hl_2026_10_12_orders([tradable]),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
     assert not report.get("residual_day")
     assert not report.get("frozen")
@@ -1128,12 +1112,11 @@ def test_residual_with_a_suppressed_flip_still_freezes():
         "opens_exposure": False,
         "Executable": False,
     }
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=_carver_hl_2026_10_12_orders([flip]),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
     assert report.get("frozen") is True
     assert not report.get("residual_day")
@@ -1144,12 +1127,11 @@ def test_residual_with_an_unflagged_suppressed_row_still_freezes():
     pipe = _pipeline()
     broker = _FakeBrokerWithPositions(positions={"ETH": 0.0079})
     orders = _carver_hl_2026_10_12_orders().drop(columns=["opens_exposure"])
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=orders,
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
     assert report.get("frozen") is True
     assert not report.get("residual_day")
@@ -1279,12 +1261,11 @@ def test_pipeline_all_skipped_closeout_sell_trips_freeze():
     freeze/alert path, not read as a healthy run."""
     pipe = _pipeline()
     broker = _SkipAllBroker()
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=_executable_closeout_sell_df(),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
     assert report.get("frozen") is True
     assert report["summary"]["total_executed"] == 0
@@ -1319,12 +1300,11 @@ def test_pipeline_all_skipped_padded_side_status_still_trips_freeze():
 
     pipe = _pipeline()
     broker = _PaddedSkipAllBroker()
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=_executable_closeout_sell_df(),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
     assert report.get("frozen") is True
     assert report["summary"]["total_executed"] == 0
@@ -1351,12 +1331,11 @@ def test_pipeline_all_skipped_buys_only_is_not_a_freeze():
             }
         ]
     )
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=orders_df,
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
     assert not report.get("frozen")
     assert pipe.notifier.messages == []
@@ -1400,12 +1379,11 @@ def test_pipeline_skipped_sell_with_a_real_fill_is_not_frozen():
 
     pipe = _pipeline()
     broker = _PartlyFillBroker()
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=_executable_closeout_sell_df(),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
     assert not report.get("frozen")
     assert report["summary"]["total_executed"] == 1
@@ -1466,12 +1444,11 @@ def test_skipped_close_out_sell_freezes_even_with_a_concurrent_failure():
     )
     pipe = _pipeline()
     broker = _SkipAndFailBroker()
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=orders,
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
     assert report.get("frozen") is True
     assert report["summary"]["total_executed"] == 0
@@ -1551,12 +1528,11 @@ def test_enforce_drop_does_not_misalign_freeze_notionals():
     """
     pipe = _pipeline()
     broker = _SkippingBroker()
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=_two_ada_sells(),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
         ledger=_FailSecondIntentLedger(),
         cycle_id="cyc-1",
         capture_fail_closed=True,  # ENFORCE: the failing one is dropped

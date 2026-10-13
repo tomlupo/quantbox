@@ -213,16 +213,16 @@ def _orders_df():
 
 def _run(row, store=None):
     from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
-    from quantbox.trade.notifier import RecordingNotifier
+    from quantbox.trade.executor import execute_orders
+    from quantbox.trade.notifier import Alerts, RecordingNotifier
 
     pipe = TradingPipeline()
     pipe.notifier = RecordingNotifier()  # TOM-1720: the pipeline alerts, never the broker
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=_RowBroker(row),
         orders_df=_orders_df(),
-        stable_coin="USDT",
         trading_enabled=True,
-        mode="live",
         working_store=store,
     )
     return report, pipe.notifier
