@@ -105,6 +105,7 @@ two class attributes: `valuation_basis` and `broker_capabilities` (a `frozenset`
 ```python
 from quantbox.contracts import BrokerCapability
 
+
 class MyBroker:
     valuation_basis = "margin_balance"
     broker_capabilities = frozenset({BrokerCapability.EQUITY, BrokerCapability.ORDER_RESULT})
