@@ -3,22 +3,21 @@
 Orchestrates: strategy execution -> aggregation -> the decision (final
 target weights: short clip, gross cap, group limits, ``venue.leverage``
 normalisation; :mod:`quantbox.decision`, the backtest's own transform,
-TOM-1520) -> the rebalancing policy -> order generation -> execution ->
+TOM-1520) -> the rebalancing policy -> order generation (the injected
+rebalancing plugin) -> execution (:mod:`quantbox.trade.executor`) ->
 artifact storage.
 
-Ported from the quantlab ``trading.py`` workflow, ``orders.py``, and
-``portfolio.py`` into a single PipelinePlugin that the quantbox runner
-can invoke via ``pipeline.run()``.
+The pipeline sizes no order itself (TOM-1458): a paper or live run without
+``plugins.rebalancing`` is refused, and the orders go to the venue through
+:func:`quantbox.trade.executor.execute_orders`.
 """
 
 from __future__ import annotations
 
 import logging
-from collections import defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from decimal import ROUND_DOWN, Decimal, getcontext
 from typing import Any, ClassVar
 
 import numpy as np
@@ -26,6 +25,7 @@ import pandas as pd
 
 from quantbox.contracts import (
     ArtifactStore,
+    BrokerCapability,
     BrokerPlugin,
     DataPlugin,
     Mode,
@@ -35,7 +35,7 @@ from quantbox.contracts import (
     RunResult,
     StrategyPlugin,
 )
-from quantbox.decision import DecisionRules, final_targets, gross_cap, log_normalisation, risk_caps_row
+from quantbox.decision import DecisionRules, final_targets, gross_cap, log_normalisation
 from quantbox.engine.groups import GROUP_LIMITS_SCHEMA, GroupLimits, resolve_group_limits
 from quantbox.engine.policy import (
     POLICY_SCHEMA,
@@ -49,20 +49,18 @@ from quantbox.engine.policy import (
 )
 from quantbox.financing import resolve_leverage
 from quantbox.frequency import _parse_bar_size
-from quantbox.plugins.rebalancing.futures_rebalancer import RESIDUAL_STATUS
 from quantbox.strategy_runner import build_strategy_context, decided_weights, latest_weights, run_strategies
 from quantbox.trade.book import (
-    BASIS_MARK,
     DEFAULT_RECONCILIATION_TOLERANCE,
     REASON_UNPRICED,
-    MarkedBook,
     PortfolioValuation,
     PortfolioValuationError,
-    nan_if_unknown,
     read_book,
 )
-from quantbox.trade.notifier import Alerts, Notifier, escape_html
-from quantbox.trade.reconciliation.cycle import filter_reduce_only, open_cycle
+from quantbox.trade.capabilities import supports
+from quantbox.trade.executor import execute_orders, to_fee
+from quantbox.trade.notifier import Alerts, Notifier
+from quantbox.trade.reconciliation.cycle import open_cycle
 from quantbox.trade.reconciliation.ledger import EXEC_STATUS_TO_LEDGER
 from quantbox.trade.reconciliation.working_orders import (
     DEFAULT_MAX_AGE_DAYS,
@@ -109,31 +107,21 @@ def _valuation_notes(valuation: PortfolioValuation | None) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Constants (from quantlab orders.py)
+# Constants
 # ---------------------------------------------------------------------------
 DEFAULT_CAPITAL_AT_RISK = 1.0
-DEFAULT_MIN_NOTIONAL = 1.0
-DEFAULT_MIN_TRADE_SIZE = 0.01
 DEFAULT_STABLE_COIN = "USDC"
+
+#: Pipeline-level key only the deleted private order generator read as a floor
+#: (TOM-1458). The rebalancing plugin reads its own ``rebalancing.params``, as it
+#: always did when one was injected; a run that sets it here is told so. Its
+#: siblings ``min_notional`` and ``scaling_factor_min`` left the schema, so
+#: ``quantbox validate`` refuses them as unknown.
+UNREAD_ORDER_KEYS = ("min_trade_size",)
 
 #: The universe screen's inputs, stored next to ``prices.parquet`` in every run
 #: dir (TOM-1420), so a run's selection can be replayed config-only (TOM-1722).
 SCREEN_INPUTS = ("volume", "market_cap", "screen_volume")
-
-# ---------------------------------------------------------------------------
-# Low-level helpers (ported from quantlab orders.py / portfolio.py)
-# ---------------------------------------------------------------------------
-
-
-def _safe_float(v: Any) -> float | None:
-    """Best-effort float coercion for ledger records; None on failure/None."""
-    if v is None:
-        return None
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return None
-
 
 # Ledger result status mapped from an execution ``orders_details`` row status.
 # Backwards-compatible alias. The map itself now lives in
@@ -141,81 +129,6 @@ def _safe_float(v: Any) -> float | None:
 # out-of-cycle working-order resolver must translate into the same map and a
 # private second copy is how two callers start disagreeing.
 _EXEC_STATUS_TO_LEDGER = EXEC_STATUS_TO_LEDGER
-
-# The statuses a broker row may carry that the execution loop acts on. Anything
-# else — absent, empty, or a word outside this set — is UNKNOWN (TOM-1336).
-_EXEC_STATUSES = frozenset({"FILLED", "PARTIAL", "WORKING", "FAILED", "SKIPPED", "UNKNOWN"})
-
-
-def _adjust_quantity(qty: float, step_size: float) -> float:
-    """Round *qty* down to the nearest *step_size* (Binance-style)."""
-    if step_size <= 0:
-        return qty
-    step_str = f"{step_size:.8f}"
-    decimal_places = step_str.rstrip("0").split(".")[-1]
-    precision = len(decimal_places)
-    getcontext().rounding = ROUND_DOWN
-    return float(Decimal(qty).quantize(Decimal("1." + "0" * precision)))
-
-
-def _suppressed_order_records(suppressed: pd.DataFrame) -> list[dict[str, Any]]:
-    """Per-order detail for a freeze, as structured records.
-
-    A freeze alert used to carry only a status HISTOGRAM ("Below min notional=2,
-    Below threshold=1"). That says how many orders died and nothing about which,
-    how big, or how far under the bar they were — so the first question a human
-    asks on being paged ("what could not trade, and by how much?") required
-    opening the run log every time. Everything needed is already on the row; it
-    just never left the pipeline.
-
-    ``shortfall_usd`` is what makes it actionable: it is the gap between the
-    order and the venue minimum, i.e. exactly how much the book would have to
-    grow for this leg to become executable.
-    """
-    records: list[dict[str, Any]] = []
-    for _, row in suppressed.iterrows():
-        notional = float(row.get("Notional Value", 0) or 0)
-        min_notional = float(row.get("Min Notional", 0) or 0)
-        record = {
-            "symbol": str(row.get("Asset", "") or row.get("Symbol", "")),
-            "action": str(row.get("Action", "")).upper(),
-            "notional_usd": notional,
-            "min_notional_usd": min_notional,
-            "status": str(row.get("Order Status", "")),
-            "reason": str(row.get("Reason", "")),
-        }
-        if min_notional > 0 and 0 < notional < min_notional:
-            record["shortfall_usd"] = min_notional - notional
-        records.append(record)
-    return records
-
-
-def _format_suppressed_line(rec: dict[str, Any]) -> str:
-    """One human-readable line per suppressed order, for chat alerts."""
-    line = f"{rec['action']} {rec['symbol']} ${rec['notional_usd']:,.2f}"
-    shortfall = rec.get("shortfall_usd")
-    if shortfall:
-        line += f" (min ${rec['min_notional_usd']:,.2f}, short ${shortfall:,.2f})"
-    detail = rec.get("reason") or rec.get("status")
-    if detail:
-        line += f" — {detail}"
-    return line
-
-
-def _get_lot_size_and_min_notional(
-    symbol_info: dict | None,
-) -> tuple[float, float, float]:
-    """Extract (min_qty, step_size, min_notional) from Binance symbol info."""
-    min_qty, step_size, min_notional = 0.0, 0.0, 0.0
-    if not symbol_info:
-        return min_qty, step_size, min_notional
-    for f in symbol_info.get("filters", []):
-        if f.get("filterType") == "LOT_SIZE":
-            min_qty = float(f.get("minQty", 0))
-            step_size = float(f.get("stepSize", 0))
-        if f.get("filterType") == "NOTIONAL":
-            min_notional = float(f.get("minNotional", 0))
-    return min_qty, step_size, min_notional
 
 
 def _expand_price_fetch_universe(
@@ -242,9 +155,11 @@ def _expand_price_fetch_universe(
     ``universe`` for eligibility/weights/store, so this cannot change strategy
     sizing or signal logic — it only widens what gets a price fetched.
     """
-    if broker is None or mode not in ("paper", "live") or not hasattr(broker, "get_positions"):
+    if broker is None or mode not in ("paper", "live"):
         return universe
     try:
+        # A required BrokerPlugin method: called, never probed (TOM-1459). A
+        # broker without it fails here and keeps the universe, as before.
         positions_df = broker.get_positions()
     except Exception:
         return universe
@@ -352,16 +267,19 @@ def _resolve_funding_charge(broker: Any, asof: str) -> float | None:
     whole of #92: for 165 days a ``hasattr`` miss on a live run rendered as
     ``Funding charge $0.00`` on a perps book that pays funding hourly on its
     full notional, and nothing downstream could tell that from a free window.
+
+    Which source a broker has is its DECLARATION (``FUNDING_APPLIED``,
+    ``FUNDING_HISTORY``; TOM-1459), not a probe for the method.
     """
     if broker is None:
         return None
 
-    if hasattr(broker, "apply_funding"):
+    if supports(broker, BrokerCapability.FUNDING_APPLIED):
         charge = broker.apply_funding()
         logger.info("Applied funding charge: %.2f", charge or 0.0)
         return charge
 
-    if hasattr(broker, "fetch_funding_payments"):
+    if supports(broker, BrokerCapability.FUNDING_HISTORY):
         window_start, window_end = _funding_window(asof)
         charge = broker.fetch_funding_payments(window_start, window_end)
         if charge is None:
@@ -375,8 +293,8 @@ def _resolve_funding_charge(broker: Any, asof: str) -> float | None:
         return charge
 
     logger.warning(
-        "Broker %s exposes no funding source (neither apply_funding nor "
-        "fetch_funding_payments) — funding reported UNKNOWN, not $0.00",
+        "Broker %s declares no funding source (neither funding_applied nor "
+        "funding_history) — funding reported UNKNOWN, not $0.00",
         type(broker).__name__,
     )
     return None
@@ -403,23 +321,6 @@ def _funding_window(asof: str) -> tuple[str, str]:
         logger.warning("Unparseable asof %r for the funding window — using the last %s", asof, FUNDING_LOOKBACK)
         ts = pd.Timestamp.utcnow()
     return (ts - FUNDING_LOOKBACK).isoformat(), ts.isoformat()
-
-
-def _to_fee(value: Any) -> float | None:
-    """A fee that was not reported is UNKNOWN, never 0.0 (#92).
-
-    The `float(x or 0)` idiom this replaces mapped both "no fee key" and
-    "fee was genuinely zero" onto 0.0. Only the second is data. Conflating them
-    is what produced 165 days of `Fees (cumulative) $0.00` on a book with ~24x
-    equity turnover.
-    """
-    if value is None:
-        return None
-    try:
-        f = float(value)
-    except (TypeError, ValueError):
-        return None
-    return None if f != f else f  # NaN is not a measurement
 
 
 #: The orders artifact's columns. One definition, because an "empty orders"
@@ -537,7 +438,8 @@ class TradingPipeline:
                     "type": "object",
                     "description": (
                         "The decision's short clip (allow_short) and gross cap (max_leverage) when no rebalancer "
-                        "plugin is injected (an injected rebalancer's own params are the rules then); also "
+                        "plugin is injected, a backtest-mode run (paper and live need one, TOM-1458; its own "
+                        "params are the rules then); also "
                         "handed to risk plugins. tranches: N is DEPRECATED (TOM-1513, TOM-1518): it is "
                         "rebalancing_policy {cadence: tranche, tranches: N}, and warns."
                     ),
@@ -589,22 +491,10 @@ class TradingPipeline:
                     "minimum": 0,
                     "default": 0.01,
                     "description": (
-                        "Min abs(weight delta) to consider a trade (the order-level floor). With a declared "
-                        "rebalancing_policy its min_trade is the floor instead and this key is refused."
+                        "Not a floor here since TOM-1458 (a run that sets it is warned): the order-level floor "
+                        "is the rebalancing plugin's rebalancing.params.min_trade_size. Beside a declared "
+                        "rebalancing_policy it is refused (its min_trade is the floor)."
                     ),
-                },
-                "min_notional": {
-                    "type": "number",
-                    "minimum": 0,
-                    "default": 1.0,
-                    "description": "Orders below this notional (quote currency) are dropped.",
-                },
-                "scaling_factor_min": {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 1,
-                    "default": 0.9,
-                    "description": "Lowest scale-down applied to buys when cash is short before orders are dropped.",
                 },
                 "trading_enabled": {
                     "type": "boolean",
@@ -710,6 +600,23 @@ class TradingPipeline:
     ) -> RunResult:
         if mode in ("paper", "live") and broker is None:
             raise ValueError("broker_required_for_paper_or_live")
+        if mode in ("paper", "live") and rebalancer is None:
+            # Q4 (Tom, 2026-10-10, TOM-1458): the pipeline's private order
+            # generator is deleted and there is no default plugin. Refused
+            # before anything is read or stored, so the error is the run's only
+            # outcome.
+            raise ValueError(
+                f"{self.meta.name} in {mode} mode needs plugins.rebalancing: the pipeline sizes no "
+                "order itself (TOM-1458). Declare rebalancing.standard.v1 for a spot book or "
+                "rebalancing.futures.v1 for a perps or margin book."
+            )
+        unread = [key for key in UNREAD_ORDER_KEYS if key in params]
+        if unread:
+            logger.warning(
+                "pipeline params %s: not a floor here; the rebalancing plugin sizes the orders from its own "
+                "rebalancing.params (TOM-1458)",
+                ", ".join(unread),
+            )
         # A fresh alert record per run; the channel opens on the live path below. A
         # `run(notifier=...)` serves THIS run only — it never sticks to the pipeline.
         injected = kwargs.get("notifier")
@@ -840,23 +747,24 @@ class TradingPipeline:
         a_agg_w = store.put_parquet("aggregated_weights", pd.DataFrame(agg_records))
         logger.info("Aggregated weights: %d assets", len(final_weights))
 
-        # --- Inject latest prices into paper broker (if supported) ---
-        if broker is not None and hasattr(broker, "set_prices"):
+        # --- Inject latest prices into paper broker (if it declares PRICE_INJECTION) ---
+        if supports(broker, BrokerCapability.PRICE_INJECTION):
             wide_prices = market_data.get("prices", pd.DataFrame())
             if not wide_prices.empty:
                 latest = wide_prices.iloc[-1].dropna()
                 broker.set_prices({str(k): float(v) for k, v in latest.items()})
                 logger.info("Injected %d prices into broker", len(latest))
 
-        # --- Inject funding rates into broker (if supported) ---
+        # --- Inject funding rates into broker (if it declares FUNDING_RATE_INJECTION) ---
         wide_funding = market_data.get("funding_rates", pd.DataFrame())
-        if broker is not None and not wide_funding.empty and hasattr(broker, "set_funding_rates"):
+        if not wide_funding.empty and supports(broker, BrokerCapability.FUNDING_RATE_INJECTION):
             latest_funding = wide_funding.iloc[-1].dropna()
             broker.set_funding_rates({str(k): float(v) for k, v in latest_funding.items()})
             logger.info("Injected %d funding rates into broker", len(latest_funding))
 
-        # --- Inject position limits into broker (if supported) ---
-        if broker is not None and hasattr(broker, "set_position_limits") and hasattr(data, "_fetcher"):
+        # --- Inject position limits into broker (if it declares POSITION_LIMIT_INJECTION) ---
+        # The `_fetcher` probes below are on the DATA plugin, not the broker.
+        if supports(broker, BrokerCapability.POSITION_LIMIT_INJECTION) and hasattr(data, "_fetcher"):
             fetcher = data._fetcher
             if hasattr(fetcher, "get_position_limits"):
                 limit_symbols = universe["symbol"].tolist() if not universe.empty else []
@@ -912,23 +820,6 @@ class TradingPipeline:
                     return rebalancer.generate_orders(weights=weights, broker=broker, params=rebal_params)
 
                 book_capital = float(rebal_params.get("capital_at_risk", DEFAULT_CAPITAL_AT_RISK))
-            elif live_book:
-                internal_params = {**params, "min_trade_size": 0.0} if policy.declared else params
-
-                def generate(weights: dict[str, float]) -> dict[str, Any]:
-                    out = self._generate_orders(
-                        broker=broker,
-                        weights=self._apply_risk_transforms(weights, params),
-                        capital_at_risk=float(params.get("capital_at_risk", DEFAULT_CAPITAL_AT_RISK)),
-                        stable_coin=str(params.get("stable_coin_symbol", DEFAULT_STABLE_COIN)),
-                        params=internal_params,
-                        mode=mode,
-                    )
-                    out["weights"] = self._apply_risk_transforms(weights, params)
-                    return out
-
-                book_capital = float(params.get("capital_at_risk", DEFAULT_CAPITAL_AT_RISK))
-            if live_book:
                 try:
                     policy_decision, order_result = self._policy_orders(
                         policy=policy,
@@ -1029,29 +920,11 @@ class TradingPipeline:
         # first alert (which a quiet day never reaches).
         self._alert_channel()
         stable_coin = str(params.get("stable_coin_symbol", DEFAULT_STABLE_COIN))
-        capital_at_risk = float(params.get("capital_at_risk", DEFAULT_CAPITAL_AT_RISK))
 
-        if order_result is not None:
-            # Already ran the rebalancer (or the policy's order generation) above; reuse result
-            pass
-        else:
-            try:
-                order_result = self._generate_orders(
-                    broker=broker,
-                    weights=final_weights,
-                    capital_at_risk=capital_at_risk,
-                    stable_coin=stable_coin,
-                    params=params,
-                    mode=mode,
-                )
-            except PortfolioValuationError as exc:  # see the rebalancer arm above
-                valuation_refusal = exc
-                api_errors.append({"stage": "portfolio_valuation", "error": str(exc)})
-                logger.error(
-                    "Portfolio valuation REFUSED (%s) -- sizing nothing this cycle; bookkeeping stages still run",
-                    exc,
-                )
-                order_result = _empty_order_result()
+        if order_result is None:
+            # The rebalancer sized the orders above on every paper or live run;
+            # nothing here sizes them instead (TOM-1458).
+            raise ValueError(f"{self.meta.name}: no order generator ran for mode {mode!r}; declare plugins.rebalancing")
         rebalancing_df = order_result["rebalancing"]
         orders_df = order_result["orders"]
         total_value = order_result["total_value"]
@@ -1113,14 +986,13 @@ class TradingPipeline:
         except Exception as exc:  # noqa: BLE001 - bookkeeping must never be fatal
             logger.error("Working-order resolution failed (non-fatal): %s", exc)
 
-        # --- Stage 7: Execution ---
+        # --- Stage 7: Execution (quantbox.trade.executor, TOM-1458) ---
         trading_enabled = bool(params.get("trading_enabled", True))
-        execution_report = self._execute_orders(
+        execution_report = execute_orders(
             broker=broker,
             orders_df=orders_df,
-            stable_coin=stable_coin,
             trading_enabled=trading_enabled,
-            mode=mode,
+            alert=self._alert,
             # Submission-time intent capture: thread the SAME ledger so intent is
             # recorded at the broker call (crash-durable), and Stage 7b reads it back.
             ledger=recon.ledger,
@@ -1173,7 +1045,7 @@ class TradingPipeline:
             # `alloc2orders` was reordered for exactly this; this twin was not.
             cash2 = broker.get_cash() or {}
             cash_usd_post = sum(float(v) for v in cash2.values())
-            if hasattr(broker, "get_equity"):
+            if supports(broker, BrokerCapability.EQUITY):
                 portfolio_value_post = float(broker.get_equity())
             else:
                 # The marked book after the orders (lots summed, one snapshot of
@@ -1253,18 +1125,22 @@ class TradingPipeline:
         # have. Every LIVE run therefore reported a FABRICATED $0.00: 165 days
         # of it on a book that turned over ~24x its equity, which made the
         # TOM-33 loss attribution unresolvable. An unmeasured cost is UNKNOWN,
-        # not free, so it is None here and null downstream.
+        # not free, so it is None here and null downstream. A broker that
+        # measures its fees DECLARES it (FEES_ACCRUED, TOM-1459).
         cumulative_fees: float | None = None
-        if broker is not None and hasattr(broker, "_cumulative_fees"):
-            cumulative_fees = float(broker._cumulative_fees)
+        if supports(broker, BrokerCapability.FEES_ACCRUED):
+            cumulative_fees = float(broker.cumulative_fees)
 
         # --- Stage 8: Artifacts ---
-        # Collect broker cost config for artifact
+        # The simulated cost model, recorded only for a broker that declares one.
         broker_costs: dict[str, Any] = {}
-        if broker is not None:
-            for attr in ("spread_bps", "slippage_bps", "maker_fee_bps", "taker_fee_bps"):
-                if hasattr(broker, attr):
-                    broker_costs[attr] = float(getattr(broker, attr))
+        if supports(broker, BrokerCapability.COST_MODEL):
+            broker_costs = {
+                "spread_bps": float(broker.spread_bps),
+                "slippage_bps": float(broker.slippage_bps),
+                "maker_fee_bps": float(broker.maker_fee_bps),
+                "taker_fee_bps": float(broker.taker_fee_bps),
+            }
 
         artifact_payload = self._build_artifact_payload(
             rebalancing_df=rebalancing_df,
@@ -1389,7 +1265,7 @@ class TradingPipeline:
                 "residual_day": bool(execution_report.get("residual_day", False)),
                 "residuals": execution_report.get("residuals", []),
                 # This cycle's order failures (#87) — a first-class exception input
-                # the notifier must alert on, from every exit of _execute_orders.
+                # the notifier must alert on, from every exit of execute_orders.
                 "order_failures": int(execution_report.get("order_failures", 0)),
                 "order_failure_detail": execution_report.get("order_failure_detail", ""),
                 # Tier-2 exception inputs the notifier threads into BookContext (#62).
@@ -1619,23 +1495,6 @@ class TradingPipeline:
         return decision, result
 
     # ==================================================================
-    # Stage 4: Risk transforms
-    # ==================================================================
-    def _apply_risk_transforms(
-        self,
-        weights: dict[str, float],
-        params: dict[str, Any],
-    ) -> dict[str, float]:
-        """The short clip, then the gross cap (:func:`quantbox.decision.risk_caps_row`), on the targets the
-        internal order generator sizes; zeros dropped, largest first.
-
-        The decision (:func:`quantbox.decision.final_targets`) already applied
-        both, in the same order, so this re-application changes nothing. Tranching
-        is the rebalancing policy's tranche cadence (:meth:`_live_policy`, TOM-1518).
-        """
-        return _target_dict(risk_caps_row(weights, **self._risk_rules(params)))
-
-    # ==================================================================
     # Stage 5: Order generation
     # ==================================================================
     def _rebalancer_params(
@@ -1689,1277 +1548,22 @@ class TradingPipeline:
         rebal_params["mode"] = mode
         return rebal_params
 
-    def _generate_orders(
-        self,
-        broker: BrokerPlugin,
-        weights: dict[str, float],
-        capital_at_risk: float,
-        stable_coin: str,
-        params: dict[str, Any],
-        mode: Mode,
-    ) -> dict[str, Any]:
-        """Generate rebalancing DataFrame and executable orders.
-
-        Ported from quantlab ``orders.py:generate_portfolio_orders()``.
-
-        ``mode`` drives the pre-trade valuation gate: in ``live`` a book that
-        cannot be fully marked refuses instead of sizing off an understated
-        portfolio value. It is REQUIRED rather than defaulting to ``"paper"``:
-        a default would let a future caller ungate a live book by forgetting an
-        argument, and forgetting is not a declaration that this is a simulation.
-        """
-        min_notional_cfg = float(params.get("min_notional", DEFAULT_MIN_NOTIONAL))
-        min_trade_size = float(params.get("min_trade_size", DEFAULT_MIN_TRADE_SIZE))
-        scaling_factor_min = float(params.get("scaling_factor_min", 0.9))
-        exclusions = list(params.get("exclusions", [])) + [stable_coin]
-        exclusions = list(set(exclusions))
-
-        # The marked book: positions, quote cash and one snapshot of marks for
-        # the targets and the held names (quantbox.trade.book).
-        book = read_book(broker, wanted=weights.keys(), exclude=exclusions, cash=(stable_coin, "USD"))
-        cash_available = float(book.cash or 0.0)
-
-        # Portfolio value. `broker.get_equity()` is preferred where the broker
-        # has one (for derivatives, cash + sum(qty * price) is wrong for
-        # shorts); otherwise the book is marked. Either way an unmarkable
-        # holding is a REFUSAL in live mode, never a silently smaller number --
-        # see quantbox.trade.book.
-        valuation = book.valuation(
-            broker=broker,
-            mode=mode,
-            # This path marks a spot/cash book, so an undeclared broker in a
-            # SIMULATION keeps being valued the way it always was here. On live
-            # an undeclared broker refuses.
-            fallback_basis=BASIS_MARK,
-            stable_coin=stable_coin,
-            exclusions=exclusions,
-            tolerance=float(params.get("equity_reconciliation_tolerance", DEFAULT_RECONCILIATION_TOLERANCE)),
-            require_reconciliation=bool(params.get("require_equity_reconciliation", True)),
-        )
-        total_value = valuation.value
-
-        if total_value <= 0:
-            logger.error(
-                "Portfolio value is zero or negative (cash=%.2f, %d holding(s), state=%s)",
-                valuation.cash,
-                valuation.n_holdings,
-                valuation.state,
-            )
-            return {
-                "orders": pd.DataFrame(),
-                "rebalancing": pd.DataFrame(),
-                "total_value": 0.0,
-                "valuation": valuation,
-            }
-
-        # Apply capital-at-risk
-        adjusted_weights = {a: w * capital_at_risk for a, w in weights.items()}
-
-        # Target positions
-        target_positions: dict[str, float] = {}
-        for asset, weight in adjusted_weights.items():
-            p = book.mark(asset)
-            if p is not None:
-                target_positions[asset] = (total_value * weight) / p
-
-        # Rebalancing DataFrame
-        rebalancing_df = self._build_rebalancing(
-            book=book,
-            target_positions=target_positions,
-            total_value=total_value,
-            strategy_weights=adjusted_weights,
-            exclusions=exclusions,
-        )
-
-        # Executable orders
-        orders_df = self._create_executable_orders(
-            rebalancing_df=rebalancing_df,
-            broker=broker,
-            stable_coin=stable_coin,
-            min_notional_default=min_notional_cfg,
-            min_trade_size=min_trade_size,
-            cash_available=cash_available,
-            scaling_factor_min=scaling_factor_min,
-        )
-
-        return {
-            "orders": orders_df,
-            "rebalancing": rebalancing_df,
-            "total_value": total_value,
-            "valuation": valuation,
-        }
-
-    # ------------------------------------------------------------------
-
-    def _build_rebalancing(
-        self,
-        book: MarkedBook,
-        target_positions: dict[str, float],
-        total_value: float,
-        strategy_weights: dict[str, float],
-        exclusions: list[str],
-    ) -> pd.DataFrame:
-        """Build the rebalancing analysis DataFrame.
-
-        Ported from quantlab ``orders.py:generate_rebalancing_dataframe()``.
-        Values come from the marked book. A held name with no mark has an
-        UNKNOWN current value and weight (NaN), never 0 (TOM-1455).
-        """
-        current_holdings = book.held
-        assets = sorted(set(current_holdings.keys()) | set(target_positions.keys()))
-        assets = [a for a in assets if a not in exclusions]
-
-        rows: list[dict[str, Any]] = []
-        for asset in assets:
-            current_qty = current_holdings.get(asset, 0.0)
-            price = book.mark(asset)
-            current_value = nan_if_unknown(book.value_of(asset))
-            target_qty = target_positions.get(asset, 0.0)
-            target_value = nan_if_unknown(book.value_of(asset, target_qty))
-            current_weight = current_value / total_value if total_value > 0 else 0
-            target_weight = target_value / total_value if total_value > 0 else 0
-            weight_delta = strategy_weights.get(asset, 0) - current_weight
-            delta_qty = target_qty - current_qty
-
-            if delta_qty > 0:
-                trade_action = "Buy"
-            elif delta_qty < 0:
-                trade_action = "Sell"
-            else:
-                trade_action = "Hold"
-
-            rows.append(
-                {
-                    "Asset": asset,
-                    "Current Quantity": current_qty,
-                    "Current Value": current_value,
-                    "Current Weight": current_weight,
-                    "Target Quantity": target_qty,
-                    "Target Value": target_value,
-                    "Target Weight": target_weight,
-                    "Weight Delta": weight_delta,
-                    "Delta Quantity": delta_qty,
-                    "Price": price,
-                    "Trade Action": trade_action,
-                }
-            )
-
-        return pd.DataFrame(rows)
-
-    # ------------------------------------------------------------------
-
-    def _create_executable_orders(
-        self,
-        rebalancing_df: pd.DataFrame,
-        broker: BrokerPlugin,
-        stable_coin: str,
-        min_notional_default: float,
-        min_trade_size: float,
-        cash_available: float,
-        scaling_factor_min: float,
-    ) -> pd.DataFrame:
-        """Convert rebalancing to executable orders with lot/step/notional validation.
-
-        Ported from quantlab ``orders.py:generate_orders_from_rebalancing()``.
-        Uses ``broker.get_market_snapshot()`` for symbol info where available.
-        """
-        if rebalancing_df.empty:
-            return pd.DataFrame(columns=list(ORDER_COLUMNS))
-
-        order_records: list[dict[str, Any]] = []
-
-        for _, row in rebalancing_df.iterrows():
-            asset = row["Asset"]
-            symbol = f"{asset}{stable_coin}"
-            action = row["Trade Action"].lower()
-            delta_qty = row["Delta Quantity"]
-            price = row["Price"]
-            status = None
-            reason = None
-            adjusted_qty = 0.0
-            notional_value = 0.0
-            min_qty = 0.0
-            step_size = 0.0
-            min_notional = min_notional_default
-            scaling_factor = None
-
-            if action == "hold" or delta_qty == 0:
-                status = "Zero delta"
-                reason = "No trade needed"
-            elif price is None or pd.isna(price) or price == 0:
-                # No mark: the held name's value and weight are UNKNOWN (NaN, the
-                # marked book), so no threshold, notional or scaling can judge
-                # it. Before TOM-1455 its weight read as 0 -- a short slipped into
-                # buy scaling with a NaN price, and a long close was "To be
-                # placed" at a NaN price.
-                status = "Zero price"
-                reason = "No price available"
-            else:
-                zero_target_sell = (
-                    action == "sell" and row.get("Target Weight", 0) == 0 and row.get("Current Quantity", 0) > 0
-                )
-                if abs(row["Weight Delta"]) < min_trade_size and not zero_target_sell:
-                    status = "Below threshold"
-                    reason = f"abs(weight delta) < {min_trade_size}"
-                else:
-                    # Try to get symbol info from broker snapshot
-                    try:
-                        snap = broker.get_market_snapshot([asset])
-                        if snap is not None and not snap.empty:
-                            info_row = snap.iloc[0]
-                            min_qty = float(info_row.get("min_qty", 0) or 0)
-                            step_size = float(info_row.get("step_size", 0) or 0)
-                            mn = info_row.get("min_notional")
-                            if mn is not None and float(mn) > 0:
-                                min_notional = float(mn)
-                    except Exception:
-                        pass
-
-                    if action == "sell":
-                        adjusted_qty = _adjust_quantity(abs(delta_qty), step_size) if step_size > 0 else abs(delta_qty)
-                        notional_value = adjusted_qty * price if price else 0.0
-
-                        if price is None or price == 0:
-                            status = "Zero price"
-                            reason = "No price available"
-                            adjusted_qty = 0.0
-                        elif notional_value < min_notional:
-                            if zero_target_sell and min_qty > 0 and (min_qty * price) >= min_notional:
-                                # Full close-out: round up to min lot so position actually closes
-                                adjusted_qty = min_qty
-                                notional_value = min_qty * price
-                                status = "To be placed"
-                                reason = f"Rounded up to min_qty={min_qty} (full close-out)"
-                            else:
-                                status = "Below min notional"
-                                reason = f"Notional {notional_value:.4f} < min_notional {min_notional:.4f}"
-                                adjusted_qty = 0.0
-                        elif min_qty > 0 and adjusted_qty < min_qty:
-                            if zero_target_sell:
-                                adjusted_qty = min_qty
-                                notional_value = min_qty * price
-                                status = "To be placed"
-                                reason = f"Rounded up to min_qty={min_qty} (full close-out)"
-                            else:
-                                status = "Below min qty"
-                                reason = f"Qty {adjusted_qty:.8f} < min_qty {min_qty:.8f}"
-                                adjusted_qty = 0.0
-                        else:
-                            status = "To be placed"
-                            reason = ""
-                    elif action == "buy":
-                        status = "Pending scaling"
-                        reason = ""
-
-            order_records.append(
-                {
-                    "Asset": asset,
-                    "Symbol": symbol,
-                    "Action": action.capitalize(),
-                    "Raw Quantity": abs(delta_qty),
-                    "Adjusted Quantity": adjusted_qty,
-                    "Notional Value": notional_value,
-                    "Price": price,
-                    "Min Notional": min_notional,
-                    "Min Qty": min_qty,
-                    "Step Size": step_size,
-                    "Order Status": status,
-                    "Reason": reason,
-                    "Scaling Factor": scaling_factor,
-                }
-            )
-
-        # --- Buy scaling (ported from quantlab) ---
-        buy_indices = [
-            i
-            for i, rec in enumerate(order_records)
-            if rec["Action"] == "Buy" and rec["Order Status"] == "Pending scaling"
-        ]
-        total_buy_value = sum(order_records[i]["Raw Quantity"] * (order_records[i]["Price"] or 0) for i in buy_indices)
-        cash_from_sells = sum(
-            rec["Notional Value"]
-            for rec in order_records
-            if rec["Action"] == "Sell" and rec["Order Status"] == "To be placed"
-        )
-        available_cash = cash_available + cash_from_sells
-        scaling_factor = min(1.0, available_cash / total_buy_value) if total_buy_value > 0 else 0.0
-
-        if total_buy_value > 0 and scaling_factor >= scaling_factor_min:
-            for i in buy_indices:
-                rec = order_records[i]
-                price = rec["Price"]
-                step_size = rec["Step Size"]
-                min_qty_val = rec["Min Qty"]
-                mn = rec["Min Notional"]
-                raw_qty = rec["Raw Quantity"]
-
-                scaled_qty = (
-                    _adjust_quantity(raw_qty * scaling_factor, step_size)
-                    if step_size and price
-                    else raw_qty * scaling_factor
-                )
-                scaled_notional = scaled_qty * price if price else 0.0
-                rec["Scaling Factor"] = scaling_factor
-                rec["Adjusted Quantity"] = scaled_qty
-                rec["Notional Value"] = scaled_notional
-
-                if price is None or price == 0:
-                    rec["Order Status"] = "Zero price"
-                    rec["Reason"] = "No price available"
-                    rec["Adjusted Quantity"] = 0.0
-                elif scaled_notional < mn:
-                    rec["Order Status"] = "Below min notional"
-                    rec["Reason"] = f"Notional {scaled_notional:.4f} < min_notional {mn:.4f}"
-                    rec["Adjusted Quantity"] = 0.0
-                elif min_qty_val > 0 and scaled_qty < min_qty_val:
-                    rec["Order Status"] = "Below min qty"
-                    rec["Reason"] = f"Qty {scaled_qty:.8f} < min_qty {min_qty_val:.8f}"
-                    rec["Adjusted Quantity"] = 0.0
-                elif scaled_qty == 0:
-                    rec["Order Status"] = "Zero quantity"
-                    rec["Reason"] = "Scaled quantity is zero"
-                else:
-                    rec["Order Status"] = "To be placed"
-                    rec["Reason"] = ""
-        elif total_buy_value > 0:
-            logger.warning(
-                "Buy scaling factor %.4f < minimum %.2f, skipping buys",
-                scaling_factor,
-                scaling_factor_min,
-            )
-
-        columns = [
-            "Asset",
-            "Symbol",
-            "Action",
-            "Raw Quantity",
-            "Adjusted Quantity",
-            "Price",
-            "Notional Value",
-            "Min Notional",
-            "Min Qty",
-            "Step Size",
-            "Scaling Factor",
-            "Order Status",
-            "Reason",
-        ]
-        order_df = pd.DataFrame(order_records, columns=columns)
-        order_df["Executable"] = (order_df["Adjusted Quantity"] > 0) & (order_df["Order Status"] == "To be placed")
-        return order_df
-
     # ==================================================================
-    # Stage 7: Execution
+    # Stage 7: Execution -- quantbox.trade.executor (TOM-1458)
     # ==================================================================
-    def _report_order_failures(self, report: dict[str, Any]) -> None:
-        """Record + alert this cycle's order failures. Idempotent; no-op at zero.
+    def _execute_orders(self, *, broker: BrokerPlugin, orders_df: pd.DataFrame, trading_enabled: bool, **kwargs):
+        """The old private name, kept ONLY for quantbox-live's ``scripts/shadow_run.py`` execution replay.
 
-        The two freeze guards are both CONJUNCTIONS requiring a total standstill:
-        one needs ``total_executed == 0`` AND a skipped close-out SELL, the other
-        needs the broker to return an EMPTY frame. Neither fires on the commonest
-        real failure — "some orders filled, some were rejected" — which is how
-        carver-HL emitted the same rejected ETH/SOL close-outs for 33 consecutive
-        days while every run was recorded as healthy (quantbox#87).
-
-        Called from BOTH exits of :meth:`_execute_orders`: the normal path and the
-        ``place_orders`` exception path. The exception path is the worst case —
-        the whole batch failed at submission and nothing traded — so it must alert
-        too, rather than returning early past the report.
+        That script calls ``pipeline._execute_orders(broker=, orders_df=, stable_coin=,
+        trading_enabled=, mode=)`` at both refs of a shadow run. The execution is
+        :func:`quantbox.trade.executor.execute_orders`; ``stable_coin`` and
+        ``mode`` were never read. Delete this once the script calls the module.
         """
-        n_failed = int(report["summary"]["total_failed"])
-        if not n_failed:
-            return
-        failed_list = ", ".join(
-            f"{str(d.get('action', '')).upper()} {d.get('symbol', '')} ({d.get('error', 'unknown')})"
-            for d in report["orders_details"]
-            if d.get("status") == "FAILED"
+        kwargs.pop("stable_coin", None)
+        kwargs.pop("mode", None)
+        return execute_orders(
+            broker=broker, orders_df=orders_df, trading_enabled=trading_enabled, alert=self._alert, **kwargs
         )
-        report["order_failures"] = n_failed
-        report["order_failure_detail"] = failed_list
-        logger.error(
-            "ORDER FAILURES: %d of %d submitted order(s) failed — %s",
-            n_failed,
-            n_failed + int(report["summary"]["total_executed"]),
-            failed_list,
-        )
-        self._alert(
-            f"❌ <b>{n_failed} ORDER(S) FAILED</b>\n{escape_html(failed_list)}\n"
-            "Targets NOT reached for these symbols; exposure is unchanged.",
-            site="order_failures",
-        )
-
-    def _execute_orders(
-        self,
-        broker: BrokerPlugin,
-        orders_df: pd.DataFrame,
-        stable_coin: str,
-        trading_enabled: bool,
-        mode: str,
-        ledger: Any = None,
-        cycle_id: str | None = None,
-        gate_orders_allowed: bool = True,
-        gate_reduce_only: bool = False,
-        capture_fail_closed: bool = False,
-        working_store: Any = None,
-    ) -> dict[str, Any]:
-        """Execute orders via broker with sell-before-buy ordering.
-
-        Ported from quantlab ``orders.py:execute_orders()``.
-
-        Reconciliation (issue #90):
-
-        * If ``ledger`` is supplied, the order INTENT is captured at the broker
-          submission call — inside this method, immediately before
-          ``broker.place_orders`` — and each order's RESULT is recorded as fills
-          are processed. This makes the ledger a crash-durable audit trail: if the
-          run dies between submission and Stage 7b, the intent is already on disk.
-        * ``gate_orders_allowed`` / ``gate_reduce_only`` are the PRE-EXECUTION gate
-          the caller derived from the persisted prior-cycle recon state (enforce
-          mode only). ``gate_orders_allowed=False`` halts all orders this cycle;
-          ``gate_reduce_only=True`` keeps only exposure-reducing orders. In observe
-          mode the caller passes the permissive defaults, so behavior is unchanged.
-        * ``working_store`` (optional): queue for orders the venue ACCEPTED that
-          were still resting on the book when the confirmation window closed. They
-          are recorded here so the next cycle can resolve them against the venue
-          and book the real fill; without a store they are still reported, but
-          their eventual fill is not recovered.
-        * ``capture_fail_closed`` (enforce mode): if intent capture fails for an
-          order, that order is DROPPED (not submitted) — under enforcement we must
-          never trade live without the crash-durable intent record. In observe mode
-          (default) a capture failure is only an observability loss and the order
-          still sends.
-        """
-        # Orders left working at the venue this cycle. Defined before any early
-        # return so the persist step at the end is always safe to run.
-        working_to_queue: list[dict[str, Any]] = []
-        report: dict[str, Any] = {
-            "executed_orders": [],
-            "failed_orders": [],
-            "summary": {
-                "total_executed": 0,
-                "total_partial": 0,
-                "total_failed": 0,
-                # Accepted by the venue, still resting on the book when the run
-                # ended. Neither executed nor failed — resolved next cycle.
-                "total_working": 0,
-                "total_value": 0.0,
-                "total_cost": 0.0,
-            },
-            "orders_details": [],
-            "api_errors": [],  # broker API errors caught during execution (#62)
-        }
-
-        if orders_df is None or orders_df.empty:
-            logger.info("No orders generated")
-            return report
-
-        if not trading_enabled:
-            logger.info("trading_enabled=False, skipping execution")
-            return report
-
-        # --- Pre-execution HALT gate (enforce mode, issue #90) -------------
-        # Derived by the caller from the persisted prior-cycle recon state. A HALT
-        # means the order path / books are not trustworthy: send nothing this cycle.
-        if not gate_orders_allowed:
-            report["recon_gated"] = "halt"
-            logger.error(
-                "RECON ENFORCE: %d order(s) HALTED pre-execution by the prior-cycle gate — nothing sent this cycle.",
-                len(orders_df),
-            )
-            self._alert(
-                f"🛑 <b>RECON ENFORCE — HALT</b>\n{len(orders_df)} order(s) NOT sent; "
-                "book is in HALT from the prior cycle. Manual clear required.",
-                site="recon_halt",
-            )
-            return report
-
-        executable = (
-            orders_df[orders_df.get("Executable", pd.Series(dtype=bool))].copy()
-            if "Executable" in orders_df.columns
-            else orders_df
-        )
-
-        # Partial reduces below the venue minimum (TOM-1778): never sent, because
-        # the venue rejects them. A known residual — listed, never a freeze.
-        residuals = (
-            orders_df[orders_df["Order Status"] == RESIDUAL_STATUS]
-            if "Order Status" in orders_df.columns
-            else pd.DataFrame()
-        )
-        if not residuals.empty:
-            report["residuals"] = _suppressed_order_records(residuals)
-            logger.info(
-                "RESIDUAL: %d partial reduce(s) below the venue minimum not sent, residual retained: %s",
-                len(residuals),
-                "; ".join(_format_suppressed_line(r) for r in report["residuals"]),
-            )
-
-        # --- Pre-execution FLATTEN gate (enforce mode, issue #90) ----------
-        # Keep only exposure-reducing orders (clamped so they never cross zero).
-        if gate_reduce_only and isinstance(executable, pd.DataFrame) and not executable.empty:
-            before_n = len(executable)
-            executable = filter_reduce_only(executable, broker)
-            report["recon_gated"] = "flatten"
-            logger.warning(
-                "RECON ENFORCE: reduce-only gate — %d of %d order(s) retained (exposure-reducing only).",
-                len(executable),
-                before_n,
-            )
-            if executable.empty:
-                # All orders were opening/increasing — nothing to reduce. This is a
-                # clean gated no-op, NOT a freeze.
-                report["recon_reduce_only_noop"] = True
-                logger.warning("RECON ENFORCE reduce-only: no exposure-reducing orders to send.")
-                return report
-
-        if executable.empty:
-            reasons: dict[str, Any] = {}
-            # Statuses that mean "the strategy WANTED to trade but the order was
-            # suppressed by a guard" (vs. a legitimately quiet day of zero-deltas).
-            suppressed_statuses = {
-                "Below min notional",
-                "Below threshold",
-                "Below min qty",
-                "Zero quantity",
-                "Zero price",
-                "Invalid (NaN)",
-            }
-            suppressed = pd.DataFrame()
-            if "Order Status" in orders_df.columns:
-                reasons = orders_df["Order Status"].value_counts().to_dict()
-                suppressed = orders_df[orders_df["Order Status"].isin(suppressed_statuses)]
-
-            # RESIDUAL DAY (TOM-1778; Tom, 2026-10-12: "Residual is not a freeze").
-            # When the book's only untraded EXITS are partial reduces below the
-            # venue minimum, and everything else suppressed is a sub-min ENTRY (an
-            # open from flat or a same-side add, flagged `opens_exposure` by the
-            # rebalancer), nothing is trapped: the venue cannot take those trims at
-            # this book size. Drift stays recon's job. Anything else suppressed —
-            # a close, a flip through zero, a reduce, a data fault (zero price,
-            # NaN), or a row without the flag — still goes to the dead-man below.
-            if not residuals.empty:
-                opens = (
-                    suppressed["opens_exposure"].eq(True)
-                    if "opens_exposure" in suppressed.columns
-                    else pd.Series(False, index=suppressed.index)
-                )
-                only_entries = bool(
-                    (
-                        suppressed["Order Status"].isin({"Below min notional", "Below threshold", "Below min qty"})
-                        & opens
-                    ).all()
-                )
-                if only_entries:
-                    report["residual_day"] = True
-                    report["residual_reasons"] = reasons
-                    logger.info(
-                        "RESIDUAL DAY: no order to send — %d residual partial reduce(s) below the venue "
-                        "minimum and %d sub-min entry leg(s). Not a freeze.",
-                        len(residuals),
-                        len(suppressed),
-                    )
-                    return report
-
-            if len(suppressed) > 0:
-                # Distinguish a TRAPPED book (real freeze) from a QUIET DAY
-                # (all-cash, nothing to do). The dead-man freeze exists to catch
-                # a book that SHOULD be rebalanced/exited but CANNOT — i.e. a
-                # held position whose exit/reduce order is sub-min and therefore
-                # suppressed. That manifests as a suppressed SELL leg, and/or the
-                # broker still reporting liquidatable positions (post stablecoin-
-                # dust exclusion, see kraken.get_positions).
-                #
-                # By contrast, on a weak-signal day an all-cash book produces a
-                # ~few-percent gross target where every ENTRY (buy) leg is below
-                # min_notional. Nothing is stuck — there are no positions to exit
-                # and no suppressed sells. Staying in cash is the correct, clean
-                # outcome, not a frozen rebalancer. Classify it as a QUIET DAY at
-                # INFO level so flat-trend days don't fire the loud freeze alert.
-                actions = suppressed.get("Action", pd.Series(dtype=object)).astype(str).str.lower()
-                has_suppressed_sell = bool((actions == "sell").any())
-
-                has_liquidatable_positions = False
-                cannot_confirm_flat = False
-                get_positions = getattr(broker, "get_positions", None)
-                if callable(get_positions):
-                    try:
-                        pos = get_positions()
-                        has_liquidatable_positions = pos is not None and len(pos) > 0
-                    except Exception as exc:  # never let a position probe crash the run
-                        # Fail SAFE: if we cannot confirm the book is flat, treat
-                        # it as potentially trapped (do not downgrade to quiet).
-                        logger.warning("Position probe for quiet/freeze classification failed: %s", exc)
-                        cannot_confirm_flat = True
-                else:
-                    # Fail SAFE (issue #82): a broker with no position probe cannot
-                    # confirm the book is flat. On a long-only spot book a suppressed
-                    # BUY is always a (harmless) entry, but on a futures book a BUY can
-                    # be a short-close EXIT that the has_suppressed_sell heuristic does
-                    # NOT catch. Without get_positions we cannot tell quiet from
-                    # trapped, so we must NOT silently downgrade to quiet — classify as
-                    # potentially trapped and alert. (Both live books — Kraken spot and
-                    # Hyperliquid perps — always expose get_positions, so this never
-                    # false-fires on a healthy live run.)
-                    logger.warning(
-                        "Broker %s exposes no get_positions; cannot confirm a flat book "
-                        "for quiet/freeze classification — failing safe to trapped.",
-                        type(broker).__name__,
-                    )
-                    cannot_confirm_flat = True
-
-                trapped = has_suppressed_sell or has_liquidatable_positions or cannot_confirm_flat
-
-                if not trapped:
-                    # QUIET DAY: all-cash, every target leg sub-min. Stay in cash.
-                    report["quiet_day"] = True
-                    report["quiet_reasons"] = reasons
-                    order_list = ", ".join(
-                        f"{str(r.get('Action', '')).upper()} {r.get('Asset', '')} "
-                        f"(${float(r.get('Notional Value', 0) or 0):.2f}, {r.get('Order Status', '')})"
-                        for _, r in suppressed.iterrows()
-                    )
-                    logger.info(
-                        "QUIET DAY: all-cash, %d sub-min target leg(s) — staying in cash. "
-                        "No liquidatable positions and no suppressed exits, so the book is "
-                        "NOT frozen. Suppressed targets: %s",
-                        len(suppressed),
-                        order_list,
-                    )
-                    return report
-
-                # DEAD-MAN: a real rebalance was intended but EVERY order was
-                # filtered. The book is NOT tracking its targets — it is frozen
-                # on stale positions. Do not exit quietly: flag the run and alert.
-                report["frozen"] = True
-                report["freeze_reasons"] = reasons
-                # Structured per-order detail so the notifier can explain WHICH
-                # orders died and by how much, without re-reading the run log.
-                report["frozen_orders"] = _suppressed_order_records(suppressed)
-                order_lines = [_format_suppressed_line(r) for r in report["frozen_orders"]]
-                order_list = "; ".join(order_lines)
-                logger.error(
-                    "REBALANCER FROZEN: all %d intended orders suppressed %s. "
-                    "Portfolio NOT rebalanced — holding stale positions. Orders: %s",
-                    len(suppressed),
-                    reasons,
-                    order_list,
-                )
-                self._alert(
-                    f"🧊 <b>REBALANCER FROZEN — 0 of {len(orders_df)} orders executable</b>\n"
-                    f"Reasons: {escape_html(reasons)}\n"
-                    "Suppressed:\n" + "\n".join(f"• {escape_html(line)}" for line in order_lines) + "\n"
-                    "Portfolio NOT rebalanced; holding stale positions. "
-                    "Likely min_notional too high for account size (or stale/NaN data).",
-                    site="frozen",
-                )
-            else:
-                logger.warning("All %d orders filtered out: %s", len(orders_df), reasons)
-            return report
-
-        # Sell before buy: sort by Action descending (Sell > Buy)
-        executable = executable.sort_values(by="Action", ascending=False)
-
-        # Convert to broker-compatible format
-        broker_orders_data: list[dict[str, Any]] = []
-        # Submission INTENT, keyed by (symbol, side). Brokers hand back skipped and
-        # failed rows carrying only symbol/side/qty/price/status/error — the
-        # notional and the venue minimum are dropped at that boundary. Without this
-        # map the broker-side freeze alert reports "SELL ADA $0.00" with no
-        # shortfall, in precisely the trapped-residual case the alert exists to
-        # explain (caught in review of #143).
-        #
-        # Deliberately a SIDE MAP rather than extra columns on broker_orders:
-        # that frame is handed to third-party adapters, and widening it risks a
-        # broker treating an unexpected column as an order field.
-        #
-        # A per-key FIFO, not a single dict entry: two orders can share
-        # (symbol, side) — the intent/result matching below already carries a FIFO
-        # for exactly that shape. With last-wins, both frozen rows would report the
-        # LAST order's notional, so a $12 trapped residual reads as $1.20 (caught in
-        # review of #144).
-        order_intent: dict[tuple[str, str], deque[dict[str, float]]] = defaultdict(deque)
-        for _, row in executable.iterrows():
-            action = str(row.get("Action", "")).lower()
-            side = "sell" if action == "sell" else "buy"
-            symbol = str(row.get("Asset", ""))
-            # NaN-safe: a mixed-column DataFrame fills a missing reduce_only with
-            # NaN, and bool(NaN) is True — which would send OPENS reduce-only.
-            _ro = row.get("reduce_only", False)
-            reduce_only = bool(_ro) if pd.notna(_ro) else False
-            broker_orders_data.append(
-                {
-                    "symbol": symbol,
-                    "side": side,
-                    "qty": float(row.get("Adjusted Quantity", 0)),
-                    "price": float(row.get("Price", 0)),
-                    # Thread the rebalancer's close flag through so the broker sends
-                    # a flat-target exit reduce-only (venue exempts it from the $10
-                    # minimum; can't flip through zero). Defaults False for opens.
-                    "reduce_only": reduce_only,
-                }
-            )
-            order_intent[(symbol, side)].append(
-                {
-                    "notional": float(row.get("Notional Value", 0) or 0),
-                    "min_notional": float(row.get("Min Notional", 0) or 0),
-                }
-            )
-
-        broker_orders = pd.DataFrame(broker_orders_data)
-        if broker_orders.empty:
-            return report
-
-        # --- Submission-time INTENT capture (issue #90) --------------------
-        # Record every order's intent to the append-only ledger at the broker
-        # submission call, BEFORE place_orders. This is the crash-durable audit
-        # trail: an intent on disk before submission proves what the system meant
-        # to do even if the run dies mid-submission. `intent_refs` is a per-(symbol,
-        # side) FIFO of order_refs so results bind one-to-one to intents below.
-        #
-        # Per-(symbol, side) FIFO of order_refs. A None entry is a SENTINEL for an
-        # order that executed but whose intent write failed (observe) — it reserves
-        # the positional slot so results stay 1:1 without recording against a
-        # never-written intent.
-        intent_refs: dict[tuple[str, str], list[str | None]] = defaultdict(list)
-        if ledger is not None and cycle_id is not None:
-            dropped_idx: list[int] = []
-            # Intents of the orders that SURVIVE to submission, rebuilt as we go.
-            #
-            # An order dropped under enforce still gets an `orders_details` row
-            # (status FAILED), so the freeze builder processes it — but it never
-            # consumed its own intent, which left the FIFO one ahead and handed
-            # every later order the WRONG notional. Reproduced in review of #145:
-            # a submitted-then-skipped ADA SELL of $12.00 was reported as $1.20,
-            # the notional of a different, dropped order. A residual figure that
-            # is confidently wrong is worse than none — it is the number a human
-            # would act on.
-            #
-            # popleft-per-visit is positionally exact: this loop walks
-            # broker_orders in submission order, which is the order the intents
-            # were appended in, so the k-th visit to a (symbol, side) pops that
-            # key's k-th intent.
-            surviving_intent: dict[tuple[str, str], deque[dict[str, float]]] = defaultdict(deque)
-            for i, (_, brow) in enumerate(broker_orders.iterrows()):
-                sym = str(brow["symbol"])
-                side = str(brow["side"]).strip().lower()
-                this_intent: dict[str, float] = order_intent[(sym, side)].popleft() if order_intent[(sym, side)] else {}
-                order_ref = f"{cycle_id}:{i}:{sym}:{side}"
-                try:
-                    ledger.record_intent(
-                        cycle_id=cycle_id,
-                        symbol=sym,
-                        side=side,
-                        order_ref=order_ref,
-                        target_qty=_safe_float(brow.get("qty")),
-                        limit_px=_safe_float(brow.get("price")),
-                    )
-                except Exception as exc:
-                    if capture_fail_closed:
-                        # ENFORCE: never trade live without the durable intent
-                        # record — DROP the order (do not submit it).
-                        logger.error(
-                            "RECON ENFORCE: intent capture failed for %s %s — DROPPING order "
-                            "(fail closed; not sent): %s",
-                            side,
-                            sym,
-                            exc,
-                        )
-                        report["orders_details"].append(
-                            {
-                                "symbol": sym,
-                                "action": side,
-                                "status": "FAILED",
-                                "error": f"intent capture failed under enforce (order dropped): {exc}",
-                                # Its OWN intent, popped above — so the freeze
-                                # alert reports this order's notional and not a
-                                # neighbour's.
-                                "notional": this_intent.get("notional", 0.0),
-                                "min_notional": this_intent.get("min_notional", 0.0),
-                            }
-                        )
-                        report["summary"]["total_failed"] += 1
-                        report["recon_capture_dropped"] = report.get("recon_capture_dropped", 0) + 1
-                        dropped_idx.append(i)
-                        continue
-                    # OBSERVE: ledger must never block execution — the order still
-                    # executes. But we MUST still reserve a positional slot so result
-                    # matching stays 1:1: append a None SENTINEL. Without it, a later
-                    # fill for another same-(symbol, side) order would pop THIS
-                    # order's would-be slot and bind to the WRONG intent. The sentinel
-                    # absorbs this order's own result (recording nothing, since its
-                    # intent was never durably written) and keeps every other order's
-                    # result bound to its own ref.
-                    logger.warning("Intent capture failed for %s %s (order still sent): %s", side, sym, exc)
-                    intent_refs[(sym, side)].append(None)
-                    surviving_intent[(sym, side)].append(this_intent)
-                    continue
-                intent_refs[(sym, side)].append(order_ref)
-                surviving_intent[(sym, side)].append(this_intent)
-
-            # The freeze builder must consume only the intents of orders that were
-            # actually submitted; the dropped ones now travel on their own
-            # orders_details rows instead.
-            order_intent = surviving_intent
-
-            # Under enforce, actually remove the dropped orders before submission.
-            if dropped_idx:
-                broker_orders = broker_orders.drop(broker_orders.index[dropped_idx]).reset_index(drop=True)
-                if broker_orders.empty:
-                    logger.error("RECON ENFORCE: all orders dropped (intent capture failed) — nothing sent.")
-                    # Same rule as the batch-exception path: every exit from this
-                    # method that leaves failures on the report must report them.
-                    # Dropping the entire batch under enforce IS a total trading
-                    # standstill — precisely when a human must be told.
-                    self._report_order_failures(report)
-                    return report
-
-        def _record_result(symbol: str, side: str, status: str, filled_qty: Any = None, avg_px: Any = None) -> None:
-            """Bind a broker result back to a captured intent (one-to-one, FIFO)."""
-            if ledger is None or cycle_id is None:
-                return
-            pool = intent_refs.get((str(symbol), str(side).strip().lower()))
-            if not pool:
-                return
-            ref = pool.pop(0)
-            if ref is None:
-                # Sentinel slot (intent write had failed): consume it to keep the
-                # FIFO aligned, but record nothing — there is no durable intent to
-                # bind this result to.
-                return
-            try:
-                ledger.record_result(
-                    order_ref=ref,
-                    cycle_id=cycle_id,
-                    status=_EXEC_STATUS_TO_LEDGER.get(str(status).strip().upper(), str(status).strip().lower()),
-                    filled_qty=_safe_float(filled_qty),
-                    avg_px=_safe_float(avg_px),
-                )
-            except Exception as exc:  # never let the ledger crash the run
-                logger.warning("Result capture failed for %s %s: %s", side, symbol, exc)
-
-        try:
-            fills = broker.place_orders(broker_orders)
-        except Exception as exc:
-            logger.error("Broker place_orders failed: %s", exc)
-            report["api_errors"].append({"stage": "place_orders", "error": str(exc)})
-            for _, row in broker_orders.iterrows():
-                report["orders_details"].append(
-                    {
-                        "symbol": row["symbol"],
-                        "action": row["side"],
-                        "status": "FAILED",
-                        "error": str(exc),
-                    }
-                )
-                report["summary"]["total_failed"] += 1
-                # The whole batch failed at submission — record a failed result so
-                # the ledger closes each intent (no dangling missed-fill timeouts).
-                _record_result(row["symbol"], row["side"], "FAILED")
-            # A batch-level submission failure is the WORST case (nothing traded
-            # at all), so it must alert on the same path as a per-order rejection.
-            # This early return previously skipped the failure report entirely.
-            self._report_order_failures(report)
-            return report
-
-        # Process fills and failures
-        if fills is not None and not fills.empty:
-            n_skipped = 0
-            n_skipped_sell = 0  # close-out SELLs the broker could not place (#81)
-            for _, fill_row in fills.iterrows():
-                # Strip whitespace before normalising: a broker that returns a
-                # padded side/status (e.g. "SELL " / "SKIPPED ") must not slip
-                # past the SKIPPED / close-out-SELL freeze counter (#81).
-                #
-                # A missing, empty or unrecognised status is UNKNOWN, never
-                # FILLED (TOM-1336): defaulting it to FILLED is how an order the
-                # venue never confirmed booked as a full fill.
-                _raw_status = fill_row.get("status")
-                status = "" if _raw_status is None or pd.isna(_raw_status) else str(_raw_status).strip().upper()
-                if status not in _EXEC_STATUSES:
-                    status = "UNKNOWN"
-                side = str(fill_row.get("side", "")).strip().lower()
-                if status == "SKIPPED":
-                    # Broker intentionally did not place this order (sub-minimum /
-                    # sub-precision dust). A clean no-op: neither executed nor
-                    # failed — record for visibility but do not count it.
-                    report["orders_details"].append(
-                        {
-                            "symbol": str(fill_row.get("symbol", "")),
-                            "action": str(fill_row.get("side", "")),
-                            "quantity": float(fill_row.get("qty", 0)),
-                            "status": "SKIPPED",
-                            "error": str(fill_row.get("error", "below exchange minimum (skipped)")),
-                        }
-                    )
-                    n_skipped += 1
-                    _record_result(fill_row.get("symbol", ""), side, "SKIPPED")
-                    if side == "sell":
-                        # A close-out/reduce the book WANTED to make but the broker
-                        # could not place (sub-exchange-min). Tracked so an all-
-                        # skipped batch with a trapped residual is not mistaken for
-                        # a healthy run (#81).
-                        n_skipped_sell += 1
-                    continue
-                if status == "WORKING":
-                    # The venue accepted this order and it was still on the book
-                    # when the confirmation window closed. NOT a failure and NOT a
-                    # fill: record it for visibility, queue it for resolution by
-                    # the next cycle, and leave the ledger intent deliberately
-                    # unmatched — the order has no terminal result yet, and
-                    # writing one would forge an outcome we have not observed.
-                    order_id = str(fill_row.get("order_id") or "")
-                    report["orders_details"].append(
-                        {
-                            "symbol": str(fill_row.get("symbol", "")),
-                            "action": str(fill_row.get("side", "")),
-                            "quantity": float(fill_row.get("qty", 0)),
-                            "status": "WORKING",
-                            "order_id": order_id,
-                            "error": str(fill_row.get("error", "still working at the venue")),
-                        }
-                    )
-                    report["summary"]["total_working"] += 1
-                    # Consume this order's intent slot to keep the per-(symbol,
-                    # side) FIFO aligned with the results that follow, and carry
-                    # the ref forward so the late fill binds to THIS intent.
-                    _pool = intent_refs.get((str(fill_row.get("symbol", "")), side))
-                    intent_ref = _pool.pop(0) if _pool else None
-                    # Record an explicit NON-TERMINAL `working` result. Leaving the
-                    # intent unmatched would be read by Stage 7b as "submitted, no
-                    # result observed" -- a MISSED FILL -- and with
-                    # degraded_failed_streak=1 a single resting limit order would
-                    # open a reconciliation break every cycle. That is the same
-                    # cry-wolf this change exists to remove, moved from Telegram
-                    # into recon. The record claims no outcome; it states the
-                    # observed fact that the order is alive.
-                    if ledger is not None and cycle_id is not None and intent_ref:
-                        try:
-                            ledger.record_result(
-                                order_ref=str(intent_ref),
-                                cycle_id=cycle_id,
-                                status="working",
-                                order_id=order_id,
-                            )
-                        except Exception:  # noqa: BLE001 - ledger must not break the run
-                            logger.exception(
-                                "Failed to record the working result for %s",
-                                fill_row.get("symbol", ""),
-                            )
-                    if order_id:
-                        working_to_queue.append(
-                            {
-                                "symbol": str(fill_row.get("symbol", "")),
-                                "side": side,
-                                "order_id": order_id,
-                                "requested_qty": float(fill_row.get("requested_qty", 0) or 0.0),
-                                "reason": str(fill_row.get("error", "")),
-                                "order_ref": intent_ref,
-                            }
-                        )
-                    else:
-                        # Working but untrackable: no id means no later resolution,
-                        # so this one really can go missing. Say so loudly rather
-                        # than let it look like the handled case.
-                        logger.error(
-                            "Order for %s is working at the venue but carries NO order id — "
-                            "it cannot be resolved next cycle and its fill may go unrecorded",
-                            fill_row.get("symbol", ""),
-                        )
-                    continue
-                if status == "UNKNOWN":
-                    # The broker could not confirm what happened. Book NO fill.
-                    # It is reported as a failure (so the operator is alerted and
-                    # every FAILED consumer downstream sees a non-fill), and when
-                    # it carries an order id it joins the working-order queue so
-                    # the next cycle books the venue's real outcome.
-                    _oid = fill_row.get("order_id")
-                    order_id = "" if _oid is None or pd.isna(_oid) else str(_oid)
-                    _err = fill_row.get("error")
-                    _err = "" if _err is None or pd.isna(_err) else str(_err)
-                    # A QUEUED unconfirmed order is non-terminal `unknown` in the
-                    # ledger, the same rule as WORKING: the resolver books its real
-                    # outcome against this order_ref next cycle. Booking it terminal
-                    # `failed` let Stage 7b count it into the failure streak — one
-                    # unconfirmed order opened a consecutive_failed break, three
-                    # escalated to HALT. With no id or no queue nothing will ever
-                    # resolve it, so it stays terminal `failed` and loud.
-                    queued = bool(order_id) and working_store is not None
-                    report["orders_details"].append(
-                        {
-                            "symbol": str(fill_row.get("symbol", "")),
-                            "action": str(fill_row.get("side", "")),
-                            "quantity": 0.0,
-                            "status": "FAILED",
-                            "fill_status": "UNKNOWN",
-                            "queued": queued,
-                            "order_id": order_id,
-                            "error": (
-                                f"fill UNCONFIRMED (broker status={_raw_status!r}); no fill booked"
-                                + (f" — {_err}" if _err else "")
-                            ),
-                        }
-                    )
-                    report["summary"]["total_failed"] += 1
-                    _pool = intent_refs.get((str(fill_row.get("symbol", "")), side))
-                    intent_ref = _pool.pop(0) if _pool else None
-                    if ledger is not None and cycle_id is not None and intent_ref:
-                        try:
-                            if queued:
-                                ledger.record_result(
-                                    order_ref=str(intent_ref), cycle_id=cycle_id, status="unknown", order_id=order_id
-                                )
-                            else:
-                                ledger.record_result(order_ref=str(intent_ref), cycle_id=cycle_id, status="failed")
-                        except Exception:  # noqa: BLE001 - ledger must not break the run
-                            logger.exception(
-                                "Failed to record the unconfirmed result for %s", fill_row.get("symbol", "")
-                            )
-                    if order_id:
-                        working_to_queue.append(
-                            {
-                                "symbol": str(fill_row.get("symbol", "")),
-                                "side": side,
-                                "order_id": order_id,
-                                "requested_qty": float(fill_row.get("requested_qty", 0) or 0.0),
-                                "reason": f"fill unconfirmed: {_err}",
-                                "order_ref": intent_ref,
-                            }
-                        )
-                    else:
-                        logger.error(
-                            "Order for %s has an UNCONFIRMED fill and NO order id — it cannot be "
-                            "resolved next cycle; reconcile it against the venue by hand",
-                            fill_row.get("symbol", ""),
-                        )
-                    continue
-                if status == "FAILED":
-                    report["orders_details"].append(
-                        {
-                            "symbol": str(fill_row.get("symbol", "")),
-                            "action": str(fill_row.get("side", "")),
-                            "quantity": float(fill_row.get("qty", 0)),
-                            "status": "FAILED",
-                            "error": str(fill_row.get("error", "placement failed")),
-                        }
-                    )
-                    report["summary"]["total_failed"] += 1
-                    _record_result(fill_row.get("symbol", ""), side, "FAILED")
-                    continue
-
-                # FILLED or PARTIAL: a real (possibly partial) fill. Record the
-                # ACTUAL filled qty the broker confirmed (issue #68) so the book's
-                # recorded position matches reality; a partial is flagged so
-                # monitors can see the unfilled remainder.
-                is_partial = status == "PARTIAL"
-                if is_partial:
-                    logger.warning(
-                        "Partial fill: %s %s — %s",
-                        side,
-                        str(fill_row.get("symbol", "")),
-                        str(fill_row.get("error", "")),
-                    )
-                detail = {
-                    "symbol": str(fill_row.get("symbol", "")),
-                    "action": str(fill_row.get("side", "")),
-                    "side": str(fill_row.get("side", "")),
-                    "executed_quantity": float(fill_row.get("qty", 0)),
-                    "executed_price": float(fill_row.get("price", 0)),
-                    # #92: absent means the broker did not report one — UNKNOWN,
-                    # not free. No LIVE broker's place_orders emits a fee key;
-                    # only futures_paper does. The old `, 0` default is what made
-                    # `fees_this_run` read $0.00 on every live run.
-                    "fee": _to_fee(fill_row.get("fee")),
-                    "status": "PARTIAL" if is_partial else "FILLED",
-                }
-                # Find reference price
-                ref_price = 0.0
-                matching = broker_orders[broker_orders["symbol"] == detail["symbol"]]
-                if not matching.empty:
-                    ref_price = float(matching.iloc[0]["price"])
-                detail["reference_price"] = ref_price
-                exec_price = detail["executed_price"]
-                if ref_price > 0 and exec_price > 0:
-                    detail["spread_pct"] = abs(exec_price - ref_price) / ref_price
-                else:
-                    detail["spread_pct"] = 0.0
-
-                report["orders_details"].append(detail)
-                report["summary"]["total_executed"] += 1
-                _record_result(
-                    detail["symbol"],
-                    side,
-                    "PARTIAL" if is_partial else "FILLED",
-                    filled_qty=detail["executed_quantity"],
-                    avg_px=detail["executed_price"],
-                )
-                if is_partial:
-                    # A partial fill DID execute (so it counts as executed and keeps
-                    # the freeze logic honest), but the unfilled remainder is real
-                    # residual exposure — surface it as a first-class incomplete
-                    # outcome so the notifier can raise an exception on it instead of
-                    # reading the run as a clean success.
-                    report["summary"]["total_partial"] += 1
-
-            # Freeze guard (issue #81): the broker returned rows, but if EVERY
-            # submitted order was SKIPPED (zero fills, zero hard failures) and at
-            # least one of those skips was a close-out SELL, the book has a
-            # trapped residual it wanted to exit but could not place at the venue.
-            # Post the dust-fix this surfaces as SKIPPED instead of the pre-PR
-            # FAILED count, so without this it would read as a healthy run. Treat
-            # it as a freeze and alert — the trapped-residual signal must not be
-            # lost just because the orders were *executable* upstream.
-            # Fires whenever zero orders filled AND at least one close-out SELL was
-            # skipped — regardless of whether other orders ALSO hard-failed. The
-            # trapped-residual signal must NOT be masked just because total_failed>0
-            # (a concurrent placement failure would otherwise hide the retained
-            # residual behind the generic FAILED alert).
-            if report["summary"]["total_executed"] == 0 and n_skipped_sell >= 1:
-                report["frozen"] = True
-                reasons = {
-                    "skipped_sell": n_skipped_sell,
-                    "skipped_total": n_skipped,
-                    "failed": int(report["summary"]["total_failed"]),
-                }
-                report["freeze_reasons"] = reasons
-
-                # Same explainability contract as the upstream freeze: name each
-                # order and why it could not go through, not just a count. These
-                # rows come from the BROKER (post-submission), so the fields are
-                # the order_details shape rather than the rebalancer's columns.
-                # Recover notional + venue minimum from the submission intent: the
-                # broker's own rows do not carry them (see order_intent above), so
-                # reading only `d` yields $0.00 and no shortfall — useless in exactly
-                # the trapped-residual case this alert exists for.
-                def _frozen_record(d: dict[str, Any]) -> dict[str, Any]:
-                    # Strip before matching: `orders_details` carries the broker's
-                    # RAW side, and a padded " SELL " (#81's shape) misses the
-                    # intent key — reinstating the "$0.00" bug in the very case
-                    # the recovery exists for (caught in review of #144).
-                    symbol = str(d.get("symbol", "")).strip()
-                    action = str(d.get("action", "")).strip()
-                    # Consume the FIFO so duplicate (symbol, side) orders each get
-                    # their OWN intent rather than all reading the last one.
-                    #
-                    # ONLY when this row does not already carry its own numbers.
-                    # An enforce-DROPPED order brings its intent along on its own
-                    # details row and was never added to the surviving FIFO, so
-                    # popping for it would consume a SUBMITTED order's intent and
-                    # leave that order reading $0.00 — the same misalignment one
-                    # step removed.
-                    own_notional = d.get("notional") or d.get("target_value")
-                    own_min = d.get("min_notional")
-                    if own_notional is None or own_min is None:
-                        pending = order_intent.get((symbol, action.lower()))
-                        intent = pending.popleft() if pending else {}
-                    else:
-                        intent = {}
-                    notional = own_notional or intent.get("notional") or 0
-                    min_notional = own_min or intent.get("min_notional") or 0
-                    return {
-                        "symbol": symbol,
-                        "action": action.upper(),
-                        "notional_usd": float(notional),
-                        "min_notional_usd": float(min_notional),
-                        "status": str(d.get("status", "")),
-                        "reason": str(d.get("reason") or d.get("error") or ""),
-                    }
-
-                report["frozen_orders"] = [
-                    _frozen_record(d) for d in report["orders_details"] if d.get("status") in {"SKIPPED", "FAILED"}
-                ]
-                for rec in report["frozen_orders"]:
-                    mn, n = rec["min_notional_usd"], rec["notional_usd"]
-                    if mn > 0 and 0 < n < mn:
-                        rec["shortfall_usd"] = mn - n
-                skipped_lines = [
-                    _format_suppressed_line(r) for r in report["frozen_orders"] if r["status"] == "SKIPPED"
-                ]
-                skipped_list = "; ".join(skipped_lines)
-                failed_n = int(report["summary"]["total_failed"])
-                failed_note = f"; {failed_n} order(s) also hard-failed" if failed_n else ""
-                logger.error(
-                    "REBALANCER FROZEN: 0 fills; %d close-out SELL(s) skipped "
-                    "sub-minimum (trapped residual)%s. Residual exposure RETAINED — "
-                    "book NOT rebalanced. Skipped: %s",
-                    n_skipped_sell,
-                    failed_note,
-                    skipped_list,
-                )
-                self._alert(
-                    "🧊 <b>REBALANCER FROZEN — trapped residual</b>\n"
-                    f"0 fills; {n_skipped_sell} close-out SELL(s) below exchange "
-                    f"minimum{failed_note}; residual exposure RETAINED.\n"
-                    f"Skipped: {escape_html(skipped_list)}\n"
-                    "Book NOT rebalanced — monitor for a trapped residual.",
-                    site="trapped_residual",
-                )
-        else:
-            # Submitted orders but received zero fills — broker-level failure.
-            order_list = ", ".join(
-                f"{r['side'].upper()} {r['qty']:.4f} {r['symbol']}" for _, r in broker_orders.iterrows()
-            )
-            logger.error(
-                "Broker returned 0 fills for %d submitted orders: %s",
-                len(broker_orders),
-                order_list,
-            )
-            # Was the one unwrapped site: a raising notify here failed the run.
-            self._alert(
-                f"⚠️ <b>0 FILLS for {len(broker_orders)} orders</b>\n"
-                f"Submitted: {escape_html(order_list)}\n"
-                "Check broker connectivity — portfolio NOT rebalanced.",
-                site="zero_fills",
-            )
-
-        # Close any INTENT with no observed result as a TIMEOUT (a missed fill:
-        # submitted but the broker returned nothing for it). Authority rule: the
-        # internal ledger is the truth for intent — this is the class the exchange
-        # alone cannot prove. Done after all fills are matched so only genuinely
-        # unresolved intents remain.
-        if ledger is not None and cycle_id is not None:
-            for (sym, side), refs in intent_refs.items():
-                for ref in refs:
-                    if ref is None:
-                        continue  # sentinel: no durable intent to close
-                    try:
-                        ledger.record_result(order_ref=ref, cycle_id=cycle_id, status="timeout")
-                    except Exception as exc:  # never let the ledger crash the run
-                        logger.warning("Timeout capture failed for %s %s: %s", side, sym, exc)
-            intent_refs.clear()
-
-        report["summary"]["total_value"] = sum(
-            d.get("executed_quantity", 0) * d.get("executed_price", 0)
-            for d in report["orders_details"]
-            if d.get("status") in ("FILLED", "PARTIAL")
-        )
-
-        # Persist BEFORE the alerting call below: queuing a working order is the
-        # durable step that lets its fill be recovered next cycle, and it must not
-        # be skipped because a notification path raised.
-        if working_to_queue and working_store is not None:
-            for rec in working_to_queue:
-                try:
-                    working_store.record(cycle_id=str(cycle_id or ""), **rec)
-                except Exception:
-                    # A lost queue entry is a lost fill, so this is loud and it
-                    # does NOT swallow: the run continues (the order is live and
-                    # the position reconciles next cycle regardless), but the
-                    # operator must see that automatic resolution will not happen.
-                    logger.exception(
-                        "FAILED to queue working order %s %s (id=%s) for next-cycle "
-                        "resolution — its fill will not be booked automatically",
-                        rec.get("side"),
-                        rec.get("symbol"),
-                        rec.get("order_id"),
-                    )
-        elif working_to_queue:
-            logger.warning(
-                "%d order(s) working at the venue but no working-order store is "
-                "configured — their fills will not be booked automatically",
-                len(working_to_queue),
-            )
-
-        self._report_order_failures(report)
-        return report
 
     # ==================================================================
     # Artifact payload builder (for publisher plugins)
@@ -3019,7 +1623,7 @@ class TradingPipeline:
         for detail in execution_report.get("orders_details", []):
             detail_status = detail.get("status")
             if detail_status in ("FILLED", "PARTIAL"):
-                order_fee = _to_fee(detail.get("fee"))
+                order_fee = to_fee(detail.get("fee"))
                 if order_fee is None or total_order_fees is None:
                     total_order_fees = None
                 else:

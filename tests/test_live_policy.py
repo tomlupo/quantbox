@@ -246,7 +246,8 @@ class _Levered:
         return {"weights": pd.DataFrame({"A": 2.0, "B": 0.0}, index=data["prices"].index)}
 
 
-@pytest.mark.parametrize("path", ["rebalancer", "pipeline"])
+# The "pipeline" arm (the private order generator) left with TOM-1458 (Q4): no paper run is without a rebalancer.
+@pytest.mark.parametrize("path", ["rebalancer"])
 def test_the_trigger_reads_the_risk_transformed_targets_as_the_backtest_does(tmp_path, path):
     """Round 1 of #244: raw target A=2.0 under max_leverage 1 is A=1.0, which the book already holds.
 

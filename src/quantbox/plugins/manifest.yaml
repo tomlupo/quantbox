@@ -107,6 +107,9 @@ profiles:
       name: binance.live_data.v1
     broker:
       name: binance.live.v1
+    # The pipeline sizes no order itself (TOM-1458): a spot book names its order generator.
+    rebalancing:
+      name: rebalancing.standard.v1
     publishers:
       - name: telegram.publisher.v1
     risk:

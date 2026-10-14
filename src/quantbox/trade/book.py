@@ -109,7 +109,9 @@ from typing import Any
 
 import pandas as pd
 
+from quantbox.contracts import BrokerCapability
 from quantbox.exceptions import QuantboxError
+from quantbox.trade.capabilities import supports
 
 logger = logging.getLogger(__name__)
 
@@ -442,8 +444,8 @@ def resolve_portfolio_value(
        be marked. This runs on every venue: on a margined one the marks do not
        feed equity, but an unmarkable name still loses its target, and that
        belongs in the record.
-    3. Ask the broker for its own view (``get_equity``), when it has one **and
-       it declared its venue**. A broker that cannot value its own book RAISES;
+    3. Ask the broker for its own view (``get_equity``), when it declares one
+       (``BrokerCapability.EQUITY``) **and it declared its venue**. A broker that cannot value its own book RAISES;
        that is a refusal, not a reason to fall back to the pipeline's number —
        falling back is how the original defect stayed invisible.
 
@@ -505,7 +507,7 @@ def resolve_portfolio_value(
     )
 
     broker_equity: float | None = None
-    if declared and broker is not None and hasattr(broker, "get_equity"):
+    if declared and supports(broker, BrokerCapability.EQUITY):
         try:
             # Validated into a LOCAL before it is published. Assigning first and
             # raising second leaves the NaN in `broker_equity` for the ungated
@@ -713,6 +715,66 @@ class MarkedBook:
             tolerance=tolerance,
             require_reconciliation=require_reconciliation,
         )
+
+    def rebalancing_frame(
+        self,
+        *,
+        target_positions: Mapping[str, float],
+        total_value: float,
+        strategy_weights: Mapping[str, float],
+        exclusions: Iterable[str] = (),
+    ) -> pd.DataFrame:
+        """The rebalancing frame: one row per held or targeted symbol, current against target.
+
+        The one builder both rebalancers call (TOM-1859; it was three copies,
+        and the missing-mark rule had to be written three times). Columns:
+        ``Asset``, ``Current Quantity``, ``Current Value``, ``Current Weight``,
+        ``Target Quantity``, ``Target Value``, ``Target Weight``, ``Weight
+        Delta``, ``Delta Quantity``, ``Price``, ``Trade Action``. Quantities are
+        signed. Values come from :meth:`value_of`: a held name with no mark has
+        an UNKNOWN current value and weight (NaN), never 0 (TOM-1455).
+        """
+        excluded = set(exclusions)
+        current_holdings = self.held
+        assets = sorted(set(current_holdings.keys()) | set(target_positions.keys()))
+        assets = [a for a in assets if a not in excluded]
+
+        rows: list[dict[str, Any]] = []
+        for asset in assets:
+            current_qty = current_holdings.get(asset, 0.0)
+            price = self.mark(asset)
+            current_value = nan_if_unknown(self.value_of(asset))
+            target_qty = target_positions.get(asset, 0.0)
+            target_value = nan_if_unknown(self.value_of(asset, target_qty))
+            current_weight = current_value / total_value if total_value > 0 else 0
+            target_weight = target_value / total_value if total_value > 0 else 0
+            weight_delta = strategy_weights.get(asset, 0) - current_weight
+            delta_qty = target_qty - current_qty
+
+            if delta_qty > 0:
+                trade_action = "Buy"
+            elif delta_qty < 0:
+                trade_action = "Sell"
+            else:
+                trade_action = "Hold"
+
+            rows.append(
+                {
+                    "Asset": asset,
+                    "Current Quantity": current_qty,
+                    "Current Value": current_value,
+                    "Current Weight": current_weight,
+                    "Target Quantity": target_qty,
+                    "Target Value": target_value,
+                    "Target Weight": target_weight,
+                    "Weight Delta": weight_delta,
+                    "Delta Quantity": delta_qty,
+                    "Price": price,
+                    "Trade Action": trade_action,
+                }
+            )
+
+        return pd.DataFrame(rows)
 
 
 def nan_if_unknown(value: float | None) -> float:

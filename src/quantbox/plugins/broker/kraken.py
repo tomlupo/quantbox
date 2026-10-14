@@ -42,7 +42,7 @@ from typing import Any
 
 import pandas as pd
 
-from quantbox.contracts import PluginMeta
+from quantbox.contracts import BrokerCapability, PluginMeta
 from quantbox.retry import with_retry
 from quantbox.trade.book import (
     BASIS_MARK,
@@ -51,6 +51,7 @@ from quantbox.trade.book import (
     PortfolioValuationError,
     value_holdings,
 )
+from quantbox.trade.lots import amount_decimals, floor_to_decimals
 
 from ..datasources.kraken_data import KRAKEN_BALANCE_SUFFIXES, normalize_kraken_asset
 from ._fills import STATUS_UNKNOWN, STATUS_WORKING, resolve_fill, trade_fee, trade_fee_currency
@@ -164,6 +165,8 @@ class KrakenBroker:
     # and the code honoured it. A spot book is worth its cash PLUS its holdings,
     # and that is a fact about Kraken, not about a YAML file.
     valuation_basis = BASIS_MARK
+    # What the trade path may use -- see contracts.BrokerCapability (TOM-1459).
+    broker_capabilities = frozenset({BrokerCapability.EQUITY, BrokerCapability.ORDER_RESULT})
 
     meta = PluginMeta(
         name="kraken.spot.v1",
@@ -696,24 +699,20 @@ class KrakenBroker:
             return None
 
         market = self._markets.get(ms, {})
-        precision = (market.get("precision", {}) or {}).get("amount", 8)
-        if isinstance(precision, float) and 0 < precision < 1:
-            precision = max(0, -int(math.floor(math.log10(precision))))
+        precision = amount_decimals((market.get("precision", {}) or {}).get("amount", 8))
         # Use ccxt's amount_to_precision (floors to the market's precision) so a
         # SELL can never round UP past the available balance. round() could push
-        # a sell qty above what we hold; flooring keeps it safe. Fall back to a
-        # floor-via-round only if amount_to_precision is unavailable.
+        # a sell qty above what we hold; flooring keeps it safe. Fall back to the
+        # one lot module's floor only if amount_to_precision is unavailable.
         amount_to_precision = getattr(self._exchange, "amount_to_precision", None)
         if callable(amount_to_precision):
             try:
                 quantity = float(amount_to_precision(ms, quantity))
             except Exception as e:  # pragma: no cover - defensive
                 logger.warning("amount_to_precision failed for %s (%s); flooring", symbol, e)
-                factor = 10 ** int(precision)
-                quantity = math.floor(quantity * factor) / factor
+                quantity = floor_to_decimals(quantity, precision)
         else:
-            factor = 10 ** int(precision)
-            quantity = math.floor(quantity * factor) / factor
+            quantity = floor_to_decimals(quantity, precision)
         if quantity <= 0:
             logger.warning("Quantity rounds to zero for %s (precision=%s)", symbol, precision)
             return SKIP_ORDER

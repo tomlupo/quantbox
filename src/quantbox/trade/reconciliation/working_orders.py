@@ -35,6 +35,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from quantbox.contracts import BrokerCapability
+from quantbox.trade.capabilities import supports
+
 from .ledger import safe_book_key, to_ledger_status
 
 logger = logging.getLogger(__name__)
@@ -267,10 +270,9 @@ def resolve_working_orders(
         result.checked = True  # nothing to check IS a complete check
         return result
 
-    resolver = getattr(broker, "fetch_order_result", None)
-    if not callable(resolver):
+    if not supports(broker, BrokerCapability.ORDER_RESULT):
         logger.warning(
-            "%d working order(s) queued but broker %s cannot resolve orders — their fills will not be booked",
+            "%d working order(s) queued but broker %s declares no order_result — their fills will not be booked",
             len(queued),
             type(broker).__name__,
         )
@@ -291,7 +293,7 @@ def resolve_working_orders(
             continue
 
         try:
-            outcome = resolver(order_id, symbol)
+            outcome = broker.fetch_order_result(order_id, symbol)
         except Exception as exc:  # noqa: BLE001 - a venue error is "could not check"
             logger.warning(
                 "Working order %s %s (id=%s) raised while resolving — left queued: %s",

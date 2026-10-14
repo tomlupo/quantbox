@@ -39,6 +39,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+import pandas as pd
+
 # ---------------------------------------------------------------------------
 # Internal verdicts produced by classify_fill().
 # ---------------------------------------------------------------------------
@@ -289,6 +291,116 @@ def resolve_fill(
         price,
         f"order not confirmed filled (venue status={raw_status})",
     )
+
+
+# ---------------------------------------------------------------------------
+# The broker seam (TOM-1458): every broker's order results, one normaliser.
+# ---------------------------------------------------------------------------
+#: The statuses the execution stage acts on. Anything else is UNKNOWN.
+EMITTED_STATUSES = frozenset({"FILLED", "PARTIAL", STATUS_WORKING, "FAILED", "SKIPPED", STATUS_UNKNOWN})
+
+#: Column the normaliser keeps a broker's own status in, for the report's reason line.
+RAW_STATUS = "raw_status"
+
+
+def _absent(value: Any) -> bool:
+    return value is None or (isinstance(value, float) and value != value)
+
+
+def normalise_results(results: pd.DataFrame | None) -> pd.DataFrame | None:
+    """A broker's ``place_orders`` rows in the vocabulary the execution stage acts on.
+
+    Every broker's result passes through here at the broker seam
+    (:func:`quantbox.trade.executor.execute_orders`), a third-party broker's
+    too. Two rules make an unconfirmed order UNKNOWN, never a fill (TOM-1336,
+    TOM-1458):
+
+    * a status that is absent, empty or outside :data:`EMITTED_STATUSES`;
+    * a FILLED or PARTIAL row with no filled quantity (``qty`` absent or NaN):
+      a fill of an unknown size is not a fill the book can record.
+
+    The status is stripped and upper-cased; the broker's own status is kept in
+    :data:`RAW_STATUS` so the report can say what the broker said. Nothing else
+    is changed: the side stays raw, because the report shows it as the broker
+    sent it. ``None`` and an empty frame are returned as they are.
+    """
+    if results is None or not isinstance(results, pd.DataFrame) or results.empty:
+        return results
+    out = results.copy()
+    raw = list(out["status"]) if "status" in out.columns else [None] * len(out)
+    qty = list(out["qty"]) if "qty" in out.columns else [None] * len(out)
+    errors = list(out["error"]) if "error" in out.columns else [None] * len(out)
+    statuses: list[str] = []
+    for i, (status, filled) in enumerate(zip(raw, qty, strict=True)):
+        word = "" if _absent(status) else str(status).strip().upper()
+        if word not in EMITTED_STATUSES:
+            word = STATUS_UNKNOWN
+        elif word in ("FILLED", "PARTIAL") and _to_float(filled) is None:
+            word = STATUS_UNKNOWN
+            if _absent(errors[i]) or not str(errors[i]):
+                errors[i] = f"broker reported {str(status).strip()} with no filled quantity"
+        statuses.append(word)
+    out[RAW_STATUS] = pd.Series(raw, index=out.index, dtype=object)
+    out["status"] = statuses
+    if "error" in out.columns or any(not _absent(e) for e in errors):
+        out["error"] = pd.Series(errors, index=out.index, dtype=object)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Binance REST order replies, read through the same classification (TOM-1458).
+# ---------------------------------------------------------------------------
+# A Binance ``create_order`` / ``get_order`` reply in ccxt's unified statuses,
+# so classify_fill / resolve_fill read it like every other venue's.
+_BINANCE_STATUS = {
+    "FILLED": _CLOSED,
+    "NEW": _OPEN,
+    "PENDING_NEW": _OPEN,
+    "PARTIALLY_FILLED": _OPEN,
+    "PENDING_CANCEL": _OPEN,
+    "CANCELED": "canceled",
+    "REJECTED": "rejected",
+    "EXPIRED": "expired",
+    "EXPIRED_IN_MATCH": "expired",
+}
+
+
+def binance_order(reply: dict | None) -> dict | None:
+    """A Binance spot order reply as a ccxt-shaped order for :func:`resolve_fill`.
+
+    ``filled`` is ``executedQty`` (every fill of the order, not the first),
+    ``amount`` is ``origQty`` and ``average`` is the quote spent per unit. An
+    absent or unrecognised status stays absent, so the order reads UNKNOWN; an
+    absent ``executedQty`` stays absent, so a FILLED reply without it reads
+    UNKNOWN too. ``None`` for no reply.
+    """
+    if not reply:
+        return None
+    filled = _to_float(reply.get("executedQty"))
+    quote = _to_float(reply.get("cummulativeQuoteQty"))
+    average = quote / filled if (quote is not None and filled) else None
+    if average is None:
+        legs = [(_to_float(f.get("qty")), _to_float(f.get("price"))) for f in reply.get("fills") or []]
+        legs = [(q, p) for q, p in legs if q and p]
+        total = sum(q for q, _ in legs)
+        average = sum(q * p for q, p in legs) / total if total else None
+    return {
+        "id": reply.get("orderId"),
+        "status": _BINANCE_STATUS.get(str(reply.get("status") or "").strip().upper()),
+        "filled": filled,
+        "amount": _to_float(reply.get("origQty")),
+        "average": average,
+        "price": _to_float(reply.get("price")),
+    }
+
+
+def binance_commission(reply: dict | None) -> tuple[float | None, str | None]:
+    """``(commission, asset)`` summed over every fill of a Binance reply; ``(None, None)`` when not one asset."""
+    fills = (reply or {}).get("fills") or []
+    costs = [(_to_float(f.get("commission")), f.get("commissionAsset")) for f in fills]
+    if not costs or any(c is None for c, _ in costs) or len({a for _, a in costs}) != 1:
+        return None, None
+    return sum(c for c, _ in costs), costs[0][1]
 
 
 # ---------------------------------------------------------------------------

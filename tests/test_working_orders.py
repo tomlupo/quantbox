@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from quantbox.contracts import BrokerCapability
 from quantbox.trade.reconciliation.working_orders import (
     DEFAULT_MAX_AGE_DAYS,
     WorkingOrderStore,
@@ -70,6 +71,8 @@ def test_store_rejects_a_book_key_that_escapes_the_root(tmp_path):
 
 class _Broker:
     """Broker stub whose fetch_order_result is scripted per order id."""
+
+    broker_capabilities = frozenset({BrokerCapability.ORDER_RESULT})  # TOM-1459: declared, not probed
 
     def __init__(self, outcomes):
         self.outcomes = outcomes
@@ -264,6 +267,8 @@ def test_a_venue_that_raises_is_unreadable_not_terminal(tmp_path):
     """A ccxt exception must never be read as 'the order is gone'."""
 
     class _Exploding:
+        broker_capabilities = frozenset({BrokerCapability.ORDER_RESULT})
+
         def fetch_order_result(self, order_id, symbol):
             raise RuntimeError("kraken 520")
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from quantbox.contracts import BrokerCapability
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
 from quantbox.trade.book import PortfolioValuationError
 from quantbox.trade.reconciliation.working_orders import WorkingOrderStore
@@ -63,6 +64,8 @@ class _Strategy:
 
 class _Broker:
     """Holds one order that the venue reports as FILLED."""
+
+    broker_capabilities = frozenset({BrokerCapability.ORDER_RESULT})  # TOM-1459: declared, not probed
 
     def __init__(self):
         self.placed: list[pd.DataFrame] = []

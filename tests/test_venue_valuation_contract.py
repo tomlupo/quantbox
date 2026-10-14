@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from quantbox.contracts import BrokerCapability
 from quantbox.plugins.pipeline.alloc2orders import _usd_marks
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline, _valuation_metrics, _valuation_notes
 from quantbox.plugins.rebalancing.futures_rebalancer import FuturesRebalancer
@@ -56,9 +57,9 @@ _UNSET = object()
 class _BrokerBase:
     """A broker double with NO ``get_equity``.
 
-    ``resolve_portfolio_value`` branches on ``hasattr(broker, "get_equity")``,
-    so the absence of the method is itself a fixture condition and must be
-    modelled by a separate class rather than by an attribute.
+    ``resolve_portfolio_value`` branches on the broker's ``EQUITY`` declaration
+    (TOM-1459), so its absence is itself a fixture condition and is modelled by
+    a separate class that declares it.
     """
 
     def __init__(
@@ -112,6 +113,8 @@ class _BrokerBase:
 
 class _BrokerWithEquity(_BrokerBase):
     """A broker double that DOES answer ``get_equity``."""
+
+    broker_capabilities = frozenset({BrokerCapability.EQUITY})  # TOM-1459: declared, not probed
 
     def __init__(self, *, equity=0.0, equity_error: BaseException | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -1373,13 +1376,6 @@ class TestPipelineModeThreading:
             "exclusions": ["Q"],
         }[key]
         assert self._params({key: sentinel}, "live")[key] == sentinel
-
-    def test_a_forgotten_mode_argument_is_impossible_at_this_seam(self):
-        """``_generate_orders`` requires ``mode`` rather than defaulting it."""
-        import inspect
-
-        sig = inspect.signature(TradingPipeline._generate_orders)
-        assert sig.parameters["mode"].default is inspect.Parameter.empty
 
 
 # ======================================================================

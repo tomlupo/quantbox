@@ -18,6 +18,7 @@ import pytest
 
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
 from quantbox.plugins.publisher import telegram as publisher
+from quantbox.trade.executor import execute_orders
 from quantbox.trade.notifier import RecordingNotifier
 from quantbox.trade.reconciliation import ReconEnforcementError, open_cycle
 from quantbox.trade.reconciliation import cycle as cycle_mod
@@ -65,9 +66,7 @@ class _Venue:
 
 
 def _execute(pipe: TradingPipeline, broker, orders: list[dict]) -> dict:
-    return pipe._execute_orders(
-        broker=broker, orders_df=pd.DataFrame(orders), stable_coin="USD", trading_enabled=True, mode="live"
-    )
+    return execute_orders(alert=pipe._alert, broker=broker, orders_df=pd.DataFrame(orders), trading_enabled=True)
 
 
 def test_an_order_failure_with_a_venue_error_carrying_lt_and_amp_is_sent_escaped():
@@ -128,12 +127,11 @@ def test_zero_fills_escapes_the_submitted_symbols():
 def test_a_recon_halt_keeps_its_headline():
     """No dynamic text beyond a count; pinned so the sweep covers every site."""
     pipe = _pipeline()
-    pipe._execute_orders(
+    execute_orders(
+        alert=pipe._alert,
         broker=_Venue([]),
         orders_df=pd.DataFrame([_order("A<B")]),
-        stable_coin="USD",
         trading_enabled=True,
-        mode="live",
         gate_orders_allowed=False,
     )
     (message,) = pipe.notifier.messages

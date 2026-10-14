@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from quantbox.contracts import BrokerCapability
 from quantbox.plugins.broker.sim import SimPaperBroker
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
 from quantbox.plugins.rebalancing.futures_rebalancer import FuturesRebalancer
@@ -210,6 +211,7 @@ class _MarginBroker(_Broker):
     """A perps venue: an unmarkable name does not understate equity, so pre-trade does not refuse."""
 
     valuation_basis = BASIS_MARGIN
+    broker_capabilities = frozenset({BrokerCapability.EQUITY})  # TOM-1459: declared, not probed
 
     def get_equity(self) -> float:
         return 1000.0
