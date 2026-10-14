@@ -175,6 +175,10 @@ def cmd_plugins_doctor(as_json: bool = False, strict: bool = False):
     except Exception:
         pass
 
+    # A broker's declared capabilities against its members (TOM-1459). A member
+    # it has but does not declare is one the trade path will not use.
+    broker_classes: dict[tuple[str, str], Any] = {("builtin", n): c for n, c in builtins.get("broker", {}).items()}
+
     # External entry points
     for group_name, ep_group in ENTRYPOINT_GROUPS.items():
         eps = importlib.metadata.entry_points(group=ep_group)
@@ -182,7 +186,9 @@ def cmd_plugins_doctor(as_json: bool = False, strict: bool = False):
             status = "ok"
             message = ""
             try:
-                ep.load()
+                loaded = ep.load()
+                if group_name == "broker":
+                    broker_classes[("entrypoint", ep.name)] = loaded
             except Exception as e:  # pragma: no cover
                 status = "error"
                 message = f"entrypoint_load_failed: {e}"
@@ -203,6 +209,20 @@ def cmd_plugins_doctor(as_json: bool = False, strict: bool = False):
                     "message": message,
                 }
             )
+
+    if broker_classes:
+        capability_mismatches = load("quantbox.trade.capabilities:mismatches", extra="trade")
+        for (source, name), cls in sorted(broker_classes.items()):
+            for problem in capability_mismatches(cls):
+                results.append(
+                    {
+                        "source": source,
+                        "group": "broker",
+                        "name": name,
+                        "status": "warn",
+                        "message": f"broker_capabilities: {problem}",
+                    }
+                )
 
     # Schemas for built-in plugins
     schema_dir = Path(str(_res_files("quantbox").joinpath("artifact_schemas")))

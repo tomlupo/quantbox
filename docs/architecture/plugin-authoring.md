@@ -97,6 +97,22 @@ Key requirements:
 - `params_schema` is a JSON Schema, **mandatory** — `quantbox validate` refuses a config key that is not one of its properties, and `quantbox plugins schema --json` publishes it to the LLM-facing layer. Constructor params are completed from the signature (type, default); see `docs/playbooks/add-a-plugin.md`.
 - Return shape matches `meta.outputs` and the schema in `src/quantbox/artifact_schemas/{output}.schema.json`.
 
+### Broker capabilities (declared, never probed)
+
+The trade path calls a broker's optional methods only when the broker declares them. A broker declares
+two class attributes: `valuation_basis` and `broker_capabilities` (a `frozenset` of `BrokerCapability`).
+
+```python
+from quantbox.contracts import BrokerCapability
+
+class MyBroker:
+    valuation_basis = "margin_balance"
+    broker_capabilities = frozenset({BrokerCapability.EQUITY, BrokerCapability.ORDER_RESULT})
+```
+
+A broker that declares nothing supports nothing. `BrokerCapability` lists each capability and the members it needs
+(`BROKER_CAPABILITY_MEMBERS` in `contracts.py`). `quantbox plugins doctor` warns when a declaration and the class disagree.
+
 ---
 
 ## Status field — the single most important meta property

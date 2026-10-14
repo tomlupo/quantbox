@@ -650,11 +650,11 @@ def _actual_weights(broker: Any, pv: float, stable_coin: str) -> tuple[dict[str,
     """
     actual_wt: dict[str, float] = {}
     unpriced: list[str] = []
-    if not callable(getattr(broker, "get_positions", None)) or pv <= 0:
+    if pv <= 0:
         return actual_wt, unpriced
     try:
-        if not hasattr(broker, "get_market_snapshot"):
-            return actual_wt, unpriced
+        # get_positions and get_market_snapshot are REQUIRED BrokerPlugin
+        # methods: read_book calls them, nothing probes for them (TOM-1459).
         book = read_book(broker)
         for sym in sorted(book.positions):
             value = book.value_of(sym)
@@ -677,18 +677,15 @@ def filter_reduce_only(executable: pd.DataFrame, broker: Any) -> pd.DataFrame:
     read positions, we drop everything (send nothing) rather than risk opening.
     """
     positions: dict[str, float] = {}
-    get_positions = getattr(broker, "get_positions", None)
-    if callable(get_positions):
-        try:
-            pos = get_positions()
-            if pos is not None and len(pos) > 0:
-                for _, r in pos.iterrows():
-                    positions[str(r.get("symbol", ""))] = float(r.get("qty", 0) or 0)
-        except Exception as exc:  # fail safe: no positions → reduce nothing
-            logger.warning("Reduce-only gate could not read positions (dropping all orders): %s", exc)
-            return executable.iloc[0:0]
-    else:
-        logger.warning("Reduce-only gate: broker exposes no get_positions — dropping all orders (fail safe).")
+    try:
+        # A REQUIRED BrokerPlugin method, called rather than probed (TOM-1459):
+        # a broker without it raises here and drops everything, as before.
+        pos = broker.get_positions()
+        if pos is not None and len(pos) > 0:
+            for _, r in pos.iterrows():
+                positions[str(r.get("symbol", ""))] = float(r.get("qty", 0) or 0)
+    except Exception as exc:  # fail safe: no positions → reduce nothing
+        logger.warning("Reduce-only gate could not read positions (dropping all orders): %s", exc)
         return executable.iloc[0:0]
 
     kept: list[Any] = []

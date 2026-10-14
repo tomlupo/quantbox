@@ -10,7 +10,7 @@ from typing import Any
 
 import pandas as pd
 
-from quantbox.contracts import PluginMeta
+from quantbox.contracts import BrokerCapability, PluginMeta
 from quantbox.trade.book import BASIS_MARK
 
 logger = logging.getLogger(__name__)
@@ -21,6 +21,14 @@ class SimPaperBroker:
     # The venue's valuation basis -- see BrokerPlugin.valuation_basis.
     # Spot paper simulator: cash plus holdings.
     valuation_basis = BASIS_MARK
+    # What the trade path may use -- see contracts.BrokerCapability (TOM-1459).
+    broker_capabilities = frozenset(
+        {
+            BrokerCapability.PRICE_INJECTION,
+            BrokerCapability.FEES_ACCRUED,
+            BrokerCapability.COST_MODEL,
+        }
+    )
 
     meta = PluginMeta(
         name="sim.paper.v1",
@@ -82,6 +90,11 @@ class SimPaperBroker:
 
     def set_prices(self, prices: dict[str, float]) -> None:
         self.prices.update(prices)
+
+    @property
+    def cumulative_fees(self) -> float:
+        """Fees this simulated book has paid so far (``BrokerCapability.FEES_ACCRUED``)."""
+        return float(self._cumulative_fees)
 
     def get_positions(self) -> pd.DataFrame:
         return pd.DataFrame([{"symbol": s, "qty": q} for s, q in self.positions.items()])

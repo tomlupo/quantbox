@@ -56,7 +56,7 @@ from typing import Any
 
 import pandas as pd
 
-from quantbox.contracts import PluginMeta
+from quantbox.contracts import BrokerCapability, PluginMeta
 from quantbox.exceptions import BrokerExecutionError
 from quantbox.retry import with_retry
 from quantbox.trade.book import BASIS_MARGIN
@@ -146,6 +146,10 @@ class HyperliquidBroker:
     # the total, not withdrawable cash, because the futures rebalancer sizes off
     # it).
     valuation_basis = BASIS_MARGIN
+    # What the trade path may use -- see contracts.BrokerCapability (TOM-1459).
+    broker_capabilities = frozenset(
+        {BrokerCapability.EQUITY, BrokerCapability.FUNDING_HISTORY, BrokerCapability.ORDER_RESULT}
+    )
 
     meta = PluginMeta(
         name="hyperliquid.perps.v1",

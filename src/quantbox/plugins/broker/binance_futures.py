@@ -52,7 +52,7 @@ from typing import Any
 
 import pandas as pd
 
-from quantbox.contracts import PluginMeta
+from quantbox.contracts import BrokerCapability, PluginMeta
 from quantbox.retry import with_retry
 from quantbox.trade.book import BASIS_MARGIN
 from quantbox.trade.lots import floor_to_decimals, floor_to_step
@@ -154,6 +154,10 @@ class BinanceFuturesBroker:
     # class. Closing it means a `get_equity()` returning total wallet balance +
     # unrealised PnL, as HyperliquidBroker does.
     valuation_basis = BASIS_MARGIN
+    # What the trade path may use -- see contracts.BrokerCapability (TOM-1459).
+    # No EQUITY (the gap above) and no FUNDING_HISTORY: this adapter cannot yet
+    # read back the funding the venue took, so funding is reported UNKNOWN.
+    broker_capabilities = frozenset({BrokerCapability.ORDER_RESULT})
 
     meta = PluginMeta(
         name="binance.futures.v1",

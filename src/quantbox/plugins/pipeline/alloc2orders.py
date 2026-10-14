@@ -9,7 +9,16 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from quantbox.contracts import ArtifactStore, BrokerPlugin, DataPlugin, Mode, PluginMeta, RiskPlugin, RunResult
+from quantbox.contracts import (
+    ArtifactStore,
+    BrokerCapability,
+    BrokerPlugin,
+    DataPlugin,
+    Mode,
+    PluginMeta,
+    RiskPlugin,
+    RunResult,
+)
 from quantbox.parquet_io import read_parquet
 from quantbox.run_history import resolve_latest_artifact
 from quantbox.trade.book import (
@@ -18,6 +27,7 @@ from quantbox.trade.book import (
     MarkedBook,
     PortfolioValuation,
 )
+from quantbox.trade.capabilities import supports
 from quantbox.trade.lots import floor_to_multiple, round_to_multiple
 
 logger = logging.getLogger(__name__)
@@ -554,7 +564,7 @@ class AllocationsToOrdersPipeline:
                 for ccy, amt in cash2.items():
                     cash_usd_post += float(amt) * _fx_rate_to_usd(fx, str(ccy))
 
-                if hasattr(broker, "get_equity"):
+                if supports(broker, BrokerCapability.EQUITY):
                     portfolio_value_usd_post = float(broker.get_equity())
                 else:
                     pos2 = broker.get_positions()

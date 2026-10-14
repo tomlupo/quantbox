@@ -270,30 +270,22 @@ def _gate_unexecutable(
 
     has_liquidatable_positions = False
     cannot_confirm_flat = False
-    get_positions = getattr(broker, "get_positions", None)
-    if callable(get_positions):
-        try:
-            pos = get_positions()
-            has_liquidatable_positions = pos is not None and len(pos) > 0
-        except Exception as exc:  # never let a position probe crash the run
-            # Fail SAFE: if we cannot confirm the book is flat, treat
-            # it as potentially trapped (do not downgrade to quiet).
-            logger.warning("Position probe for quiet/freeze classification failed: %s", exc)
-            cannot_confirm_flat = True
-    else:
-        # Fail SAFE (issue #82): a broker with no position probe cannot
-        # confirm the book is flat. On a long-only spot book a suppressed
-        # BUY is always a (harmless) entry, but on a futures book a BUY can
-        # be a short-close EXIT that the has_suppressed_sell heuristic does
-        # NOT catch. Without get_positions we cannot tell quiet from
-        # trapped, so we must NOT silently downgrade to quiet — classify as
-        # potentially trapped and alert. (Both live books — Kraken spot and
-        # Hyperliquid perps — always expose get_positions, so this never
-        # false-fires on a healthy live run.)
+    try:
+        # `get_positions` is a REQUIRED BrokerPlugin method: called, never
+        # probed (TOM-1459). A broker without it raises here and takes the
+        # same fail-safe branch as a failed read.
+        pos = broker.get_positions()
+        has_liquidatable_positions = pos is not None and len(pos) > 0
+    except Exception as exc:  # never let a position read crash the run
+        # Fail SAFE (issue #82): if we cannot confirm the book is flat, treat
+        # it as potentially trapped (do not downgrade to quiet). On a
+        # long-only spot book a suppressed BUY is always a (harmless) entry,
+        # but on a futures book a BUY can be a short-close EXIT that the
+        # has_suppressed_sell heuristic does NOT catch.
         logger.warning(
-            "Broker %s exposes no get_positions; cannot confirm a flat book "
-            "for quiet/freeze classification — failing safe to trapped.",
+            "Position read for quiet/freeze classification failed on %s: %s — failing safe to trapped.",
             type(broker).__name__,
+            exc,
         )
         cannot_confirm_flat = True
 

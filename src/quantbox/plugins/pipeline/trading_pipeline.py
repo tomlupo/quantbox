@@ -25,6 +25,7 @@ import pandas as pd
 
 from quantbox.contracts import (
     ArtifactStore,
+    BrokerCapability,
     BrokerPlugin,
     DataPlugin,
     Mode,
@@ -56,6 +57,7 @@ from quantbox.trade.book import (
     PortfolioValuationError,
     read_book,
 )
+from quantbox.trade.capabilities import supports
 from quantbox.trade.executor import execute_orders, to_fee
 from quantbox.trade.notifier import Alerts, Notifier
 from quantbox.trade.reconciliation.cycle import open_cycle
@@ -153,9 +155,11 @@ def _expand_price_fetch_universe(
     ``universe`` for eligibility/weights/store, so this cannot change strategy
     sizing or signal logic — it only widens what gets a price fetched.
     """
-    if broker is None or mode not in ("paper", "live") or not hasattr(broker, "get_positions"):
+    if broker is None or mode not in ("paper", "live"):
         return universe
     try:
+        # A required BrokerPlugin method: called, never probed (TOM-1459). A
+        # broker without it fails here and keeps the universe, as before.
         positions_df = broker.get_positions()
     except Exception:
         return universe
@@ -263,16 +267,19 @@ def _resolve_funding_charge(broker: Any, asof: str) -> float | None:
     whole of #92: for 165 days a ``hasattr`` miss on a live run rendered as
     ``Funding charge $0.00`` on a perps book that pays funding hourly on its
     full notional, and nothing downstream could tell that from a free window.
+
+    Which source a broker has is its DECLARATION (``FUNDING_APPLIED``,
+    ``FUNDING_HISTORY``; TOM-1459), not a probe for the method.
     """
     if broker is None:
         return None
 
-    if hasattr(broker, "apply_funding"):
+    if supports(broker, BrokerCapability.FUNDING_APPLIED):
         charge = broker.apply_funding()
         logger.info("Applied funding charge: %.2f", charge or 0.0)
         return charge
 
-    if hasattr(broker, "fetch_funding_payments"):
+    if supports(broker, BrokerCapability.FUNDING_HISTORY):
         window_start, window_end = _funding_window(asof)
         charge = broker.fetch_funding_payments(window_start, window_end)
         if charge is None:
@@ -286,8 +293,8 @@ def _resolve_funding_charge(broker: Any, asof: str) -> float | None:
         return charge
 
     logger.warning(
-        "Broker %s exposes no funding source (neither apply_funding nor "
-        "fetch_funding_payments) — funding reported UNKNOWN, not $0.00",
+        "Broker %s declares no funding source (neither funding_applied nor "
+        "funding_history) — funding reported UNKNOWN, not $0.00",
         type(broker).__name__,
     )
     return None
@@ -740,23 +747,24 @@ class TradingPipeline:
         a_agg_w = store.put_parquet("aggregated_weights", pd.DataFrame(agg_records))
         logger.info("Aggregated weights: %d assets", len(final_weights))
 
-        # --- Inject latest prices into paper broker (if supported) ---
-        if broker is not None and hasattr(broker, "set_prices"):
+        # --- Inject latest prices into paper broker (if it declares PRICE_INJECTION) ---
+        if supports(broker, BrokerCapability.PRICE_INJECTION):
             wide_prices = market_data.get("prices", pd.DataFrame())
             if not wide_prices.empty:
                 latest = wide_prices.iloc[-1].dropna()
                 broker.set_prices({str(k): float(v) for k, v in latest.items()})
                 logger.info("Injected %d prices into broker", len(latest))
 
-        # --- Inject funding rates into broker (if supported) ---
+        # --- Inject funding rates into broker (if it declares FUNDING_RATE_INJECTION) ---
         wide_funding = market_data.get("funding_rates", pd.DataFrame())
-        if broker is not None and not wide_funding.empty and hasattr(broker, "set_funding_rates"):
+        if not wide_funding.empty and supports(broker, BrokerCapability.FUNDING_RATE_INJECTION):
             latest_funding = wide_funding.iloc[-1].dropna()
             broker.set_funding_rates({str(k): float(v) for k, v in latest_funding.items()})
             logger.info("Injected %d funding rates into broker", len(latest_funding))
 
-        # --- Inject position limits into broker (if supported) ---
-        if broker is not None and hasattr(broker, "set_position_limits") and hasattr(data, "_fetcher"):
+        # --- Inject position limits into broker (if it declares POSITION_LIMIT_INJECTION) ---
+        # The `_fetcher` probes below are on the DATA plugin, not the broker.
+        if supports(broker, BrokerCapability.POSITION_LIMIT_INJECTION) and hasattr(data, "_fetcher"):
             fetcher = data._fetcher
             if hasattr(fetcher, "get_position_limits"):
                 limit_symbols = universe["symbol"].tolist() if not universe.empty else []
@@ -1037,7 +1045,7 @@ class TradingPipeline:
             # `alloc2orders` was reordered for exactly this; this twin was not.
             cash2 = broker.get_cash() or {}
             cash_usd_post = sum(float(v) for v in cash2.values())
-            if hasattr(broker, "get_equity"):
+            if supports(broker, BrokerCapability.EQUITY):
                 portfolio_value_post = float(broker.get_equity())
             else:
                 # The marked book after the orders (lots summed, one snapshot of
@@ -1117,18 +1125,22 @@ class TradingPipeline:
         # have. Every LIVE run therefore reported a FABRICATED $0.00: 165 days
         # of it on a book that turned over ~24x its equity, which made the
         # TOM-33 loss attribution unresolvable. An unmeasured cost is UNKNOWN,
-        # not free, so it is None here and null downstream.
+        # not free, so it is None here and null downstream. A broker that
+        # measures its fees DECLARES it (FEES_ACCRUED, TOM-1459).
         cumulative_fees: float | None = None
-        if broker is not None and hasattr(broker, "_cumulative_fees"):
-            cumulative_fees = float(broker._cumulative_fees)
+        if supports(broker, BrokerCapability.FEES_ACCRUED):
+            cumulative_fees = float(broker.cumulative_fees)
 
         # --- Stage 8: Artifacts ---
-        # Collect broker cost config for artifact
+        # The simulated cost model, recorded only for a broker that declares one.
         broker_costs: dict[str, Any] = {}
-        if broker is not None:
-            for attr in ("spread_bps", "slippage_bps", "maker_fee_bps", "taker_fee_bps"):
-                if hasattr(broker, attr):
-                    broker_costs[attr] = float(getattr(broker, attr))
+        if supports(broker, BrokerCapability.COST_MODEL):
+            broker_costs = {
+                "spread_bps": float(broker.spread_bps),
+                "slippage_bps": float(broker.slippage_bps),
+                "maker_fee_bps": float(broker.maker_fee_bps),
+                "taker_fee_bps": float(broker.taker_fee_bps),
+            }
 
         artifact_payload = self._build_artifact_payload(
             rebalancing_df=rebalancing_df,

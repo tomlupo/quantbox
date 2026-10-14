@@ -42,7 +42,7 @@ from typing import Any
 
 import pandas as pd
 
-from quantbox.contracts import PluginMeta
+from quantbox.contracts import BrokerCapability, PluginMeta
 from quantbox.retry import with_retry
 from quantbox.trade.book import (
     BASIS_MARK,
@@ -165,6 +165,8 @@ class KrakenBroker:
     # and the code honoured it. A spot book is worth its cash PLUS its holdings,
     # and that is a fact about Kraken, not about a YAML file.
     valuation_basis = BASIS_MARK
+    # What the trade path may use -- see contracts.BrokerCapability (TOM-1459).
+    broker_capabilities = frozenset({BrokerCapability.EQUITY, BrokerCapability.ORDER_RESULT})
 
     meta = PluginMeta(
         name="kraken.spot.v1",

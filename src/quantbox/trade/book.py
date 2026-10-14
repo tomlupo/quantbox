@@ -109,7 +109,9 @@ from typing import Any
 
 import pandas as pd
 
+from quantbox.contracts import BrokerCapability
 from quantbox.exceptions import QuantboxError
+from quantbox.trade.capabilities import supports
 
 logger = logging.getLogger(__name__)
 
@@ -442,8 +444,8 @@ def resolve_portfolio_value(
        be marked. This runs on every venue: on a margined one the marks do not
        feed equity, but an unmarkable name still loses its target, and that
        belongs in the record.
-    3. Ask the broker for its own view (``get_equity``), when it has one **and
-       it declared its venue**. A broker that cannot value its own book RAISES;
+    3. Ask the broker for its own view (``get_equity``), when it declares one
+       (``BrokerCapability.EQUITY``) **and it declared its venue**. A broker that cannot value its own book RAISES;
        that is a refusal, not a reason to fall back to the pipeline's number —
        falling back is how the original defect stayed invisible.
 
@@ -505,7 +507,7 @@ def resolve_portfolio_value(
     )
 
     broker_equity: float | None = None
-    if declared and broker is not None and hasattr(broker, "get_equity"):
+    if declared and supports(broker, BrokerCapability.EQUITY):
         try:
             # Validated into a LOCAL before it is published. Assigning first and
             # raising second leaves the NaN in `broker_equity` for the ungated

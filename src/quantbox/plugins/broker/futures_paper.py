@@ -21,7 +21,7 @@ from typing import Any
 
 import pandas as pd
 
-from quantbox.contracts import PluginMeta
+from quantbox.contracts import BrokerCapability, PluginMeta
 from quantbox.trade.book import BASIS_MARGIN
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,17 @@ class FuturesPaperBroker:
     # paper broker: portfolio value IS `margin_balance` by construction (see the
     # class docstring above).
     valuation_basis = BASIS_MARGIN
+    # What the trade path may use -- see contracts.BrokerCapability (TOM-1459).
+    broker_capabilities = frozenset(
+        {
+            BrokerCapability.PRICE_INJECTION,
+            BrokerCapability.FUNDING_RATE_INJECTION,
+            BrokerCapability.POSITION_LIMIT_INJECTION,
+            BrokerCapability.FUNDING_APPLIED,
+            BrokerCapability.FEES_ACCRUED,
+            BrokerCapability.COST_MODEL,
+        }
+    )
 
     meta = PluginMeta(
         name="sim.futures_paper.v1",
@@ -164,6 +175,11 @@ class FuturesPaperBroker:
     def set_position_limits(self, limits: dict[str, float]) -> None:
         """Inject per-symbol max-notional position limits."""
         self.position_limits.update(limits)
+
+    @property
+    def cumulative_fees(self) -> float:
+        """Fees this simulated book has paid so far (``BrokerCapability.FEES_ACCRUED``)."""
+        return float(self._cumulative_fees)
 
     # ------------------------------------------------------------------
     # BrokerPlugin protocol
