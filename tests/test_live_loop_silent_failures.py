@@ -36,7 +36,8 @@ import pytest
 from quantbox.exceptions import BrokerExecutionError
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
 from quantbox.plugins.rebalancing.futures_rebalancer import FuturesRebalancer
-from quantbox.trade.notifier import RecordingNotifier
+from quantbox.trade.executor import execute_orders, report_order_failures
+from quantbox.trade.notifier import Alerts, RecordingNotifier
 
 MIN_TRADE = 0.01
 MIN_NOTIONAL = 10.0
@@ -200,12 +201,11 @@ def test_partial_order_failure_alerts():
     broker = _Broker()
     orders = pd.DataFrame([_executable("PEPE", "Buy", 100.0, 1.0), _executable("ETH", "Sell", 0.0022, 1930.0)])
 
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=orders,
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
 
     assert report["summary"]["total_failed"] == 1
@@ -234,12 +234,11 @@ def test_batch_submission_exception_still_alerts():
     broker = _Exploding()
     orders = pd.DataFrame([_executable("PEPE", "Buy", 100.0, 1.0), _executable("ETH", "Sell", 0.0022, 1930.0)])
 
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=orders,
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
 
     assert report["summary"]["total_failed"] == 2
@@ -273,12 +272,11 @@ def test_reduce_only_flag_threads_to_broker():
     close = _executable("ETH", "Sell", 0.0022, 1930.0)
     close["reduce_only"] = True
     open_ = _executable("PEPE", "Buy", 100.0, 1.0)  # reduce_only absent -> False
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=pd.DataFrame([open_, close]),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
     )
     assert report["summary"]["total_failed"] == 0
     by_sym = {o["symbol"]: o for o in broker.seen}
@@ -307,7 +305,7 @@ def test_enforce_dropping_every_order_still_alerts():
         "api_errors": [],
     }
 
-    pipe._report_order_failures(report)
+    report_order_failures(report, Alerts(pipe.notifier).send)
 
     assert report["order_failures"] == 2
     assert "intent capture failed" in report["order_failure_detail"]

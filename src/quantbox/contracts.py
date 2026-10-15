@@ -53,13 +53,26 @@ classes with a class-level ``meta = PluginMeta(...)`` attribute.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Literal, Protocol
 
 import pandas as pd
 
 __all__ = [
+    "BROKER_CAPABILITY_MEMBERS",
+    "AcceptsFundingRates",
+    "AcceptsPositionLimits",
+    "AcceptsPrices",
+    "AccruesFees",
+    "AppliesFunding",
     "ArtifactStore",
+    "BrokerCapability",
     "BrokerPlugin",
+    "HasCostModel",
+    "ReadsFundingHistory",
+    "ResolvesOrders",
+    "SupportsEquity",
+    "ValuationBasis",
     "DataPlugin",
     "FeaturePlugin",
     "Mode",
@@ -262,29 +275,162 @@ class DataPlugin(Protocol):
     def load_fx(self, asof: str, params: dict[str, Any]) -> pd.DataFrame | None: ...
 
 
+ValuationBasis = Literal["mark_to_market", "margin_balance"]
+"""How a venue values a book: ``BrokerPlugin.valuation_basis`` (see :mod:`quantbox.trade.book`)."""
+
+
+class BrokerCapability(str, Enum):
+    """An optional thing a broker can do, which the trade path uses only when DECLARED.
+
+    A broker declares its capabilities in one class attribute,
+    ``broker_capabilities`` (a ``frozenset`` of these members). The pipeline
+    reads that declaration and never probes a broker for a method
+    (TOM-1459). A broker that declares nothing supports none of them, and the
+    trade path behaves as it did for a broker without those methods.
+
+    Each member names the members the broker must then have
+    (:data:`BROKER_CAPABILITY_MEMBERS`) and the typed Protocol they form:
+
+    * ``EQUITY`` — :class:`SupportsEquity`: ``get_equity()``, the venue's own
+      account value. It MUST raise rather than return a value that omits a held
+      position it could not price (see :mod:`quantbox.trade.book`).
+    * ``FUNDING_APPLIED`` — :class:`AppliesFunding`: ``apply_funding()``, a
+      simulated book that books funding itself and returns the signed charge.
+    * ``FUNDING_HISTORY`` — :class:`ReadsFundingHistory`:
+      ``fetch_funding_payments(since, until)``, a live venue that reads back
+      the funding it took; ``None`` means unmeasured.
+    * ``FEES_ACCRUED`` — :class:`AccruesFees`: ``cumulative_fees``, the fees
+      the book has paid so far.
+    * ``COST_MODEL`` — :class:`HasCostModel`: ``spread_bps``,
+      ``slippage_bps``, ``maker_fee_bps``, ``taker_fee_bps``, the simulated
+      execution costs, recorded in the trade artifact.
+    * ``PRICE_INJECTION`` — :class:`AcceptsPrices`: ``set_prices(prices)``.
+    * ``FUNDING_RATE_INJECTION`` — :class:`AcceptsFundingRates`:
+      ``set_funding_rates(rates)``.
+    * ``POSITION_LIMIT_INJECTION`` — :class:`AcceptsPositionLimits`:
+      ``set_position_limits(limits)``.
+    * ``ORDER_RESULT`` — :class:`ResolvesOrders`:
+      ``fetch_order_result(order_id, symbol)``, the venue's answer for an order
+      a previous cycle left working.
+
+    A third-party broker declares, for example::
+
+        from quantbox.contracts import BrokerCapability
+
+        class MyBroker:
+            valuation_basis = "margin_balance"
+            broker_capabilities = frozenset({BrokerCapability.EQUITY, BrokerCapability.ORDER_RESULT})
+
+    ``quantbox plugins doctor`` warns when a broker's declaration and its
+    members disagree, in either direction.
+    """
+
+    EQUITY = "equity"
+    FUNDING_APPLIED = "funding_applied"
+    FUNDING_HISTORY = "funding_history"
+    FEES_ACCRUED = "fees_accrued"
+    COST_MODEL = "cost_model"
+    PRICE_INJECTION = "price_injection"
+    FUNDING_RATE_INJECTION = "funding_rate_injection"
+    POSITION_LIMIT_INJECTION = "position_limit_injection"
+    ORDER_RESULT = "order_result"
+
+
+#: The members each capability obliges a broker to have. The one table that
+#: ``quantbox plugins doctor`` and the per-broker tests check a declaration
+#: against. ``COST_MODEL`` lists attributes; every other entry lists methods or
+#: a property.
+BROKER_CAPABILITY_MEMBERS: dict[BrokerCapability, tuple[str, ...]] = {
+    BrokerCapability.EQUITY: ("get_equity",),
+    BrokerCapability.FUNDING_APPLIED: ("apply_funding",),
+    BrokerCapability.FUNDING_HISTORY: ("fetch_funding_payments",),
+    BrokerCapability.FEES_ACCRUED: ("cumulative_fees",),
+    BrokerCapability.COST_MODEL: ("spread_bps", "slippage_bps", "maker_fee_bps", "taker_fee_bps"),
+    BrokerCapability.PRICE_INJECTION: ("set_prices",),
+    BrokerCapability.FUNDING_RATE_INJECTION: ("set_funding_rates",),
+    BrokerCapability.POSITION_LIMIT_INJECTION: ("set_position_limits",),
+    BrokerCapability.ORDER_RESULT: ("fetch_order_result",),
+}
+
+
+class SupportsEquity(Protocol):
+    """``BrokerCapability.EQUITY``."""
+
+    def get_equity(self) -> float: ...
+
+
+class AppliesFunding(Protocol):
+    """``BrokerCapability.FUNDING_APPLIED``."""
+
+    def apply_funding(self) -> float | None: ...
+
+
+class ReadsFundingHistory(Protocol):
+    """``BrokerCapability.FUNDING_HISTORY``."""
+
+    def fetch_funding_payments(self, since: str, until: str) -> float | None: ...
+
+
+class AccruesFees(Protocol):
+    """``BrokerCapability.FEES_ACCRUED``."""
+
+    @property
+    def cumulative_fees(self) -> float: ...
+
+
+class HasCostModel(Protocol):
+    """``BrokerCapability.COST_MODEL``."""
+
+    spread_bps: float
+    slippage_bps: float
+    maker_fee_bps: float
+    taker_fee_bps: float
+
+
+class AcceptsPrices(Protocol):
+    """``BrokerCapability.PRICE_INJECTION``."""
+
+    def set_prices(self, prices: dict[str, float]) -> None: ...
+
+
+class AcceptsFundingRates(Protocol):
+    """``BrokerCapability.FUNDING_RATE_INJECTION``."""
+
+    def set_funding_rates(self, rates: dict[str, float]) -> None: ...
+
+
+class AcceptsPositionLimits(Protocol):
+    """``BrokerCapability.POSITION_LIMIT_INJECTION``."""
+
+    def set_position_limits(self, limits: dict[str, float]) -> None: ...
+
+
+class ResolvesOrders(Protocol):
+    """``BrokerCapability.ORDER_RESULT``."""
+
+    def fetch_order_result(self, order_id: str, symbol: str) -> dict[str, Any] | None: ...
+
+
 class BrokerPlugin(Protocol):
     """Manages positions and executes orders.
 
-    Methods:
+    Methods (required; the trade path calls them without asking):
         get_positions: Current holdings as DataFrame[symbol, qty].
         get_cash: Cash balances as {currency: amount}.
         get_market_snapshot: Current prices/info for symbols.
         place_orders: Submit orders, returns fills DataFrame.
         fetch_fills: Historical fills since a timestamp.
 
-    Optional methods (checked via hasattr):
-        get_equity: Total account value in USD. For derivatives brokers
-            this is the authoritative portfolio value (margin + unrealized PnL).
-            Pipelines prefer this over cash + sum(qty * price) when available,
-            since the latter is incorrect for short/futures positions.
-
-            An implementation MUST raise rather than return a value that omits
-            a held position it could not price. Equity feeds live position
-            sizing, so an understated figure under-sizes every target silently;
-            "could not value" has to exit differently from "the book is small".
-            See :mod:`quantbox.trade.book`.
+    Optional capabilities are DECLARED, never probed: ``broker_capabilities``
+    is a ``frozenset`` of :class:`BrokerCapability`, and each member names the
+    typed Protocol the broker then implements (``get_equity`` is
+    :class:`SupportsEquity`, and so on). A broker that omits the attribute
+    declares nothing. :mod:`quantbox.trade.capabilities` reads it.
 
     Class attributes:
+        broker_capabilities: The capabilities this broker declares. A plain
+            class attribute, free of API calls; it must not vary with account
+            state.
         valuation_basis: HOW THIS VENUE VALUES A BOOK — the one declaration that
             decides pre-trade sizing. ``"mark_to_market"`` for a spot/cash venue
             (value is cash + sum(qty * price), so every held position must be
@@ -306,6 +452,8 @@ class BrokerPlugin(Protocol):
     """
 
     meta: PluginMeta
+    valuation_basis: ValuationBasis
+    broker_capabilities: frozenset[BrokerCapability]
 
     def get_positions(self) -> pd.DataFrame: ...
     def get_cash(self) -> dict[str, float]: ...

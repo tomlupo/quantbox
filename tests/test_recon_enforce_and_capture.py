@@ -22,7 +22,8 @@ import json
 import pandas as pd
 
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
-from quantbox.trade.notifier import RecordingNotifier
+from quantbox.trade.executor import execute_orders
+from quantbox.trade.notifier import Alerts, RecordingNotifier
 from quantbox.trade.reconciliation import ReconCycle, ReconEnforcementError, open_cycle
 from quantbox.trade.reconciliation import cycle as cycle_mod
 from quantbox.trade.reconciliation.cycle import enforce_requested
@@ -84,12 +85,11 @@ def _drive_cycle(
 ):
     """run()'s recon wiring: open the cycle (load + gate) → execute → close."""
     recon = open_cycle(params, run_id=run_id, asof=asof, alert=pipe._alert)
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=pd.DataFrame(orders),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
         ledger=recon.ledger,
         cycle_id=recon.cycle_id,
         gate_orders_allowed=recon.orders_allowed,
@@ -183,12 +183,11 @@ def test_replay_from_ledger_after_crash_before_stage7b(tmp_path):
     ctx_params = {"reconciliation": {"book_key": "carver-HL", "data_dir": str(tmp_path), "mode": "observe"}}
     pipe = _pipeline()
     ctx = ReconCycle.load(ctx_params, run_id="r1", asof="d")
-    pipe._execute_orders(
+    execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=pd.DataFrame([_order("DOGE", "Buy"), _order("ETH", "Buy")]),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
         ledger=ctx.ledger,
         cycle_id=ctx.cycle_id,
     )
@@ -310,12 +309,11 @@ def test_failed_intent_write_does_not_leave_a_dangling_result(tmp_path):
 
     ctx.ledger.record_intent = _flaky_intent
 
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=pd.DataFrame([_order("DOGE", "Buy"), _order("ETH", "Buy")]),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
         ledger=ctx.ledger,
         cycle_id=ctx.cycle_id,
     )
@@ -378,12 +376,11 @@ def test_enforce_drops_order_when_intent_capture_fails(tmp_path):
 
     ctx.ledger.record_intent = _flaky
     broker = _FakeBroker(fills_fn=_fills_all("FILLED"))
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=pd.DataFrame([_order("DOGE", "Buy"), _order("ETH", "Buy")]),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
         ledger=ctx.ledger,
         cycle_id=ctx.cycle_id,
         capture_fail_closed=True,
@@ -509,12 +506,11 @@ def test_observe_dup_order_intent_failure_no_mis_binding(tmp_path):
 
     # Two DOGE buys with DISTINCT quantities so a mis-binding is detectable.
     broker = _FakeBroker(fills_fn=_fills_all("FILLED"))
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=pd.DataFrame([_order("DOGE", "Buy", qty=5.0), _order("DOGE", "Buy", qty=7.0)]),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
         ledger=ctx.ledger,
         cycle_id=ctx.cycle_id,
         capture_fail_closed=False,  # observe: both orders still execute
@@ -798,12 +794,11 @@ def test_queued_unknown_order_raises_no_break_on_the_reconstruction_path(tmp_pat
     broker = _FakeBroker(fills_fn=_fills_unknown())
     orders = [_order("DOGE", "Buy")]
     store = _QueueStore()
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=broker,
         orders_df=pd.DataFrame(orders),
-        stable_coin="USDC",
         trading_enabled=True,
-        mode="live",
         working_store=store,
     )
     notes = ReconCycle.load(params, run_id="r1", asof="d").close(

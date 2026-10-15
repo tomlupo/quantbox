@@ -23,6 +23,7 @@ from quantbox.contracts import StrategyContext
 from quantbox.plugins.broker.sim import SimPaperBroker
 from quantbox.plugins.pipeline.backtest_pipeline import BacktestPipeline
 from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
+from quantbox.plugins.rebalancing.standard_rebalancer import StandardRebalancer
 from quantbox.store import FileArtifactStore
 from quantbox.strategy_runner import resolve_annualize
 
@@ -112,6 +113,8 @@ def _run_trading(tmp_path, strat, pipeline_params, strat_params=None, mode="back
         broker=None if mode == "backtest" else SimPaperBroker(),
         risk=[],
         strategies=[strat],
+        # A paper run names its order generator (TOM-1458, Q4); it does not touch the strategy context.
+        rebalancer=None if mode == "backtest" else StandardRebalancer(),
     )
     assert strat.seen, "trading never ran the strategy — the comparison would be vacuous"
     return strat.seen[-1]

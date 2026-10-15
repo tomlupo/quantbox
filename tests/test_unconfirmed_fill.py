@@ -17,6 +17,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from quantbox.contracts import BrokerCapability
 from quantbox.plugins.broker import _fills
 from quantbox.plugins.broker._fills import STATUS_UNKNOWN, classify_fill, resolve_fill
 
@@ -213,16 +214,16 @@ def _orders_df():
 
 def _run(row, store=None):
     from quantbox.plugins.pipeline.trading_pipeline import TradingPipeline
-    from quantbox.trade.notifier import RecordingNotifier
+    from quantbox.trade.executor import execute_orders
+    from quantbox.trade.notifier import Alerts, RecordingNotifier
 
     pipe = TradingPipeline()
     pipe.notifier = RecordingNotifier()  # TOM-1720: the pipeline alerts, never the broker
-    report = pipe._execute_orders(
+    report = execute_orders(
+        alert=Alerts(pipe.notifier).send,
         broker=_RowBroker(row),
         orders_df=_orders_df(),
-        stable_coin="USDT",
         trading_enabled=True,
-        mode="live",
         working_store=store,
     )
     return report, pipe.notifier
@@ -271,6 +272,8 @@ def test_working_order_resolver_keeps_an_unknown_outcome_queued(tmp_path, late_s
     store.record(symbol="BTC", side="buy", order_id="OID1", requested_qty=1.0, cycle_id="c1", order_ref="r1")
 
     class _B:
+        broker_capabilities = frozenset({BrokerCapability.ORDER_RESULT})  # TOM-1459: declared, not probed
+
         def fetch_order_result(self, order_id, symbol):
             return {"status": late_status, "qty": 0.0, "price": 0.0, "error": "not confirmed"}
 

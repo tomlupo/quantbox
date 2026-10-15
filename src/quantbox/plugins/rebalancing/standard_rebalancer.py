@@ -6,16 +6,15 @@ weights in, orders out. WHEN to rebalance and to WHICH targets (the tranche
 cadence, the trigger, ``min_trade``) is the rebalancing policy's, decided by
 the backtest's own code (``quantbox.engine.policy``, TOM-1518).
 
-Ported from ``TradingPipeline._apply_risk_transforms()``,
-``_generate_orders()``, ``_build_rebalancing()``, and
-``_create_executable_orders()``.
+Since TOM-1458 it is the trading pipeline's order generator for a spot book:
+the pipeline's private copy is deleted, and a paper or live config names
+``plugins.rebalancing``. Step rounding is :mod:`quantbox.trade.lots`.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from decimal import ROUND_DOWN, Decimal, getcontext
 from typing import Any
 
 import pandas as pd
@@ -23,13 +22,13 @@ import pandas as pd
 from quantbox.contracts import BrokerPlugin, PluginMeta
 from quantbox.decision import gross_cap, risk_caps_row
 from quantbox.engine.policy import TRANCHES_MOVED
+from quantbox.plugins.rebalancing.futures_rebalancer import declares_open
 from quantbox.trade.book import (
     BASIS_MARK,
     DEFAULT_RECONCILIATION_TOLERANCE,
-    MarkedBook,
-    nan_if_unknown,
     read_book,
 )
+from quantbox.trade.lots import floor_to_step
 
 logger = logging.getLogger(__name__)
 
@@ -42,36 +41,12 @@ DEFAULT_MIN_TRADE_SIZE = 0.01
 DEFAULT_STABLE_COIN = "USDC"
 
 
-# ---------------------------------------------------------------------------
-# Low-level helpers (from quantlab orders.py / portfolio.py)
-# ---------------------------------------------------------------------------
-
-
-def _adjust_quantity(qty: float, step_size: float) -> float:
-    """Round *qty* down to the nearest *step_size* (Binance-style)."""
-    if step_size <= 0:
-        return qty
-    step_str = f"{step_size:.8f}"
-    decimal_places = step_str.rstrip("0").split(".")[-1]
-    precision = len(decimal_places)
-    getcontext().rounding = ROUND_DOWN
-    return float(Decimal(qty).quantize(Decimal("1." + "0" * precision)))
-
-
-def _get_lot_size_and_min_notional(
-    symbol_info: dict | None,
-) -> tuple[float, float, float]:
-    """Extract (min_qty, step_size, min_notional) from Binance symbol info."""
-    min_qty, step_size, min_notional = 0.0, 0.0, 0.0
-    if not symbol_info:
-        return min_qty, step_size, min_notional
-    for f in symbol_info.get("filters", []):
-        if f.get("filterType") == "LOT_SIZE":
-            min_qty = float(f.get("minQty", 0))
-            step_size = float(f.get("stepSize", 0))
-        if f.get("filterType") == "NOTIONAL":
-            min_notional = float(f.get("minNotional", 0))
-    return min_qty, step_size, min_notional
+def _opens_exposure(row: pd.Series) -> bool:
+    """The row's declared intent (:func:`declares_open`); an unknown quantity is no open."""
+    cur, tgt = row.get("Current Quantity", 0.0), row.get("Target Quantity", 0.0)
+    if cur is None or tgt is None or pd.isna(cur) or pd.isna(tgt):
+        return False
+    return declares_open(float(cur), float(tgt))
 
 
 # ---------------------------------------------------------------------------
@@ -287,8 +262,7 @@ class StandardRebalancer:
             if p is not None:
                 target_positions[asset] = (total_value * weight) / p
 
-        rebalancing_df = self._build_rebalancing(
-            book=book,
+        rebalancing_df = book.rebalancing_frame(
             target_positions=target_positions,
             total_value=total_value,
             strategy_weights=adjusted_weights,
@@ -318,62 +292,6 @@ class StandardRebalancer:
             # establish. `FuturesRebalancer` already carries it on both.
             "valuation": valuation,
         }
-
-    # ------------------------------------------------------------------
-
-    def _build_rebalancing(
-        self,
-        book: MarkedBook,
-        target_positions: dict[str, float],
-        total_value: float,
-        strategy_weights: dict[str, float],
-        exclusions: list[str],
-    ) -> pd.DataFrame:
-        """Build the rebalancing analysis DataFrame.
-
-        Values come from the marked book. A held name with no mark has an
-        UNKNOWN current value and weight (NaN), never 0 (TOM-1455).
-        """
-        current_holdings = book.held
-        assets = sorted(set(current_holdings.keys()) | set(target_positions.keys()))
-        assets = [a for a in assets if a not in exclusions]
-
-        rows: list[dict[str, Any]] = []
-        for asset in assets:
-            current_qty = current_holdings.get(asset, 0.0)
-            price = book.mark(asset)
-            current_value = nan_if_unknown(book.value_of(asset))
-            target_qty = target_positions.get(asset, 0.0)
-            target_value = nan_if_unknown(book.value_of(asset, target_qty))
-            current_weight = current_value / total_value if total_value > 0 else 0
-            target_weight = target_value / total_value if total_value > 0 else 0
-            weight_delta = strategy_weights.get(asset, 0) - current_weight
-            delta_qty = target_qty - current_qty
-
-            if delta_qty > 0:
-                trade_action = "Buy"
-            elif delta_qty < 0:
-                trade_action = "Sell"
-            else:
-                trade_action = "Hold"
-
-            rows.append(
-                {
-                    "Asset": asset,
-                    "Current Quantity": current_qty,
-                    "Current Value": current_value,
-                    "Current Weight": current_weight,
-                    "Target Quantity": target_qty,
-                    "Target Value": target_value,
-                    "Target Weight": target_weight,
-                    "Weight Delta": weight_delta,
-                    "Delta Quantity": delta_qty,
-                    "Price": price,
-                    "Trade Action": trade_action,
-                }
-            )
-
-        return pd.DataFrame(rows)
 
     # ------------------------------------------------------------------
 
@@ -457,7 +375,7 @@ class StandardRebalancer:
                         pass
 
                     if action == "sell":
-                        adjusted_qty = _adjust_quantity(abs(delta_qty), step_size) if step_size > 0 else abs(delta_qty)
+                        adjusted_qty = floor_to_step(abs(delta_qty), step_size)
                         notional_value = adjusted_qty * price if price else 0.0
 
                         if price is None or price == 0:
@@ -494,6 +412,9 @@ class StandardRebalancer:
                     "Order Status": status,
                     "Reason": reason,
                     "Scaling Factor": scaling_factor,
+                    # The order's declared intent (TOM-901): the execution stage
+                    # reads it instead of guessing intent from the side.
+                    "opens_exposure": _opens_exposure(row),
                 }
             )
 
@@ -521,11 +442,7 @@ class StandardRebalancer:
                 mn = rec["Min Notional"]
                 raw_qty = rec["Raw Quantity"]
 
-                scaled_qty = (
-                    _adjust_quantity(raw_qty * scaling_factor, step_size)
-                    if step_size and price
-                    else raw_qty * scaling_factor
-                )
+                scaled_qty = floor_to_step(raw_qty * scaling_factor, step_size) if price else raw_qty * scaling_factor
                 scaled_notional = scaled_qty * price if price else 0.0
                 rec["Scaling Factor"] = scaling_factor
                 rec["Adjusted Quantity"] = scaled_qty
@@ -570,6 +487,7 @@ class StandardRebalancer:
             "Scaling Factor",
             "Order Status",
             "Reason",
+            "opens_exposure",
         ]
         order_df = pd.DataFrame(order_records, columns=columns)
         order_df["Executable"] = (order_df["Adjusted Quantity"] > 0) & (order_df["Order Status"] == "To be placed")

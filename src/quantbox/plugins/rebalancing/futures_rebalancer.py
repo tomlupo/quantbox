@@ -35,12 +35,27 @@ from quantbox.engine.policy import TRANCHES_MOVED
 from quantbox.trade.book import (
     BASIS_MARGIN,
     DEFAULT_RECONCILIATION_TOLERANCE,
-    MarkedBook,
-    nan_if_unknown,
     read_book,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def declares_open(current_qty: float, target_qty: float) -> bool:
+    """The order's declared intent: True for an open from flat or an add on the same side.
+
+    The one definition every builtin rebalancer writes as ``opens_exposure`` on
+    an order row (TOM-1778, TOM-901). A flip through zero is NOT an open: it
+    exits the held side first. The execution stage (:mod:`quantbox.trade.executor`)
+    reads the flag instead of guessing intent from the order's side.
+    """
+    if target_qty == 0:
+        return False
+    if current_qty == 0:
+        return True
+    same_sign = (target_qty > 0) == (current_qty > 0)
+    return bool(same_sign and abs(target_qty) > abs(current_qty))
+
 
 #: ``Order Status`` of a partial reduce below the venue minimum (TOM-1778): not
 #: sent, because the venue rejects it, and a known residual, not a freeze.
@@ -267,8 +282,8 @@ class FuturesRebalancer:
             if p is not None:
                 target_positions[asset] = (total_value * weight) / p
 
-        rebalancing_df = self._build_rebalancing(
-            book=book,
+        # Signed quantities and values: the book's one frame builder (TOM-1859).
+        rebalancing_df = book.rebalancing_frame(
             target_positions=target_positions,
             total_value=total_value,
             strategy_weights=adjusted_weights,
@@ -292,63 +307,6 @@ class FuturesRebalancer:
             # what it could not mark, rather than only the resulting number.
             "valuation": valuation,
         }
-
-    # ------------------------------------------------------------------
-
-    def _build_rebalancing(
-        self,
-        book: MarkedBook,
-        target_positions: dict[str, float],
-        total_value: float,
-        strategy_weights: dict[str, float],
-        exclusions: list[str],
-    ) -> pd.DataFrame:
-        """Build the rebalancing analysis DataFrame with signed positions.
-
-        Values come from the marked book. A held name with no mark has an
-        UNKNOWN current value and weight (NaN), never 0 (TOM-1455).
-        """
-        current_holdings = book.held
-        assets = sorted(set(current_holdings.keys()) | set(target_positions.keys()))
-        assets = [a for a in assets if a not in exclusions]
-
-        rows: list[dict[str, Any]] = []
-        for asset in assets:
-            current_qty = current_holdings.get(asset, 0.0)
-            price = book.mark(asset)
-            # Signed current value
-            current_value = nan_if_unknown(book.value_of(asset))
-            target_qty = target_positions.get(asset, 0.0)
-            target_value = nan_if_unknown(book.value_of(asset, target_qty))
-            current_weight = current_value / total_value if total_value > 0 else 0
-            target_weight = target_value / total_value if total_value > 0 else 0
-            weight_delta = strategy_weights.get(asset, 0) - current_weight
-            delta_qty = target_qty - current_qty
-
-            if delta_qty > 0:
-                trade_action = "Buy"
-            elif delta_qty < 0:
-                trade_action = "Sell"
-            else:
-                trade_action = "Hold"
-
-            rows.append(
-                {
-                    "Asset": asset,
-                    "Current Quantity": current_qty,
-                    "Current Value": current_value,
-                    "Current Weight": current_weight,
-                    "Target Quantity": target_qty,
-                    "Target Value": target_value,
-                    "Target Weight": target_weight,
-                    "Weight Delta": weight_delta,
-                    "Delta Quantity": delta_qty,
-                    "Price": price,
-                    "Trade Action": trade_action,
-                }
-            )
-
-        return pd.DataFrame(rows)
 
     # ------------------------------------------------------------------
 
@@ -481,7 +439,7 @@ class FuturesRebalancer:
             #     the fees the band exists to prevent.
             #   * the `ordermin` base-unit floor — venues do NOT waive lot size or
             #     step size for reduceOnly (binance_futures.py:487 adjust_quantity,
-            #     hyperliquid.py:755 precision round, neither with a reduce_only
+            #     hyperliquid.py place_order precision floor, neither with a reduce_only
             #     escape). Exempting it would mark the row Executable, then have the
             #     broker silently return None — the exact send-and-vanish failure
             #     the floor exists to prevent.
@@ -500,9 +458,10 @@ class FuturesRebalancer:
                 same_sign = (tgt_qty > 0) == (cur_qty > 0)
                 is_partial_reduce = cur_qty != 0 and same_sign and abs(tgt_qty) < abs(cur_qty)
                 # An open from flat or an add on the same side: the only rows a
-                # residual day may leave unsent (TOM-1778). A flip through zero is NOT
-                # one — it exits the held side.
-                opens_exposure = bool(tgt_qty != 0 and (cur_qty == 0 or (same_sign and abs(tgt_qty) > abs(cur_qty))))
+                # residual day may leave unsent (TOM-1778), and the declared intent
+                # the trapped-residual counter reads (TOM-901). A flip through zero
+                # is NOT one — it exits the held side.
+                opens_exposure = declares_open(cur_qty, tgt_qty)
 
             # Sent reduce-only.
             is_exposure_reducing = bool(is_flat_target or is_partial_reduce)
@@ -520,7 +479,7 @@ class FuturesRebalancer:
                 # `target - current` from the same two columns (line 285), but
                 # this method accepts those columns independently and nothing else
                 # checks them for mutual consistency. Mirrors the gate-path clamp
-                # in trading_pipeline.py:2528.
+                # in quantbox.trade.reconciliation.cycle.filter_reduce_only.
                 clamped_qty = min(adjusted_qty, abs(cur_qty))
                 if clamped_qty != adjusted_qty:
                     logger.warning(

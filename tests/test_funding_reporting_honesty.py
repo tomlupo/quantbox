@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import pytest
 
+from quantbox.contracts import BrokerCapability
 from quantbox.plugins.broker._funding import funding_payment, net_funding, select_window
 
 # ---------------------------------------------------------------------------
@@ -243,6 +244,8 @@ def test_pipeline_reads_funding_from_a_live_broker():
     from quantbox.plugins.pipeline.trading_pipeline import _resolve_funding_charge
 
     class LiveBroker:
+        broker_capabilities = frozenset({BrokerCapability.FUNDING_HISTORY})  # TOM-1459: declared, not probed
+
         def __init__(self):
             self.asked = None
 
@@ -266,6 +269,8 @@ def test_pipeline_keeps_an_unmeasured_funding_charge_unknown():
     from quantbox.plugins.pipeline.trading_pipeline import _resolve_funding_charge
 
     class BlindBroker:
+        broker_capabilities = frozenset({BrokerCapability.FUNDING_HISTORY})
+
         def fetch_funding_payments(self, since, until):
             return None
 
@@ -287,6 +292,8 @@ def test_pipeline_still_prefers_a_simulated_book_that_applies_funding():
     from quantbox.plugins.pipeline.trading_pipeline import _resolve_funding_charge
 
     class PaperBroker:
+        broker_capabilities = frozenset({BrokerCapability.FUNDING_APPLIED, BrokerCapability.FUNDING_HISTORY})
+
         def apply_funding(self):
             return -1.25
 

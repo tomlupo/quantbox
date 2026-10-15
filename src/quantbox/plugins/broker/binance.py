@@ -8,6 +8,8 @@ import pandas as pd
 from quantbox.contracts import PluginMeta
 from quantbox.trade.book import BASIS_MARK
 
+from ._fills import binance_order, resolve_fill
+
 try:
     from binance.client import Client
 except Exception:  # pragma: no cover
@@ -132,21 +134,35 @@ class BinanceBroker:
                     res = self.client.create_order(
                         symbol=sym, side=side.upper(), type="LIMIT", timeInForce="GTC", quantity=qty, price=str(price)
                     )
-            except Exception:
-                continue
-
-            # best-effort: parse fills
-            for f in res.get("fills", []) or []:
+            except Exception as exc:
                 fills.append(
                     {
                         "symbol": sym,
                         "side": side.lower(),
-                        "qty": float(f.get("qty", 0.0)),
-                        "price": float(f.get("price", 0.0)),
-                        # An executed fill says so: a status-less row is UNKNOWN to the pipeline (TOM-1336).
-                        "status": "FILLED",
+                        "qty": 0.0,
+                        "price": 0.0,
+                        "status": "FAILED",
+                        "error": str(exc),
                     }
                 )
+                continue
+
+            # The whole order, through the one fill reader (TOM-1458): every fill
+            # summed, a resting limit WORKING, an unconfirmed reply UNKNOWN.
+            order = binance_order(res)
+            status, filled_qty, fill_price, reason = resolve_fill(order, qty)
+            fills.append(
+                {
+                    "symbol": sym,
+                    "side": side.lower(),
+                    "qty": filled_qty,
+                    "price": fill_price,
+                    "requested_qty": qty,
+                    "order_id": "" if not order or order.get("id") is None else str(order["id"]),
+                    "status": status,
+                    "error": reason,
+                }
+            )
 
         return pd.DataFrame(fills)
 

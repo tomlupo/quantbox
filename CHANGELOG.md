@@ -29,6 +29,24 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.17.0 (2026-10-15)
+
+### BREAKING CHANGE
+
+- trade.full_pipeline.v1 in paper or live mode requires
+plugins.rebalancing; pipeline-level min_notional and scaling_factor_min are
+refused by validation.
+- carver-HL (Hyperliquid) orders are now up to one step
+smaller where the nearest step was above the request.
+
+### Feat
+
+- **trade**: P5 W4-W6 — execution module, one lot rule rounding down, declared broker capabilities (TOM-1458, TOM-1859, TOM-1860, TOM-1721, TOM-1459) (#289)
+
+### Fix
+
+- **trade**: escape alert text for Telegram HTML; a strategy with no row on a date contributes 0 (TOM-1843, TOM-1844) (#288)
+
 ## v0.16.1 (2026-10-13)
 
 ### Fix

@@ -86,6 +86,11 @@ class MyExchangeBroker:
                     "status": "filled",
                 }
             )
+        # Every row passes one normaliser at the broker seam
+        # (quantbox.plugins.broker._fills.normalise_results): a status outside
+        # FILLED / PARTIAL / WORKING / FAILED / SKIPPED / UNKNOWN, or a FILLED row
+        # with no qty, reads as UNKNOWN and books no fill. A live venue reads its
+        # order replies through resolve_fill.
         return pd.DataFrame(fills)
 
     def fetch_fills(self, since: str) -> pd.DataFrame:
@@ -132,6 +137,9 @@ plugins:
     params_init:
       paper_trading: true
       quote_currency: "USDT"
+  # Required in paper and live mode: the pipeline sizes no order itself.
+  rebalancing:
+    name: "rebalancing.standard.v1"
 ```
 
 ### 5. Verify

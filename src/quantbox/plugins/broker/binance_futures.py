@@ -48,14 +48,14 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from decimal import ROUND_DOWN, Decimal, getcontext
 from typing import Any
 
 import pandas as pd
 
-from quantbox.contracts import PluginMeta
+from quantbox.contracts import BrokerCapability, PluginMeta
 from quantbox.retry import with_retry
 from quantbox.trade.book import BASIS_MARGIN
+from quantbox.trade.lots import floor_to_decimals, floor_to_step
 
 from ._fills import resolve_fill, trade_fee, trade_fee_currency
 
@@ -105,15 +105,11 @@ class RiskConfig:
 # ============================================================================
 
 
-def adjust_quantity(qty: float, step_size: float, precision: int = 8) -> float:
-    """Adjust quantity to Binance step size."""
+def adjust_quantity(qty: float, step_size: float) -> float:
+    """*qty* floored to the Binance step (:mod:`quantbox.trade.lots`); no step known: floored to 8 decimals."""
     if step_size <= 0:
-        return round(qty, precision)
-    getcontext().rounding = ROUND_DOWN
-    step_str = f"{step_size:.{precision}f}".rstrip("0")
-    decimal_places = len(step_str.split(".")[-1]) if "." in step_str else 0
-    adjusted = Decimal(str(qty)).quantize(Decimal(f"1e-{decimal_places}"))
-    return float(adjusted)
+        return floor_to_decimals(qty, 8)
+    return floor_to_step(qty, step_size)
 
 
 def adjust_price(price: float, tick_size: float) -> float:
@@ -158,6 +154,10 @@ class BinanceFuturesBroker:
     # class. Closing it means a `get_equity()` returning total wallet balance +
     # unrealised PnL, as HyperliquidBroker does.
     valuation_basis = BASIS_MARGIN
+    # What the trade path may use -- see contracts.BrokerCapability (TOM-1459).
+    # No EQUITY (the gap above) and no FUNDING_HISTORY: this adapter cannot yet
+    # read back the funding the venue took, so funding is reported UNKNOWN.
+    broker_capabilities = frozenset({BrokerCapability.ORDER_RESULT})
 
     meta = PluginMeta(
         name="binance.futures.v1",

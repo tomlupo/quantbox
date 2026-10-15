@@ -34,6 +34,7 @@ import math
 import pandas as pd
 import pytest
 
+from quantbox.contracts import BrokerCapability
 from quantbox.trade.book import (
     BASIS_MARGIN,
     BASIS_MARK,
@@ -68,6 +69,7 @@ class _SpotBroker:
     """A long-only spot broker whose equity is cash + marks, like Kraken."""
 
     valuation_basis = BASIS_MARK
+    broker_capabilities = frozenset({BrokerCapability.EQUITY})  # TOM-1459: declared, not probed
 
     def __init__(self, equity: float | None = None, raises: Exception | None = None):
         self._equity = equity
@@ -84,6 +86,7 @@ class _PerpsBroker:
     """A derivatives broker: equity is margin + unrealised PnL, NOT cash + marks."""
 
     valuation_basis = BASIS_MARGIN
+    broker_capabilities = frozenset({BrokerCapability.EQUITY})  # TOM-1459: declared, not probed
 
     def __init__(self, equity: float):
         self._equity = equity
@@ -108,6 +111,10 @@ class _UndeclaredBroker:
     run is stopped even though a number was available, because nobody knows what
     that number MEANS.
     """
+
+    # Declares the equity CAPABILITY (TOM-1459) but not the venue: the number is
+    # available and still unusable, which is what this fake stands for.
+    broker_capabilities = frozenset({BrokerCapability.EQUITY})
 
     def describe(self) -> dict[str, object]:
         return {"name": "Undeclared", "type": "spot", "long_only": True}
@@ -607,6 +614,8 @@ class _SizingBroker:
     accident -- the first draft of this file had the base declare spot, which
     silently turned every "undeclared" test into a declared one.
     """
+
+    broker_capabilities = frozenset({BrokerCapability.EQUITY})  # TOM-1459: declared, not probed
 
     def __init__(self, cash: float, holdings: dict[str, float], prices: dict[str, float]):
         self._cash = cash
