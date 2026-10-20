@@ -313,7 +313,7 @@ wheels = [
 
 [[package]]
 name = "ccxt"
-version = "4.5.85"
+version = "4.5.88"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohappyeyeballs" },
@@ -340,9 +340,9 @@ dependencies = [
     { name = "yarl" },
     { name = "zlib-ng" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/84/57/f68d0cb8ee804b805113f3d819a1d69179dd5ddf361ac74418fc5afb2a4d/ccxt-4.5.85.tar.gz", hash = "sha256:e2e57064675779b16d174c4bb87856d4c84e237075c6240e4c0d99db931bd02b", size = 6322871, upload-time = "2026-10-01T06:38:12.396Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ea/0d/33185cbe18cd75afbc21077b62805e31f50998425772869e8a61c5589fd2/ccxt-4.5.88.tar.gz", hash = "sha256:cb615b5f420fd57b2624c4e85a02a1fa32c914fec4fc5ebe7565d1ef06333016", size = 6304659, upload-time = "2026-10-14T10:56:50.946Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/43/c4/8264379c5cc6b47cb45b5a984a32f82fdf2689ee62af8255bc238f612701/ccxt-4.5.85-py3-none-any.whl", hash = "sha256:da6b2cce40530d471bc8ecf716a3e7d709f597fca8a4a84e40e7422b31f164c0", size = 6704190, upload-time = "2026-10-01T06:38:09.141Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/7a/710fe4ca770ca6d1054786eb430d36344aaea93d1a26b27f7959072d0bb7/ccxt-4.5.88-py3-none-any.whl", hash = "sha256:3e37d626cf3245c547b76751a26a9119df9da28f1f80fbdb751586bfebf5f791", size = 6684043, upload-time = "2026-10-14T10:56:47.731Z" },
 ]
 
 [[package]]
@@ -3218,8 +3218,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "arch", marker = "extra == 'simulation'", specifier = ">=8.0" },
-    { name = "ccxt", marker = "extra == 'ccxt'", specifier = ">=4.5.85" },
-    { name = "ccxt", marker = "extra == 'trade'", specifier = ">=4.5.85" },
+    { name = "ccxt", marker = "extra == 'ccxt'", specifier = ">=4.5.88" },
+    { name = "ccxt", marker = "extra == 'trade'", specifier = ">=4.5.88" },
     { name = "duckdb", marker = "extra == 'data'", specifier = ">=1.5.6" },
     { name = "httpx", marker = "extra == 'data'", specifier = ">=0.28.1" },
     { name = "httpx", marker = "extra == 'trade'", specifier = ">=0.28.1" },
@@ -3254,7 +3254,7 @@ dev = [
     { name = "import-linter", specifier = ">=2.15" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "quantbox", extras = ["research", "vectorbt"] },
-    { name = "ruff", specifier = ">=0.17.0" },
+    { name = "ruff", specifier = ">=0.17.1" },
 ]
 
 [[package]]
