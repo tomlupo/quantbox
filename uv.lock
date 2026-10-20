@@ -313,7 +313,7 @@ wheels = [
 
 [[package]]
 name = "ccxt"
-version = "4.5.85"
+version = "4.5.88"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohappyeyeballs" },
@@ -340,9 +340,9 @@ dependencies = [
     { name = "yarl" },
     { name = "zlib-ng" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/84/57/f68d0cb8ee804b805113f3d819a1d69179dd5ddf361ac74418fc5afb2a4d/ccxt-4.5.85.tar.gz", hash = "sha256:e2e57064675779b16d174c4bb87856d4c84e237075c6240e4c0d99db931bd02b", size = 6322871, upload-time = "2026-10-01T06:38:12.396Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ea/0d/33185cbe18cd75afbc21077b62805e31f50998425772869e8a61c5589fd2/ccxt-4.5.88.tar.gz", hash = "sha256:cb615b5f420fd57b2624c4e85a02a1fa32c914fec4fc5ebe7565d1ef06333016", size = 6304659, upload-time = "2026-10-14T10:56:50.946Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/43/c4/8264379c5cc6b47cb45b5a984a32f82fdf2689ee62af8255bc238f612701/ccxt-4.5.85-py3-none-any.whl", hash = "sha256:da6b2cce40530d471bc8ecf716a3e7d709f597fca8a4a84e40e7422b31f164c0", size = 6704190, upload-time = "2026-10-01T06:38:09.141Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/7a/710fe4ca770ca6d1054786eb430d36344aaea93d1a26b27f7959072d0bb7/ccxt-4.5.88-py3-none-any.whl", hash = "sha256:3e37d626cf3245c547b76751a26a9119df9da28f1f80fbdb751586bfebf5f791", size = 6684043, upload-time = "2026-10-14T10:56:47.731Z" },
 ]
 
 [[package]]
@@ -2663,15 +2663,15 @@ wheels = [
 
 [[package]]
 name = "plotly"
-version = "6.9.0"
+version = "7.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "narwhals" },
     { name = "packaging" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/96/07/795c79dbce40c39bece88e69d049babbd23ffa95b5d117f248db8ea03abb/plotly-6.9.0.tar.gz", hash = "sha256:967ad33e8c704fed051800d11d985eb206a9c795c14206b30a6f463ed9c67d0d", size = 6919903, upload-time = "2026-07-09T14:55:59.982Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/49/c3/72b369f5ed7701b04ab0ea3dcf83e9bbce71c0b3bc6f07f87568550d09ea/plotly-7.1.0.tar.gz", hash = "sha256:f860166a4a3d78c69cb1f4a15f28a5c8283eade98a282a698f3bb853a449ace5", size = 6689315, upload-time = "2026-09-15T19:21:21.75Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/24/18/d8544811ab076f876c4892b3714f5b0dad335e1dc33aef826df431b8325d/plotly-6.9.0-py3-none-any.whl", hash = "sha256:36bebe2f1bb13884774fe61689c329071446f6ce4a8927fb1f0d6fb24f581236", size = 9909646, upload-time = "2026-07-09T14:55:55.421Z" },
+    { url = "https://files.pythonhosted.org/packages/e5/7d/905a3a3d51087515719058c94cfbda2ff0fc14417c20d557ae3e82d8b250/plotly-7.1.0-py3-none-any.whl", hash = "sha256:dbb7fa18afce40d0a8e80d1bf162eceb3faa0ce5a77fe741ad09a74cf78f53f3", size = 9692368, upload-time = "2026-09-15T19:21:18.331Z" },
 ]
 
 [[package]]
@@ -3218,8 +3218,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "arch", marker = "extra == 'simulation'", specifier = ">=8.0" },
-    { name = "ccxt", marker = "extra == 'ccxt'", specifier = ">=4.5.85" },
-    { name = "ccxt", marker = "extra == 'trade'", specifier = ">=4.5.85" },
+    { name = "ccxt", marker = "extra == 'ccxt'", specifier = ">=4.5.88" },
+    { name = "ccxt", marker = "extra == 'trade'", specifier = ">=4.5.88" },
     { name = "duckdb", marker = "extra == 'data'", specifier = ">=1.5.6" },
     { name = "httpx", marker = "extra == 'data'", specifier = ">=0.28.1" },
     { name = "httpx", marker = "extra == 'trade'", specifier = ">=0.28.1" },
@@ -3227,10 +3227,10 @@ requires-dist = [
     { name = "jsonschema", specifier = ">=4.26.0" },
     { name = "matplotlib", marker = "extra == 'viz'", specifier = ">=3.10.9" },
     { name = "numba", marker = "extra == 'vectorbt'", specifier = ">=0.68.0" },
-    { name = "numpy", specifier = ">=1.26.4" },
+    { name = "numpy", specifier = ">=2.2.6" },
     { name = "pandas", specifier = ">=2.3.3" },
     { name = "pandas-market-calendars", specifier = ">=5.5.0" },
-    { name = "plotly", marker = "extra == 'research'", specifier = ">=6.5.2,<7" },
+    { name = "plotly", marker = "extra == 'research'", specifier = ">=7.1.0,<8" },
     { name = "pyarrow", specifier = ">=25.0.1" },
     { name = "pycoingecko", marker = "extra == 'data'", specifier = ">=3.2.0" },
     { name = "python-binance", marker = "extra == 'binance'" },
@@ -3254,7 +3254,7 @@ dev = [
     { name = "import-linter", specifier = ">=2.15" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "quantbox", extras = ["research", "vectorbt"] },
-    { name = "ruff", specifier = ">=0.17.0" },
+    { name = "ruff", specifier = ">=0.17.1" },
 ]
 
 [[package]]
