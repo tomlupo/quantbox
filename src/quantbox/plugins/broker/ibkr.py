@@ -16,9 +16,10 @@ except Exception:  # pragma: no cover
 
 
 # An IB ``OrderStatus.status`` in ccxt's unified statuses, so classify_fill /
-# resolve_fill read it like every other venue's (TOM-1978). ``Inactive`` is how
-# IB reports an order it rejected or will not work; an unrecognised or empty
-# status (no status message has arrived yet) stays absent and reads UNKNOWN.
+# resolve_fill read it like every other venue's (TOM-1978). An unrecognised or
+# empty status (no status message has arrived yet) stays absent and reads UNKNOWN.
+# ``Inactive`` is not in the table: IB uses it both for a rejected order and for
+# an accepted order it holds and may still work, so it is read by _inactive_status.
 _IBKR_STATUS = {
     "Filled": "closed",
     "Submitted": "open",
@@ -28,8 +29,19 @@ _IBKR_STATUS = {
     "PendingCancel": "open",
     "Cancelled": "canceled",
     "ApiCancelled": "canceled",
-    "Inactive": "rejected",
 }
+
+
+def _inactive_status(trade) -> str | None:
+    """``rejected`` when IB sent an order error, else ``None`` (reads UNKNOWN).
+
+    ib_insync logs an order error, never a warning, as a log entry with a
+    non-zero ``errorCode``. An ``Inactive`` order with no such entry may be held
+    and work later: reading it as FAILED would let the next cycle place it again
+    while the first one can still fill, so it stays UNKNOWN and queued (Tom, 2026-10-22).
+    """
+    log = getattr(trade, "log", None) or []
+    return "rejected" if any(getattr(e, "errorCode", 0) for e in log) else None
 
 
 def _num(value) -> float | None:
@@ -62,7 +74,7 @@ def ibkr_order(trade) -> dict | None:
         average = sum(q * p for q, p in legs) / total if total else None
     return {
         "id": getattr(order, "orderId", None),
-        "status": _IBKR_STATUS.get(raw),
+        "status": _inactive_status(trade) if raw == "Inactive" else _IBKR_STATUS.get(raw),
         "filled": _num(getattr(st, "filled", None)),
         "remaining": _num(getattr(st, "remaining", None)),
         "amount": _num(getattr(order, "totalQuantity", None)),

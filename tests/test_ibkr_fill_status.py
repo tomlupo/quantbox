@@ -13,7 +13,7 @@ import pandas as pd
 import pytest
 
 from quantbox.plugins.broker import ibkr
-from quantbox.plugins.broker._fills import STATUS_WORKING
+from quantbox.plugins.broker._fills import STATUS_UNKNOWN, STATUS_WORKING
 
 
 def _status(status: str, filled: float, avg: float = 0.0) -> SimpleNamespace:
@@ -21,9 +21,10 @@ def _status(status: str, filled: float, avg: float = 0.0) -> SimpleNamespace:
 
 
 class _FakeIB:
-    def __init__(self, script: list[SimpleNamespace], log: list[str] | None = None):
+    def __init__(self, script: list[SimpleNamespace], log: list[tuple[str, int]] | None = None):
         self.script = list(script)
-        self.log = [SimpleNamespace(message=m) for m in (log or [])]
+        # ib_insync's TradeLogEntry: an order error carries a non-zero errorCode.
+        self.log = [SimpleNamespace(message=m, errorCode=code) for m, code in (log or [])]
         self.trade = None
 
     def connect(self, *args, **kwargs):
@@ -73,12 +74,26 @@ ORDER = pd.DataFrame([{"symbol": "SPY", "side": "buy", "qty": 100.0, "price": 0.
         ([_status("Submitted", 40.0, 500.0)], None, "PARTIAL", 40.0, 500.0),
         # A working order: accepted, nothing filled when the window closes.
         ([_status("Submitted", 0.0)] * 5, None, STATUS_WORKING, 0.0, None),
-        # A rejection: IB reports an order it will not work as Inactive.
-        ([_status("Inactive", 0.0)], ["Order rejected - reason: no trading permissions"], "FAILED", 0.0, None),
-        # Not yet acknowledged at the first read, then filled in full on the re-read.
-        ([_status("PendingSubmit", 0.0), _status("Filled", 100.0, 501.0)], None, "FILLED", 100.0, 501.0),
+        # A rejection: Inactive with an order error from IB.
+        (
+            [_status("Inactive", 0.0)],
+            [("Error 201, reqId 42: Order rejected - reason: no trading permissions", 201)],
+            "FAILED",
+            0.0,
+            None,
+        ),
+        # A held order: Inactive with no order error may still work, so it is not FAILED.
+        ([_status("Inactive", 0.0)], [("", 0)], STATUS_UNKNOWN, 0.0, None),
+        # Still not acknowledged after the first 0.5 s, filled in full on the re-read.
+        (
+            [_status("PendingSubmit", 0.0), _status("PendingSubmit", 0.0), _status("Filled", 100.0, 501.0)],
+            None,
+            "FILLED",
+            100.0,
+            501.0,
+        ),
     ],
-    ids=["partial", "working", "rejected", "settles-filled"],
+    ids=["partial", "working", "rejected", "held", "settles-filled"],
 )
 def test_ibkr_reports_the_orders_own_status(monkeypatch, script, log, status, qty, price):
     row = _broker(monkeypatch, script, log).place_orders(ORDER).iloc[0]
