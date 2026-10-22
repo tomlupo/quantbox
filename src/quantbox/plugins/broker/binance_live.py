@@ -787,7 +787,8 @@ class BinanceLiveBroker:
             - Weight_Delta: target - current weight
             - Delta_Qty: how much to buy/sell
             - Price: current price
-            - Action: 'Buy', 'Sell', or 'Hold'
+            - Action: 'Buy', 'Sell', 'Hold', or 'Unpriced' (a target with no
+              price: its Target_Qty and Delta_Qty are NaN and it is not traded)
 
         Example:
             >>> weights = {'BTC': 0.40, 'ETH': 0.30, 'SOL': 0.15}
@@ -834,17 +835,33 @@ class BinanceLiveBroker:
 
             target_weight = adjusted_weights.get(asset, 0.0)
             target_value = total_value * target_weight
-            target_qty = target_value / price if price and price > 0 else 0
-
-            delta_qty = target_qty - current_qty
+            priced = bool(price and price > 0)
             weight_delta = target_weight - current_weight
 
-            if delta_qty > 0.0001:
-                action = "Buy"
-            elif delta_qty < -0.0001:
-                action = "Sell"
+            if target_weight != 0 and not priced and asset != self.stable_coin:
+                # A target with no price cannot be sized. It used to get
+                # ``target_qty = 0`` and was never bought, with nothing to say
+                # so (TOM-1979). The size is unknown, not 0: the row is
+                # REPORTED, and the orders frame carries it as "Unpriced". A
+                # HELD asset with no mark never reaches here; the valuation
+                # above refuses the whole plan (TOM-1860).
+                logger.error(
+                    "No price for target %s (weight %.4f): it cannot be sized and is not traded.",
+                    asset,
+                    target_weight,
+                )
+                target_qty = math.nan
+                delta_qty = math.nan
+                action = "Unpriced"
             else:
-                action = "Hold"
+                target_qty = target_value / price if priced else 0
+                delta_qty = target_qty - current_qty
+                if delta_qty > 0.0001:
+                    action = "Buy"
+                elif delta_qty < -0.0001:
+                    action = "Sell"
+                else:
+                    action = "Hold"
 
             data.append(
                 {
@@ -1114,6 +1131,23 @@ class BinanceLiveBroker:
             for _, row in buy_rows.iterrows():
                 order = self._prepare_order(row, is_buy=True, scaling_factor=scaling_factor)
                 order_records.append(order)
+
+        # A target with no price is never traded, and never dropped silently:
+        # the orders frame is where a skipped order says why (TOM-1979).
+        for _, row in df[df["Action"] == "Unpriced"].iterrows():
+            order_records.append(
+                {
+                    "Asset": row["Asset"],
+                    "Symbol": row["Symbol"],
+                    "Action": "Buy" if row["Target_Weight"] > 0 else "Sell",
+                    "Raw_Qty": math.nan,
+                    "Adjusted_Qty": 0.0,
+                    "Price": row["Price"],
+                    "Notional_Value": 0.0,
+                    "Order_Status": "Unpriced",
+                    "Reason": "No price: the target cannot be sized",
+                }
+            )
 
         orders_df = pd.DataFrame(order_records)
         if not orders_df.empty:

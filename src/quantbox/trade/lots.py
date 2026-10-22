@@ -11,8 +11,11 @@ grilling Q5; TOM-1721): Binance spot, Binance futures, the spot rebalancer,
 Kraken and Hyperliquid. A rounded order never exceeds its target or the cash
 behind it. A full close is not cut short: a position size the venue reports is
 on the venue's grid, and flooring an on-grid quantity returns it unchanged.
-:func:`round_to_multiple` is not an order rule: the allocations-to-orders
-pipeline rounds a TARGET position to its lot with it.
+
+**A target position is rounded toward zero too** (Tom, 2026-10-22; TOM-1979):
+the allocations-to-orders pipeline rounds a target to its ``lot_size`` and its
+``qty_step`` with :func:`floor_to_multiple`, longs and shorts alike. A rounded
+target never exceeds the size the weight asked for.
 
 Only quantities are rounded here. Whether an order clears a venue minimum
 (``min_qty``, ``min_notional``) is decided by the caller, because the exemptions
@@ -75,17 +78,19 @@ def amount_decimals(precision: Any) -> int:
 
 
 def floor_to_multiple(qty: float, step: float) -> float:
-    """*qty* floored to a whole multiple of *step*; a step of 0 or less returns *qty*."""
-    if step <= 0:
-        return qty
-    return math.floor(qty / step) * step
+    """*qty* rounded toward zero to a whole multiple of *step*, in decimal arithmetic.
 
-
-def round_to_multiple(qty: float, lot: float) -> float:
-    """*qty* rounded to the NEAREST whole multiple of *lot*; a lot of 0 or less returns *qty*."""
-    if lot <= 0:
+    Toward zero for a short too: ``-0.25`` on a ``0.1`` step is ``-0.2``, never
+    ``-0.3`` (TOM-1979). Both floats are read through ``str``, as
+    :func:`floor_to_decimals` does, so an on-grid quantity is returned unchanged:
+    ``0.3`` on a ``0.1`` step stays ``0.3`` (float division gives ``2.9999…``).
+    A step of 0 or less, or a quantity that is not finite, returns *qty*.
+    """
+    if step <= 0 or not math.isfinite(qty):
         return qty
-    return round(qty / lot) * lot
+    d_step = Decimal(str(step))
+    lots = (Decimal(str(qty)) / d_step).to_integral_value(rounding=ROUND_DOWN)
+    return float(lots * d_step) + 0.0  # + 0.0 turns -0.0 into 0.0
 
 
 def binance_filters(symbol_info: dict | None) -> tuple[float, float, float]:
