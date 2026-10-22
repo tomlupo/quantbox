@@ -8,7 +8,9 @@ the backtest's own code (``quantbox.engine.policy``, TOM-1518).
 
 Since TOM-1458 it is the trading pipeline's order generator for a spot book:
 the pipeline's private copy is deleted, and a paper or live config names
-``plugins.rebalancing``. Step rounding is :mod:`quantbox.trade.lots`.
+``plugins.rebalancing``. The venue's step and minimums, and their order, are
+its lot rules (:class:`quantbox.trade.lots.LotRules`, read from the broker's
+market snapshot).
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ from quantbox.trade.book import (
     DEFAULT_RECONCILIATION_TOLERANCE,
     read_book,
 )
-from quantbox.trade.lots import floor_to_step
+from quantbox.trade.lots import SKIP_MIN_NOTIONAL, SKIP_MIN_QTY, Lot, LotRules
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,18 @@ DEFAULT_CAPITAL_AT_RISK = 1.0
 DEFAULT_MIN_NOTIONAL = 1.0
 DEFAULT_MIN_TRADE_SIZE = 0.01
 DEFAULT_STABLE_COIN = "USDC"
+
+
+def _lot_status(lot: Lot, notional: float, rules: LotRules) -> tuple[str, str]:
+    """The order frame's ``Order Status`` and ``Reason`` for a lot-rules answer."""
+    size = abs(lot.rounded)
+    if lot.skip == SKIP_MIN_NOTIONAL:
+        return "Below min notional", f"Notional {notional:.4f} < min_notional {rules.min_notional:.4f}"
+    if lot.skip == SKIP_MIN_QTY:
+        return "Below min qty", f"Qty {size:.8f} < min_qty {rules.min_qty:.8f}"
+    if lot.skip:
+        return "Zero quantity", "Scaled quantity is zero"
+    return "To be placed", ""
 
 
 def _opens_exposure(row: pd.Series) -> bool:
@@ -327,6 +341,8 @@ class StandardRebalancer:
             )
 
         order_records: list[dict[str, Any]] = []
+        # The venue's lot rules of each buy, by record index, for the scaling pass.
+        lot_rules: dict[int, LotRules] = {}
 
         for _, row in rebalancing_df.iterrows():
             asset = row["Asset"]
@@ -362,40 +378,26 @@ class StandardRebalancer:
                     status = "Below threshold"
                     reason = f"abs(weight delta) < {min_trade_size}"
                 else:
+                    rules = LotRules.from_snapshot({}, default_min_notional=min_notional_default)
                     try:
                         snap = broker.get_market_snapshot([asset])
                         if snap is not None and not snap.empty:
-                            info_row = snap.iloc[0]
-                            min_qty = float(info_row.get("min_qty", 0) or 0)
-                            step_size = float(info_row.get("step_size", 0) or 0)
-                            mn = info_row.get("min_notional")
-                            if mn is not None and float(mn) > 0:
-                                min_notional = float(mn)
+                            rules = LotRules.from_snapshot(
+                                snap.iloc[0].to_dict(), default_min_notional=min_notional_default
+                            )
                     except Exception:
                         pass
+                    min_qty, step_size, min_notional = rules.min_qty, rules.step_size, rules.min_notional
 
                     if action == "sell":
-                        adjusted_qty = floor_to_step(abs(delta_qty), step_size)
-                        notional_value = adjusted_qty * price if price else 0.0
-
-                        if price is None or price == 0:
-                            status = "Zero price"
-                            reason = "No price available"
-                            adjusted_qty = 0.0
-                        elif notional_value < min_notional:
-                            status = "Below min notional"
-                            reason = f"Notional {notional_value:.4f} < min_notional {min_notional:.4f}"
-                            adjusted_qty = 0.0
-                        elif min_qty > 0 and adjusted_qty < min_qty:
-                            status = "Below min qty"
-                            reason = f"Qty {adjusted_qty:.8f} < min_qty {min_qty:.8f}"
-                            adjusted_qty = 0.0
-                        else:
-                            status = "To be placed"
-                            reason = ""
+                        lot = rules.accept(abs(delta_qty), price)
+                        adjusted_qty = lot.qty
+                        notional_value = abs(lot.rounded) * price
+                        status, reason = _lot_status(lot, notional_value, rules)
                     elif action == "buy":
                         status = "Pending scaling"
                         reason = ""
+                        lot_rules[len(order_records)] = rules
 
             order_records.append(
                 {
@@ -437,35 +439,20 @@ class StandardRebalancer:
             for i in buy_indices:
                 rec = order_records[i]
                 price = rec["Price"]
-                step_size = rec["Step Size"]
-                min_qty_val = rec["Min Qty"]
-                mn = rec["Min Notional"]
                 raw_qty = rec["Raw Quantity"]
 
-                scaled_qty = floor_to_step(raw_qty * scaling_factor, step_size) if price else raw_qty * scaling_factor
-                scaled_notional = scaled_qty * price if price else 0.0
                 rec["Scaling Factor"] = scaling_factor
-                rec["Adjusted Quantity"] = scaled_qty
-                rec["Notional Value"] = scaled_notional
-
                 if price is None or price == 0:
+                    rec["Adjusted Quantity"] = 0.0
+                    rec["Notional Value"] = 0.0
                     rec["Order Status"] = "Zero price"
                     rec["Reason"] = "No price available"
-                    rec["Adjusted Quantity"] = 0.0
-                elif scaled_notional < mn:
-                    rec["Order Status"] = "Below min notional"
-                    rec["Reason"] = f"Notional {scaled_notional:.4f} < min_notional {mn:.4f}"
-                    rec["Adjusted Quantity"] = 0.0
-                elif min_qty_val > 0 and scaled_qty < min_qty_val:
-                    rec["Order Status"] = "Below min qty"
-                    rec["Reason"] = f"Qty {scaled_qty:.8f} < min_qty {min_qty_val:.8f}"
-                    rec["Adjusted Quantity"] = 0.0
-                elif scaled_qty == 0:
-                    rec["Order Status"] = "Zero quantity"
-                    rec["Reason"] = "Scaled quantity is zero"
-                else:
-                    rec["Order Status"] = "To be placed"
-                    rec["Reason"] = ""
+                    continue
+                rules = lot_rules[i]
+                lot = rules.accept(raw_qty * scaling_factor, price)
+                rec["Adjusted Quantity"] = lot.qty
+                rec["Notional Value"] = abs(lot.rounded) * price
+                rec["Order Status"], rec["Reason"] = _lot_status(lot, rec["Notional Value"], rules)
         elif total_buy_value > 0:
             logger.warning(
                 "Buy scaling factor %.4f < minimum %.2f, skipping buys",

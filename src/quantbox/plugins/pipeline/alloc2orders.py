@@ -29,7 +29,7 @@ from quantbox.trade.book import (
     PortfolioValuation,
 )
 from quantbox.trade.capabilities import supports
-from quantbox.trade.lots import floor_to_multiple
+from quantbox.trade.lots import LotRules
 
 logger = logging.getLogger(__name__)
 
@@ -172,17 +172,13 @@ def _fx_rate_to_usd(fx: pd.DataFrame | None, ccy: str) -> float:
 def _apply_qty_rules(qty: float, lot_size: float, min_qty: float, qty_step: float) -> float:
     """The venue's lot rules on a target quantity, each rounded toward zero (TOM-1979).
 
-    The rounding is :mod:`quantbox.trade.lots`. A long and a short target both
-    shrink toward zero, so a rounded target never exceeds the requested size.
+    The lot rules are :class:`quantbox.trade.lots.LotRules`: the ``lot_size``,
+    then the ``qty_step``, then the ``min_qty``. A long and a short target both
+    shrink toward zero, so a rounded target never exceeds the requested size. A
+    target is not an order, so no minimum notional is judged here.
     """
-    q = qty
-    if lot_size and lot_size > 0:
-        q = floor_to_multiple(q, lot_size)
-    if qty_step and qty_step > 0:
-        q = floor_to_multiple(q, qty_step)
-    if min_qty and min_qty > 0 and abs(q) < min_qty:
-        return 0.0
-    return float(q)
+    q = LotRules.from_snapshot({"step_size": lot_size}).accept(qty).rounded
+    return LotRules.from_snapshot({"step_size": qty_step, "min_qty": min_qty}).accept(q).qty
 
 
 # --------------------------

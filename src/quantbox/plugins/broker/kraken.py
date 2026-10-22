@@ -51,7 +51,7 @@ from quantbox.trade.book import (
     PortfolioValuationError,
     value_holdings,
 )
-from quantbox.trade.lots import amount_decimals, floor_to_decimals
+from quantbox.trade.lots import LotRules
 
 from ..datasources.kraken_data import KRAKEN_BALANCE_SUFFIXES, normalize_kraken_asset
 from ._fills import STATUS_UNKNOWN, STATUS_WORKING, resolve_fill, trade_fee, trade_fee_currency
@@ -459,12 +459,10 @@ class KrakenBroker:
                     mid = float(ticker.get("last") or ticker.get("close") or 0.0) or None
                 except Exception as e:
                     logger.warning("Ticker fetch failed for %s: %s", sym, e)
-                market = self._markets.get(ms, {})
-                limits = market.get("limits", {})
-                precision = market.get("precision", {})
-                min_qty = (limits.get("amount", {}) or {}).get("min") or 0.0
-                step_size = self._precision_to_step(precision.get("amount"))
-                min_notional = (limits.get("cost", {}) or {}).get("min") or 0.0
+                rules = LotRules.from_market(self._markets.get(ms, {}), "kraken")
+                min_qty = rules.min_qty
+                step_size = rules.step_size
+                min_notional = rules.min_notional
             rows.append(
                 {
                     "symbol": sym,
@@ -475,23 +473,6 @@ class KrakenBroker:
                 }
             )
         return pd.DataFrame(rows)
-
-    @staticmethod
-    def _precision_to_step(precision: Any) -> float:
-        """ccxt precision -> step size. ccxt may give a step float (0.001) or an
-        integer number of decimals (3)."""
-        if precision is None:
-            return 0.0
-        try:
-            p = float(precision)
-        except (TypeError, ValueError):
-            return 0.0
-        if p <= 0:
-            return 0.0
-        # Integer >= 1 means "number of decimals".
-        if p >= 1 and float(p).is_integer():
-            return 10 ** (-int(p))
-        return p
 
     # ------------------------------------------------------------------
     # Orders
@@ -698,29 +679,28 @@ class KrakenBroker:
             logger.error("Unknown Kraken market for %s/%s", symbol, self.quote_asset)
             return None
 
-        market = self._markets.get(ms, {})
-        precision = amount_decimals((market.get("precision", {}) or {}).get("amount", 8))
-        # Use ccxt's amount_to_precision (floors to the market's precision) so a
-        # SELL can never round UP past the available balance. round() could push
-        # a sell qty above what we hold; flooring keeps it safe. Fall back to the
-        # one lot module's floor only if amount_to_precision is unavailable.
+        # The venue's lot rules (quantbox.trade.lots) decide the quantity. The
+        # rounding stays ccxt's own amount_to_precision (it floors, so a SELL
+        # never rounds UP past the balance), and the lot rules floor to the step
+        # only if ccxt is unavailable or refuses. Unpriced (price=None): the
+        # order goes out as Kraken sends it today, the minimum notional is left
+        # to the venue; the rebalancer judged it on its own snapshot.
         amount_to_precision = getattr(self._exchange, "amount_to_precision", None)
-        if callable(amount_to_precision):
-            try:
-                quantity = float(amount_to_precision(ms, quantity))
-            except Exception as e:  # pragma: no cover - defensive
-                logger.warning("amount_to_precision failed for %s (%s); flooring", symbol, e)
-                quantity = floor_to_decimals(quantity, precision)
-        else:
-            quantity = floor_to_decimals(quantity, precision)
-        if quantity <= 0:
-            logger.warning("Quantity rounds to zero for %s (precision=%s)", symbol, precision)
+        quantize = (lambda q: amount_to_precision(ms, q)) if callable(amount_to_precision) else None
+        rules = LotRules.from_market(self._markets.get(ms, {}), "kraken", quantize=quantize)
+        lot = rules.accept(quantity, None)
+        if lot.skip:
+            logger.warning(
+                "Kraken order %s %s %s skipped: %s (rounded %s, min qty %s)",
+                side,
+                quantity,
+                symbol,
+                lot.skip,
+                lot.rounded,
+                rules.min_qty,
+            )
             return SKIP_ORDER
-
-        min_qty = (market.get("limits", {}).get("amount", {}) or {}).get("min") or 0
-        if min_qty and quantity < min_qty:
-            logger.warning("Quantity %s below Kraken minimum %s for %s", quantity, min_qty, symbol)
-            return SKIP_ORDER
+        quantity = lot.qty
 
         # A NaN price must NOT route to a limit order (pd.notna(NaN) is False).
         has_price = pd.notna(price) and price > 0
