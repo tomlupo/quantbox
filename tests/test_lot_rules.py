@@ -7,9 +7,10 @@ The property, for an order of signed quantity ``q`` at price ``p``:
 * it is never below the venue's minimum notional or minimum quantity, unless
   the order is reduce-only on a venue that exempts it;
 * otherwise the answer is a skip, and a skip carries a reason;
+* an order is never skipped when its size rounded down to the step clears the
+  minimums, or is above zero on an exempt reduce-only order;
 * an on-grid quantity (a full close of a position the venue reports) is sent
-  whole when it clears the minimums, and always when it is an exempt
-  reduce-only order.
+  whole, under the same condition.
 
 The property runs twice. ``test_the_property_through_the_lot_rules`` asks
 :class:`quantbox.trade.lots.LotRules` directly. ``test_the_property_at_each_venue_entry``
@@ -71,6 +72,18 @@ class Case:
     def clears_minimums(self, size: float) -> bool:
         return size * self.price >= self.min_notional and size >= self.min_qty
 
+    @property
+    def floored(self) -> float:
+        """``|qty|`` rounded down to the step, computed here and not by quantbox."""
+        size = Decimal(str(abs(self.qty)))
+        return float((size // self.step) * self.step)
+
+    @property
+    def venue_accepts(self) -> bool:
+        """The floored size is an order the venue takes: exempt, or clearing both minimums."""
+        f = self.floored
+        return f > 0 and (self.exempt or self.clears_minimums(f))
+
 
 def _cases(venue: str) -> list[Case]:
     rng = random.Random(f"{SEED}-{venue}")
@@ -107,8 +120,8 @@ def _violations(case: Case, answer: float | None, reason: str | None, *, reasons
         bad = []
         if reasons_known and not reason:
             bad.append("skipped without a reason")
-        if case.on_grid and (case.exempt or case.clears_minimums(size)):
-            bad.append("an on-grid order that the venue accepts was skipped")
+        if case.venue_accepts:
+            bad.append(f"skipped although the venue accepts {case.floored} (exempt={case.exempt})")
         return bad
     bad = []
     a = abs(answer)
