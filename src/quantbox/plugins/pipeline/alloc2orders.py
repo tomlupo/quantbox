@@ -20,6 +20,7 @@ from quantbox.contracts import (
     RunResult,
 )
 from quantbox.parquet_io import read_parquet
+from quantbox.plugins.broker._fills import normalise_results
 from quantbox.run_history import resolve_latest_artifact
 from quantbox.trade.book import (
     BASIS_MARK,
@@ -628,13 +629,13 @@ class AllocationsToOrdersPipeline:
         )
         a_port = store.put_parquet("portfolio_daily", portfolio_daily)
 
-        # A broker row is not always a fill: a SKIPPED (or FAILED, WORKING,
-        # UNKNOWN) row traded nothing. A row with no status is a fill, as before.
-        if "status" in fills.columns:
-            status = fills["status"].astype(str).str.strip().str.upper()
-            n_fills = int((status.isin({"FILLED", "PARTIAL"}) | fills["status"].isna()).sum())
-        else:
-            n_fills = len(fills)
+        # A broker row is not always a fill: a SKIPPED, FAILED, WORKING or
+        # UNKNOWN row traded nothing. The broker seam's one normaliser decides
+        # (a status-less row is UNKNOWN there, TOM-1336), never a second rule here.
+        normalised = normalise_results(fills)
+        n_fills = (
+            0 if normalised is None or normalised.empty else int(normalised["status"].isin({"FILLED", "PARTIAL"}).sum())
+        )
 
         llm_notes_md = f"""# Run summary: {self.meta.name}
 

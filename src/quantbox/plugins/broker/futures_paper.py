@@ -24,7 +24,7 @@ import pandas as pd
 from quantbox.contracts import BrokerCapability, PluginMeta
 from quantbox.trade.book import BASIS_MARGIN
 
-from ._fills import skipped_row as _skipped
+from ._fills import skipped_row
 
 logger = logging.getLogger(__name__)
 
@@ -229,11 +229,11 @@ class FuturesPaperBroker:
             if reduce_only:
                 if abs(old_qty) < 1e-12:
                     logger.warning("reduce_only order on flat %s, skipping", sym)
-                    fills.append(_skipped(sym, side, qty, "reduce_only on a flat position"))
+                    fills.append(skipped_row(sym, side, qty, "reduce_only on a flat position"))
                     continue
                 if signed * old_qty > 0:
                     logger.warning("reduce_only order would increase %s exposure, skipping", sym)
-                    fills.append(_skipped(sym, side, qty, "reduce_only would increase exposure"))
+                    fills.append(skipped_row(sym, side, qty, "reduce_only would increase exposure"))
                     continue
                 if abs(signed) > abs(old_qty):
                     logger.info(
@@ -288,7 +288,7 @@ class FuturesPaperBroker:
                             projected_notional,
                             max_notional,
                         )
-                        fills.append(_skipped(sym, side, qty, "position limit reached"))
+                        fills.append(skipped_row(sym, side, qty, "position limit reached"))
                         continue
 
                     # Invariant 1: shrink only. Invariant 2: keep the direction.
@@ -296,7 +296,7 @@ class FuturesPaperBroker:
 
                     if abs(capped_signed) < 1e-12:
                         logger.warning("Position limit reached for %s, skipping", sym)
-                        fills.append(_skipped(sym, side, qty, "position limit reached"))
+                        fills.append(skipped_row(sym, side, qty, "position limit reached"))
                         continue
 
                     logger.info(
