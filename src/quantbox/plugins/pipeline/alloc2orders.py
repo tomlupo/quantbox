@@ -20,6 +20,7 @@ from quantbox.contracts import (
     RunResult,
 )
 from quantbox.parquet_io import read_parquet
+from quantbox.plugins.broker._fills import normalise_results
 from quantbox.run_history import resolve_latest_artifact
 from quantbox.trade.book import (
     BASIS_MARK,
@@ -628,6 +629,14 @@ class AllocationsToOrdersPipeline:
         )
         a_port = store.put_parquet("portfolio_daily", portfolio_daily)
 
+        # A broker row is not always a fill: a SKIPPED, FAILED, WORKING or
+        # UNKNOWN row traded nothing. The broker seam's one normaliser decides
+        # (a status-less row is UNKNOWN there, TOM-1336), never a second rule here.
+        normalised = normalise_results(fills)
+        n_fills = (
+            0 if normalised is None or normalised.empty else int(normalised["status"].isin({"FILLED", "PARTIAL"}).sum())
+        )
+
         llm_notes_md = f"""# Run summary: {self.meta.name}
 
 - asof: {asof}
@@ -637,7 +646,7 @@ class AllocationsToOrdersPipeline:
 - portfolio_valuation: {valuation.state} (source={valuation.source}, \
 {valuation.n_holdings} holding(s), {len(valuation.unpriced)} unpriced)
 - orders: {len(orders)}
-- fills: {len(fills)}
+- fills: {n_fills} (broker rows: {len(fills)})
 - fx_loaded: {fx is not None}
 - instrument_map: {bool(params.get("instrument_map"))}
 - approval_required: {bool(params.get("approval_required", False))}
@@ -649,7 +658,7 @@ class AllocationsToOrdersPipeline:
             "portfolio_value_usd_pre": float(portfolio_value_usd_pre),
             "portfolio_value_usd_post": float(portfolio_value_usd_post),
             "n_orders": float(len(orders)),
-            "n_fills": float(len(fills)),
+            "n_fills": float(n_fills),
             # "nothing held", "fully marked" and "could not price" must stay
             # distinguishable in the run record, not collapse to one number.
             **valuation.as_metrics(),

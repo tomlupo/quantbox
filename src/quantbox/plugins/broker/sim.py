@@ -13,6 +13,8 @@ import pandas as pd
 from quantbox.contracts import BrokerCapability, PluginMeta
 from quantbox.trade.book import BASIS_MARK
 
+from ._fills import skipped_row
+
 logger = logging.getLogger(__name__)
 
 
@@ -124,6 +126,8 @@ class SimPaperBroker:
             if mid_price == 0.0:
                 mid_price = self.prices.get(sym, 0.0)
             if mid_price == 0.0:
+                # Nothing to fill at: a visible SKIPPED row, never a vanished order.
+                fills.append(skipped_row(sym, side, qty, "no price: order has none and set_prices has none"))
                 continue
 
             # Slippage model: spread + slippage + volume-dependent impact
