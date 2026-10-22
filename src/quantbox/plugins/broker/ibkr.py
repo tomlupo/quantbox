@@ -7,10 +7,80 @@ import pandas as pd
 from quantbox.contracts import PluginMeta
 from quantbox.trade.book import BASIS_MARK
 
+from ._fills import _CONFIRM_DELAY_S, resolve_fill
+
 try:
     from ib_insync import IB, LimitOrder, MarketOrder, Stock
 except Exception:  # pragma: no cover
     IB = None  # type: ignore
+
+
+# An IB ``OrderStatus.status`` in ccxt's unified statuses, so classify_fill /
+# resolve_fill read it like every other venue's (TOM-1978). ``Inactive`` is how
+# IB reports an order it rejected or will not work; an unrecognised or empty
+# status (no status message has arrived yet) stays absent and reads UNKNOWN.
+_IBKR_STATUS = {
+    "Filled": "closed",
+    "Submitted": "open",
+    "PreSubmitted": "open",
+    "PendingSubmit": "open",
+    "ApiPending": "open",
+    "PendingCancel": "open",
+    "Cancelled": "canceled",
+    "ApiCancelled": "canceled",
+    "Inactive": "rejected",
+}
+
+
+def _num(value) -> float | None:
+    """A float, or ``None`` for an absent, NaN or IB-unset (``UNSET_DOUBLE``) value."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if (f == f and abs(f) < 1e300) else None
+
+
+def ibkr_order(trade) -> dict | None:
+    """An ib_insync ``Trade`` as a ccxt-shaped order for :func:`resolve_fill`.
+
+    The status and filled quantity are the order's own (``trade.orderStatus``),
+    never the requested quantity. ``average`` is IB's ``avgFillPrice``, or the
+    share-weighted price of the trade's executions when IB has not reported one.
+    ``None`` for no trade.
+    """
+    if trade is None:
+        return None
+    st = getattr(trade, "orderStatus", None)
+    order = getattr(trade, "order", None)
+    raw = str(getattr(st, "status", "") or "").strip()
+    average = _num(getattr(st, "avgFillPrice", None))
+    if not average or average <= 0:
+        legs = [
+            (_num(getattr(f.execution, "shares", None)), _num(getattr(f.execution, "price", None)))
+            for f in getattr(trade, "fills", None) or []
+        ]
+        legs = [(q, p) for q, p in legs if q and p]
+        total = sum(q for q, _ in legs)
+        average = sum(q * p for q, p in legs) / total if total else None
+    return {
+        "id": getattr(order, "orderId", None),
+        "status": _IBKR_STATUS.get(raw),
+        "filled": _num(getattr(st, "filled", None)),
+        "remaining": _num(getattr(st, "remaining", None)),
+        "amount": _num(getattr(order, "totalQuantity", None)),
+        "average": average,
+        "price": _num(getattr(order, "lmtPrice", None)),
+    }
+
+
+def _ibkr_reason(trade, reason: str) -> str:
+    """``reason`` plus IB's own status word and its last log message, when there is one."""
+    raw = str(getattr(getattr(trade, "orderStatus", None), "status", "") or "").strip()
+    log = getattr(trade, "log", None) or []
+    message = str(getattr(log[-1], "message", "") or "").strip() if log else ""
+    extra = "; ".join(x for x in (f"IB status={raw}" if raw else "", message) if x)
+    return f"{reason} [{extra}]" if (reason and extra) else reason
 
 
 @dataclass
@@ -166,21 +236,33 @@ class IBKRBroker:
                 order = LimitOrder(action, qty, float(price))
 
             trade = self.ib.placeOrder(contract, order)
-            # wait briefly for fill updates; for real trading you need robust tracking
+            # Let the first status and execution messages arrive.
             self.ib.sleep(0.5)
 
-            # Collect executions (if any)
-            for f in trade.fills:
-                fills.append(
-                    {
-                        "symbol": sym,
-                        "side": side,
-                        "qty": float(f.execution.shares),
-                        "price": float(f.execution.price),
-                        # An executed fill says so: a status-less row is UNKNOWN to the pipeline (TOM-1336).
-                        "status": "FILLED",
-                    }
-                )
+            # One row per order, read from the order's OWN status and filled
+            # quantity through resolve_fill (TOM-1978): a partial, a working
+            # order and a rejection each come back as such, never as FILLED.
+            # The re-read pumps ib_insync's event loop with ib.sleep (time.sleep
+            # would block the updates), so resolve_fill itself waits 0 s.
+            def refetch(trade=trade) -> dict | None:
+                self.ib.sleep(_CONFIRM_DELAY_S)
+                return ibkr_order(trade)
+
+            ib_order = ibkr_order(trade)
+            status, filled_qty, fill_price, reason = resolve_fill(ib_order, qty, refetch=refetch, confirm_delay=0)
+            order_id = (ib_order or {}).get("id")
+            fills.append(
+                {
+                    "symbol": sym,
+                    "side": side,
+                    "qty": filled_qty,
+                    "price": fill_price,
+                    "requested_qty": qty,
+                    "order_id": "" if order_id is None else str(order_id),
+                    "status": status,
+                    "error": _ibkr_reason(trade, reason),
+                }
+            )
 
         return pd.DataFrame(fills)
 
