@@ -148,8 +148,7 @@ class BinanceFuturesBroker:
     # class. Closing it means a `get_equity()` returning total wallet balance +
     # unrealised PnL, as HyperliquidBroker does.
     valuation_basis = BASIS_MARGIN
-    # The venue whose lot rules this broker sends with (quantbox.trade.lots.lot_venue):
-    # the rebalancer builds the same rules from the market snapshot (TOM-2207).
+    # The venue's lot rules -- see BrokerPlugin.lot_venue (TOM-2207).
     lot_venue = "binance_futures"
     # What the trade path may use -- see contracts.BrokerCapability (TOM-1459).
     # No EQUITY (the gap above) and no FUNDING_HISTORY: this adapter cannot yet

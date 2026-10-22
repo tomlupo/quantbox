@@ -114,6 +114,10 @@ class MyBroker:
 A broker that declares nothing supports nothing. `BrokerCapability` lists each capability and the members it needs
 (`BROKER_CAPABILITY_MEMBERS` in `contracts.py`). `quantbox plugins doctor` warns when a declaration and the class disagree.
 
+A broker that rounds orders by a venue's lot rules also declares `lot_venue`, one of the venues in
+`quantbox.trade.lots`. The order generator then builds the same lot rules and plans the quantity the broker sends
+(TOM-2207). The `BrokerPlugin` docstring in `contracts.py` owns what each declaration means.
+
 ---
 
 ## Status field — the single most important meta property

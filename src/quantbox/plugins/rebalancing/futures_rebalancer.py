@@ -333,18 +333,18 @@ class FuturesRebalancer:
 
         Symbols are base asset names; the broker formats them for the venue.
 
-        The quantity is the one the venue gets (TOM-2207). The venue's lot rules
-        (``lot_rules``, :class:`quantbox.trade.lots.LotRules` per symbol, built
-        from the broker's snapshot; ``default_lot_rules`` for a symbol without a
-        row, else no rounding) round it toward zero to the step BEFORE every floor
-        below, so the floors judge the rounded quantity and ``Adjusted Quantity``
-        is what the broker sends. A row the lot rules refuse is skipped here with
-        its reason: a quantity that rounds to zero is ``Zero quantity``; a close
-        below the minimum quantity on a venue that does not exempt reduce-only
-        orders is ``Below min qty``. The broker keeps its own lot-rules check.
-        Before TOM-2207 this method sent the unrounded ``abs(delta)`` and the
-        broker rounded it, so the order frame showed orders the broker shrank or
-        dropped.
+        The quantity is the one the venue gets (TOM-2207). ``lot_rules`` holds
+        each symbol's :class:`quantbox.trade.lots.LotRules`, built from the
+        broker's snapshot. A symbol without a row takes ``default_lot_rules``;
+        without those, the quantity is not rounded. The lot rules round the
+        quantity toward zero to the step BEFORE every floor below. So the floors
+        judge the rounded quantity, and ``Adjusted Quantity`` is the quantity the
+        broker sends. A row the lot rules refuse is skipped here with its reason:
+        a quantity that rounds to zero is ``Zero quantity``. A close below the
+        minimum quantity, on a venue without a reduce-only exemption, is ``Below
+        min qty``. The broker keeps its own lot-rules check. Before TOM-2207 this
+        method planned the unrounded ``abs(delta)`` and the broker rounded it.
+        So the order frame showed orders the broker shrank or dropped.
 
         Per-pair minimums (``min_notional_map`` / ``min_qty_map``, from the broker
         snapshot) give the venue's true binding floor ``max(costmin, ordermin*price)``:
@@ -515,13 +515,13 @@ class FuturesRebalancer:
                         abs(cur_qty),
                     )
                     adjusted_qty = clamped_qty
-            # The venue's lot rules round the (clamped) quantity toward zero to the
-            # step, also here above the gate chain, so every floor below and the
-            # reported columns judge the quantity the broker sends (TOM-2207).
-            # Unpriced (None): the notional floor is this method's own, below,
-            # with its operator floor and its close and residual rules.
+            # The venue's lot rules round the clamped quantity toward zero to the
+            # step (TOM-2207). This also runs above the gate chain. So every floor
+            # below and every reported column judge the quantity the broker sends.
+            # No price: the notional floor stays this method's own, below.
             rules = lot_rules.get(asset, default_lot_rules)
-            lot = rules.accept(adjusted_qty, None, reduce_only=is_exposure_reducing)
+            unrounded_qty = adjusted_qty
+            lot = rules.accept(unrounded_qty, None, reduce_only=is_exposure_reducing)
             adjusted_qty = abs(lot.rounded)
             notional_value = adjusted_qty * price if price else 0.0
 
@@ -604,10 +604,12 @@ class FuturesRebalancer:
                     # every other row. A venue that does not exempt reduce-only
                     # orders (Kraken) refuses a close below its minimum quantity.
                     status = "Below min qty"
-                    reason = f"Close qty {adjusted_qty:.8f} < min_qty {rules.min_qty:.8f}: the venue does not exempt it"
+                    reason = (
+                        f"Close qty {adjusted_qty:.8f} < min_qty {rules.min_qty:.8f}: no reduce-only exemption here"
+                    )
                 else:
                     status = "Zero quantity"
-                    reason = f"Qty {abs(delta_qty):.8f} {lot.skip} (step {rules.step_size:g})"
+                    reason = f"Qty {unrounded_qty:.8f} {lot.skip} (step {rules.step_size:g})"
                 logger.info("Skipping %s %s: %s", action, asset, reason)
                 adjusted_qty = 0.0
             else:

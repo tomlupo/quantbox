@@ -146,8 +146,7 @@ class HyperliquidBroker:
     # the total, not withdrawable cash, because the futures rebalancer sizes off
     # it).
     valuation_basis = BASIS_MARGIN
-    # The venue whose lot rules this broker sends with (quantbox.trade.lots.lot_venue):
-    # the rebalancer builds the same rules from the market snapshot (TOM-2207).
+    # The venue's lot rules -- see BrokerPlugin.lot_venue (TOM-2207).
     lot_venue = "hyperliquid"
     # What the trade path may use -- see contracts.BrokerCapability (TOM-1459).
     broker_capabilities = frozenset(

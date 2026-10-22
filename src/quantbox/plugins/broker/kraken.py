@@ -165,8 +165,7 @@ class KrakenBroker:
     # and the code honoured it. A spot book is worth its cash PLUS its holdings,
     # and that is a fact about Kraken, not about a YAML file.
     valuation_basis = BASIS_MARK
-    # The venue whose lot rules this broker sends with (quantbox.trade.lots.lot_venue):
-    # the rebalancer builds the same rules from the market snapshot (TOM-2207).
+    # The venue's lot rules -- see BrokerPlugin.lot_venue (TOM-2207).
     lot_venue = "kraken"
     # What the trade path may use -- see contracts.BrokerCapability (TOM-1459).
     broker_capabilities = frozenset({BrokerCapability.EQUITY, BrokerCapability.ORDER_RESULT})
