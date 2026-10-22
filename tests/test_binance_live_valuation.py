@@ -9,6 +9,7 @@ two valued it at 0, so the book was understated with nothing to say so.
 from __future__ import annotations
 
 import json
+import math
 
 import pytest
 
@@ -75,3 +76,25 @@ def test_describe_reports_an_unmarkable_holding_never_at_zero(tmp_path, monkeypa
     assert by_symbol["ETH"]["marked"] is False
     assert by_symbol["BTC"]["value"] == pytest.approx(10000.0)
     assert by_symbol["BTC"]["marked"] is True
+
+
+def test_an_unpriced_target_that_is_not_held_is_reported_never_silent(tmp_path, monkeypatch):
+    """TOM-1979: a target with no price was sized to 0 and never bought, with nothing to say so.
+
+    The book is still valued (the asset is not held), so the plan is not refused.
+    The asset's row says ``Unpriced`` with an UNKNOWN target, and the orders frame
+    carries it with ``Order_Status == "Unpriced"``, where a skipped order is reported.
+    """
+    broker = _paper_broker(tmp_path, monkeypatch, {"USDC": 1000.0, "BTC": 0.5}, {"BTC": 20000.0})
+    broker.readonly = True
+
+    plan = broker.generate_rebalancing({"BTC": 0.5, "SOL": 0.2}).set_index("Asset")
+    assert plan.loc["SOL", "Action"] == "Unpriced"
+    assert math.isnan(plan.loc["SOL", "Target_Qty"])
+    assert math.isnan(plan.loc["SOL", "Delta_Qty"])
+    assert plan.loc["BTC", "Action"] in {"Buy", "Sell", "Hold"}
+
+    report = broker.execute_rebalancing({"BTC": 0.5, "SOL": 0.2})
+    orders = report["orders"].set_index("Asset")
+    assert orders.loc["SOL", "Order_Status"] == "Unpriced"
+    assert not bool(orders.loc["SOL", "Executable"])

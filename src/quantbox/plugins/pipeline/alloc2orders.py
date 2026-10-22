@@ -29,7 +29,7 @@ from quantbox.trade.book import (
     PortfolioValuation,
 )
 from quantbox.trade.capabilities import supports
-from quantbox.trade.lots import floor_to_multiple, round_to_multiple
+from quantbox.trade.lots import floor_to_multiple
 
 logger = logging.getLogger(__name__)
 
@@ -170,10 +170,14 @@ def _fx_rate_to_usd(fx: pd.DataFrame | None, ccy: str) -> float:
 
 
 def _apply_qty_rules(qty: float, lot_size: float, min_qty: float, qty_step: float) -> float:
-    """The venue's lot rules on a target quantity; the rounding is :mod:`quantbox.trade.lots`."""
+    """The venue's lot rules on a target quantity, each rounded toward zero (TOM-1979).
+
+    The rounding is :mod:`quantbox.trade.lots`. A long and a short target both
+    shrink toward zero, so a rounded target never exceeds the requested size.
+    """
     q = qty
     if lot_size and lot_size > 0:
-        q = round_to_multiple(q, lot_size)
+        q = floor_to_multiple(q, lot_size)
     if qty_step and qty_step > 0:
         q = floor_to_multiple(q, qty_step)
     if min_qty and min_qty > 0 and abs(q) < min_qty:
