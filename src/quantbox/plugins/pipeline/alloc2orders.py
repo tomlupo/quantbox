@@ -628,6 +628,14 @@ class AllocationsToOrdersPipeline:
         )
         a_port = store.put_parquet("portfolio_daily", portfolio_daily)
 
+        # A broker row is not always a fill: a SKIPPED (or FAILED, WORKING,
+        # UNKNOWN) row traded nothing. A row with no status is a fill, as before.
+        if "status" in fills.columns:
+            status = fills["status"].astype(str).str.strip().str.upper()
+            n_fills = int((status.isin({"FILLED", "PARTIAL"}) | fills["status"].isna()).sum())
+        else:
+            n_fills = len(fills)
+
         llm_notes_md = f"""# Run summary: {self.meta.name}
 
 - asof: {asof}
@@ -637,7 +645,7 @@ class AllocationsToOrdersPipeline:
 - portfolio_valuation: {valuation.state} (source={valuation.source}, \
 {valuation.n_holdings} holding(s), {len(valuation.unpriced)} unpriced)
 - orders: {len(orders)}
-- fills: {len(fills)}
+- fills: {n_fills} (broker rows: {len(fills)})
 - fx_loaded: {fx is not None}
 - instrument_map: {bool(params.get("instrument_map"))}
 - approval_required: {bool(params.get("approval_required", False))}
@@ -649,7 +657,7 @@ class AllocationsToOrdersPipeline:
             "portfolio_value_usd_pre": float(portfolio_value_usd_pre),
             "portfolio_value_usd_post": float(portfolio_value_usd_post),
             "n_orders": float(len(orders)),
-            "n_fills": float(len(fills)),
+            "n_fills": float(n_fills),
             # "nothing held", "fully marked" and "could not price" must stay
             # distinguishable in the run record, not collapse to one number.
             **valuation.as_metrics(),

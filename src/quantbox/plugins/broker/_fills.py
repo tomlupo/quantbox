@@ -64,6 +64,33 @@ STATUS_WORKING = "WORKING"
 # against the venue (TOM-1336).
 STATUS_UNKNOWN = "UNKNOWN"
 
+
+def skipped_row(symbol: str, side: str, qty: float, reason: str) -> dict[str, Any]:
+    """A row for an order the broker intentionally did not place.
+
+    The pipeline distinguishes three outcomes — filled, FAILED, and an
+    intentional broker-side no-op — and a broker signals the third by returning
+    a row with ``status="SKIPPED"`` (``trading_pipeline.py`` treats it as
+    "neither executed nor failed: record for visibility but do not count it").
+    Returning nothing instead makes the order vanish from ``orders_details`` and
+    leaves a dangling entry in the per-(symbol, side) intent FIFO, which reads
+    downstream as a MISSED FILL rather than a deliberate decline.
+
+    Shape mirrors the Kraken broker's skip row: the REQUESTED quantity is kept
+    (it is what the book wanted), price is 0.0 because nothing traded.
+    """
+    return {
+        "symbol": symbol,
+        "side": side,
+        "qty": qty,
+        "price": 0.0,
+        "notional": 0.0,
+        "fee": 0.0,
+        "status": "SKIPPED",
+        "error": reason,
+    }
+
+
 # Bounded confirmation wait for an async-settling order (Kraken spot settles a
 # marketable order milliseconds after create_order returns status='open',
 # filled=0 — issue #97). resolve_fill re-polls up to this many times, sleeping

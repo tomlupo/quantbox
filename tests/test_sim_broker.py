@@ -485,7 +485,11 @@ class TestSimPaperBroker:
     # ------------------------------------------------------------------
 
     def test_order_with_zero_price_and_no_set_prices_is_skipped(self):
-        """Orders with price=0 and no set_prices entry are skipped."""
+        """Orders with price=0 and no set_prices entry come back as a SKIPPED row.
+
+        Requirement change (Tom, 2026-10-22): the row used to be dropped, so the
+        order vanished from the report and read downstream as a missed fill.
+        """
         broker = SimPaperBroker(cash=100_000.0)
         orders = pd.DataFrame(
             [
@@ -494,8 +498,14 @@ class TestSimPaperBroker:
         )
         fills = broker.place_orders(orders)
 
-        assert len(fills) == 0
+        assert len(fills) == 1
+        row = fills.iloc[0]
+        assert row["status"] == "SKIPPED"
+        assert row["qty"] == 10.0
+        assert row["price"] == 0.0
+        assert "no price" in row["error"]
         assert broker.cash == 100_000.0
+        assert broker.positions.get("UNKNOWN", 0.0) == 0.0
 
     def test_order_uses_set_prices_when_price_column_missing(self):
         """Orders fall back to set_prices when no price is provided in the order."""
