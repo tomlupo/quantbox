@@ -51,7 +51,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import pandas as pd
@@ -60,7 +60,7 @@ from quantbox.contracts import BrokerCapability, PluginMeta
 from quantbox.exceptions import BrokerExecutionError
 from quantbox.retry import with_retry
 from quantbox.trade.book import BASIS_MARGIN
-from quantbox.trade.lots import amount_decimals, floor_to_decimals
+from quantbox.trade.lots import LotRules
 
 from ._fills import STATUS_UNKNOWN, STATUS_WORKING, resolve_fill, trade_fee, trade_fee_currency
 from ._funding import net_funding, select_window
@@ -445,15 +445,14 @@ class HyperliquidBroker:
         for s in symbols:
             market_symbol = self._get_market_symbol(s)
             market = self._markets.get(market_symbol, {}) if market_symbol else {}
-            precision = market.get("precision", {})
-            limits = market.get("limits", {})
+            rules = LotRules.from_market(market, "hyperliquid")
             rows.append(
                 {
                     "symbol": s,
                     "mid": prices.get(s),
-                    "min_qty": limits.get("amount", {}).get("min", 0.0) or 0.0,
-                    "step_size": precision.get("amount", 0.0) or 0.0,
-                    "min_notional": limits.get("cost", {}).get("min", 10.0) or 10.0,
+                    "min_qty": rules.min_qty,
+                    "step_size": rules.step_size,
+                    "min_notional": rules.min_notional,
                 }
             )
         return pd.DataFrame(rows)
@@ -819,58 +818,38 @@ class HyperliquidBroker:
         if not price:
             return None
 
-        # Check minimum notional — but NEVER on a reduce-only order.
-        #
-        # This guard is a churn/economics filter for orders that OPEN or INCREASE
-        # exposure. Applying it to a position-closing reduce-only order is the
-        # bug behind quantbox#87: carver-HL's sub-$10 ETH/SOL/ARB exits were
-        # rejected HERE, never sent, and reported as "placement failed" — 71
-        # times over 33 days. The error string made it look like the venue was
-        # refusing them. It was not: verified live on 2026-07-22, Hyperliquid
-        # ACCEPTS a full reduce-only close below its own minimum (SOL 0.03,
-        # $2.33, filled at 77.773). The exit was available the whole time.
-        #
-        # A reduce-only order cannot increase exposure by construction, so there
-        # is nothing for a minimum-size filter to protect against — and refusing
-        # to let a book out of a position is strictly more dangerous than letting
-        # it place a small order.
-        notional = quantity * price
-        if reduce_only:
-            if notional < self.risk.min_order_notional:
-                logger.info(
-                    "Reduce-only %s %s: notional $%.2f is below the $%.2f floor — sending anyway "
-                    "(exits are never blocked by a minimum-size filter).",
-                    side,
-                    symbol,
-                    notional,
-                    self.risk.min_order_notional,
-                )
-        elif notional < self.risk.min_order_notional:
-            logger.warning(f"Order notional ${notional:.2f} below minimum ${self.risk.min_order_notional}")
+        # The venue's lot rules (quantbox.trade.lots) decide the quantity: rounded
+        # DOWN to the step (TOM-1721), then the minimum notional on the ROUNDED
+        # quantity, then the minimum quantity (TOM-2206: the notional used to be
+        # judged before rounding). The minimum notional is this broker's risk
+        # floor, not the market's. A reduce-only order is exempt from both
+        # minimums: Hyperliquid accepts a full reduce-only close below its own
+        # minimum (verified live 2026-07-22, SOL 0.03, $2.33), and blocking an
+        # exit here trapped carver-HL's sub-$10 residuals 71 times (quantbox#87).
+        rules = replace(LotRules.from_market(market, "hyperliquid"), min_notional=self.risk.min_order_notional)
+        lot = rules.accept(quantity, price, reduce_only=reduce_only)
+        if lot.skip or lot.qty <= 0:
+            logger.warning(
+                "Order %s %s %s not sent: %s (rounded %s, min notional $%.2f, min qty %s)",
+                side,
+                quantity,
+                symbol,
+                lot.skip or "not a positive quantity",
+                lot.rounded,
+                rules.min_notional,
+                rules.min_qty,
+            )
             return None
-
-        # Adjust quantity to precision (quantbox.trade.lots). ccxt may return
-        # precision as a float step size (e.g. 0.001) or an int number of
-        # decimals (e.g. 3). Rounded DOWN, as on every venue (TOM-1721): an order
-        # never exceeds its target or the cash behind it. A full close stays
-        # whole: the position size the venue reports is on this grid already,
-        # and flooring an on-grid quantity returns it unchanged.
-        precision = amount_decimals(market.get("precision", {}).get("amount", 8))
-        quantity = floor_to_decimals(quantity, precision)
-
-        if quantity <= 0:
-            logger.warning(f"Quantity rounds to zero for {symbol} (precision={precision})")
-            return None
-
-        # Check exchange minimum quantity — again, never on a reduce-only close.
-        # (On Hyperliquid amount.min is unset, so this is inert here; kept
-        # consistent with the notional guard for any venue that does set it, and
-        # so the exit path has a single rule: a position-closing order is never
-        # blocked by a minimum-size filter.)
-        min_qty = market.get("limits", {}).get("amount", {}).get("min") or 0
-        if min_qty and quantity < min_qty and not reduce_only:
-            logger.warning(f"Quantity {quantity} below exchange minimum {min_qty} for {symbol}")
-            return None
+        quantity = lot.qty
+        if reduce_only and quantity * price < rules.min_notional:
+            logger.info(
+                "Reduce-only %s %s: notional $%.2f is below the $%.2f floor — sending anyway "
+                "(exits are never blocked by a minimum-size filter).",
+                side,
+                symbol,
+                quantity * price,
+                rules.min_notional,
+            )
 
         # Place order with retries
         for attempt in range(MAX_RETRIES):
