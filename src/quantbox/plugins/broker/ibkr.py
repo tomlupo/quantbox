@@ -7,7 +7,7 @@ import pandas as pd
 from quantbox.contracts import PluginMeta
 from quantbox.trade.book import BASIS_MARK
 
-from ._fills import _CONFIRM_DELAY_S, resolve_fill
+from ._fills import _CONFIRM_DELAY_S, _to_float, resolve_fill
 
 try:
     from ib_insync import IB, LimitOrder, MarketOrder, Stock
@@ -33,12 +33,9 @@ _IBKR_STATUS = {
 
 
 def _num(value) -> float | None:
-    """A float, or ``None`` for an absent, NaN or IB-unset (``UNSET_DOUBLE``) value."""
-    try:
-        f = float(value)
-    except (TypeError, ValueError):
-        return None
-    return f if (f == f and abs(f) < 1e300) else None
+    """:func:`_to_float`, and ``None`` for IB's unset value (``UNSET_DOUBLE``, ~1.8e308)."""
+    f = _to_float(value)
+    return f if (f is not None and abs(f) < 1e300) else None
 
 
 def ibkr_order(trade) -> dict | None:

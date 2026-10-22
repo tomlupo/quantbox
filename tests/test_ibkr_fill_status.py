@@ -87,6 +87,7 @@ def test_ibkr_reports_the_orders_own_status(monkeypatch, script, log, status, qt
     assert row["qty"] == pytest.approx(qty)
     assert row["requested_qty"] == pytest.approx(100.0)
     assert row["order_id"] == "42"
+    assert row["price"] < 1e300  # IB's unset lmtPrice on a market order never reaches the row
     if price is not None:
         assert row["price"] == pytest.approx(price)
     if status == "FAILED":
