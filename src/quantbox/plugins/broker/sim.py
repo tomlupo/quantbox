@@ -151,7 +151,9 @@ class SimPaperBroker:
                 "price": fill_price,
                 "fee": fee,
                 "timestamp": now,
-                # An executed fill says so: a status-less row is UNKNOWN to the pipeline (TOM-1336).
+                # What was simulated: the whole requested qty, at fill_price, so FILLED
+                # is the simulator's own outcome, not an assumed one (TOM-1978). A
+                # status-less row would be UNKNOWN to the pipeline (TOM-1336).
                 "status": "FILLED",
             }
             fills.append(fill)
