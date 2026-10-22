@@ -148,6 +148,9 @@ class BinanceFuturesBroker:
     # class. Closing it means a `get_equity()` returning total wallet balance +
     # unrealised PnL, as HyperliquidBroker does.
     valuation_basis = BASIS_MARGIN
+    # The venue whose lot rules this broker sends with (quantbox.trade.lots.lot_venue):
+    # the rebalancer builds the same rules from the market snapshot (TOM-2207).
+    lot_venue = "binance_futures"
     # What the trade path may use -- see contracts.BrokerCapability (TOM-1459).
     # No EQUITY (the gap above) and no FUNDING_HISTORY: this adapter cannot yet
     # read back the funding the venue took, so funding is reported UNKNOWN.
@@ -333,7 +336,7 @@ class BinanceFuturesBroker:
         prices = self.get_prices(symbols)
         rows = []
         for s in symbols:
-            rules = LotRules.from_snapshot(self._get_symbol_info(s) or {}, venue="binance_futures")
+            rules = LotRules.from_snapshot(self._get_symbol_info(s) or {}, venue=self.lot_venue)
             rows.append(
                 {
                     "symbol": s,
@@ -486,7 +489,7 @@ class BinanceFuturesBroker:
         market = self._markets.get(market_symbol)
         if not market:
             return None
-        rules = LotRules.from_market(market, "binance_futures")
+        rules = LotRules.from_market(market, self.lot_venue)
         return {
             "symbol": market_symbol,
             "step_size": rules.step_size,
@@ -542,7 +545,7 @@ class BinanceFuturesBroker:
         # close is exempt from both minimums — the venue accepts it (it cannot
         # open/increase exposure), and blocking it here is what traps a sub-min
         # residual (quantbox#87). Only OPENS are gated.
-        rules = LotRules.from_snapshot(info, venue="binance_futures")
+        rules = LotRules.from_snapshot(info, venue=self.lot_venue)
         lot = rules.accept(quantity, price, reduce_only=reduce_only)
         if lot.skip or lot.qty <= 0:
             logger.warning(
