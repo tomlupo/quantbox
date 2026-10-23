@@ -58,8 +58,10 @@ def declares_open(current_qty: float, target_qty: float) -> bool:
     return bool(same_sign and abs(target_qty) > abs(current_qty))
 
 
-#: ``Order Status`` of a partial reduce below the venue minimum (TOM-1778): not
-#: sent, because the venue rejects it, and a known residual, not a freeze.
+#: ``Order Status`` of an exit the venue rejects at this size, so it is not sent:
+#: a partial reduce below the venue minimum (TOM-1778), or a full close the
+#: venue can never accept (TOM-2212, :meth:`quantbox.trade.lots.LotRules.never_accepts_close`).
+#: A known residual, not a freeze. The ``Reason`` says which.
 RESIDUAL_STATUS = "Residual below min notional"
 
 DEFAULT_CAPITAL_AT_RISK = 1.0
@@ -339,10 +341,13 @@ class FuturesRebalancer:
         without those, the quantity is not rounded. The lot rules round the
         quantity toward zero to the step BEFORE every floor below. So the floors
         judge the rounded quantity, and ``Adjusted Quantity`` is the quantity the
-        broker sends. A row the lot rules refuse is skipped here with its reason:
-        a quantity that rounds to zero is ``Zero quantity``. A close below the
-        minimum quantity, on a venue without a reduce-only exemption, is ``Below
-        min qty``. The broker keeps its own lot-rules check. Before TOM-2207 this
+        broker sends. A row the lot rules refuse is skipped here with its reason.
+        A full close the venue can never accept (it rounds to zero, or it is
+        below the minimum quantity on a venue without a reduce-only exemption)
+        is ``RESIDUAL_STATUS`` (TOM-2212). Any other quantity that rounds to zero
+        is ``Zero quantity``. A close below the minimum quantity on a broker
+        that declares no venue is ``Below min qty``. The broker keeps its own
+        lot-rules check. Before TOM-2207 this
         method planned the unrounded ``abs(delta)`` and the broker rounded it.
         So the order frame showed orders the broker shrank or dropped.
 
@@ -599,10 +604,28 @@ class FuturesRebalancer:
             elif lot.skip:
                 # The venue's lot rules refuse what is left: the broker would
                 # drop it (TOM-2207). Its reason goes on the row, before the broker.
-                if lot.skip == SKIP_MIN_QTY:
+                if is_closing and rules.never_accepts_close(lot):
+                    # A full close the venue can never accept: dust below the
+                    # venue's minimum quantity on a venue with no reduce-only
+                    # exemption (Kraken: ADA 0.0088 vs min 20), or a quantity
+                    # that rounds to zero at the venue's step. No order can exit
+                    # this position, today or on a later day. It is a known
+                    # residual, not a freeze (Tom, 2026-10-23, TOM-2212, which
+                    # extends "Residual is not a freeze", TOM-1778).
+                    status = RESIDUAL_STATUS
+                    if lot.skip == SKIP_MIN_QTY:
+                        # The held quantity, not the rounded one: the reader
+                        # matches it against the balance.
+                        shortfall = f"qty {unrounded_qty:.8f} < min_qty {rules.min_qty:.8f}, no reduce-only exemption"
+                    else:
+                        shortfall = f"qty {unrounded_qty:.8f} {lot.skip} (step {rules.step_size:g})"
+                    reason = f"Close {shortfall}: the venue rejects it, residual retained"
+                elif lot.skip == SKIP_MIN_QTY:
                     # Only a close reaches here: the base-unit floor above judges
-                    # every other row. A venue that does not exempt reduce-only
-                    # orders (Kraken) refuses a close below its minimum quantity.
+                    # every other row. And only on a broker that declares no
+                    # venue: without the venue's facts, the missing reduce-only
+                    # exemption is not proven, so the close stays suppressed and
+                    # the dead-man still counts it (TOM-2212).
                     status = "Below min qty"
                     reason = (
                         f"Close qty {adjusted_qty:.8f} < min_qty {rules.min_qty:.8f}: no reduce-only exemption here"

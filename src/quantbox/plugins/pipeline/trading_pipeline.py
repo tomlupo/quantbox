@@ -1218,12 +1218,14 @@ class TradingPipeline:
             # but every order was suppressed (book frozen on stale positions).
             # Monitors/dashboards should alarm on rebalance_frozen == 1.
             "rebalance_frozen": 1.0 if execution_report.get("frozen") else 0.0,
-            # Quiet-day signal: 1.0 means all-cash with every target leg sub-min
-            # (staying in cash). This is INFO-level, NOT a freeze — monitors must
-            # NOT alarm on it.
+            # Quiet-day signal: 1.0 means nothing to send and nothing trapped —
+            # an all-cash book with every target leg sub-min, or a held book whose
+            # legs are all sub-min entries or inside the churn band (TOM-2212).
+            # This is INFO-level, NOT a freeze — monitors must NOT alarm on it.
             "quiet_day": 1.0 if execution_report.get("quiet_day") else 0.0,
-            # Residual-day signal (TOM-1778): nothing sent because every exit was a
-            # partial reduce below the venue minimum. INFO-level, NOT a freeze.
+            # Residual-day signal (TOM-1778, TOM-2212): nothing sent because every
+            # exit was one the venue rejects at this size — a partial reduce below
+            # the venue minimum, or a full close of dust. INFO-level, NOT a freeze.
             "residual_day": 1.0 if execution_report.get("residual_day") else 0.0,
             "residual_count": float(len(execution_report.get("residuals", []))),
             # Tier-2 exception inputs (#62).

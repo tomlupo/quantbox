@@ -7,7 +7,8 @@ orchestrator; the stages, in order:
 
 1. **gate** — ``trading_enabled``, the reconciliation HALT and FLATTEN gates
    (enforce mode, issue #90), and the dead-man when no order is executable: a
-   residual day (TOM-1778), a quiet day, or a FROZEN book.
+   residual day (TOM-1778, TOM-2212), a quiet day, or a FROZEN book. The book
+   freezes only when a suppressed row is not proven to trap nothing.
 2. **submit** — sell before buy; the order INTENT is written to the ledger
    before ``broker.place_orders`` (crash-durable, issue #90).
 3. **classify** — every broker row passes :func:`normalise_results` (the one
@@ -209,47 +210,94 @@ def report_order_failures(report: dict[str, Any], alert: Alert) -> None:
     )
 
 
+def _untrapped(suppressed: pd.DataFrame) -> pd.Series:
+    """Per suppressed row: True when its DECLARED intent proves the row traps nothing (TOM-1778, TOM-2212).
+
+    Two kinds, both declared by the rebalancer in ``opens_exposure``:
+
+    * a sub-min ENTRY — an open from flat or a same-side add (``opens_exposure``
+      True) below the venue minimum or inside the churn band. Not trading it
+      leaves the book where it is; nothing it holds is stuck.
+    * a CHURN-BAND TRIM — any row the band held back (``Below threshold``) whose
+      intent is declared. The band is the book's own churn policy, not a refusal:
+      a full close is exempt from it, so the band never holds back a close, and
+      once the drift grows past the band the trade goes out.
+
+    Everything else is NOT proven untrapped: a declared exit any floor or the
+    venue blocked (``Below min notional``, ``Below min qty``, ``Zero quantity``),
+    a data fault (``Zero price``, ``Invalid (NaN)``) on any row, and any row that
+    declares no intent (a third-party rebalancer). A full close the venue can
+    never accept is not in this frame at all: the rebalancer reports it as a
+    residual (``RESIDUAL_STATUS``), and :func:`_gate_unexecutable` lists it.
+    """
+    if "opens_exposure" not in suppressed.columns:
+        return pd.Series(False, index=suppressed.index)
+    declared = suppressed["opens_exposure"].notna()
+    status = suppressed["Order Status"]
+    entry = status.isin({"Below min notional", "Below threshold", "Below min qty"}) & suppressed["opens_exposure"].eq(
+        True
+    )
+    band = (status == "Below threshold") & declared
+    return entry | band
+
+
 def _gate_unexecutable(
     report: dict[str, Any], orders_df: pd.DataFrame, residuals: pd.DataFrame, broker: BrokerPlugin, alert: Alert
 ) -> dict[str, Any]:
-    """No order is executable: a residual day, a quiet day, or the dead-man FREEZE."""
+    """No order is executable: a residual day, a quiet day, or the dead-man FREEZE.
+
+    The book freezes only when a suppressed row may hold something the venue
+    could accept: see :func:`_untrapped` for the rows that cannot. The order of
+    the checks below is part of the contract.
+    """
     reasons: dict[str, Any] = {}
     suppressed = pd.DataFrame()
     if "Order Status" in orders_df.columns:
         reasons = orders_df["Order Status"].value_counts().to_dict()
         suppressed = orders_df[orders_df["Order Status"].isin(SUPPRESSED_STATUSES)]
+    untrapped = _untrapped(suppressed) if not suppressed.empty else pd.Series(dtype=bool)
+    nothing_trapped = bool(untrapped.all())
 
-    # RESIDUAL DAY (TOM-1778; Tom, 2026-10-12: "Residual is not a freeze").
-    # When the book's only untraded EXITS are partial reduces below the
-    # venue minimum, and everything else suppressed is a sub-min ENTRY (an
-    # open from flat or a same-side add, flagged `opens_exposure` by the
-    # rebalancer), nothing is trapped: the venue cannot take those trims at
-    # this book size. Drift stays recon's job. Anything else suppressed —
-    # a close, a flip through zero, a reduce, a data fault (zero price,
-    # NaN), or a row without the flag — still goes to the dead-man below.
-    if not residuals.empty:
-        opens = (
-            suppressed["opens_exposure"].eq(True)
-            if "opens_exposure" in suppressed.columns
-            else pd.Series(False, index=suppressed.index)
+    # RESIDUAL DAY (TOM-1778; Tom, 2026-10-12: "Residual is not a freeze";
+    # extended Tom, 2026-10-23, TOM-2212). The book's only untraded EXITS are
+    # residuals — partial reduces below the venue minimum, and full closes the
+    # venue can never accept (dust) — and everything else suppressed is a
+    # sub-min entry or a churn-band trim (see _untrapped). Nothing is trapped:
+    # the venue cannot take those exits at this size. Drift stays recon's job.
+    # Anything else suppressed still goes to the dead-man below.
+    if not residuals.empty and nothing_trapped:
+        report["residual_day"] = True
+        report["residual_reasons"] = reasons
+        logger.info(
+            "RESIDUAL DAY: no order to send — %d residual exit(s) the venue rejects at this size "
+            "and %d sub-min entry or churn-band leg(s). Not a freeze.",
+            len(residuals),
+            len(suppressed),
         )
-        only_entries = bool(
-            (suppressed["Order Status"].isin({"Below min notional", "Below threshold", "Below min qty"}) & opens).all()
-        )
-        if only_entries:
-            report["residual_day"] = True
-            report["residual_reasons"] = reasons
-            logger.info(
-                "RESIDUAL DAY: no order to send — %d residual partial reduce(s) below the venue "
-                "minimum and %d sub-min entry leg(s). Not a freeze.",
-                len(residuals),
-                len(suppressed),
-            )
-            return report
+        return report
 
     if len(suppressed) == 0:
         logger.warning("All %d orders filtered out: %s", len(orders_df), reasons)
         return report
+
+    # A QUIET DAY on a held book (TOM-2212): every suppressed row declares an
+    # intent that traps nothing — holdings inside the churn band, sub-min
+    # entries — and there is no residual. No position read is needed: the
+    # declared intents already say what the position read below only guesses
+    # (issue #82), so its fail-safe stays for rows that declare nothing.
+    if nothing_trapped:
+        report["quiet_day"] = True
+        report["quiet_reasons"] = reasons
+        logger.info(
+            "QUIET DAY: no order to send — %d sub-min entry or churn-band leg(s), nothing trapped. Not a freeze.",
+            len(suppressed),
+        )
+        return report
+
+    # From here on, only the rows not proven untrapped are judged, and only
+    # they are named on a freeze page: a band trim or a declared entry beside
+    # them never makes the book trapped by itself.
+    suppressed = suppressed[~untrapped]
 
     # Distinguish a TRAPPED book (real freeze) from a QUIET DAY
     # (all-cash, nothing to do). The dead-man freeze exists to catch
@@ -320,7 +368,7 @@ def _gate_unexecutable(
     order_lines = [format_suppressed_line(r) for r in report["frozen_orders"]]
     order_list = "; ".join(order_lines)
     logger.error(
-        "REBALANCER FROZEN: all %d intended orders suppressed %s. "
+        "REBALANCER FROZEN: no order executable, %d suppressed order(s) not proven untrapped %s. "
         "Portfolio NOT rebalanced — holding stale positions. Orders: %s",
         len(suppressed),
         reasons,
@@ -415,8 +463,9 @@ def execute_orders(
         else orders_df
     )
 
-    # Partial reduces below the venue minimum (TOM-1778): never sent, because
-    # the venue rejects them. A known residual — listed, never a freeze.
+    # Exits the venue rejects at this size: partial reduces below the venue
+    # minimum (TOM-1778) and full closes the venue can never accept (TOM-2212).
+    # Never sent. A known residual — listed, never a freeze.
     residuals = (
         orders_df[orders_df["Order Status"] == RESIDUAL_STATUS]
         if "Order Status" in orders_df.columns
@@ -425,7 +474,7 @@ def execute_orders(
     if not residuals.empty:
         report["residuals"] = suppressed_order_records(residuals)
         logger.info(
-            "RESIDUAL: %d partial reduce(s) below the venue minimum not sent, residual retained: %s",
+            "RESIDUAL: %d exit(s) the venue rejects at this size not sent, residual retained: %s",
             len(residuals),
             "; ".join(format_suppressed_line(r) for r in report["residuals"]),
         )

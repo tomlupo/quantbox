@@ -123,6 +123,10 @@ class LotRules:
     #: (Kraken: ccxt ``amount_to_precision``). It replaces step rounding; if it
     #: raises, the step rounding is used.
     quantize: Callable[[float], Any] | None = None
+    #: The venue these rules are for, ``None`` when no venue was declared. With a
+    #: venue, ``reduce_only_exempt`` is that venue's fact; without one it is only
+    #: the absence of a fact (TOM-2212).
+    venue: str | None = None
 
     # -- construction ------------------------------------------------------
 
@@ -154,6 +158,7 @@ class LotRules:
             reduce_only_exempt=v.reduce_only_exempt,
             fallback_step=v.unknown_step,
             quantize=quantize,
+            venue=venue,
         )
 
     @classmethod
@@ -184,6 +189,7 @@ class LotRules:
             min_notional=mn,
             reduce_only_exempt=bool(v and v.reduce_only_exempt),
             fallback_step=v.unknown_step if v else None,
+            venue=venue if v else None,
         )
 
     # -- the question ------------------------------------------------------
@@ -214,6 +220,21 @@ class LotRules:
         if size <= 0:
             return Lot(0.0, rounded, SKIP_ZERO)
         return Lot(rounded, rounded)
+
+    def never_accepts_close(self, lot: Lot) -> bool:
+        """True when *lot*, the answer for a full close, is a close this venue can never accept (TOM-2212).
+
+        *lot* is :meth:`accept` of the whole position with ``reduce_only=True``.
+        A quantity that rounds to zero at the step is never an order. A quantity
+        below the minimum quantity is never an order on a venue whose rules give
+        no reduce-only exemption. That second fact needs a declared ``venue``:
+        without one, the missing exemption is not known, so the answer is False.
+        """
+        if lot.skip == SKIP_ZERO:
+            return True
+        if lot.skip == SKIP_MIN_QTY:
+            return self.venue is not None and not self.reduce_only_exempt
+        return False
 
     def _round(self, size: float) -> float:
         step = self.step if self.step is not None else self.fallback_step
