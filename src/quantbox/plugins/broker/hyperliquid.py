@@ -146,6 +146,8 @@ class HyperliquidBroker:
     # the total, not withdrawable cash, because the futures rebalancer sizes off
     # it).
     valuation_basis = BASIS_MARGIN
+    # The venue's lot rules -- see BrokerPlugin.lot_venue (TOM-2207).
+    lot_venue = "hyperliquid"
     # What the trade path may use -- see contracts.BrokerCapability (TOM-1459).
     broker_capabilities = frozenset(
         {BrokerCapability.EQUITY, BrokerCapability.FUNDING_HISTORY, BrokerCapability.ORDER_RESULT}
@@ -445,7 +447,7 @@ class HyperliquidBroker:
         for s in symbols:
             market_symbol = self._get_market_symbol(s)
             market = self._markets.get(market_symbol, {}) if market_symbol else {}
-            rules = LotRules.from_market(market, "hyperliquid")
+            rules = LotRules.from_market(market, self.lot_venue)
             rows.append(
                 {
                     "symbol": s,
@@ -826,7 +828,7 @@ class HyperliquidBroker:
         # minimums: Hyperliquid accepts a full reduce-only close below its own
         # minimum (verified live 2026-07-22, SOL 0.03, $2.33), and blocking an
         # exit here trapped carver-HL's sub-$10 residuals 71 times (quantbox#87).
-        rules = replace(LotRules.from_market(market, "hyperliquid"), min_notional=self.risk.min_order_notional)
+        rules = replace(LotRules.from_market(market, self.lot_venue), min_notional=self.risk.min_order_notional)
         lot = rules.accept(quantity, price, reduce_only=reduce_only)
         if lot.skip or lot.qty <= 0:
             logger.warning(

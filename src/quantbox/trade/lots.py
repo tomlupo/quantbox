@@ -29,7 +29,10 @@ filter (quantbox#87). Rounding still applies, so it never flips a position.
 
 Venue facts that are not in the market data live in ``_VENUES`` here and
 nowhere else: the default minimum notional when the venue reports none, the
-reduce-only exemption, and the step used when no step is known.
+reduce-only exemption, and the step used when no step is known. A broker names
+its venue with the class attribute ``lot_venue``; :func:`lot_venue` reads it, so
+an order generator that holds only the broker and its market snapshot builds the
+same rules the broker sends with (TOM-2207).
 
 The free functions below the class are the arithmetic the class uses, kept for
 the callers not yet moved onto :class:`LotRules` (``binance_live``, TOM-2208).
@@ -70,6 +73,23 @@ _VENUES: dict[str, _Venue] = {
     "binance_futures": _Venue(default_min_notional=5.0, reduce_only_exempt=True, unknown_step=Decimal("1E-8")),
     "kraken": _Venue(default_min_notional=0.0, reduce_only_exempt=False, unknown_step=Decimal("1E-8")),
 }
+
+
+def lot_venue(broker: object | None) -> str | None:
+    """The venue *broker* declares in ``lot_venue``, or ``None`` when it declares none we know.
+
+    ``None`` means: no venue facts. :meth:`LotRules.from_snapshot` then gives no
+    reduce-only exemption and no fallback step.
+    """
+    venue = getattr(broker, "lot_venue", None)
+    if venue is None:
+        return None
+    if venue not in _VENUES:
+        logger.warning(
+            "Broker %s declares lot_venue=%r, which is not one of %s", type(broker).__name__, venue, sorted(_VENUES)
+        )
+        return None
+    return str(venue)
 
 
 @dataclass(frozen=True)

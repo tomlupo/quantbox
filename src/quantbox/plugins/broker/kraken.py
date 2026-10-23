@@ -165,6 +165,8 @@ class KrakenBroker:
     # and the code honoured it. A spot book is worth its cash PLUS its holdings,
     # and that is a fact about Kraken, not about a YAML file.
     valuation_basis = BASIS_MARK
+    # The venue's lot rules -- see BrokerPlugin.lot_venue (TOM-2207).
+    lot_venue = "kraken"
     # What the trade path may use -- see contracts.BrokerCapability (TOM-1459).
     broker_capabilities = frozenset({BrokerCapability.EQUITY, BrokerCapability.ORDER_RESULT})
 
@@ -459,7 +461,7 @@ class KrakenBroker:
                     mid = float(ticker.get("last") or ticker.get("close") or 0.0) or None
                 except Exception as e:
                     logger.warning("Ticker fetch failed for %s: %s", sym, e)
-                rules = LotRules.from_market(self._markets.get(ms, {}), "kraken")
+                rules = LotRules.from_market(self._markets.get(ms, {}), self.lot_venue)
                 min_qty = rules.min_qty
                 step_size = rules.step_size
                 min_notional = rules.min_notional
@@ -687,7 +689,7 @@ class KrakenBroker:
         # to the venue; the rebalancer judged it on its own snapshot.
         amount_to_precision = getattr(self._exchange, "amount_to_precision", None)
         quantize = (lambda q: amount_to_precision(ms, q)) if callable(amount_to_precision) else None
-        rules = LotRules.from_market(self._markets.get(ms, {}), "kraken", quantize=quantize)
+        rules = LotRules.from_market(self._markets.get(ms, {}), self.lot_venue, quantize=quantize)
         lot = rules.accept(quantity, None)
         if lot.skip:
             logger.warning(

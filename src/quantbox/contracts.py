@@ -449,6 +449,12 @@ class BrokerPlugin(Protocol):
             against a spot broker, and the margin-balance rule was applied
             faithfully to a book where it is wrong by the whole value of the
             positions held.
+        lot_venue: Optional. The venue whose lot rules the broker sends with
+            (``"hyperliquid"``, ``"kraken"``, ``"binance_futures"``). An order
+            generator reads it with :func:`quantbox.trade.lots.lot_venue`, so
+            it plans the quantity the broker sends (TOM-2207). A broker that
+            omits it gets no venue facts: no reduce-only exemption, no
+            fallback step.
     """
 
     meta: PluginMeta
