@@ -18,7 +18,7 @@ import pandas as pd
 
 from quantbox._removed import removed_names
 from quantbox.contracts import PluginMeta
-from quantbox.dataset import _resolve_pinned, load_pinned_dataset
+from quantbox.dataset import _resolve_pinned, load_pinned_dataset, served_prices
 from quantbox.parquet_io import read_parquet
 
 logger = logging.getLogger(__name__)
@@ -318,6 +318,12 @@ class LocalFileDataPlugin:
 
             params_init:
               dataset: etf-daily
+
+    A dataset a research line froze itself is found by the same name under
+    ``datasets/`` beside the line's ``datasets.lock``. A manifest ``serve`` block
+    (:func:`quantbox.dataset_lock.serve_spec`) names the table served as prices, whether
+    it holds prices or returns (a returns table is served as a total-return index), and
+    its frequency, which the run's ``bars_per_year`` follows (TOM-2232).
     """
 
     meta = PluginMeta(
@@ -369,7 +375,18 @@ class LocalFileDataPlugin:
     # What ``quantbox dataset resolve -c <config> --json`` reports; the runner records it in the manifest.
     dataset_resolution: dict[str, Any] | None = field(default=None, init=False, repr=False)
 
+    def _resolution(self) -> dict[str, Any]:
+        if self.dataset_resolution is None:
+            self.dataset_resolution = _resolve_pinned(self.dataset, self.dataset_lock)
+        return self.dataset_resolution
+
+    def _served(self) -> dict[str, Any] | None:
+        """The resolution's ``serve`` block: the dataset is read by quantbox itself, not quantbox-datasets."""
+        return self._resolution().get("serve") if self.dataset else None
+
     def _pinned(self) -> Any:
+        if self._dataset is None and self._served() is not None:
+            self._dataset = served_prices(self.dataset_resolution)
         if self._dataset is None:
             self._dataset, self.dataset_resolution = load_pinned_dataset(
                 self.dataset, self.dataset_lock, self.dataset_resolution
@@ -386,8 +403,8 @@ class LocalFileDataPlugin:
         and the ``*_path`` params are ignored.
         """
         if self.dataset:
-            if self.dataset_resolution is None:
-                self.dataset_resolution = _resolve_pinned(self.dataset, self.dataset_lock)
+            if self._served() is not None:
+                return {"prices": self._served()["file"], "funding_rates": self.dataset_resolution.get("funding_rates")}
             served = self.dataset_resolution.get("path")
             return {
                 "prices": str(Path(served) / "prices.parquet") if served else None,
@@ -405,10 +422,17 @@ class LocalFileDataPlugin:
         """
         if not self.dataset:
             return None
-        if self.dataset_resolution is None:
-            self.dataset_resolution = _resolve_pinned(self.dataset, self.dataset_lock)
-        market = self.dataset_resolution.get("market")
+        market = self._resolution().get("market")
         return str(market) if market else None
+
+    def planned_frequency(self) -> str | None:
+        """A by-name dataset's bar, from its manifest ``serve.frequency`` (``1M``, ``1d``, ...); else None.
+
+        The runner makes it the run's frequency when the config declares none, and
+        refuses a config that declares another (:func:`quantbox.runner.resolve_run`).
+        """
+        served = self._served() if self.dataset else None
+        return served.get("frequency") if served else None
 
     def load_universe(self, params: dict[str, Any]) -> pd.DataFrame:
         """Load trading universe from file or params.
@@ -422,6 +446,8 @@ class LocalFileDataPlugin:
         if symbols:
             return pd.DataFrame({"symbol": symbols})
 
+        if self.dataset and self._served() is not None:
+            return pd.DataFrame({"symbol": list(self._pinned().columns)})
         if self.dataset:
             df = self._pinned().universe
             if "symbol" in df.columns:
@@ -467,6 +493,12 @@ class LocalFileDataPlugin:
                 return df[available]
             return df
 
+        if self.dataset and self._served() is not None:
+            self.loaded_paths = self.planned_paths(params)
+            return {
+                "prices": _select_cols(_clip_frame(self._pinned(), asof)),
+                **{key: pd.DataFrame() for key in ("volume", "market_cap", "funding_rates")},
+            }
         if self.dataset:
             ds = self._pinned()
             self.loaded_paths = self.planned_paths(params)

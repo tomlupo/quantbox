@@ -290,6 +290,50 @@ def _bind_dataset_lock(data: Any, config_path: str | Path | None) -> None:
         data.dataset_lock = str(lock)
 
 
+def _apply_dataset_frequency(data: Any, pipeline_params: dict[str, Any]) -> None:
+    """A dataset's declared bar (``planned_frequency()``, its manifest ``serve.frequency``) becomes the run's.
+
+    With no ``frequency`` and no ``prices.frequency`` in the config, it is written into
+    ``prices.frequency``, which :func:`quantbox.frequency.resolve_pipeline_frequency` reads
+    for the StrategyContext's ``bars_per_year`` and the default ``trading_days``. A config
+    that declares a different bar is refused: a monthly table annualised as daily bars
+    is silently wrong by a factor of twenty. The ``bars_per_year`` used is recorded in
+    the dataset resolution the run manifest carries (TOM-2232). A data plugin without
+    the method, or a dataset without the key, leaves the params as they are.
+    """
+    from .dataset_lock import DatasetResolveError, DatasetServeError
+    from .frequency import Frequency, resolve_pipeline_frequency
+
+    planned = getattr(data, "planned_frequency", None)
+    if not callable(planned):
+        return
+    try:
+        frequency = planned()
+    except DatasetServeError:
+        raise
+    except DatasetResolveError:
+        return  # unresolvable here; the data plugin raises it where it always did
+    if not frequency:
+        return
+    prices = dict(pipeline_params.get("prices", {"lookback_days": 365}))
+    declared = pipeline_params.get("frequency")
+    if declared is None:
+        declared = prices.get("frequency")
+    if declared is not None:
+        if Frequency.parse(declared).bar_size != Frequency.parse(frequency).bar_size:
+            raise DatasetServeError(
+                f"dataset {data.dataset!r} is {frequency} bars (its manifest serve.frequency), "
+                f"but the config declares frequency {declared!r}; remove it, or declare {frequency!r}"
+            )
+    else:
+        prices["frequency"] = frequency
+        pipeline_params["prices"] = prices
+    resolved = resolve_pipeline_frequency(pipeline_params, pipeline_params.get("prices") or {})
+    serve = data.dataset_resolution["serve"]
+    serve["bars_per_year"] = float(resolved.bars_per_year())
+    serve["frequency_source"] = "config" if declared is not None else "dataset"
+
+
 def _dataset_block(data: Any) -> dict[str, Any]:
     """Return the typed dataset evidence block for run_manifest.json.
 
@@ -559,6 +603,7 @@ def resolve_run(
         for r in risk_cfg_list:
             merged_risk_params.update(r.get("params", {}))
         pipeline_params["_risk_cfg"] = merged_risk_params
+    _apply_dataset_frequency(data, pipeline_params)
 
     # --- Variant strategies (multi-variant pipelines) ---
     variant_plugins: dict[str, Any] = {}
