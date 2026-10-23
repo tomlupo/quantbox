@@ -1079,16 +1079,6 @@ class TestBrokerDeclarations:
             pytest.skip(f"{plugin_name} not registered in this build")
         assert getattr(classes[plugin_name], BASIS_ATTR, None) == expected
 
-    def test_unregistered_broker_modules_declare_one_too(self):
-        """``binance_live.py`` is in the diff but NOT in ``builtins()``.
-
-        The registry sweep above cannot see it, so a broker reachable only by
-        entry point would slip through into a live refusal.
-        """
-        from quantbox.plugins.broker.binance_live import BinanceLiveBroker
-
-        assert getattr(BinanceLiveBroker, BASIS_ATTR, None) == BASIS_MARK
-
     def test_the_declaration_is_readable_without_instantiating(self):
         """ "must be free of API calls" -- so it cannot live on an instance."""
         for name, cls in self._broker_classes().items():

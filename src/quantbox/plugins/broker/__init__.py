@@ -14,7 +14,6 @@ from quantbox._lazy import load
 
 __all__ = [
     "BinanceBroker",
-    "BinanceLiveBroker",
     "BinanceFuturesBroker",
     "BinancePaperBrokerStub",
     "FuturesPaperBroker",
@@ -23,8 +22,6 @@ __all__ = [
     "IBKRPaperBrokerStub",
     "KrakenBroker",
     "SimPaperBroker",
-    "UniverseSelector",
-    "UniverseConfig",
 ]
 
 _PKG = "quantbox.plugins.broker"
@@ -38,23 +35,13 @@ _LAZY = {
     "IBKRPaperBrokerStub": f"{_PKG}.ibkr_stub:PaperBrokerStub",
     "KrakenBroker": f"{_PKG}.kraken:KrakenBroker",
     "SimPaperBroker": f"{_PKG}.sim:SimPaperBroker",
-    "BinanceLiveBroker": f"{_PKG}.binance_live:BinanceLiveBroker",
-    "UniverseConfig": f"{_PKG}.binance_live:UniverseConfig",
-    "UniverseSelector": f"{_PKG}.binance_live:UniverseSelector",
 }
-# These three were None when binance_live failed to import; that stays true.
-_NONE_ON_IMPORT_ERROR = {"BinanceLiveBroker", "UniverseConfig", "UniverseSelector"}
 
 
 def __getattr__(name: str) -> Any:
     if name not in _LAZY:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    try:
-        value = load(_LAZY[name], extra="trade")
-    except ImportError:
-        if name not in _NONE_ON_IMPORT_ERROR:
-            raise
-        value = None
+    value = load(_LAZY[name], extra="trade")
     globals()[name] = value
     return value
 

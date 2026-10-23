@@ -33,9 +33,6 @@ reduce-only exemption, and the step used when no step is known. A broker names
 its venue with the class attribute ``lot_venue``; :func:`lot_venue` reads it, so
 an order generator that holds only the broker and its market snapshot builds the
 same rules the broker sends with (TOM-2207).
-
-The free functions below the class are the arithmetic the class uses, kept for
-the callers not yet moved onto :class:`LotRules` (``binance_live``, TOM-2208).
 """
 
 from __future__ import annotations
@@ -50,9 +47,6 @@ from typing import Any
 from quantbox.lot_step import lot_step
 
 logger = logging.getLogger(__name__)
-
-#: Digits a step size is written with when its decimal places are counted.
-_STEP_DIGITS = 8
 
 #: Skip reasons :meth:`LotRules.accept` answers with.
 SKIP_NOT_FINITE = "not a finite quantity"
@@ -263,65 +257,3 @@ def _floor_to(qty: float, step: Decimal) -> float:
         return qty
     lots = (Decimal(str(qty)) / step).to_integral_value(rounding=ROUND_DOWN)
     return float(lots * step) + 0.0  # + 0.0 turns -0.0 into 0.0
-
-
-# ---------------------------------------------------------------------------
-# Arithmetic for callers not yet on LotRules (binance_live, TOM-2208)
-# ---------------------------------------------------------------------------
-
-
-def step_decimals(step: float, digits: int = _STEP_DIGITS) -> int:
-    """Decimal places of *step* written with *digits* digits: ``0.001`` → 3, ``1`` → 0, ``0.25`` → 2."""
-    text = f"{step:.{digits}f}".rstrip("0")
-    return len(text.split(".")[-1]) if "." in text else 0
-
-
-def floor_to_decimals(qty: float, decimals: int) -> float:
-    """*qty* rounded toward zero to *decimals* decimal places, in decimal arithmetic.
-
-    The float is read through its shortest repr (``str``), so ``0.3`` floors to
-    ``0.3`` and not to ``0.2``. The rounding mode is passed to ``quantize``; the
-    process-wide decimal context is never changed.
-    """
-    exponent = Decimal(1).scaleb(-int(decimals))
-    return float(Decimal(str(qty)).quantize(exponent, rounding=ROUND_DOWN))
-
-
-def floor_to_step(qty: float, step: float) -> float:
-    """*qty* rounded toward zero to the decimal places of *step* (the Binance LOT_SIZE rule).
-
-    A step of 0 or less means "no step known": *qty* is returned as is. The rule
-    counts the step's decimal places; it does not round to multiples of the step
-    (``0.5`` floors to one decimal). :class:`LotRules` rounds to multiples.
-    """
-    if step <= 0:
-        return qty
-    return floor_to_decimals(qty, step_decimals(step))
-
-
-def floor_to_multiple(qty: float, step: float) -> float:
-    """*qty* rounded toward zero to a whole multiple of *step*, in decimal arithmetic.
-
-    Toward zero for a short too: ``-0.25`` on a ``0.1`` step is ``-0.2``, never
-    ``-0.3`` (TOM-1979). Both floats are read through ``str``, so an on-grid
-    quantity is returned unchanged: ``0.3`` on a ``0.1`` step stays ``0.3``.
-    A step of 0 or less, or a quantity that is not finite, returns *qty*.
-    """
-    if step <= 0 or not math.isfinite(qty):
-        return qty
-    return _floor_to(qty, Decimal(str(step)))
-
-
-def binance_filters(symbol_info: dict | None) -> tuple[float, float, float]:
-    """``(min_qty, step_size, min_notional)`` from a Binance symbol-info payload; zeros when absent."""
-    min_qty, step_size, min_notional = 0.0, 0.0, 0.0
-    if not symbol_info:
-        return min_qty, step_size, min_notional
-    for f in symbol_info.get("filters", []) or []:
-        kind = f.get("filterType")
-        if kind == "LOT_SIZE":
-            min_qty = float(f.get("minQty", 0))
-            step_size = float(f.get("stepSize", 0))
-        elif kind == "NOTIONAL":
-            min_notional = float(f.get("minNotional", 0))
-    return min_qty, step_size, min_notional

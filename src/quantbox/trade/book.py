@@ -394,8 +394,7 @@ def venue_valuation_basis(broker: object | None) -> str | None:
     a key in ``describe()``: ``describe()`` is a free-form introspection surface
     whose shape already varies across the brokers in this repo (Hyperliquid
     reports ``type: "decentralized"``, ``BinanceFuturesBroker`` has no ``type``
-    at all, ``BinanceLiveBroker.describe()`` returns a whole account snapshot
-    and hits the network). A valuation rule cannot key off a field like that,
+    at all). A valuation rule cannot key off a field like that,
     and it must not cost an API call to read.
 
     An unrecognised value is ``None``, not a guess: a declaration nobody can
