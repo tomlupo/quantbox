@@ -33,11 +33,12 @@ reads too much as residual or untrapped.
 
 from __future__ import annotations
 
-import ccxt
+from types import SimpleNamespace
+
 import pandas as pd
 import pytest
 
-from quantbox.plugins.broker import _fills
+from quantbox.plugins.broker import _fills, kraken
 from quantbox.plugins.broker.kraken import KrakenBroker
 from quantbox.plugins.rebalancing.futures_rebalancer import RESIDUAL_STATUS, FuturesRebalancer
 from quantbox.trade.executor import execute_orders
@@ -152,7 +153,7 @@ class _Kraken:
     def create_order(self, symbol, type, side, amount, price=None):
         self.created.append((symbol, side, float(amount)))
         if self.outcome == "reject":
-            raise ccxt.InvalidOrder("EOrder:Invalid order")
+            raise _InvalidOrder("EOrder:Invalid order")
         if self.outcome == "unconfirmed":
             return {}
         return {
@@ -168,10 +169,32 @@ class _Kraken:
         return {"id": oid, "status": "open", "filled": 0.0, "amount": 1.0}
 
 
+class _InvalidOrder(Exception):
+    """Stands in for ``ccxt.InvalidOrder``: the venue refused the order."""
+
+
+class _InsufficientFunds(Exception):
+    """Stands in for ``ccxt.InsufficientFunds``."""
+
+
 @pytest.fixture(autouse=True)
 def _no_confirmation_wait(monkeypatch):
     """The fill-confirmation poll sleeps between re-reads; the fake venue answers at once."""
     monkeypatch.setattr(_fills.time, "sleep", lambda s: None)
+
+
+@pytest.fixture(autouse=True)
+def _ccxt_errors(monkeypatch):
+    """ccxt's two order-rejection classes, at the broker's own ``ccxt`` name.
+
+    CI's test job installs no ccxt, and ``kraken.py`` then holds ``ccxt = None``.
+    ``KrakenBroker._place_one`` reads only these two classes from it, by
+    ``isinstance``, to tell a venue rejection (no retry) from a transient error
+    (retried). So the rejection path runs the same code with or without ccxt.
+    """
+    monkeypatch.setattr(
+        kraken, "ccxt", SimpleNamespace(InvalidOrder=_InvalidOrder, InsufficientFunds=_InsufficientFunds)
+    )
 
 
 def _run(day: dict, *, broker: KrakenBroker | None = None, weights: dict | None = None, outcome: str = "working"):
