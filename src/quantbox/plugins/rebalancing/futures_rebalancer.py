@@ -678,6 +678,11 @@ class FuturesRebalancer:
                     # True only for an open from flat or a same-side add (see above);
                     # the dead-man reads it to tell a residual day from a trapped book.
                     "opens_exposure": opens_exposure,
+                    # True for a full close (flat target, position held). This
+                    # rebalancer exempts every full close from the churn band, so a
+                    # band row that declares False is never a held-back close: the
+                    # dead-man reads it to clear band rows as untrapped (TOM-2212).
+                    "full_close": is_closing,
                 }
             )
 

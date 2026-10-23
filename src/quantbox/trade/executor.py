@@ -218,10 +218,13 @@ def _untrapped(suppressed: pd.DataFrame) -> pd.Series:
     * a sub-min ENTRY — an open from flat or a same-side add (``opens_exposure``
       True) below the venue minimum or inside the churn band. Not trading it
       leaves the book where it is; nothing it holds is stuck.
-    * a CHURN-BAND TRIM — any row the band held back (``Below threshold``) whose
-      intent is declared. The band is the book's own churn policy, not a refusal:
-      a full close is exempt from it, so the band never holds back a close, and
-      once the drift grows past the band the trade goes out.
+    * a CHURN-BAND TRIM — a row the band held back (``Below threshold``) whose
+      intent is declared and which declares it is NOT a full close
+      (``full_close`` False). The band is the book's own churn policy, not a
+      refusal, and once the drift grows past it the trade goes out. A band row
+      that is, or may be, a full close is not cleared: the futures rebalancer
+      exempts every full close from the band, but the standard rebalancer
+      exempts only a long one, so its short close can sit in the band.
 
     Everything else is NOT proven untrapped: a declared exit any floor or the
     venue blocked (``Below min notional``, ``Below min qty``, ``Zero quantity``),
@@ -237,7 +240,12 @@ def _untrapped(suppressed: pd.DataFrame) -> pd.Series:
     entry = status.isin({"Below min notional", "Below threshold", "Below min qty"}) & suppressed["opens_exposure"].eq(
         True
     )
-    band = (status == "Below threshold") & declared
+    not_a_close = (
+        suppressed["full_close"].eq(False)
+        if "full_close" in suppressed.columns
+        else pd.Series(False, index=suppressed.index)
+    )
+    band = (status == "Below threshold") & declared & not_a_close
     return entry | band
 
 

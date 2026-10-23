@@ -313,6 +313,7 @@ BAND_TRIM = {
     "Notional Value": 1.08,
     "Order Status": "Below threshold",
     "opens_exposure": False,
+    "full_close": False,
 }
 DUST = {
     "Asset": "TRX",
@@ -371,6 +372,26 @@ def test_guard_a_data_fault_beside_dust_and_band_trims_still_freezes(status):
     )
     assert report.get("frozen") is True
     assert not report.get("residual_day")
+
+
+@pytest.mark.parametrize("full_close", [True, None], ids=["declared-close", "close-undeclared"])
+def test_guard_a_short_close_held_in_the_band_still_freezes(full_close):
+    """rebalancing.standard.v1 exempts only a LONG close from the band, so its short
+    close can sit in the band as a declared exit. It is not a trim (review of 677109a)."""
+    short_close = {
+        "Asset": "ARB",
+        "Action": "Buy",
+        "Notional Value": 0.4,
+        "Order Status": "Below threshold",
+        "opens_exposure": False,
+    }
+    if full_close is not None:
+        short_close["full_close"] = full_close
+    report = execute_orders(
+        broker=_Held(), orders_df=_frame(short_close), trading_enabled=True, alert=lambda m, *, site=None: True
+    )
+    assert report.get("frozen") is True
+    assert not report.get("quiet_day")
 
 
 def test_guard_a_band_row_that_declares_no_intent_still_freezes_a_held_book():
