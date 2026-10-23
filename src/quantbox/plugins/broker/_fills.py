@@ -421,15 +421,6 @@ def binance_order(reply: dict | None) -> dict | None:
     }
 
 
-def binance_commission(reply: dict | None) -> tuple[float | None, str | None]:
-    """``(commission, asset)`` summed over every fill of a Binance reply; ``(None, None)`` when not one asset."""
-    fills = (reply or {}).get("fills") or []
-    costs = [(_to_float(f.get("commission")), f.get("commissionAsset")) for f in fills]
-    if not costs or any(c is None for c, _ in costs) or len({a for _, a in costs}) != 1:
-        return None, None
-    return sum(c for c, _ in costs), costs[0][1]
-
-
 # ---------------------------------------------------------------------------
 # Fee extraction (#92) — the same philosophy, applied to cost.
 # ---------------------------------------------------------------------------
