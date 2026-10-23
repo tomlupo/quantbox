@@ -313,7 +313,7 @@ def _apply_dataset_frequency(data: Any, pipeline_params: dict[str, Any]) -> None
         raise
     except DatasetResolveError:
         return  # unresolvable here; the data plugin raises it where it always did
-    if not frequency:
+    if not isinstance(frequency, str) or not frequency:
         return
     prices = dict(pipeline_params.get("prices", {"lookback_days": 365}))
     declared = pipeline_params.get("frequency")
