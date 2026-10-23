@@ -115,8 +115,9 @@ class Frequency:
     def bars_per_year(self) -> float:
         """Exchange-aware bars per year.
 
-        For calendar-month bars (``'1M'``, ``'3M'``; held as multiples of 30 days):
-            12 / months on any calendar, since a month is a month whatever trades in it.
+        For calendar-month bars (``'1M'``, ``'3M'``; held as multiples of 30 days, so a
+            ``'30d'`` bar is read as a month too): 12 / months on any calendar, since a
+            month is a month whatever trades in it.
         For 24/7 calendars: 365 * bars_per_day.
         For exchange calendars: trading_days * bars_per_session (intraday) or
             trading_days / days_per_bar (daily+).

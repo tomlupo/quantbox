@@ -495,9 +495,15 @@ class LocalFileDataPlugin:
 
         if self.dataset and self._served() is not None:
             self.loaded_paths = self.planned_paths(params)
+            # The funding file planned_paths names is served too: the funding guard trusts that plan.
+            fpath = self.loaded_paths["funding_rates"]
             return {
                 "prices": _select_cols(_clip_frame(self._pinned(), asof)),
-                **{key: pd.DataFrame() for key in ("volume", "market_cap", "funding_rates")},
+                "volume": pd.DataFrame(),
+                "market_cap": pd.DataFrame(),
+                "funding_rates": _select_cols(_read_file(fpath, asof=asof, symbols=symbols))
+                if fpath
+                else pd.DataFrame(),
             }
         if self.dataset:
             ds = self._pinned()

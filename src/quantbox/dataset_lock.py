@@ -97,6 +97,18 @@ def datasets_root() -> Path:
     raise DatasetResolveError(f"no datasets root: set {ROOT_ENV} to the quantbox-datasets clone's datasets/ directory")
 
 
+def _one_name(value: Any) -> bool:
+    """True when *value* names one entry in a directory: no separator, not ``.`` or ``..``, not absolute."""
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value not in (".", "..")
+        and "/" not in value
+        and "\\" not in value
+        and not Path(value).is_absolute()
+    )
+
+
 def _pin_file(manifest: dict[str, Any]) -> str:
     """The file a pin hashes: the manifest's ``pin_file``, else prices.parquet (quantbox-datasets ADR-0015).
 
@@ -104,7 +116,7 @@ def _pin_file(manifest: dict[str, Any]) -> str:
     tables): before TOM-2232 such a dataset resolved with no sha256 at all.
     """
     named = manifest.get("pin_file")
-    return named if isinstance(named, str) and named and "/" not in named and "\\" not in named else "prices.parquet"
+    return named if _one_name(named) else "prices.parquet"
 
 
 def _manifest(path: Path) -> dict[str, Any]:
@@ -130,7 +142,7 @@ def serve_spec(manifest: dict[str, Any], name: str) -> dict[str, Any] | None:
     if unknown:
         raise DatasetServeError(f"dataset {name!r}: manifest serve has unknown keys {unknown}")
     table = block.get("table", "prices")
-    if not isinstance(table, str) or not table or "/" in table or "\\" in table or table in (".", ".."):
+    if not _one_name(table):
         raise DatasetServeError(f"dataset {name!r}: serve.table must name one table in the dataset, got {table!r}")
     kind = block.get("kind", "prices")
     if kind not in SERVE_KINDS:
@@ -238,7 +250,7 @@ def resolve_dataset(name: str, *, lock: str | Path | None = None, start: str | P
     """
     # A name is one directory under the root: an absolute name, a separator or ``..``
     # would read (and record as pinned) bytes from outside $QUANTBOX_DATASETS_ROOT.
-    if not name or name in (".", "..") or "/" in name or "\\" in name or Path(name).is_absolute():
+    if not _one_name(name):
         raise DatasetResolveError(f"dataset name {name!r} must be one directory name under the datasets root")
     lock_path = Path(lock).resolve() if lock is not None else find_lock(start)
     pinned = None

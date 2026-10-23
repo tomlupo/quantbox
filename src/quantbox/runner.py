@@ -315,7 +315,8 @@ def _apply_dataset_frequency(data: Any, pipeline_params: dict[str, Any]) -> None
         return  # unresolvable here; the data plugin raises it where it always did
     if not isinstance(frequency, str) or not frequency:
         return
-    prices = dict(pipeline_params.get("prices", {"lookback_days": 365}))
+    # The pipelines' own default prices block, so a run that names none loads as before.
+    prices = dict(pipeline_params.get("prices") or {"lookback_days": 365})
     declared = pipeline_params.get("frequency")
     if declared is None:
         declared = prices.get("frequency")
