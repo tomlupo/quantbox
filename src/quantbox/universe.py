@@ -14,6 +14,7 @@ from __future__ import annotations
 import pandas as pd
 
 from quantbox.exceptions import MissingExtraError
+from quantbox.lot_step import lot_step
 
 __all__ = ["DEFAULT_STABLECOINS", "select_universe", "select_universe_duckdb"]
 
@@ -206,14 +207,11 @@ def select_universe(
     # a szDecimals map is supplied.
     if fine_lot_sz_decimals and fine_lot_max_lot_fraction > 0 and fine_lot_min_notional > 0:
         threshold = fine_lot_max_lot_fraction * fine_lot_min_notional
-        lot_step = pd.Series(
-            {
-                t: (10.0 ** (-int(fine_lot_sz_decimals[t])) if t in fine_lot_sz_decimals else float("nan"))
-                for t in valid_tickers
-            }
-        )
-        lot_notional = prices[valid_tickers].mul(lot_step, axis=1)
-        # NaN lot_step (unknown szDecimals) -> NaN lot_notional -> excluded.
+        # The step is read by the one rule the lot rules use (quantbox.lot_step).
+        steps = {t: lot_step(int(fine_lot_sz_decimals[t])) for t in valid_tickers if t in fine_lot_sz_decimals}
+        step_by_ticker = pd.Series({t: float(steps.get(t) or "nan") for t in valid_tickers})
+        lot_notional = prices[valid_tickers].mul(step_by_ticker, axis=1)
+        # NaN step (unknown or negative szDecimals) -> NaN lot_notional -> excluded.
         fine_lot_mask = (lot_notional <= threshold) & lot_notional.notna()
         listing_mask = listing_mask & fine_lot_mask
 

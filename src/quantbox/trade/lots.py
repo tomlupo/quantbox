@@ -47,6 +47,8 @@ from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
+from quantbox.lot_step import lot_step
+
 logger = logging.getLogger(__name__)
 
 #: Digits a step size is written with when its decimal places are counted.
@@ -136,8 +138,9 @@ class LotRules:
 
         ccxt gives ``precision["amount"]`` as a step (a float: ``0.001``, or
         ``1.0`` for a whole-unit coin, ``TICK_SIZE`` mode) or as a number of
-        decimals (an int: ``3``). Missing ``limits.cost.min`` falls back to the
-        venue's default minimum notional.
+        decimals (an int: ``3``); :func:`quantbox.lot_step.lot_step` reads both.
+        Missing ``limits.cost.min`` falls back to the venue's default minimum
+        notional.
         """
         v = _VENUES[venue]
         market = market or {}
@@ -145,7 +148,7 @@ class LotRules:
         precision = market.get("precision") or {}
         cost_min = _positive((limits.get("cost") or {}).get("min"))
         return cls(
-            step=_ccxt_step(precision.get("amount")),
+            step=lot_step(precision.get("amount")),
             min_qty=_positive((limits.get("amount") or {}).get("min")),
             min_notional=cost_min if cost_min > 0 else v.default_min_notional,
             reduce_only_exempt=v.reduce_only_exempt,
@@ -231,16 +234,6 @@ def _positive(value: Any) -> float:
     except (TypeError, ValueError):
         return 0.0
     return f if math.isfinite(f) and f > 0 else 0.0
-
-
-def _ccxt_step(precision: Any) -> Decimal | None:
-    """A ccxt ``precision["amount"]`` as a step: an int is a number of decimals, a float is the step."""
-    if precision is None or isinstance(precision, bool):
-        return None
-    if isinstance(precision, int):
-        return Decimal(1).scaleb(-precision) if precision >= 0 else None
-    p = _positive(precision)
-    return Decimal(str(p)) if p > 0 else None
 
 
 def _floor_to(qty: float, step: Decimal) -> float:
