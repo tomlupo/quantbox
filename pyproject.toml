@@ -185,6 +185,7 @@ source_modules = [
   "quantbox.inference",
   "quantbox.instrument_calendar",
   "quantbox.llm_utils",  # event lines and schema checks; the runner imports it
+  "quantbox.lot_step",  # precision -> step; universe (plugins) and trade.lots read it (TOM-2206)
   "quantbox.metrics",
   "quantbox.overlays",  # the overlay chaining contract; explain imports it
   "quantbox.params_schema",
@@ -464,6 +465,7 @@ source_modules = [
   "quantbox.inference",
   "quantbox.instrument_calendar",
   "quantbox.llm_utils",
+  "quantbox.lot_step",
   "quantbox.metrics",
   "quantbox.overlays",
   "quantbox.params_schema",
