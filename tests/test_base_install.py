@@ -232,7 +232,6 @@ def test_the_package_names_are_the_same_objects_as_before():
     import quantbox.plugins.broker as br
     import quantbox.plugins.datasources as ds
     import quantbox.plugins.publisher as pub
-    from quantbox.plugins.broker.binance_live import BinanceLiveBroker
     from quantbox.plugins.broker.ibkr_stub import PaperBrokerStub
     from quantbox.plugins.datasources.binance_data import MarketDataSnapshot
     from quantbox.plugins.datasources.local_file_data import LocalFileDataPlugin
@@ -242,7 +241,6 @@ def test_the_package_names_are_the_same_objects_as_before():
     assert ds.MarketDataSnapshot is MarketDataSnapshot
     assert ds.DuckDBParquetData is LocalFileDataPlugin
     assert br.IBKRPaperBrokerStub is PaperBrokerStub
-    assert br.BinanceLiveBroker is BinanceLiveBroker
     assert pub.TelegramPublisher is TelegramPublisher
     for mod in (ds, br, pub):
         for name in mod.__all__:

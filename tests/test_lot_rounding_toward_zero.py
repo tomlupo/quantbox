@@ -5,6 +5,13 @@ a property test of pure logic that real books rarely reach: a short target, a
 quantity just under a lot boundary, and a step that float division gets wrong
 (``0.3 / 0.1 == 2.9999999999999996``). A seeded randomized loop stands in for
 hypothesis, which is not a dev dependency.
+
+The order rounding is :class:`quantbox.trade.lots.LotRules` (TOM-2206). Until
+TOM-2208 these properties were asserted on the free function
+``floor_to_multiple``; it had no caller left when ``binance_live`` was deleted
+(Tom, 2026-10-23), so they are asserted on ``LotRules`` itself. ``test_lot_rules.py``
+asserts the same property per venue on power-of-ten steps; the steps here also
+include 0.25, 0.5, 5 and 100.
 """
 
 from __future__ import annotations
@@ -15,10 +22,15 @@ from decimal import Decimal
 import pytest
 
 from quantbox.plugins.pipeline.alloc2orders import _apply_qty_rules
-from quantbox.trade.lots import floor_to_decimals, floor_to_multiple, floor_to_step
+from quantbox.trade.lots import LotRules
 
 STEPS = (0.00001, 0.001, 0.01, 0.1, 0.25, 0.5, 1.0, 5.0, 100.0)
 N_CASES = 2000
+
+
+def _floor(qty: float, step: float) -> float:
+    """*qty* rounded by the lot rules of an instrument with *step* and no minimums."""
+    return LotRules(step=Decimal(str(step))).accept(qty).rounded
 
 
 def _quantities(seed: int) -> list[float]:
@@ -39,23 +51,9 @@ def _within(rounded: float, requested: float) -> bool:
 
 
 @pytest.mark.parametrize("step", STEPS)
-def test_floor_to_multiple_never_exceeds_the_request(step):
-    bad = [(q, floor_to_multiple(q, step)) for q in _quantities(1979) if not _within(floor_to_multiple(q, step), q)]
+def test_the_lot_rules_never_exceed_the_request(step):
+    bad = [(q, _floor(q, step)) for q in _quantities(1979) if not _within(_floor(q, step), q)]
     assert not bad, f"step {step}: {bad[:5]}"
-
-
-@pytest.mark.parametrize("step", STEPS)
-def test_floor_to_step_never_exceeds_the_request(step):
-    bad = [(q, floor_to_step(q, step)) for q in _quantities(1721) if not _within(floor_to_step(q, step), q)]
-    assert not bad, f"step {step}: {bad[:5]}"
-
-
-@pytest.mark.parametrize("decimals", (0, 1, 3, 8))
-def test_floor_to_decimals_never_exceeds_the_request(decimals):
-    bad = [
-        (q, floor_to_decimals(q, decimals)) for q in _quantities(8) if not _within(floor_to_decimals(q, decimals), q)
-    ]
-    assert not bad, f"decimals {decimals}: {bad[:5]}"
 
 
 @pytest.mark.parametrize("lot_size", (0.0, 0.1, 1.0, 5.0))
@@ -78,12 +76,18 @@ def test_an_on_grid_quantity_is_unchanged(step):
     for _ in range(500):
         n = rng.randint(-100_000, 100_000)
         on_grid = float(n * d_step)
-        assert floor_to_multiple(on_grid, step) == on_grid, (n, step)
+        assert _floor(on_grid, step) == on_grid, (n, step)
+
+
+def test_the_lot_rules_read_the_decimal_not_the_binary_float():
+    """``0.3 / 0.1`` is ``2.999...`` in binary floats; the lot rules keep ``0.3`` (was asserted on floor_to_step)."""
+    assert _floor(0.3, 0.1) == 0.3
+    assert _floor(0.29, 0.01) == 0.29
 
 
 def test_a_rounded_quantity_is_a_whole_multiple_of_the_step():
     for step in STEPS:
         d_step = Decimal(str(step))
         for q in _quantities(3):
-            rounded = Decimal(str(floor_to_multiple(q, step)))
+            rounded = Decimal(str(_floor(q, step)))
             assert rounded % d_step == 0, (q, step, rounded)

@@ -480,8 +480,8 @@ def test_phantom_uses_recent_intent_window_not_all_history(tmp_path):
 
 
 class _SnapshotBroker(_FakeBroker):
-    """Fake broker whose snapshot is given per symbol and, like sim.py and
-    binance_live.py, emits ONE ROW PER REQUESTED ELEMENT — a symbol requested
+    """Fake broker whose snapshot is given per symbol and, like sim.py,
+    emits ONE ROW PER REQUESTED ELEMENT — a symbol requested
     twice comes back twice. A symbol absent from ``marks`` is omitted from the
     snapshot; a symbol mapped to ``None`` comes back with a NaN mid."""
 
