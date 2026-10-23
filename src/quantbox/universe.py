@@ -209,9 +209,7 @@ def select_universe(
         threshold = fine_lot_max_lot_fraction * fine_lot_min_notional
         # The step is read by the one rule the lot rules use (quantbox.lot_step).
         steps = {t: lot_step(int(fine_lot_sz_decimals[t])) for t in valid_tickers if t in fine_lot_sz_decimals}
-        step_by_ticker = pd.Series(
-            {t: (float(steps[t]) if steps.get(t) is not None else float("nan")) for t in valid_tickers}
-        )
+        step_by_ticker = pd.Series({t: float(steps.get(t) or "nan") for t in valid_tickers})
         lot_notional = prices[valid_tickers].mul(step_by_ticker, axis=1)
         # NaN step (unknown or negative szDecimals) -> NaN lot_notional -> excluded.
         fine_lot_mask = (lot_notional <= threshold) & lot_notional.notna()

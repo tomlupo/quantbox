@@ -8,10 +8,10 @@ A venue states its quantity step in one of two forms. ccxt calls both
 - a **step**, a float: ``0.001``, or ``1.0`` for a whole-unit coin (ccxt
   ``TICK_SIZE`` mode).
 
-:func:`lot_step` reads either form. It is core, so the plugin-layer universe
-guard (:mod:`quantbox.universe`) and the trade-layer lot rules
-(:mod:`quantbox.trade.lots`) read a step by the same rule, and a plugin never
-imports :mod:`quantbox.trade`.
+:func:`lot_step` reads either form. It is core. The plugin-layer universe guard
+(:mod:`quantbox.universe`) and the trade-layer lot rules
+(:mod:`quantbox.trade.lots`) both call it. So a plugin never imports
+:mod:`quantbox.trade`.
 """
 
 from __future__ import annotations
