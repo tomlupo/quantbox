@@ -29,6 +29,27 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.18.0 (2026-10-24)
+
+### Feat
+
+- **arms**: every worker log line names its arm (TOM-2311) (#301)
+- **datasources**: serve a monthly or returns dataset by name from its manifest (TOM-2232) (#300)
+
+### Fix
+
+- **trade**: dust a venue can never accept is residual, not a freeze; churn-band trims do not trap a book (TOM-2212) (#298)
+- **trade**: futures_rebalancer plans the quantity the broker sends, through the lot rules (TOM-2207) (#296)
+- **trade**: targets round toward zero, shorts too; binance_live reports an unpriced target (TOM-1979) (#294)
+- **broker**: sim returns a SKIPPED row for an order it has no price for; alloc2orders counts only traded rows as fills (#293)
+- **broker**: ibkr.live and sim report the order's own fill status through resolve_fill (TOM-1978) (#292)
+
+### Refactor
+
+- **broker**: delete binance_live — unregistered, no consumer (TOM-2208) (#299)
+- **core**: one precision-to-step rule for the universe guard and the lot rules (TOM-2206) (#297)
+- **trade**: one lot-rules module owns a venue's rounding, minimums and their order (TOM-2206) (#295)
+
 ## v0.17.0 (2026-10-15)
 
 ### BREAKING CHANGE

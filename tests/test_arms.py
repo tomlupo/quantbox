@@ -439,3 +439,49 @@ def test_the_arm_pool_only_asks_for_child_recycling_where_python_has_it(monkeypa
     assert kwargs["max_workers"] == 2
     assert kwargs["mp_context"].get_start_method() == "spawn"
     assert ("max_tasks_per_child" in kwargs) is recycles
+
+
+# ----------------------------------------------------------------------
+# Logs: every worker line names its arm (TOM-2311)
+# ----------------------------------------------------------------------
+
+
+def test_parallel_arms_name_their_arm_on_every_warning(tmp_path, capfd):
+    """Two spawned workers share one stderr; each warning says which arm made it (TOM-2287)."""
+    _write_base(tmp_path)
+    arms_path = _write_arms(
+        tmp_path,
+        {
+            # Gross above max_leverage 1.0: each arm logs a RISK warning from its worker.
+            "overrides": {
+                "lev-a": {"plugins.strategies.0.params.frac": 1.5},
+                "lev-b": {"plugins.strategies.0.params.frac": 2.0},
+            },
+            "parallel": {"max_workers": 2, "memory_budget_gb": 4},
+        },
+    )
+    summary = run_arms(load_arms(arms_path))
+    assert summary["status"] == "ok"
+    assert summary["parallel"]["workers"] == 2
+    warnings = [line for line in capfd.readouterr().err.splitlines() if "RISK:" in line]
+    assert {line.split("]")[0] for line in warnings} == {"[arm lev-a", "[arm lev-b"}
+    assert all(line.startswith("[arm lev-") for line in warnings)
+
+
+def test_the_engine_warning_carries_the_arm_as_prefix_and_field(caplog):
+    import logging
+
+    from quantbox.arms import _arm_log_prefix
+
+    engine = logging.getLogger("quantbox.engine.vectorbt")
+    with caplog.at_level(logging.WARNING, logger="quantbox.engine.vectorbt"):
+        with _arm_log_prefix("net3bp"):
+            engine.warning("ENGINE: on %d of %d rebalance bar(s)", 3, 40)
+            engine.warning("100% literal, no args")
+        engine.warning("ENGINE: outside any arm")
+    assert [r.getMessage() for r in caplog.records] == [
+        "[arm net3bp] ENGINE: on 3 of 40 rebalance bar(s)",
+        "[arm net3bp] 100% literal, no args",
+        "ENGINE: outside any arm",
+    ]
+    assert [getattr(r, "arm", None) for r in caplog.records] == ["net3bp", "net3bp", None]
