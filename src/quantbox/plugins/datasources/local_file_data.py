@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,7 @@ import pandas as pd
 
 from quantbox._removed import removed_names
 from quantbox.contracts import PluginMeta
-from quantbox.dataset import _resolve_pinned, load_pinned_dataset, served_prices
+from quantbox.dataset import _resolve_pinned, finite_numbers, load_pinned_dataset, served_prices, unique_rows
 from quantbox.parquet_io import read_parquet
 
 logger = logging.getLogger(__name__)
@@ -69,12 +70,27 @@ def _universe_with_metadata(df: pd.DataFrame) -> pd.DataFrame:
     return df[["symbol", *others]].drop_duplicates(subset=["symbol"]).reset_index(drop=True)
 
 
-def _read_file(path: str, asof: str | None = None, symbols: list[str] | None = None) -> pd.DataFrame:
+def _value_columns(df: pd.DataFrame) -> list[Any]:
+    """The columns that hold the file's values: the one a long file pivots, else every non-date column."""
+    if "symbol" in df.columns and "date" in df.columns:
+        return [c for c in df.columns if c not in ("date", "symbol")][:1]
+    return [c for c in df.columns if c != "date"]
+
+
+def _read_file(
+    path: str,
+    asof: str | None = None,
+    symbols: list[str] | None = None,
+    validate: Callable[[pd.DataFrame, list[Any]], pd.DataFrame] | None = None,
+) -> pd.DataFrame:
     """Read a Parquet or CSV file, optionally filtering by date and symbols.
 
     Auto-detects wide vs long format:
     - Long: has ``symbol`` + ``date`` columns → pivot to wide (date index, symbol columns)
     - Wide: date-like index/column + ticker columns → return as-is with date index
+
+    *validate* (frame, value columns) runs on the values AS READ, before the pivot: a
+    pivot averages duplicate rows, so +inf and -inf on one date would leave as NaN.
     """
     p = Path(path)
     if not p.exists():
@@ -91,6 +107,8 @@ def _read_file(path: str, asof: str | None = None, symbols: list[str] | None = N
 
     if df.empty:
         return df
+    if validate is not None:
+        df = validate(df, _value_columns(df))
 
     # Auto-detect long format and pivot to wide
     if "symbol" in df.columns and "date" in df.columns:
@@ -285,7 +303,7 @@ def _pivot_long_to_wide(df: pd.DataFrame) -> pd.DataFrame:
     if not value_cols:
         return df
 
-    # Use first value column for the pivot
+    # Use first value column for the pivot (the one _value_columns names)
     value_col = value_cols[0]
     try:
         wide = df.pivot_table(index="date", columns="symbol", values=value_col)
@@ -497,13 +515,24 @@ class LocalFileDataPlugin:
             self.loaded_paths = self.planned_paths(params)
             # The funding file planned_paths names is served too: the funding guard trusts that plan.
             fpath = self.loaded_paths["funding_rates"]
+
+            def validate(df: pd.DataFrame, columns: list[Any]) -> pd.DataFrame:
+                values = finite_numbers(df, self.dataset, "funding_rates", columns=columns, labels=df.get("date"))
+                # One row per key, so the pivot after this is a pure reshape: nothing is averaged.
+                return unique_rows(values, self.dataset, "funding_rates")
+
+            funding = _read_file(fpath, asof=asof, symbols=symbols, validate=validate) if fpath else pd.DataFrame()
+
+            def as_served(frame: pd.DataFrame, what: str) -> pd.DataFrame:
+                # Checked again where it leaves, after the pivot and the date label: two
+                # intraday stamps share one daily label, and arithmetic upstream can overflow.
+                return finite_numbers(unique_rows(frame, self.dataset, what), self.dataset, what)
+
             return {
-                "prices": _select_cols(_clip_frame(self._pinned(), asof)),
+                "prices": as_served(_select_cols(_clip_frame(self._pinned(), asof)), "served prices"),
                 "volume": pd.DataFrame(),
                 "market_cap": pd.DataFrame(),
-                "funding_rates": _select_cols(_read_file(fpath, asof=asof, symbols=symbols))
-                if fpath
-                else pd.DataFrame(),
+                "funding_rates": as_served(_select_cols(funding), "served funding_rates"),
             }
         if self.dataset:
             ds = self._pinned()
