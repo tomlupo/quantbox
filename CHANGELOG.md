@@ -29,6 +29,18 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.19.0 (2026-10-25)
+
+### Feat
+
+- **python**: require Python 3.11+, drop 3.10 (pillow 13 everywhere) (TOM-2354) (#307)
+
+### Fix
+
+- **dataset**: serve the bytes the lock pins, one read, no resolution-time hash (TOM-2232) (#306)
+- **dataset**: refuse malformed or non-finite returns, re-check the served bytes against the pin, keep served tables inside the dataset (TOM-2232) (#305)
+- **deps**: pillow 13 (37 CVEs), aiohttp 3.14.5 + yarl 1.25.1, certifi 2026.10.23 (#304)
+
 ## v0.18.0 (2026-10-24)
 
 ### Feat
