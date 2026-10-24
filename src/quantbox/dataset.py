@@ -19,6 +19,7 @@ __all__ = [
     "load_pinned_dataset",
     "served_prices",
     "total_return_index",
+    "unique_rows",
 ]
 
 
@@ -151,6 +152,30 @@ def finite_numbers(
     return out
 
 
+def unique_rows(frame: pd.DataFrame, name: str, what: str) -> pd.DataFrame:
+    """*frame*, refused when a key has more than one row: a served table is reshaped, never aggregated.
+
+    The key is (``date``, ``symbol``) for a long table, ``date`` for a wide one with a date
+    column, else the index. Two rows for one key would be averaged by a pivot, and an
+    average of finite values can overflow (PR #305 review round 2).
+    """
+    from quantbox.dataset_lock import DatasetServeError
+
+    key = [c for c in ("date", "symbol") if c in frame.columns] if "date" in frame.columns else []
+    duplicated = frame.duplicated(subset=key, keep=False) if key else frame.index.duplicated(keep=False)
+    if duplicated.any():
+        where = frame.loc[duplicated, key] if key else frame.index[duplicated].to_frame(index=False)
+        rows = [
+            tuple(v.date().isoformat() if isinstance(v, pd.Timestamp) else v for v in r)
+            for r in where.drop_duplicates().head(5).itertuples(index=False)
+        ]
+        raise DatasetServeError(
+            f"dataset {name!r}: {what} has more than one row for key {key or ['index']} {rows}; "
+            "a served table is reshaped, never aggregated"
+        )
+    return frame
+
+
 def total_return_index(returns: pd.DataFrame, frequency: str | None = None, *, name: str = "dataset") -> pd.DataFrame:
     """Prices for a table of simple per-bar returns: :data:`quantbox.dataset_lock.TOTAL_RETURN_CONSTRUCTION`.
 
@@ -205,7 +230,8 @@ def total_return_index(returns: pd.DataFrame, frequency: str | None = None, *, n
                 values,
             ]
         )
-    growth = (1.0 + values).cumprod()
+    with np.errstate(over="ignore"):  # an overflow is refused where the frame is served (served_prices)
+        growth = (1.0 + values).cumprod()
     # The bar before each series' first return is its base, 1.0.
     for col in values.columns:
         start = values.index.get_loc(values[col].first_valid_index())
@@ -218,8 +244,10 @@ def served_prices(resolution: dict[str, Any]) -> pd.DataFrame:
 
     The table is parsed from the bytes that hash to the resolution's sha256, read once
     (:func:`quantbox.dataset_lock.served_bytes`), narrowed to ``serve.columns``, refused
-    when a value is not a finite number, and for ``kind: returns`` turned into a
-    total-return index (:func:`total_return_index`). quantbox reads it itself, so a
+    when a date has more than one row or a value is not a finite number, and for
+    ``kind: returns`` turned into a total-return index (:func:`total_return_index`). The
+    frame returned is checked again by :func:`finite_numbers`, so every served value is
+    finite or a true null whatever arithmetic made it. quantbox reads it itself, so a
     dataset a research line froze needs no quantbox-datasets install.
     """
     from quantbox.dataset_lock import DatasetServeError, served_bytes
@@ -236,9 +264,14 @@ def served_prices(resolution: dict[str, Any]) -> pd.DataFrame:
         if absent:
             raise DatasetServeError(f"dataset {name!r}: serve.columns {absent} are not in {serve['file']}")
         frame = frame[serve["columns"]]
+    unique_rows(frame, name, serve["table"])
     if serve["kind"] == "returns":
-        return total_return_index(frame, serve.get("frequency"), name=name)
-    return finite_numbers(frame, name, "prices").sort_index()
+        served = total_return_index(frame, serve.get("frequency"), name=name)
+    else:
+        served = finite_numbers(frame, name, "prices").sort_index()
+    # The guarantee is checked where the frame leaves, after every transform: compounding
+    # finite returns can still overflow to inf.
+    return finite_numbers(served, name, "served prices")
 
 
 @dataclass(frozen=True)

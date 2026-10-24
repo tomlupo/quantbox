@@ -19,7 +19,7 @@ import pandas as pd
 
 from quantbox._removed import removed_names
 from quantbox.contracts import PluginMeta
-from quantbox.dataset import _resolve_pinned, finite_numbers, load_pinned_dataset, served_prices
+from quantbox.dataset import _resolve_pinned, finite_numbers, load_pinned_dataset, served_prices, unique_rows
 from quantbox.parquet_io import read_parquet
 
 logger = logging.getLogger(__name__)
@@ -517,9 +517,13 @@ class LocalFileDataPlugin:
             fpath = self.loaded_paths["funding_rates"]
 
             def validate(df: pd.DataFrame, columns: list[Any]) -> pd.DataFrame:
-                return finite_numbers(df, self.dataset, "funding_rates", columns=columns, labels=df.get("date"))
+                values = finite_numbers(df, self.dataset, "funding_rates", columns=columns, labels=df.get("date"))
+                # One row per key, so the pivot after this is a pure reshape: nothing is averaged.
+                return unique_rows(values, self.dataset, "funding_rates")
 
             funding = _read_file(fpath, asof=asof, symbols=symbols, validate=validate) if fpath else pd.DataFrame()
+            # Checked again as served, after the pivot and the date label.
+            funding = finite_numbers(funding, self.dataset, "served funding_rates")
             return {
                 "prices": _select_cols(_clip_frame(self._pinned(), asof)),
                 "volume": pd.DataFrame(),

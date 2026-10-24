@@ -152,6 +152,35 @@ def test_a_valid_funding_file_with_a_gap_is_still_served(line):
     assert wide["EQ"].iloc[0] == 0.001 and np.isnan(wide["EQ"].iloc[1])
 
 
+# -- independent review round 2 of #305: no arithmetic on served values, output checked too --
+
+
+def _long(dates, rates) -> pd.DataFrame:
+    return pd.DataFrame({"date": dates, "symbol": ["EQ"] * len(dates), "funding_rate": rates})
+
+
+def test_a_duplicate_date_symbol_key_in_a_long_funding_file_is_refused_not_averaged(line):
+    # Two finite 1e308 rates on one key: the pivot's average overflowed to inf and was served.
+    long = _long([MONTHS[0], MONTHS[1], MONTHS[1], MONTHS[2]], [0.001, 1e308, 1e308, 0.001])
+    with pytest.raises(
+        DatasetServeError, match=r"more than one row for key \['date', 'symbol'\] \[\('2000-02-29', 'EQ'\)\]"
+    ):
+        _served_funding(line, long, index=False)
+
+
+def test_returns_that_compound_past_the_largest_float_are_refused_not_served_as_inf(line):
+    # Each return is finite; (1 + 1e300) ** 2 is not.
+    _freeze(line, pd.DataFrame({"EQ": [1e300, 1e300, 0.1]}, index=MONTHS), MONTHLY_RETURNS)
+    with pytest.raises(DatasetServeError, match=r"served prices series 'EQ' has a non-finite value on \['2000-02-29'"):
+        _serve(line)
+
+
+def test_a_valid_long_funding_file_with_unique_keys_is_still_served(line):
+    long = _long(list(MONTHS), [0.001, 0.002, 0.003])
+    served = _served_funding(line, long, index=False)["funding_rates"]
+    np.testing.assert_allclose(served["EQ"].to_numpy(), [0.001, 0.002, 0.003])
+
+
 def test_a_null_at_a_series_edge_is_still_history_not_yet_listed(line):
     _freeze(line, pd.DataFrame({"EQ": [None, "0.1", "0.2"]}, index=MONTHS), MONTHLY_RETURNS)
     # The series starts at the second month: the first month is its 1.0 base, as before.
