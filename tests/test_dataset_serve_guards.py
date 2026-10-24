@@ -104,8 +104,52 @@ def test_a_served_funding_file_with_an_infinity_is_refused(line):
     ds = _freeze(line, pd.DataFrame({"EQ": [10.0, 11.0, 12.0]}, index=MONTHS), {"table": "monthly", "kind": "prices"})
     pd.DataFrame({"EQ": [0.001, np.inf, 0.001]}, index=MONTHS).to_parquet(ds / "funding_rates.parquet")
     plugin = LocalFileDataPlugin(dataset="kf", dataset_lock=str(line / "datasets.lock"))
-    with pytest.raises(DatasetServeError, match=r"funding_rates column\(s\) \['EQ'\] hold a non-finite value"):
+    with pytest.raises(DatasetServeError, match=r"funding_rates series 'EQ' has a non-finite value"):
         plugin.load_market_data(plugin.load_universe({}), "2000-03-31", {})
+
+
+# -- independent review round 1 of #305: the value rule runs on the RAW values ------------
+
+
+def _served_funding(line: Path, funding: pd.DataFrame, *, index: bool = True):
+    from quantbox.plugins.datasources.local_file_data import LocalFileDataPlugin
+
+    ds = _freeze(line, pd.DataFrame({"EQ": [10.0, 11.0, 12.0]}, index=MONTHS), {"table": "monthly", "kind": "prices"})
+    funding.to_parquet(ds / "funding_rates.parquet", index=index)
+    plugin = LocalFileDataPlugin(dataset="kf", dataset_lock=str(line / "datasets.lock"))
+    return plugin.load_market_data(plugin.load_universe({}), "2000-03-31", {})
+
+
+def test_a_nullable_bool_returns_column_is_refused_not_served_as_a_100_percent_return(line):
+    # Parquet reads [None, True, False] back as object; coercion made it [nan, 1.0, 0.0] -> prices [1, 2, 2].
+    _freeze(line, pd.DataFrame({"EQ": [None, True, False]}, index=MONTHS), MONTHLY_RETURNS)
+    with pytest.raises(DatasetServeError, match=r"'EQ' holds bool values, not numbers, on \['2000-02-29'"):
+        _serve(line)
+
+
+def test_a_string_infinity_in_the_served_funding_file_is_refused(line):
+    with pytest.raises(
+        DatasetServeError, match=r"funding_rates series 'EQ' has a non-finite value on \['2000-02-29'\]"
+    ):
+        _served_funding(line, pd.DataFrame({"EQ": ["0.001", "inf", "0.001"]}, index=MONTHS))
+
+
+def test_duplicate_plus_and_minus_infinity_in_a_long_funding_file_are_refused_before_the_pivot(line):
+    # The pivot averages the two rows of 2000-02-29 to NaN: validated after it, the date just vanished.
+    long = pd.DataFrame(
+        {
+            "date": [MONTHS[0], MONTHS[1], MONTHS[1], MONTHS[2]],
+            "symbol": ["EQ"] * 4,
+            "funding_rate": [0.001, np.inf, -np.inf, 0.001],
+        }
+    )
+    with pytest.raises(DatasetServeError, match=r"funding_rates series 'funding_rate' has a non-finite value"):
+        _served_funding(line, long, index=False)
+
+
+def test_a_valid_funding_file_with_a_gap_is_still_served(line):
+    wide = _served_funding(line, pd.DataFrame({"EQ": [0.001, None, 0.002]}, index=MONTHS))["funding_rates"]
+    assert wide["EQ"].iloc[0] == 0.001 and np.isnan(wide["EQ"].iloc[1])
 
 
 def test_a_null_at_a_series_edge_is_still_history_not_yet_listed(line):

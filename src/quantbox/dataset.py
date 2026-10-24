@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any, Protocol, runtime_checkable
 
+import numpy as np
 import pandas as pd
 
 from .contracts import PluginMeta
@@ -12,8 +15,8 @@ __all__ = [
     "CoverageReport",
     "DatasetManifest",
     "DatasetPlugin",
+    "finite_numbers",
     "load_pinned_dataset",
-    "refuse_non_finite",
     "served_prices",
     "total_return_index",
 ]
@@ -64,59 +67,88 @@ def _bar_before(first: pd.Timestamp, frequency: str | None, index: pd.DatetimeIn
     return first - (index[1] - index[0])
 
 
-def _dates(mask: pd.Series) -> list[str]:
-    """The first five dates where *mask* holds, as ISO strings, for an error message."""
-    return [d.date().isoformat() for d in mask[mask].index[:5]]
+_NOT_A_NUMBER = "type"  # a bool, a date, any object that is not a real number
+_NOT_PARSED = "text"  # a string that does not parse as a number ("bad", "nan")
 
 
-def _numeric(frame: pd.DataFrame, name: str, what: str) -> pd.DataFrame:
-    """*frame* as numbers, refused when a value that is there is not a number, or is not finite.
+def _cell(value: Any) -> tuple[float, str | None]:
+    """One raw source value as a float, or NaN and why it is not a number.
 
-    A null stays a missing value (a series not yet listed, or no longer). A value that
-    fails numeric conversion, or an infinity, is a data fault: coerced to NaN at a
-    series' edge it would pass as missing history (PR #303 review, finding 2/101). A
-    column that pandas converts without being numbers (bool, dates, durations) is
-    refused by its dtype.
+    A true null (None, NaN, pd.NA, NaT) is NaN with no reason. A bool is not a number,
+    although Python and pandas count it as one. A string is parsed by ``float``; the
+    text "nan" is not a null, so it is refused. ±inf is returned as is; the caller refuses it.
+    """
+    if value is None or value is pd.NA or value is pd.NaT:
+        return math.nan, None
+    if isinstance(value, (bool, np.bool_)):
+        return math.nan, _NOT_A_NUMBER
+    if isinstance(value, (int, float, np.integer, np.floating, Decimal)):
+        return float(value), None
+    if isinstance(value, str):
+        try:
+            number = float(value)
+        except ValueError:
+            return math.nan, _NOT_PARSED
+        return (math.nan, _NOT_PARSED) if math.isnan(number) else (number, None)
+    return math.nan, _NOT_A_NUMBER
+
+
+def _labels(where: np.ndarray, labels: pd.Index) -> list[str]:
+    """The first five labels where *where* holds: ISO dates for a date label, else the label."""
+    return [d.date().isoformat() if isinstance(d, pd.Timestamp) else str(d) for d in labels[where][:5]]
+
+
+def finite_numbers(
+    frame: pd.DataFrame, name: str, what: str, *, columns: list[Any] | None = None, labels: Any = None
+) -> pd.DataFrame:
+    """*frame* with *columns* (default: all) as numbers, refused unless every RAW value is a true null
+    or a finite real number. The ONE value rule for every served table: prices, returns, funding.
+
+    Run on the source values, before any ``to_numeric``, ``astype`` or pivot: those turn a
+    malformed edge value into missing history, a bool into a 0/1 return, a date into
+    nanoseconds, and average +inf with -inf into NaN (PR #303 and #305 reviews). A null
+    stays NaN (a series not yet listed, or no longer). Refused
+    (:class:`~quantbox.dataset_lock.DatasetServeError`): a bool, a date or any other
+    object; a string that does not parse as a number (a numeric string such as "0.1"
+    parses, as a CSV-born table holds them); ±inf. A plain int or float column is kept
+    as read; any other validated column becomes float64. *labels* names the rows in an
+    error (default: the index).
     """
     from quantbox.dataset_lock import DatasetServeError
 
-    values = frame.apply(pd.to_numeric, errors="coerce")
-    for col in values.columns:
-        source, converted = frame[col].dtype, values[col].dtype
-        if (
-            pd.api.types.is_bool_dtype(converted)
-            or not pd.api.types.is_numeric_dtype(converted)
-            or pd.api.types.is_datetime64_any_dtype(source)
-            or pd.api.types.is_timedelta64_dtype(source)
-        ):
-            raise DatasetServeError(f"dataset {name!r}: {what} series {col!r} holds {source} values, not numbers")
-        malformed = values[col].isna() & frame[col].notna()
-        if malformed.any():
+    labels = frame.index if labels is None else pd.Index(labels)
+    out = frame.copy()
+    for col in frame.columns if columns is None else columns:
+        raw = frame[col].to_numpy(dtype=object)
+        dtype = frame[col].dtype
+        if pd.api.types.is_numeric_dtype(dtype) and not pd.api.types.is_bool_dtype(dtype):
+            # A float or int column holds nothing but numbers and nulls: no per-value walk.
+            values = frame[col].to_numpy(dtype=float, na_value=math.nan)
+            not_a_number = not_parsed = np.zeros(len(raw), dtype=bool)
+        else:
+            cells = [_cell(v) for v in raw]
+            values = np.array([c[0] for c in cells], dtype=float)
+            reasons = np.array([c[1] for c in cells], dtype=object)
+            not_a_number, not_parsed = reasons == _NOT_A_NUMBER, reasons == _NOT_PARSED
+        if not_a_number.any():
+            kinds = sorted({type(v).__name__ for v in raw[not_a_number]})
+            raise DatasetServeError(
+                f"dataset {name!r}: {what} series {col!r} holds {', '.join(kinds)} values, not numbers, on "
+                f"{_labels(not_a_number, labels)}: {raw[not_a_number][:5].tolist()}"
+            )
+        if not_parsed.any():
             raise DatasetServeError(
                 f"dataset {name!r}: {what} series {col!r} has a value that is not a number on "
-                f"{_dates(malformed)}: {frame[col][malformed].head(5).tolist()}"
+                f"{_labels(not_parsed, labels)}: {raw[not_parsed][:5].tolist()}"
             )
-        infinite = values[col].isin([float("inf"), float("-inf")])
+        infinite = np.isinf(values)
         if infinite.any():
             raise DatasetServeError(
-                f"dataset {name!r}: {what} series {col!r} has a non-finite value on {_dates(infinite)}"
+                f"dataset {name!r}: {what} series {col!r} has a non-finite value on {_labels(infinite, labels)}"
             )
-    return values
-
-
-def refuse_non_finite(frame: pd.DataFrame, name: str, what: str) -> pd.DataFrame:
-    """*frame* unchanged, refused when a numeric column holds an infinity.
-
-    For a by-name dataset's served funding file, read wide or long by the inline reader:
-    its non-numeric columns (``symbol``, a date) are left to that reader.
-    """
-    from quantbox.dataset_lock import DatasetServeError
-
-    numeric = frame.select_dtypes("number")
-    infinite = sorted(str(c) for c in numeric.columns if numeric[c].isin([float("inf"), float("-inf")]).any())
-    if infinite:
-        raise DatasetServeError(f"dataset {name!r}: {what} column(s) {infinite} hold a non-finite value")
-    return frame
+        if not isinstance(dtype, np.dtype) or dtype.kind not in "iuf":
+            out[col] = values  # a plain int or float column is served as it was read
+    return out
 
 
 def total_return_index(returns: pd.DataFrame, frequency: str | None = None, *, name: str = "dataset") -> pd.DataFrame:
@@ -149,7 +181,7 @@ def total_return_index(returns: pd.DataFrame, frequency: str | None = None, *, n
                 "a missing month would be compounded as no return"
             )
     # Before any span is found: a malformed edge value must not read as "not yet listed".
-    values = _numeric(returns, name, "returns")
+    values = finite_numbers(returns, name, "returns")
     for col in values.columns:
         series = values[col]
         first, last = series.first_valid_index(), series.last_valid_index()
@@ -206,7 +238,7 @@ def served_prices(resolution: dict[str, Any]) -> pd.DataFrame:
         frame = frame[serve["columns"]]
     if serve["kind"] == "returns":
         return total_return_index(frame, serve.get("frequency"), name=name)
-    return _numeric(frame, name, "prices").sort_index()
+    return finite_numbers(frame, name, "prices").sort_index()
 
 
 @dataclass(frozen=True)
