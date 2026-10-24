@@ -147,3 +147,5 @@ See [docs/](docs/) for full documentation:
 - [Trading bridge](docs/playbooks/trading-bridge.md)
 - [Approval gate](docs/playbooks/approval-gate.md)
 - [Integration guide](docs/playbooks/quantbox-integration-guide.md)
+
+<!-- probe: Codex code review test, 24.10 — this PR is closed after the check -->
