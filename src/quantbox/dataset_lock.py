@@ -119,8 +119,27 @@ def _pin_file(manifest: dict[str, Any]) -> str:
     return named if _one_name(named) else "prices.parquet"
 
 
-def _manifest(path: Path) -> dict[str, Any]:
-    file = path / "manifest.yaml"
+def _inside(
+    path: Path, file_name: str, name: str, what: str, error: type[DatasetResolveError] = DatasetResolveError
+) -> Path:
+    """``path / file_name``, refused when it resolves outside the dataset directory *path*.
+
+    A name that passes :func:`_one_name` can still be a symlink: without this check a
+    manifest-named table, the pin file, the funding file or the manifest itself could be
+    hashed and served from anywhere on disk (PR #303 review, finding 103). A file that
+    does not exist is returned as is; its caller reports it missing.
+    """
+    file = path / file_name
+    if not (file.exists() or file.is_symlink()):
+        return file
+    real, home = file.resolve(), path.resolve()
+    if not real.is_relative_to(home):
+        raise error(f"dataset {name!r}: {what} {file} resolves to {real}, outside the dataset directory {home}")
+    return file
+
+
+def _manifest(path: Path, name: str) -> dict[str, Any]:
+    file = _inside(path, "manifest.yaml", name, "manifest")
     loaded = yaml.safe_load(file.read_text()) if file.is_file() else None
     return loaded if isinstance(loaded, dict) else {}
 
@@ -169,7 +188,7 @@ def _served_table(path: Path, manifest: dict[str, Any], spec: dict[str, Any], na
     The pin covers only the pin file; a served table that is not the pin file is held to
     its ``content_hashes`` entry, so an edited table cannot ride under an unchanged pin.
     """
-    file = path / f"{spec['table']}.parquet"
+    file = _inside(path, f"{spec['table']}.parquet", name, "serve.table", DatasetServeError)
     sha = _sha256(file)
     if sha is None:
         raise DatasetServeError(f"dataset {name!r}: serve.table {spec['table']!r} but {file} does not exist")
@@ -183,6 +202,27 @@ def _served_table(path: Path, manifest: dict[str, Any], spec: dict[str, Any], na
     if spec["kind"] == "returns":
         served["construction"] = TOTAL_RETURN_CONSTRUCTION
     return served
+
+
+def served_bytes(served: dict[str, Any], name: str) -> bytes:
+    """The served table's bytes, read ONCE, refused unless they hash to the sha256 its resolution recorded.
+
+    Resolution and loading are two steps in the data plugin; the caller parses exactly
+    these bytes, so a table replaced between them is refused rather than served under
+    the resolution's hash (PR #303 review, finding 102).
+    """
+    file = Path(served["file"])
+    try:
+        data = file.read_bytes()
+    except OSError as exc:
+        raise DatasetServeError(f"dataset {name!r}: {file} cannot be read to serve it ({exc})") from exc
+    sha = hashlib.sha256(data).hexdigest()
+    if sha != served["sha256"]:
+        raise DatasetServeError(
+            f"dataset {name!r}: {file} now has sha256 {sha}, not the bytes it was resolved at "
+            f"({served['sha256']}); it changed after resolution"
+        )
+    return data
 
 
 def _locate(name: str, lock_path: Path | None) -> tuple[Path, Path]:
@@ -262,21 +302,23 @@ def resolve_dataset(name: str, *, lock: str | Path | None = None, start: str | P
         pinned = pins.get(name) or None
 
     root, path = _locate(name, lock_path)
-    pin_name = _pin_file(_manifest(path))
-    on_disk = _sha256(path / pin_name)
+    # Read once: the pin file and the serve block come from the same manifest bytes.
+    manifest = _manifest(path, name)
+    pin_name = _pin_file(manifest)
+    on_disk = _sha256(_inside(path, pin_name, name, "pin file"))
     actual, restored, error = on_disk, False, None
     if pinned and on_disk != pinned:
         restored_path, why_not = _restore_pinned(path, pinned)
-        if restored_path is not None and _sha256(restored_path / pin_name) == pinned:
+        if restored_path is not None and _sha256(_inside(restored_path, pin_name, name, "pin file")) == pinned:
             path, actual, restored = restored_path, pinned, True
+            manifest = _manifest(path, name)
         else:
             error = (
                 f"dataset {name!r}: {path / pin_name} has sha256 {on_disk or '(no file)'}, "
                 f"but {lock_path} pins {pinned}; {why_not or 'the restored build does not hash to the pin'}"
             )
 
-    manifest = _manifest(path)
-    funding = path / "funding_rates.parquet"
+    funding = _inside(path, "funding_rates.parquet", name, "funding_rates")
     out: dict[str, Any] = {
         "name": name,
         "root": str(root),

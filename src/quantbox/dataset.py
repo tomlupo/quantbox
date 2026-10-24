@@ -63,6 +63,33 @@ def _bar_before(first: pd.Timestamp, frequency: str | None, index: pd.DatetimeIn
     return first - (index[1] - index[0])
 
 
+def _numeric(frame: pd.DataFrame, name: str, what: str) -> pd.DataFrame:
+    """*frame* as numbers, refused when a value that is there is not a number, or is not finite.
+
+    A null stays a missing value (a series not yet listed, or no longer). A value that
+    fails numeric conversion, or an infinity, is a data fault: coerced to NaN at a
+    series' edge it would pass as missing history (PR #303 review, finding 2/101).
+    """
+    from quantbox.dataset_lock import DatasetServeError
+
+    values = frame.apply(pd.to_numeric, errors="coerce")
+    for col in values.columns:
+        malformed = values[col].isna() & frame[col].notna()
+        if malformed.any():
+            raise DatasetServeError(
+                f"dataset {name!r}: {what} series {col!r} has a value that is not a number on "
+                f"{[d.date().isoformat() for d in malformed[malformed].index[:5]]}: "
+                f"{frame[col][malformed].head(5).tolist()}"
+            )
+        infinite = values[col].isin([float("inf"), float("-inf")])
+        if infinite.any():
+            raise DatasetServeError(
+                f"dataset {name!r}: {what} series {col!r} has a non-finite value on "
+                f"{[d.date().isoformat() for d in infinite[infinite].index[:5]]}"
+            )
+    return values
+
+
 def total_return_index(returns: pd.DataFrame, frequency: str | None = None, *, name: str = "dataset") -> pd.DataFrame:
     """Prices for a table of simple per-bar returns: :data:`quantbox.dataset_lock.TOTAL_RETURN_CONSTRUCTION`.
 
@@ -70,8 +97,9 @@ def total_return_index(returns: pd.DataFrame, frequency: str | None = None, *, n
     index gives back every return, the first included; when a series' first return is
     the table's first row, that bar is added before it. A series may start late and end
     early (NaN outside its span). Refused (:class:`~quantbox.dataset_lock.DatasetServeError`):
-    a NaN INSIDE a series' span, a missing month in a monthly table, a duplicated or
-    unsorted date, a return at or below -100 %.
+    a value that is not a number or not finite (anywhere, the edges included), a NaN
+    INSIDE a series' span, a missing month in a monthly table, a duplicated or unsorted
+    date, a return at or below -100 %.
     """
     from quantbox.dataset_lock import DatasetServeError
 
@@ -91,7 +119,8 @@ def total_return_index(returns: pd.DataFrame, frequency: str | None = None, *, n
                 f"dataset {name!r}: the monthly returns table has a gap after {missing[:5]}; "
                 "a missing month would be compounded as no return"
             )
-    values = returns.apply(pd.to_numeric, errors="coerce")
+    # Before any span is found: a malformed edge value must not read as "not yet listed".
+    values = _numeric(returns, name, "returns")
     for col in values.columns:
         series = values[col]
         first, last = series.first_valid_index(), series.last_valid_index()
@@ -126,16 +155,17 @@ def total_return_index(returns: pd.DataFrame, frequency: str | None = None, *, n
 def served_prices(resolution: dict[str, Any]) -> pd.DataFrame:
     """The prices a by-name dataset with a manifest ``serve`` block is served as, from its resolution.
 
-    The table is read from the resolved file (its sha256 was checked when it was
-    resolved), narrowed to ``serve.columns``, and for ``kind: returns`` turned into a
+    The table is parsed from the bytes that hash to the resolution's sha256, read once
+    (:func:`quantbox.dataset_lock.served_bytes`), narrowed to ``serve.columns``, refused
+    when a value is not a finite number, and for ``kind: returns`` turned into a
     total-return index (:func:`total_return_index`). quantbox reads it itself, so a
     dataset a research line froze needs no quantbox-datasets install.
     """
-    from quantbox.dataset_lock import DatasetServeError
-    from quantbox.parquet_io import read_parquet
+    from quantbox.dataset_lock import DatasetServeError, served_bytes
+    from quantbox.parquet_io import read_parquet_bytes
 
     serve, name = resolution["serve"], resolution["name"]
-    frame = read_parquet(serve["file"])
+    frame = read_parquet_bytes(served_bytes(serve, name))
     if "date" in frame.columns:
         frame = frame.set_index("date")
     if not isinstance(frame.index, pd.DatetimeIndex):
@@ -147,7 +177,7 @@ def served_prices(resolution: dict[str, Any]) -> pd.DataFrame:
         frame = frame[serve["columns"]]
     if serve["kind"] == "returns":
         return total_return_index(frame, serve.get("frequency"), name=name)
-    return frame.sort_index()
+    return _numeric(frame, name, "prices").sort_index()
 
 
 @dataclass(frozen=True)
