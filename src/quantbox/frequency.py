@@ -115,10 +115,18 @@ class Frequency:
     def bars_per_year(self) -> float:
         """Exchange-aware bars per year.
 
+        For calendar-month bars (``'1M'``, ``'3M'``; held as multiples of 30 days, so a
+            ``'30d'`` bar is read as a month too): 12 / months on any calendar, since a
+            month is a month whatever trades in it.
         For 24/7 calendars: 365 * bars_per_day.
         For exchange calendars: trading_days * bars_per_session (intraday) or
             trading_days / days_per_bar (daily+).
         """
+        # A month bar was 365/30 = 12.17 on 24/7 and 250/30 = 8.3 on NYSE before TOM-2232.
+        month = pd.Timedelta(days=30)
+        if self.bar_size >= month and self.bar_size % month == pd.Timedelta(0):
+            return 12.0 / float(self.bar_size / month)
+
         # 24/7 markets: every calendar day trades, full 24h
         if self.calendar in _ALWAYS_OPEN_CALENDARS:
             bars_per_day = pd.Timedelta(days=1) / self.bar_size

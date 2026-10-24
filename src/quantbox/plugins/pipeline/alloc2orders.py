@@ -20,6 +20,7 @@ from quantbox.contracts import (
     RunResult,
 )
 from quantbox.parquet_io import read_parquet
+from quantbox.plugins.broker._fills import normalise_results
 from quantbox.run_history import resolve_latest_artifact
 from quantbox.trade.book import (
     BASIS_MARK,
@@ -28,7 +29,7 @@ from quantbox.trade.book import (
     PortfolioValuation,
 )
 from quantbox.trade.capabilities import supports
-from quantbox.trade.lots import floor_to_multiple, round_to_multiple
+from quantbox.trade.lots import LotRules
 
 logger = logging.getLogger(__name__)
 
@@ -169,15 +170,15 @@ def _fx_rate_to_usd(fx: pd.DataFrame | None, ccy: str) -> float:
 
 
 def _apply_qty_rules(qty: float, lot_size: float, min_qty: float, qty_step: float) -> float:
-    """The venue's lot rules on a target quantity; the rounding is :mod:`quantbox.trade.lots`."""
-    q = qty
-    if lot_size and lot_size > 0:
-        q = round_to_multiple(q, lot_size)
-    if qty_step and qty_step > 0:
-        q = floor_to_multiple(q, qty_step)
-    if min_qty and min_qty > 0 and abs(q) < min_qty:
-        return 0.0
-    return float(q)
+    """The venue's lot rules on a target quantity, each rounded toward zero (TOM-1979).
+
+    The lot rules are :class:`quantbox.trade.lots.LotRules`: the ``lot_size``,
+    then the ``qty_step``, then the ``min_qty``. A long and a short target both
+    shrink toward zero, so a rounded target never exceeds the requested size. A
+    target is not an order, so no minimum notional is judged here.
+    """
+    q = LotRules.from_snapshot({"step_size": lot_size}).accept(qty).rounded
+    return LotRules.from_snapshot({"step_size": qty_step, "min_qty": min_qty}).accept(q).qty
 
 
 # --------------------------
@@ -628,6 +629,14 @@ class AllocationsToOrdersPipeline:
         )
         a_port = store.put_parquet("portfolio_daily", portfolio_daily)
 
+        # A broker row is not always a fill: a SKIPPED, FAILED, WORKING or
+        # UNKNOWN row traded nothing. The broker seam's one normaliser decides
+        # (a status-less row is UNKNOWN there, TOM-1336), never a second rule here.
+        normalised = normalise_results(fills)
+        n_fills = (
+            0 if normalised is None or normalised.empty else int(normalised["status"].isin({"FILLED", "PARTIAL"}).sum())
+        )
+
         llm_notes_md = f"""# Run summary: {self.meta.name}
 
 - asof: {asof}
@@ -637,7 +646,7 @@ class AllocationsToOrdersPipeline:
 - portfolio_valuation: {valuation.state} (source={valuation.source}, \
 {valuation.n_holdings} holding(s), {len(valuation.unpriced)} unpriced)
 - orders: {len(orders)}
-- fills: {len(fills)}
+- fills: {n_fills} (broker rows: {len(fills)})
 - fx_loaded: {fx is not None}
 - instrument_map: {bool(params.get("instrument_map"))}
 - approval_required: {bool(params.get("approval_required", False))}
@@ -649,7 +658,7 @@ class AllocationsToOrdersPipeline:
             "portfolio_value_usd_pre": float(portfolio_value_usd_pre),
             "portfolio_value_usd_post": float(portfolio_value_usd_post),
             "n_orders": float(len(orders)),
-            "n_fills": float(len(fills)),
+            "n_fills": float(n_fills),
             # "nothing held", "fully marked" and "could not price" must stay
             # distinguishable in the run record, not collapse to one number.
             **valuation.as_metrics(),

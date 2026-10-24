@@ -35,7 +35,7 @@ def _all_brokers() -> dict[str, type]:
         for name in broker_pkg.__all__
         if getattr(broker_pkg, name, None) is not None and hasattr(getattr(broker_pkg, name), "meta")
     }
-    assert "BinanceLiveBroker" in exported
+    assert set(exported) == set(broker_pkg.__all__), "an exported broker left this check's field of view"
     return {f"registry:{k}": v for k, v in registered.items()} | {f"export:{k}": v for k, v in exported.items()}
 
 

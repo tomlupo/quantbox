@@ -55,7 +55,7 @@ import pandas as pd
 from quantbox.contracts import BrokerCapability, PluginMeta
 from quantbox.retry import with_retry
 from quantbox.trade.book import BASIS_MARGIN
-from quantbox.trade.lots import floor_to_decimals, floor_to_step
+from quantbox.trade.lots import LotRules
 
 from ._fills import resolve_fill, trade_fee, trade_fee_currency
 
@@ -106,17 +106,11 @@ class RiskConfig:
 
 
 def adjust_quantity(qty: float, step_size: float) -> float:
-    """*qty* floored to the Binance step (:mod:`quantbox.trade.lots`); no step known: floored to 8 decimals."""
-    if step_size <= 0:
-        return floor_to_decimals(qty, 8)
-    return floor_to_step(qty, step_size)
+    """*qty* rounded toward zero by the Binance futures lot rules (:mod:`quantbox.trade.lots`).
 
-
-def adjust_price(price: float, tick_size: float) -> float:
-    """Adjust price to Binance tick size."""
-    if tick_size <= 0:
-        return price
-    return round(price / tick_size) * tick_size
+    No step known: floored to 8 decimals. The minimums are not judged here.
+    """
+    return LotRules.from_snapshot({"step_size": step_size}, venue="binance_futures").accept(qty).rounded
 
 
 # ============================================================================
@@ -154,6 +148,8 @@ class BinanceFuturesBroker:
     # class. Closing it means a `get_equity()` returning total wallet balance +
     # unrealised PnL, as HyperliquidBroker does.
     valuation_basis = BASIS_MARGIN
+    # The venue's lot rules -- see BrokerPlugin.lot_venue (TOM-2207).
+    lot_venue = "binance_futures"
     # What the trade path may use -- see contracts.BrokerCapability (TOM-1459).
     # No EQUITY (the gap above) and no FUNDING_HISTORY: this adapter cannot yet
     # read back the funding the venue took, so funding is reported UNKNOWN.
@@ -339,14 +335,14 @@ class BinanceFuturesBroker:
         prices = self.get_prices(symbols)
         rows = []
         for s in symbols:
-            info = self._get_symbol_info(s)
+            rules = LotRules.from_snapshot(self._get_symbol_info(s) or {}, venue=self.lot_venue)
             rows.append(
                 {
                     "symbol": s,
                     "mid": prices.get(s),
-                    "min_qty": info["min_qty"] if info else 0.0,
-                    "step_size": info["step_size"] if info else 0.0,
-                    "min_notional": info["min_notional"] if info else 5.0,
+                    "min_qty": rules.min_qty,
+                    "step_size": rules.step_size,
+                    "min_notional": rules.min_notional,
                 }
             )
         return pd.DataFrame(rows)
@@ -487,18 +483,17 @@ class BinanceFuturesBroker:
     # ========================================================================
 
     def _get_symbol_info(self, symbol: str) -> dict | None:
-        """Get symbol trading info (lot size, tick size, min notional)."""
+        """The symbol's lot rules as a snapshot row (step, min qty, min notional); None for an unknown symbol."""
         market_symbol = f"{symbol}/{self.quote_currency}:USDT"
         market = self._markets.get(market_symbol)
         if not market:
             return None
-
+        rules = LotRules.from_market(market, self.lot_venue)
         return {
             "symbol": market_symbol,
-            "step_size": market["precision"]["amount"],
-            "tick_size": market["precision"]["price"],
-            "min_notional": market.get("limits", {}).get("cost", {}).get("min", 5),
-            "min_qty": market.get("limits", {}).get("amount", {}).get("min", 0),
+            "step_size": rules.step_size,
+            "min_notional": rules.min_notional,
+            "min_qty": rules.min_qty,
         }
 
     def set_leverage(self, symbol: str, leverage: int) -> bool:
@@ -540,34 +535,39 @@ class BinanceFuturesBroker:
             logger.error(f"Unknown symbol: {symbol}")
             return None
 
-        # Adjust quantity
-        adj_qty = adjust_quantity(quantity, info["step_size"])
-        if adj_qty <= 0:
-            logger.warning(f"Quantity too small for {symbol}: {quantity}")
-            return None
-
-        # Check minimum notional
         price = self.get_price(symbol)
         if not price:
             return None
 
-        # A reduce-only close is exempt from the min-notional floor — the venue
-        # accepts it (it cannot open/increase exposure), and blocking it here is
-        # what traps a sub-min residual (quantbox#87). Only OPENS are gated.
-        notional = adj_qty * price
-        if notional < info["min_notional"]:
-            if reduce_only:
-                logger.info(
-                    "Reduce-only %s %s: notional $%.2f below $%.2f floor — sending anyway "
-                    "(exits are never blocked by a minimum-size filter).",
-                    side,
-                    symbol,
-                    notional,
-                    info["min_notional"],
-                )
-            else:
-                logger.warning(f"Order notional ${notional:.2f} below minimum ${info['min_notional']}")
-                return None
+        # The venue's lot rules (quantbox.trade.lots): rounded down to the step,
+        # then the minimum notional, then the minimum quantity. A reduce-only
+        # close is exempt from both minimums — the venue accepts it (it cannot
+        # open/increase exposure), and blocking it here is what traps a sub-min
+        # residual (quantbox#87). Only OPENS are gated.
+        rules = LotRules.from_snapshot(info, venue=self.lot_venue)
+        lot = rules.accept(quantity, price, reduce_only=reduce_only)
+        if lot.skip or lot.qty <= 0:
+            logger.warning(
+                "Order %s %s %s not sent: %s (rounded %s, min notional $%.2f, min qty %s)",
+                side,
+                quantity,
+                symbol,
+                lot.skip or "not a positive quantity",
+                lot.rounded,
+                rules.min_notional,
+                rules.min_qty,
+            )
+            return None
+        adj_qty = lot.qty
+        if reduce_only and adj_qty * price < rules.min_notional:
+            logger.info(
+                "Reduce-only %s %s: notional $%.2f below $%.2f floor — sending anyway "
+                "(exits are never blocked by a minimum-size filter).",
+                side,
+                symbol,
+                adj_qty * price,
+                rules.min_notional,
+            )
 
         # Set leverage
         self.set_leverage(symbol, self.target_leverage)

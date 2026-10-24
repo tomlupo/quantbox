@@ -1013,8 +1013,9 @@ def test_every_broker_in_this_repo_declares_a_valuation_basis():
 
     It reads TWO authorities, because neither alone is closed: the plugin
     registry (what a config can name) and the broker package's `__all__` (what a
-    downstream repo can import). `BinanceLiveBroker` is in the second and not the
-    first, so a registry-only check would have missed it.
+    downstream repo can import). A broker exported and not registered (as
+    `BinanceLiveBroker` was until TOM-2208) is in the second and not the first,
+    so a registry-only check would miss it.
 
     Mutation target: remove `valuation_basis` from any one broker; this names it.
     """
@@ -1029,7 +1030,7 @@ def test_every_broker_in_this_repo_declares_a_valuation_basis():
         for name in broker_pkg.__all__
         if getattr(broker_pkg, name, None) is not None and hasattr(getattr(broker_pkg, name), "meta")
     }
-    assert "BinanceLiveBroker" in exported, "the exported-but-unregistered broker left this check's field of view"
+    assert set(exported) == set(broker_pkg.__all__), "an exported broker left this check's field of view"
 
     candidates = {f"registry:{k}": v for k, v in registered.items()} | {f"export:{k}": v for k, v in exported.items()}
     undeclared = sorted(name for name, cls in candidates.items() if venue_valuation_basis(cls) is None)

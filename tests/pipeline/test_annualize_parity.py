@@ -157,8 +157,9 @@ def test_prices_frequency_alias_resolves_in_both_pipelines(tmp_path, freq, expec
         ({"frequency": "daily"}, 365.0),
         ({"frequency": {"bar_size": "hourly", "calendar": "24/7"}}, 8760.0),
         # The alias table must not fold the month spelling into minutes:
-        # "1M" lowercased is "1m", which is MINUTES.
-        ({"frequency": "1M"}, 365.0 / 30),
+        # "1M" lowercased is "1m", which is MINUTES. A month is 12 per year (TOM-2232;
+        # it was 365 / 30 = 12.17 before a monthly dataset could be read by name).
+        ({"frequency": "1M"}, 12.0),
         ({"frequency": "1m"}, 365.0 * 24 * 60),
     ],
     ids=["explicit_daily", "dict_hourly", "1M_stays_month", "1m_stays_minute"],

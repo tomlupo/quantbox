@@ -4,8 +4,14 @@ A config names a dataset and nothing else. Where its bytes live and which build 
 must be come from two places that are NOT the config and NOT the working directory:
 
 - the root: ``$QUANTBOX_DATASETS_ROOT``, else the clone quantbox-datasets was installed
-  from (its own ``datasets_root()``);
-- the pin: the ``datasets.lock`` nearest the config (``quantbox-datasets pin <name>``).
+  from (its own ``datasets_root()``); or, for a dataset frozen inside a research line
+  (TOM-2232, D5), the ``datasets/`` directory beside the line's ``datasets.lock``;
+- the pin: the ``datasets.lock`` nearest the config (``quantbox-datasets pin <name>``),
+  the sha256 of the manifest's ``pin_file`` (``prices.parquet`` unless it names one).
+
+A manifest may say how the dataset is SERVED by name (:func:`serve_spec`): which table
+is its prices, whether that table holds prices or returns, and its bar frequency. A
+manifest without that block is served exactly as before.
 
 :func:`resolve_dataset` is the one answer both ``quantbox dataset resolve -c <config> --json``
 and the runner use (both pick the lock with :func:`lock_for_config`), and the runner
@@ -25,12 +31,34 @@ from typing import Any
 
 import yaml
 
+from .exceptions import ConfigValidationError, ValidationFinding
+
 LOCK_NAME = "datasets.lock"
 ROOT_ENV = "QUANTBOX_DATASETS_ROOT"
 
 
 class DatasetResolveError(RuntimeError):
     """A dataset name could not be resolved to a root, or its bytes are not the pinned build."""
+
+
+class DatasetServeError(DatasetResolveError, ConfigValidationError):
+    """A manifest's ``serve`` block cannot be served: an unknown kind or frequency, a missing
+    or altered table, a gap in a returns series. Refused, never served as empty data (TOM-2232)."""
+
+    def __init__(self, message: str) -> None:
+        ConfigValidationError.__init__(self, message, [ValidationFinding("error", message, code="dataset_serve")])
+
+
+#: ``serve.kind``: ``prices`` is served as is; ``returns`` as a total-return index built from them.
+SERVE_KINDS = ("prices", "returns")
+#: The frequencies a ``serve`` block may declare, by their spelling in quantbox.frequency.
+SERVE_FREQUENCIES = {"daily": "1d", "1d": "1d", "weekly": "1w", "1w": "1w", "monthly": "1M", "1M": "1M"}
+#: How a ``kind: returns`` table becomes prices (quantbox.dataset.total_return_index); recorded in the resolution.
+TOTAL_RETURN_CONSTRUCTION = (
+    "total-return index: 1.0 one bar before each series' first return, then the cumulative product of (1 + return)"
+)
+#: Where a line keeps the datasets it froze itself: beside its datasets.lock (D5).
+LINE_DATASETS_DIR = "datasets"
 
 
 def find_lock(start: str | Path | None = None) -> Path | None:
@@ -69,6 +97,172 @@ def datasets_root() -> Path:
     raise DatasetResolveError(f"no datasets root: set {ROOT_ENV} to the quantbox-datasets clone's datasets/ directory")
 
 
+def _one_name(value: Any) -> bool:
+    """True when *value* names one entry in a directory: no separator, not ``.`` or ``..``, not absolute."""
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value not in (".", "..")
+        and "/" not in value
+        and "\\" not in value
+        and not Path(value).is_absolute()
+    )
+
+
+def _pin_file(manifest: dict[str, Any]) -> str:
+    """The file a pin hashes: the manifest's ``pin_file``, else prices.parquet (quantbox-datasets ADR-0015).
+
+    A frozen dataset need not hold a prices.parquet (sbbi holds annual and monthly
+    tables): before TOM-2232 such a dataset resolved with no sha256 at all.
+    """
+    named = manifest.get("pin_file")
+    return named if _one_name(named) else "prices.parquet"
+
+
+def _inside(
+    path: Path, file_name: str, name: str, what: str, error: type[DatasetResolveError] = DatasetResolveError
+) -> Path:
+    """``path / file_name``, refused when it resolves outside the dataset directory *path*.
+
+    A name that passes :func:`_one_name` can still be a symlink: without this check a
+    manifest-named table, the pin file, the funding file or the manifest itself could be
+    hashed and served from anywhere on disk (PR #303 review, finding 103). A file that
+    does not exist is returned as is; its caller reports it missing.
+    """
+    file = path / file_name
+    if not (file.exists() or file.is_symlink()):
+        return file
+    real, home = file.resolve(), path.resolve()
+    if not real.is_relative_to(home):
+        raise error(f"dataset {name!r}: {what} {file} resolves to {real}, outside the dataset directory {home}")
+    return file
+
+
+def _manifest(path: Path, name: str) -> dict[str, Any]:
+    file = _inside(path, "manifest.yaml", name, "manifest")
+    loaded = yaml.safe_load(file.read_text()) if file.is_file() else None
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def serve_spec(manifest: dict[str, Any], name: str) -> dict[str, Any] | None:
+    """The manifest's ``serve`` block, checked; None when it has none (served as before).
+
+    ``table`` (default ``prices``) names ``<table>.parquet``, the frame served as prices;
+    ``kind`` (default ``prices``) is ``prices`` or ``returns``; ``frequency`` (optional)
+    is the bar, which the run's StrategyContext follows; ``columns`` (optional) the series
+    served, in order. Anything else is refused by name.
+    """
+    block = manifest.get("serve")
+    if block is None:
+        return None
+    if not isinstance(block, dict):
+        raise DatasetServeError(f"dataset {name!r}: manifest serve must be a mapping, got {block!r}")
+    unknown = sorted(set(block) - {"table", "kind", "frequency", "columns"})
+    if unknown:
+        raise DatasetServeError(f"dataset {name!r}: manifest serve has unknown keys {unknown}")
+    table = block.get("table", "prices")
+    if not _one_name(table):
+        raise DatasetServeError(f"dataset {name!r}: serve.table must name one table in the dataset, got {table!r}")
+    kind = block.get("kind", "prices")
+    if kind not in SERVE_KINDS:
+        raise DatasetServeError(f"dataset {name!r}: serve.kind {kind!r} is not one of {list(SERVE_KINDS)}")
+    frequency = block.get("frequency")
+    if frequency is not None and frequency not in SERVE_FREQUENCIES:
+        raise DatasetServeError(
+            f"dataset {name!r}: serve.frequency {frequency!r} is not one of {sorted(SERVE_FREQUENCIES)}"
+        )
+    columns = block.get("columns")
+    if columns is not None and not (isinstance(columns, list) and columns and all(isinstance(c, str) for c in columns)):
+        raise DatasetServeError(f"dataset {name!r}: serve.columns must be a non-empty list of names")
+    return {
+        "table": table,
+        "kind": kind,
+        "frequency": SERVE_FREQUENCIES[frequency] if frequency is not None else None,
+        "columns": columns,
+    }
+
+
+def _served_table(
+    path: Path, manifest: dict[str, Any], spec: dict[str, Any], name: str, pinned: str | None
+) -> dict[str, Any]:
+    """The table *spec* serves: its file and the sha256 it must have, which is never a hash taken here.
+
+    That sha256 is the anchor :func:`served_bytes` holds the served bytes to: the lock's
+    pin when the table IS the pin file of a pinned dataset (resolution already compared
+    that file to the pin), else the table's ``content_hashes`` entry, so an edited table
+    cannot ride under an unchanged pin. A table nothing pins or vouches for is refused.
+    Resolution compares a table that is not the pin file to its entry once, to refuse
+    early; that hash is not kept (PR #303 review round 2: a second hash of the pin file
+    became the hash serving trusted, and a replacement in between was served).
+    """
+    file = _inside(path, f"{spec['table']}.parquet", name, "serve.table", DatasetServeError)
+    if not file.is_file():
+        raise DatasetServeError(f"dataset {name!r}: serve.table {spec['table']!r} but {file} does not exist")
+    vouched = ((manifest.get("content_hashes") or {}).get(file.name) or {}).get("sha256")
+    if file.name == _pin_file(manifest) and pinned:
+        anchor = pinned
+    else:
+        sha = _sha256(file)
+        if vouched is None or vouched != sha:
+            raise DatasetServeError(
+                f"dataset {name!r}: {file} has sha256 {sha}, but its manifest content_hashes "
+                f"{'vouch for ' + vouched if vouched else 'carry no entry for it'}; the served table must be vouched for"
+            )
+        anchor = vouched
+    served = {**spec, "file": str(file), "sha256": anchor}
+    if spec["kind"] == "returns":
+        served["construction"] = TOTAL_RETURN_CONSTRUCTION
+    return served
+
+
+def served_bytes(served: dict[str, Any], name: str) -> bytes:
+    """The served table's bytes, read ONCE, refused unless they hash to its anchor: the lock's pin or its vouched hash.
+
+    The anchor (:func:`_served_table`) comes from ``datasets.lock`` or ``content_hashes``,
+    never from a hash taken during resolution. The caller parses exactly these bytes,
+    so a table replaced at any time before this read is refused (PR #303 review, finding
+    102 and round 2).
+    """
+    file = Path(served["file"])
+    try:
+        data = file.read_bytes()
+    except OSError as exc:
+        raise DatasetServeError(f"dataset {name!r}: {file} cannot be read to serve it ({exc})") from exc
+    sha = hashlib.sha256(data).hexdigest()
+    if sha != served["sha256"]:
+        raise DatasetServeError(
+            f"dataset {name!r}: {file} has sha256 {sha}, not the bytes it was resolved at, which the lock "
+            f"pins or its manifest vouches for ({served['sha256']}); refused rather than served"
+        )
+    return data
+
+
+def _locate(name: str, lock_path: Path | None) -> tuple[Path, Path]:
+    """(root, dataset directory) for *name*: under the datasets root, else in the line beside the lock.
+
+    A line freezes the data it fetched under ``<lock dir>/datasets/<name>`` and keeps the
+    same name when the dataset moves to quantbox-datasets at promotion (TOM-2232, D5).
+    The root wins whenever it holds the name, so a line copy beside a lock never shadows
+    it (a stray copy is ignored, TOM-1349); the pin then decides whether its bytes serve.
+    """
+    try:
+        root: Path | None = datasets_root()
+    except DatasetResolveError:
+        root = None
+    if root is not None and (root / name).is_dir():
+        return root, root / name
+    line_root = lock_path.parent / LINE_DATASETS_DIR if lock_path is not None else None
+    if line_root is not None and (line_root / name).is_dir():
+        return line_root, line_root / name
+    if root is None:
+        raise DatasetResolveError(
+            f"dataset {name!r} not found in the line ({line_root or 'no datasets.lock'}), and no datasets root: "
+            f"set {ROOT_ENV} to the quantbox-datasets clone's datasets/ directory"
+        )
+    where = f"{root} (from ${ROOT_ENV} or the clone)" + (f" or {line_root}" if line_root is not None else "")
+    raise DatasetResolveError(f"dataset {name!r} not found under {where}")
+
+
 def _sha256(path: Path) -> str | None:
     if not path.is_file():
         return None
@@ -98,16 +292,21 @@ def resolve_dataset(name: str, *, lock: str | Path | None = None, start: str | P
     (default: cwd) is used, and with none found the dataset is unpinned.
 
     Returns a JSON-safe dict: ``name``, ``root``, ``path``, ``lock``, ``sha256`` (the pin,
-    or None), ``actual_sha256`` (of the prices.parquet that will be read), ``matches``
-    (None when unpinned), ``restored`` (served from git history), ``market`` and
-    ``funding_rates`` (its file, or None). A mismatch is reported in ``matches`` and
-    ``error``, never raised here — :func:`require_match` is the gate.
+    or None), ``actual_sha256`` (of the pin file that will be read: prices.parquet, or the
+    manifest's ``pin_file``, then also recorded as ``pin_file``), ``matches`` (None when
+    unpinned), ``restored`` (served from git history), ``market`` and ``funding_rates``
+    (its file, or None); with a manifest ``serve`` block, ``serve`` (:func:`serve_spec`
+    plus the served ``file`` and the ``sha256`` serving holds it to: the lock's pin, or the
+    table's ``content_hashes`` entry — never a hash taken here). A mismatch is reported in ``matches``
+    and ``error``, never raised here — :func:`require_match` is the gate; a ``serve``
+    block that cannot be served raises :class:`DatasetServeError`, and a manifest, pin file
+    or funding file that resolves outside the dataset directory raises
+    :class:`DatasetResolveError` (:func:`_inside`).
     """
     # A name is one directory under the root: an absolute name, a separator or ``..``
     # would read (and record as pinned) bytes from outside $QUANTBOX_DATASETS_ROOT.
-    if not name or name in (".", "..") or "/" in name or "\\" in name or Path(name).is_absolute():
+    if not _one_name(name):
         raise DatasetResolveError(f"dataset name {name!r} must be one directory name under the datasets root")
-    root = datasets_root()
     lock_path = Path(lock).resolve() if lock is not None else find_lock(start)
     pinned = None
     if lock_path is not None:
@@ -117,24 +316,24 @@ def resolve_dataset(name: str, *, lock: str | Path | None = None, start: str | P
             raise DatasetResolveError(f"{lock_path} is not a mapping of dataset name to sha256")
         pinned = pins.get(name) or None
 
-    path = root / name
-    if not path.is_dir():
-        raise DatasetResolveError(f"dataset {name!r} not found under {root} (from ${ROOT_ENV} or the clone)")
-    on_disk = _sha256(path / "prices.parquet")
+    root, path = _locate(name, lock_path)
+    # Read once: the pin file and the serve block come from the same manifest bytes.
+    manifest = _manifest(path, name)
+    pin_name = _pin_file(manifest)
+    on_disk = _sha256(_inside(path, pin_name, name, "pin file"))
     actual, restored, error = on_disk, False, None
     if pinned and on_disk != pinned:
         restored_path, why_not = _restore_pinned(path, pinned)
-        if restored_path is not None and _sha256(restored_path / "prices.parquet") == pinned:
+        if restored_path is not None and _sha256(_inside(restored_path, pin_name, name, "pin file")) == pinned:
             path, actual, restored = restored_path, pinned, True
+            manifest = _manifest(path, name)
         else:
             error = (
-                f"dataset {name!r}: {path / 'prices.parquet'} has sha256 {on_disk or '(no file)'}, "
+                f"dataset {name!r}: {path / pin_name} has sha256 {on_disk or '(no file)'}, "
                 f"but {lock_path} pins {pinned}; {why_not or 'the restored build does not hash to the pin'}"
             )
 
-    manifest_file = path / "manifest.yaml"
-    manifest = (yaml.safe_load(manifest_file.read_text()) or {}) if manifest_file.is_file() else {}
-    funding = path / "funding_rates.parquet"
+    funding = _inside(path, "funding_rates.parquet", name, "funding_rates")
     out: dict[str, Any] = {
         "name": name,
         "root": str(root),
@@ -147,6 +346,11 @@ def resolve_dataset(name: str, *, lock: str | Path | None = None, start: str | P
         "market": manifest.get("market"),
         "funding_rates": str(funding) if funding.is_file() else None,
     }
+    if pin_name != "prices.parquet":
+        out["pin_file"] = pin_name
+    spec = serve_spec(manifest, name)
+    if spec is not None and error is None:
+        out["serve"] = _served_table(path, manifest, spec, name, pinned)
     if error:
         out["error"] = error
     return out

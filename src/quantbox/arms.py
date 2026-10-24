@@ -33,6 +33,7 @@ import contextlib
 import copy
 import itertools
 import json
+import logging
 import os
 import sys
 from collections.abc import Mapping
@@ -281,17 +282,42 @@ def _pool_kwargs(workers: int) -> dict[str, Any]:
     return kwargs
 
 
+@contextlib.contextmanager
+def _arm_log_prefix(name: str):
+    """Every log record made while an arm runs starts with ``[arm <name>]`` (TOM-2311).
+
+    Parallel arms interleave on one stderr, so a bare ENGINE warning cannot be
+    tied to its arm (TOM-2287). The prefix goes into the record itself, so every
+    handler shows it — the worker's last-resort stderr, a configured root, pytest's
+    caplog — and ``record.arm`` carries the name as a field.
+    """
+    previous = logging.getLogRecordFactory()
+
+    def factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
+        record = previous(*args, **kwargs)
+        prefix = f"[arm {name}] "
+        record.msg = (prefix.replace("%", "%%") if record.args else prefix) + str(record.msg)
+        record.arm = name
+        return record
+
+    logging.setLogRecordFactory(factory)
+    try:
+        yield
+    finally:
+        logging.setLogRecordFactory(previous)
+
+
 def _run_one(name: str, cfg: dict[str, Any], config_path: str | None) -> dict[str, Any]:
     """Run one arm; never raises, so one arm's failure cannot hide another's result.
 
     Top-level so a spawned worker can import it. stdout goes to stderr: the
-    parent's stdout may be carrying ``--json``.
+    parent's stdout may be carrying ``--json``. Its log lines carry the arm's name.
     """
     try:
         from .registry import PluginRegistry
         from .runner import run_from_config
 
-        with contextlib.redirect_stdout(sys.stderr):
+        with contextlib.redirect_stdout(sys.stderr), _arm_log_prefix(name):
             result = run_from_config(cfg, PluginRegistry.discover(), config_path=config_path)
         return {"name": name, "status": "ok", "run_id": result.run_id, "error": None}
     except Exception as exc:  # noqa: BLE001 — the batch reports it by arm name
