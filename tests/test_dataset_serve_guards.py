@@ -257,3 +257,55 @@ def test_a_funding_file_symlinked_out_of_the_dataset_is_refused(line):
     (ds / "funding_rates.parquet").symlink_to(outside)
     with pytest.raises(DatasetResolveError, match="outside the dataset directory"):
         resolve_dataset("kf", lock=line / "datasets.lock")
+
+
+# -- independent review round 2 of #303: the lock's pin is the only anchor -----------------
+
+
+def test_a_pin_file_replaced_after_it_was_checked_against_the_pin_is_never_served(line, monkeypatch):
+    """The reviewer's race: the pin file is replaced right after resolution hashed it against the pin.
+
+    Before, a second hash taken during resolution became the hash serving trusted, so the
+    replacement was served at ``matches: True``. Served bytes must be the pinned ones, or refused.
+    """
+    import quantbox.dataset_lock as dl
+
+    ds = _freeze(line, pd.DataFrame({"EQ": [10.0, 11.0, 12.0]}, index=MONTHS), {"table": "monthly", "kind": "prices"})
+    pin = (line / "datasets.lock").read_text().split(": ")[1].strip()
+    real_sha256, calls = dl._sha256, []
+
+    def hash_then_replace(path):
+        sha = real_sha256(path)
+        if Path(path).name == "monthly.parquet" and not calls:
+            calls.append(path)
+            pd.DataFrame({"EQ": [99.0, 98.0, 97.0]}, index=MONTHS).to_parquet(ds / "monthly.parquet")
+        return sha
+
+    monkeypatch.setattr(dl, "_sha256", hash_then_replace)
+    resolution = require_match(resolve_dataset("kf", lock=line / "datasets.lock"))
+    assert resolution["matches"] is True and calls  # the pin was checked, then the file changed
+    assert resolution["serve"]["sha256"] == pin  # serving is held to the pin, not to a later hash
+    with pytest.raises(DatasetServeError, match=f"the lock pins or its manifest vouches for \\({pin}\\)"):
+        served_prices(resolution)
+
+
+def test_an_unpinned_table_replaced_between_two_reads_of_resolution_is_held_to_its_vouched_hash(line, monkeypatch):
+    """No lock entry: the anchor is the table's content_hashes entry, never resolution's own hash."""
+    import quantbox.dataset_lock as dl
+
+    ds = _freeze(line, pd.DataFrame({"EQ": [10.0, 11.0, 12.0]}, index=MONTHS), {"table": "monthly", "kind": "prices"})
+    vouched = yaml.safe_load((ds / "manifest.yaml").read_text())["content_hashes"]["monthly.parquet"]["sha256"]
+    (line / "datasets.lock").write_text("other: abc\n")  # a lock that does not pin kf
+    real_sha256, calls = dl._sha256, []
+
+    def hash_then_replace(path):
+        sha = real_sha256(path)
+        if Path(path).name == "monthly.parquet" and not calls:
+            calls.append(path)
+            pd.DataFrame({"EQ": [99.0, 98.0, 97.0]}, index=MONTHS).to_parquet(ds / "monthly.parquet")
+        return sha
+
+    monkeypatch.setattr(dl, "_sha256", hash_then_replace)
+    with pytest.raises(DatasetServeError, match="must be vouched for"):
+        resolve_dataset("kf", lock=line / "datasets.lock")
+    assert calls and vouched

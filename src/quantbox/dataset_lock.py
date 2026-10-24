@@ -182,34 +182,46 @@ def serve_spec(manifest: dict[str, Any], name: str) -> dict[str, Any] | None:
     }
 
 
-def _served_table(path: Path, manifest: dict[str, Any], spec: dict[str, Any], name: str) -> dict[str, Any]:
-    """The table *spec* serves: its file and sha256, refused when absent or not the bytes the manifest vouches for.
+def _served_table(
+    path: Path, manifest: dict[str, Any], spec: dict[str, Any], name: str, pinned: str | None
+) -> dict[str, Any]:
+    """The table *spec* serves: its file and the sha256 it must have, which is never a hash taken here.
 
-    The pin covers only the pin file; a served table that is not the pin file is held to
-    its ``content_hashes`` entry, so an edited table cannot ride under an unchanged pin.
+    That sha256 is the anchor :func:`served_bytes` holds the served bytes to: the lock's
+    pin when the table IS the pin file of a pinned dataset (resolution already compared
+    that file to the pin), else the table's ``content_hashes`` entry, so an edited table
+    cannot ride under an unchanged pin. A table nothing pins or vouches for is refused.
+    Resolution compares a table that is not the pin file to its entry once, to refuse
+    early; that hash is not kept (PR #303 review round 2: a second hash of the pin file
+    became the hash serving trusted, and a replacement in between was served).
     """
     file = _inside(path, f"{spec['table']}.parquet", name, "serve.table", DatasetServeError)
-    sha = _sha256(file)
-    if sha is None:
+    if not file.is_file():
         raise DatasetServeError(f"dataset {name!r}: serve.table {spec['table']!r} but {file} does not exist")
     vouched = ((manifest.get("content_hashes") or {}).get(file.name) or {}).get("sha256")
-    if file.name != _pin_file(manifest) and vouched != sha:
-        raise DatasetServeError(
-            f"dataset {name!r}: {file} has sha256 {sha}, but its manifest content_hashes "
-            f"{'vouch for ' + vouched if vouched else 'carry no entry for it'}; the served table must be vouched for"
-        )
-    served = {**spec, "file": str(file), "sha256": sha}
+    if file.name == _pin_file(manifest) and pinned:
+        anchor = pinned
+    else:
+        sha = _sha256(file)
+        if vouched is None or vouched != sha:
+            raise DatasetServeError(
+                f"dataset {name!r}: {file} has sha256 {sha}, but its manifest content_hashes "
+                f"{'vouch for ' + vouched if vouched else 'carry no entry for it'}; the served table must be vouched for"
+            )
+        anchor = vouched
+    served = {**spec, "file": str(file), "sha256": anchor}
     if spec["kind"] == "returns":
         served["construction"] = TOTAL_RETURN_CONSTRUCTION
     return served
 
 
 def served_bytes(served: dict[str, Any], name: str) -> bytes:
-    """The served table's bytes, read ONCE, refused unless they hash to the sha256 its resolution recorded.
+    """The served table's bytes, read ONCE, refused unless they hash to its anchor: the lock's pin or its vouched hash.
 
-    Resolution and loading are two steps in the data plugin; the caller parses exactly
-    these bytes, so a table replaced between them is refused rather than served under
-    the resolution's hash (PR #303 review, finding 102).
+    The anchor (:func:`_served_table`) comes from ``datasets.lock`` or ``content_hashes``,
+    never from a hash taken during resolution. The caller parses exactly these bytes,
+    so a table replaced at any time before this read is refused (PR #303 review, finding
+    102 and round 2).
     """
     file = Path(served["file"])
     try:
@@ -219,8 +231,8 @@ def served_bytes(served: dict[str, Any], name: str) -> bytes:
     sha = hashlib.sha256(data).hexdigest()
     if sha != served["sha256"]:
         raise DatasetServeError(
-            f"dataset {name!r}: {file} now has sha256 {sha}, not the bytes it was resolved at "
-            f"({served['sha256']}); it changed after resolution"
+            f"dataset {name!r}: {file} has sha256 {sha}, not the bytes it was resolved at, which the lock "
+            f"pins or its manifest vouches for ({served['sha256']}); refused rather than served"
         )
     return data
 
@@ -284,7 +296,8 @@ def resolve_dataset(name: str, *, lock: str | Path | None = None, start: str | P
     manifest's ``pin_file``, then also recorded as ``pin_file``), ``matches`` (None when
     unpinned), ``restored`` (served from git history), ``market`` and ``funding_rates``
     (its file, or None); with a manifest ``serve`` block, ``serve`` (:func:`serve_spec`
-    plus the served ``file`` and its ``sha256``). A mismatch is reported in ``matches``
+    plus the served ``file`` and the ``sha256`` serving holds it to: the lock's pin, or the
+    table's ``content_hashes`` entry — never a hash taken here). A mismatch is reported in ``matches``
     and ``error``, never raised here — :func:`require_match` is the gate; a ``serve``
     block that cannot be served raises :class:`DatasetServeError`, and a manifest, pin file
     or funding file that resolves outside the dataset directory raises
@@ -337,7 +350,7 @@ def resolve_dataset(name: str, *, lock: str | Path | None = None, start: str | P
         out["pin_file"] = pin_name
     spec = serve_spec(manifest, name)
     if spec is not None and error is None:
-        out["serve"] = _served_table(path, manifest, spec, name)
+        out["serve"] = _served_table(path, manifest, spec, name, pinned)
     if error:
         out["error"] = error
     return out

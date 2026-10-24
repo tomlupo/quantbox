@@ -242,7 +242,8 @@ def total_return_index(returns: pd.DataFrame, frequency: str | None = None, *, n
 def served_prices(resolution: dict[str, Any]) -> pd.DataFrame:
     """The prices a by-name dataset with a manifest ``serve`` block is served as, from its resolution.
 
-    The table is parsed from the bytes that hash to the resolution's sha256, read once
+    The table is parsed from the bytes that hash to the lock's pin (or the table's
+    ``content_hashes`` entry), read once
     (:func:`quantbox.dataset_lock.served_bytes`), narrowed to ``serve.columns``, refused
     when a date has more than one row or a value is not a finite number, and for
     ``kind: returns`` turned into a total-return index (:func:`total_return_index`). The
