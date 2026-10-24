@@ -28,7 +28,7 @@ aborts over five weeks of the ``quantbox-paper`` cron, across seven unrelated
 strategies, two of which turned a fully successful run into ``exit=1``.
 
 Every *pandas-bound* parquet read in quantbox goes through :func:`read_parquet`
-so the library cannot re-introduce the crash one call site at a time; a test
+(or :func:`read_parquet_bytes`, for bytes a caller already hashed) so the library cannot re-introduce the crash one call site at a time; a test
 enforces that no module calls ``pd.read_parquet`` directly. Reads that quantbox
 hands to DuckDB as SQL (``SELECT * FROM read_parquet(...)``) are a different
 engine, never touch a Python file handle, and are out of scope here. It is a
@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover - pyarrow is a hard dep in practice
     pq = None  # type: ignore[assignment]
     PYARROW_AVAILABLE = False
 
-__all__ = ["read_parquet"]
+__all__ = ["read_parquet", "read_parquet_bytes"]
 
 
 def _local_file(path: Any) -> str | None:
@@ -91,3 +91,15 @@ def read_parquet(path: Any, columns: list[str] | None = None, **kwargs: Any) -> 
     # own reader adds the stored index columns back to ``columns``, and
     # without it a ``columns=[...]`` read silently returns a RangeIndex.
     return pq.read_table(local, columns=columns, use_pandas_metadata=True).to_pandas()
+
+
+def read_parquet_bytes(data: bytes) -> pd.DataFrame:
+    """A parquet file already in memory, parsed as :func:`read_parquet` parses a local file.
+
+    For a caller that hashed these exact bytes and must parse the same ones
+    (:func:`quantbox.dataset.served_prices`). PyArrow reads its own buffer, so no
+    Python file handle reaches its reader threads.
+    """
+    import pyarrow as pa
+
+    return pq.read_table(pa.BufferReader(data), use_pandas_metadata=True).to_pandas()
