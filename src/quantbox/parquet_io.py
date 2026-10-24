@@ -28,7 +28,7 @@ aborts over five weeks of the ``quantbox-paper`` cron, across seven unrelated
 strategies, two of which turned a fully successful run into ``exit=1``.
 
 Every *pandas-bound* parquet read in quantbox goes through :func:`read_parquet`
-so the library cannot re-introduce the crash one call site at a time; a test
+(or :func:`read_parquet_bytes`, for bytes a caller already hashed) so the library cannot re-introduce the crash one call site at a time; a test
 enforces that no module calls ``pd.read_parquet`` directly. Reads that quantbox
 hands to DuckDB as SQL (``SELECT * FROM read_parquet(...)``) are a different
 engine, never touch a Python file handle, and are out of scope here. It is a

@@ -13,6 +13,7 @@ __all__ = [
     "DatasetManifest",
     "DatasetPlugin",
     "load_pinned_dataset",
+    "refuse_non_finite",
     "served_prices",
     "total_return_index",
 ]
@@ -63,31 +64,59 @@ def _bar_before(first: pd.Timestamp, frequency: str | None, index: pd.DatetimeIn
     return first - (index[1] - index[0])
 
 
+def _dates(mask: pd.Series) -> list[str]:
+    """The first five dates where *mask* holds, as ISO strings, for an error message."""
+    return [d.date().isoformat() for d in mask[mask].index[:5]]
+
+
 def _numeric(frame: pd.DataFrame, name: str, what: str) -> pd.DataFrame:
     """*frame* as numbers, refused when a value that is there is not a number, or is not finite.
 
     A null stays a missing value (a series not yet listed, or no longer). A value that
     fails numeric conversion, or an infinity, is a data fault: coerced to NaN at a
-    series' edge it would pass as missing history (PR #303 review, finding 2/101).
+    series' edge it would pass as missing history (PR #303 review, finding 2/101). A
+    column that pandas converts without being numbers (bool, dates, durations) is
+    refused by its dtype.
     """
     from quantbox.dataset_lock import DatasetServeError
 
     values = frame.apply(pd.to_numeric, errors="coerce")
     for col in values.columns:
+        source, converted = frame[col].dtype, values[col].dtype
+        if (
+            pd.api.types.is_bool_dtype(converted)
+            or not pd.api.types.is_numeric_dtype(converted)
+            or pd.api.types.is_datetime64_any_dtype(source)
+            or pd.api.types.is_timedelta64_dtype(source)
+        ):
+            raise DatasetServeError(f"dataset {name!r}: {what} series {col!r} holds {source} values, not numbers")
         malformed = values[col].isna() & frame[col].notna()
         if malformed.any():
             raise DatasetServeError(
                 f"dataset {name!r}: {what} series {col!r} has a value that is not a number on "
-                f"{[d.date().isoformat() for d in malformed[malformed].index[:5]]}: "
-                f"{frame[col][malformed].head(5).tolist()}"
+                f"{_dates(malformed)}: {frame[col][malformed].head(5).tolist()}"
             )
         infinite = values[col].isin([float("inf"), float("-inf")])
         if infinite.any():
             raise DatasetServeError(
-                f"dataset {name!r}: {what} series {col!r} has a non-finite value on "
-                f"{[d.date().isoformat() for d in infinite[infinite].index[:5]]}"
+                f"dataset {name!r}: {what} series {col!r} has a non-finite value on {_dates(infinite)}"
             )
     return values
+
+
+def refuse_non_finite(frame: pd.DataFrame, name: str, what: str) -> pd.DataFrame:
+    """*frame* unchanged, refused when a numeric column holds an infinity.
+
+    For a by-name dataset's served funding file, read wide or long by the inline reader:
+    its non-numeric columns (``symbol``, a date) are left to that reader.
+    """
+    from quantbox.dataset_lock import DatasetServeError
+
+    numeric = frame.select_dtypes("number")
+    infinite = sorted(str(c) for c in numeric.columns if numeric[c].isin([float("inf"), float("-inf")]).any())
+    if infinite:
+        raise DatasetServeError(f"dataset {name!r}: {what} column(s) {infinite} hold a non-finite value")
+    return frame
 
 
 def total_return_index(returns: pd.DataFrame, frequency: str | None = None, *, name: str = "dataset") -> pd.DataFrame:

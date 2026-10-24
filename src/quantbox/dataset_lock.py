@@ -286,7 +286,9 @@ def resolve_dataset(name: str, *, lock: str | Path | None = None, start: str | P
     (its file, or None); with a manifest ``serve`` block, ``serve`` (:func:`serve_spec`
     plus the served ``file`` and its ``sha256``). A mismatch is reported in ``matches``
     and ``error``, never raised here — :func:`require_match` is the gate; a ``serve``
-    block that cannot be served raises :class:`DatasetServeError`.
+    block that cannot be served raises :class:`DatasetServeError`, and a manifest, pin file
+    or funding file that resolves outside the dataset directory raises
+    :class:`DatasetResolveError` (:func:`_inside`).
     """
     # A name is one directory under the root: an absolute name, a separator or ``..``
     # would read (and record as pinned) bytes from outside $QUANTBOX_DATASETS_ROOT.

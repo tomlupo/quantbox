@@ -18,7 +18,7 @@ import pandas as pd
 
 from quantbox._removed import removed_names
 from quantbox.contracts import PluginMeta
-from quantbox.dataset import _resolve_pinned, load_pinned_dataset, served_prices
+from quantbox.dataset import _resolve_pinned, load_pinned_dataset, refuse_non_finite, served_prices
 from quantbox.parquet_io import read_parquet
 
 logger = logging.getLogger(__name__)
@@ -497,13 +497,16 @@ class LocalFileDataPlugin:
             self.loaded_paths = self.planned_paths(params)
             # The funding file planned_paths names is served too: the funding guard trusts that plan.
             fpath = self.loaded_paths["funding_rates"]
+            funding = (
+                refuse_non_finite(_read_file(fpath, asof=asof, symbols=symbols), self.dataset, "funding_rates")
+                if fpath
+                else pd.DataFrame()
+            )
             return {
                 "prices": _select_cols(_clip_frame(self._pinned(), asof)),
                 "volume": pd.DataFrame(),
                 "market_cap": pd.DataFrame(),
-                "funding_rates": _select_cols(_read_file(fpath, asof=asof, symbols=symbols))
-                if fpath
-                else pd.DataFrame(),
+                "funding_rates": _select_cols(funding),
             }
         if self.dataset:
             ds = self._pinned()

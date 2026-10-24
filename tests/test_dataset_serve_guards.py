@@ -85,6 +85,29 @@ def test_a_malformed_or_non_finite_value_is_refused_not_served(line, kind, value
         _serve(line)
 
 
+@pytest.mark.parametrize(
+    ("kind", "values"),
+    [
+        ("returns", [True, False, True]),  # was served as +100 % / 0 % returns
+        ("prices", list(MONTHS)),  # was served as epoch nanoseconds
+    ],
+)
+def test_a_column_pandas_converts_without_being_numbers_is_refused(line, kind, values):
+    _freeze(line, pd.DataFrame({"EQ": values}, index=MONTHS), {"table": "monthly", "kind": kind})
+    with pytest.raises(DatasetServeError, match="'EQ' holds .* values, not numbers"):
+        _serve(line)
+
+
+def test_a_served_funding_file_with_an_infinity_is_refused(line):
+    from quantbox.plugins.datasources.local_file_data import LocalFileDataPlugin
+
+    ds = _freeze(line, pd.DataFrame({"EQ": [10.0, 11.0, 12.0]}, index=MONTHS), {"table": "monthly", "kind": "prices"})
+    pd.DataFrame({"EQ": [0.001, np.inf, 0.001]}, index=MONTHS).to_parquet(ds / "funding_rates.parquet")
+    plugin = LocalFileDataPlugin(dataset="kf", dataset_lock=str(line / "datasets.lock"))
+    with pytest.raises(DatasetServeError, match=r"funding_rates column\(s\) \['EQ'\] hold a non-finite value"):
+        plugin.load_market_data(plugin.load_universe({}), "2000-03-31", {})
+
+
 def test_a_null_at_a_series_edge_is_still_history_not_yet_listed(line):
     _freeze(line, pd.DataFrame({"EQ": [None, "0.1", "0.2"]}, index=MONTHS), MONTHLY_RETURNS)
     # The series starts at the second month: the first month is its 1.0 base, as before.
