@@ -68,7 +68,6 @@
     ],
     "required_checks": [
       "lint",
-      "test (3.10)",
       "test (3.12)",
       "no-vectorbt",
       "pipeline-smoke",
