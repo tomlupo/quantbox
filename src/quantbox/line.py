@@ -125,7 +125,7 @@ def uv_lock(line_dir: Path, *, offline: bool = False) -> None:
     _run(cmd, what=f"uv lock in {line_dir}")
 
 
-# ── uv.lock reading (3.10 has no tomllib, and uv.lock's [[package]] header is regular) ──
+# ── uv.lock reading (regex, not tomllib: written for 3.10, and uv.lock's [[package]] header is regular) ──
 
 
 def lock_versions(lock_text: str, *, exclude: set[str] = frozenset()) -> dict[str, str]:
