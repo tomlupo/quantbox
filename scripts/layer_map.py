@@ -17,13 +17,8 @@ no dev group. Usage from a script::
 
 from __future__ import annotations
 
-import sys
+import tomllib
 from pathlib import Path
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # pragma: no cover - Python 3.10 (pytest depends on tomli there)
-    import tomli as tomllib
 
 # Layer name -> its rank in import order. A layer may import only a lower rank;
 # research and trade share rank 2 and never import each other.
