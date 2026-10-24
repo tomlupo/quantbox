@@ -522,13 +522,17 @@ class LocalFileDataPlugin:
                 return unique_rows(values, self.dataset, "funding_rates")
 
             funding = _read_file(fpath, asof=asof, symbols=symbols, validate=validate) if fpath else pd.DataFrame()
-            # Checked again as served, after the pivot and the date label.
-            funding = finite_numbers(funding, self.dataset, "served funding_rates")
+
+            def as_served(frame: pd.DataFrame, what: str) -> pd.DataFrame:
+                # Checked again where it leaves, after the pivot and the date label: two
+                # intraday stamps share one daily label, and arithmetic upstream can overflow.
+                return finite_numbers(unique_rows(frame, self.dataset, what), self.dataset, what)
+
             return {
-                "prices": _select_cols(_clip_frame(self._pinned(), asof)),
+                "prices": as_served(_select_cols(_clip_frame(self._pinned(), asof)), "served prices"),
                 "volume": pd.DataFrame(),
                 "market_cap": pd.DataFrame(),
-                "funding_rates": _select_cols(funding),
+                "funding_rates": as_served(_select_cols(funding), "served funding_rates"),
             }
         if self.dataset:
             ds = self._pinned()

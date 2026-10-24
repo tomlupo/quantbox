@@ -181,6 +181,24 @@ def test_a_valid_long_funding_file_with_unique_keys_is_still_served(line):
     np.testing.assert_allclose(served["EQ"].to_numpy(), [0.001, 0.002, 0.003])
 
 
+def test_two_intraday_stamps_that_share_one_served_date_are_refused(line):
+    # Distinct raw keys, one daily label as served: the frame would leave with two rows for 2000-01-31.
+    stamps = pd.DatetimeIndex(["2000-01-31 08:00", "2000-01-31 16:00", "2000-02-29"], name="date")
+    long = _long(list(stamps), [0.001, 0.002, 0.003])
+    with pytest.raises(DatasetServeError, match=r"served funding_rates has more than one row .*2000-01-31"):
+        _served_funding(line, long, index=False)
+
+
+def test_served_prices_with_two_intraday_stamps_on_one_date_are_refused(line):
+    from quantbox.plugins.datasources.local_file_data import LocalFileDataPlugin
+
+    stamps = pd.DatetimeIndex(["2000-01-31 08:00", "2000-01-31 16:00", "2000-02-29"], name="date")
+    _freeze(line, pd.DataFrame({"EQ": [10.0, 11.0, 12.0]}, index=stamps), {"table": "monthly", "kind": "prices"})
+    plugin = LocalFileDataPlugin(dataset="kf", dataset_lock=str(line / "datasets.lock"))
+    with pytest.raises(DatasetServeError, match=r"served prices has more than one row .*2000-01-31"):
+        plugin.load_market_data(plugin.load_universe({}), "2000-03-31", {})
+
+
 def test_a_null_at_a_series_edge_is_still_history_not_yet_listed(line):
     _freeze(line, pd.DataFrame({"EQ": [None, "0.1", "0.2"]}, index=MONTHS), MONTHLY_RETURNS)
     # The series starts at the second month: the first month is its 1.0 base, as before.
