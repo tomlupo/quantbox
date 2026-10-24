@@ -71,7 +71,8 @@ dev = [
 
 [tool.uv]
 # CVE-2026-104874 (multidict HIGH, fixed in 6.9.1): ccxt pins multidict==6.7.1 exactly — remove when ccxt relaxes its multidict pin.
-# The <7 cap keeps aiohttp's own bound (multidict<7.0), which an override would otherwise erase.
+# The <7 cap kept aiohttp 3.14.3's own bound (multidict<7.0), which an override would otherwise erase.
+# aiohttp 3.14.5 allows multidict<8.0, so the cap is now stricter than aiohttp; lifting it is a separate change.
 override-dependencies = ["multidict>=6.9.1,<7"]
 
 [tool.uv_build]
