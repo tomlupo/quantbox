@@ -862,12 +862,19 @@ def new_line(
     python: str = typer.Option(None, "--python", help="Python minor version the line runs on (default: 3.12)"),
     dataset: str = typer.Option(None, "--dataset", help="Dataset the base config reads (default: crypto-spot-daily)"),
     question: str = typer.Option(None, "--question", help="One sentence: what this line investigates"),
+    kind: str = typer.Option(
+        None,
+        "--kind",
+        help="What the prereg block is anchored to: book (a system.yaml book) or replication (a paper)",
+    ),
     no_lock: bool = typer.Option(False, "--no-lock", help="Write the files only; skip `uv lock`"),
     as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Create a Model C research line: pinned pyproject + lock, README with prereg, datasets.lock, arms, repro test.
 
     quantbox is pinned to the commit the tag names, every transitive dependency exactly.
+    `--kind replication` writes a prereg block anchored to a paper (`kind: replication`,
+    `paper:`) instead of a book, as the qute-research pre-flight's replication mode reads it.
     Then: `cd <slug> && uv sync && uv run quantbox run -c config.yaml`.
     """
     line = load("quantbox.line", extra="research")
@@ -885,6 +892,7 @@ def new_line(
         "extras": (extras, line.DEFAULT_EXTRAS),
         "python": (python, line.DEFAULT_PYTHON),
         "dataset": (dataset, line.DEFAULT_DATASET),
+        "kind": (kind, line.DEFAULT_KIND),
     }
     kwargs.update({k: (v if v is not None else d) for k, (v, d) in defaults.items()})
     try:

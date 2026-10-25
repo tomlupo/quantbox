@@ -9,6 +9,7 @@ docstring; this page is the two commands.
 ```bash
 quantbox new line <slug>                       # pinned to the latest v* tag
 quantbox new line <slug> --quantbox-ref v0.8.0 # or a named tag / SHA
+quantbox new line <slug> --kind replication    # a paper replication: prereg anchored to the paper
 cd <slug>
 export QUANTBOX_DATASETS_ROOT=/path/to/quantbox-datasets/datasets
 uv sync
@@ -21,7 +22,7 @@ What it writes:
 |---|---|
 | `pyproject.toml` | quantbox at the 40-char SHA the tag names (tag in `[tool.quantbox-line]`), quantbox-datasets at a SHA, and every transitive dependency `==`-pinned in a managed `constraint-dependencies` block |
 | `uv.lock` | resolved under those pins; `uv sync --locked` reproduces it |
-| `README.md` | line frontmatter and the `prereg:` block, placeholders the pre-run gate refuses until filled |
+| `README.md` | line frontmatter and the `prereg:` block, placeholders the pre-run gate refuses until filled. The block names a `book:` by default; `--kind replication` writes `kind: replication` and a `paper:` block instead, the keys the qute-research pre-flight's replication mode reads |
 | `datasets.lock` | sha256 of the base dataset's `prices.parquet`, read from `$QUANTBOX_DATASETS_ROOT` ([TOM-1349](../../src/quantbox/dataset_lock.py) format) |
 | `config.yaml` | the base backtest: the dataset by name, `execution.lag_bars: 1` |
 | `arms.yaml` | the arms over that base ([`quantbox.arms`](../../src/quantbox/arms.py) format) |
