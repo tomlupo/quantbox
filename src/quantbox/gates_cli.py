@@ -496,7 +496,11 @@ def predreg(
     allow_nonfinite_drop: bool = _DROP,
     as_json: bool = _JSON,
 ):
-    """Predictive regression r_t on x_t-1: Stambaugh bias-adjusted and Lewellen conditional slopes, one-sided."""
+    """Predictive regression r_t on x_t-1: Stambaugh bias-adjusted and Lewellen conditional slopes, one-sided.
+
+    Rows must be consecutive periods: a date one file lacks inside the shared span is refused, but a
+    period missing from BOTH files cannot be seen, and the lag would pair across it.
+    """
 
     def compute() -> dict:
         import pandas as pd

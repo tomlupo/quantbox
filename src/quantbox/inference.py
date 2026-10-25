@@ -461,9 +461,12 @@ def predictive_regression(
 
     Refuses (:class:`InferenceInputError`) mismatched lengths, a ``rho_bound``
     outside (0, 1], fewer than 5 usable pairs (the augmented fit has 3
-    parameters), a constant return or predictor series, and a predictor whose
-    AR(1) innovations cancel to noise (no ``gamma`` exists). All floats are
-    full precision.
+    parameters), a constant return or predictor series, a predictor whose
+    AR(1) innovations cancel to noise (no ``gamma`` exists), and returns that
+    are an exact function of the predictor (no residual variance). Rows must
+    be CONSECUTIVE periods: a period missing from both series is not
+    detectable here, and the lag would pair across it. All floats are full
+    precision.
     """
     import statsmodels.api as sm
     from scipy.stats import norm
