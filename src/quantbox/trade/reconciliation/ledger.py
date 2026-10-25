@@ -287,6 +287,6 @@ def _opt_float(v: Any) -> float | None:
 
 
 def _utc_now_iso() -> str:
-    from datetime import datetime, timezone
+    from datetime import UTC, datetime
 
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 #: The UTC start timestamp that ends every run id (``asof__pipeline__cfghash__ts``).
@@ -19,7 +19,7 @@ def run_started_at(run_id: str) -> datetime | None:
     if not sep:
         return None
     try:
-        return datetime.strptime(ts, RUN_TS_FORMAT).replace(tzinfo=timezone.utc)
+        return datetime.strptime(ts, RUN_TS_FORMAT).replace(tzinfo=UTC)
     except ValueError:
         return None
 

@@ -10,7 +10,7 @@ cycle resolves it against the venue and books what actually happened.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -174,7 +174,7 @@ def test_a_broker_that_cannot_resolve_leaves_the_queue_intact(tmp_path):
 def test_an_order_unresolved_past_the_retention_cap_is_dropped_loudly(tmp_path, caplog):
     store = _queued(tmp_path)
     stale = store.load()
-    stale[0]["recorded_at"] = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    stale[0]["recorded_at"] = (datetime.now(UTC) - timedelta(days=30)).isoformat()
     store.save(stale)
     broker = _Broker({"OID1": None})
 
@@ -282,7 +282,7 @@ def test_a_venue_that_raises_is_unreadable_not_terminal(tmp_path):
 def test_older_than_finds_the_order_still_open_an_hour_later(tmp_path):
     """The operational signal Tom asked for: still open after the threshold."""
     store = _queued(tmp_path)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     recs = store.load()
     recs[0]["recorded_at"] = (now - timedelta(minutes=90)).isoformat()
     store.save(recs)
@@ -296,7 +296,7 @@ def test_older_than_finds_the_order_still_open_an_hour_later(tmp_path):
 def test_a_fresh_working_order_is_not_flagged_as_stuck(tmp_path):
     """Positive control on the other side: the threshold can say 'no'."""
     store = _queued(tmp_path)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     res = resolve_working_orders(store, _Broker({"OID1": {"status": "WORKING"}}), now=now)
     assert res.still_working and res.older_than(3600, now=now) == []
 
@@ -325,7 +325,7 @@ def test_an_unparseable_age_is_never_expired_away(tmp_path):
 def test_the_retention_cap_is_configurable_by_the_caller(tmp_path):
     store = _queued(tmp_path)
     recs = store.load()
-    recs[0]["recorded_at"] = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+    recs[0]["recorded_at"] = (datetime.now(UTC) - timedelta(days=2)).isoformat()
     store.save(recs)
 
     kept = resolve_working_orders(store, _Broker({"OID1": None}), max_age_days=7)
@@ -364,7 +364,7 @@ def test_expired_cuts_across_the_outcome_buckets_rather_than_being_a_fourth(tmp_
     `expired`. The docstring says so; this is what stops that claim drifting."""
     store = _queued(tmp_path)
     recs = store.load()
-    recs[0]["recorded_at"] = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    recs[0]["recorded_at"] = (datetime.now(UTC) - timedelta(days=30)).isoformat()
     store.save(recs)
 
     res = resolve_working_orders(store, _Broker({"OID1": {"status": "WORKING"}}))

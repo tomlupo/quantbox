@@ -44,7 +44,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pandas as pd
@@ -206,7 +206,7 @@ class HyperliquidDataPlugin:
         tickers = universe["symbol"].tolist()
         lookback = int(params.get("lookback_days", 365))
 
-        asof_dt = datetime.strptime(asof, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        asof_dt = datetime.strptime(asof, "%Y-%m-%d").replace(tzinfo=UTC)
         start_dt = asof_dt - timedelta(days=lookback)
         # Hyperliquid expects millisecond timestamps
         start_ms = int(start_dt.timestamp() * 1000)

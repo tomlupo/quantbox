@@ -763,7 +763,7 @@ def approve(
 ):
     """Write an approval file for the orders in a run directory."""
     import json
-    from datetime import datetime, timezone
+    from datetime import UTC, datetime
     from pathlib import Path
 
     run_path = Path(run_dir)
@@ -780,7 +780,7 @@ def approve(
         "approved": True,
         "orders_digest": digest,
         "who": who,
-        "when": datetime.now(timezone.utc).isoformat(),
+        "when": datetime.now(UTC).isoformat(),
         "note": note,
     }
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

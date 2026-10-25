@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 import numpy as np
@@ -1156,7 +1156,7 @@ class TradingPipeline:
         a_trade = store.put_json(
             "trade_history",
             {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "mode": mode,
                 "trades": artifact_payload.get("execution_summary", {}).get("executed_orders", []),
             },

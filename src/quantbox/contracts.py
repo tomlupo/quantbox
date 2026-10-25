@@ -53,7 +53,7 @@ classes with a class-level ``meta = PluginMeta(...)`` attribute.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal, Protocol
 
 import pandas as pd
@@ -279,7 +279,7 @@ ValuationBasis = Literal["mark_to_market", "margin_balance"]
 """How a venue values a book: ``BrokerPlugin.valuation_basis`` (see :mod:`quantbox.trade.book`)."""
 
 
-class BrokerCapability(str, Enum):
+class BrokerCapability(StrEnum):
     """An optional thing a broker can do, which the trade path uses only when DECLARED.
 
     A broker declares its capabilities in one class attribute,
