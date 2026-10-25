@@ -325,38 +325,51 @@ def test_a_book_line_is_the_default_and_an_unknown_kind_is_refused(tmp_path, fak
     assert not (tmp_path / "other").exists()
 
 
-def _preflight_module():
+def _preflight_module(monkeypatch: pytest.MonkeyPatch):
     """The qute-research pre-flight that has a replication mode: `$QUTE_RESEARCH_PREFLIGHT`,
-    else the newest plugin-cache copy defining `check_replication`, else None."""
+    else the newest plugin-cache copy defining `check_replication`, else None.
+
+    An explicit `$QUTE_RESEARCH_PREFLIGHT` that is missing or has no replication mode
+    fails the test: a path named on purpose is never quietly replaced by a skip.
+    """
     import importlib.util
 
-    candidates = []
-    if os.environ.get("QUTE_RESEARCH_PREFLIGHT"):
-        candidates.append(Path(os.environ["QUTE_RESEARCH_PREFLIGHT"]))
-    cache = Path.home() / ".claude/plugins/cache/qute-plugins/qute-research"
+    explicit = os.environ.get("QUTE_RESEARCH_PREFLIGHT")
+    if explicit:
+        path = Path(explicit)
+        assert path.is_file(), f"$QUTE_RESEARCH_PREFLIGHT={explicit} is not a file"
+        assert "def check_replication(" in path.read_text(encoding="utf-8"), f"{explicit} has no replication mode"
+        candidates = [path]
+    else:
+        cache = Path.home() / ".claude/plugins/cache/qute-plugins/qute-research"
 
-    def semver(p: Path) -> tuple[int, ...]:
-        parts = p.parts[-3].split(".")
-        return tuple(int(x) for x in parts) if all(x.isdigit() for x in parts) else ()
+        def semver(p: Path) -> tuple[int, ...]:
+            parts = p.parts[-3].split(".")
+            return tuple(int(x) for x in parts) if all(x.isdigit() for x in parts) else ()
 
-    candidates += sorted(cache.glob("*/scripts/quant_preflight.py"), key=semver, reverse=True)
+        candidates = sorted(cache.glob("*/scripts/quant_preflight.py"), key=semver, reverse=True)
     for path in candidates:
-        if path.is_file() and "def check_replication(" in path.read_text(encoding="utf-8"):
+        if "def check_replication(" in path.read_text(encoding="utf-8"):
             spec = importlib.util.spec_from_file_location("qute_quant_preflight", str(path))
             module = importlib.util.module_from_spec(spec)
-            sys.modules[spec.name] = module  # its dataclasses resolve annotations through it
+            # its dataclasses resolve annotations through sys.modules; it prepends its own dir
+            # to sys.path on import. Both are undone when the test ends.
+            monkeypatch.setitem(sys.modules, spec.name, module)
+            monkeypatch.setattr(sys, "path", list(sys.path))
             spec.loader.exec_module(module)
             return module
     return None
 
 
-def test_the_replication_readme_passes_the_qute_research_preflight_replication_mode(tmp_path, fake_qb, datasets_root):
+def test_the_replication_readme_passes_the_qute_research_preflight_replication_mode(
+    tmp_path, fake_qb, datasets_root, monkeypatch
+):
     """The card's verification: the generated block, once filled, passes the REAL pre-flight.
 
     Skips (saying so) where no qute-research with a replication mode is installed; the
     test above holds the same keys offline, so CI is not left with nothing.
     """
-    qp = _preflight_module()
+    qp = _preflight_module(monkeypatch)
     if qp is None:
         pytest.skip("no qute-research pre-flight with a replication mode; set QUTE_RESEARCH_PREFLIGHT")
     _scaffold(tmp_path, fake_qb, kind="replication")
