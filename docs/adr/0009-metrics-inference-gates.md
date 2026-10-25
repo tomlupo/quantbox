@@ -108,6 +108,7 @@ The duplication guard of #236 matched metric NAMES. It did not see these copies:
    - The `nw` gate and `factor_regression` do not take `overlap` yet: a gate
      tests a strategy's per-period returns, which do not overlap.
 8. **Multiple-testing corrections are inference.** *Added by TOM-1646 (2026-10-08).* `inference.multiple_testing(pvalues, *, alpha, method="bonferroni"|"holm")` and `inference.bonferroni_alpha(n_tests, *, alpha)` (the per-test level `alpha/m`, for a CI) are the one home; the guard's `multiple_testing` class refuses a second one.
+9. **A predictive regression is inference.** *Added by TOM-2411 (2026-10-25).* `inference.predictive_regression(returns, predictor, *, rho_bound=0.9999)` regresses r_t on x_{t-1} and returns the OLS slope, the Stambaugh (1999) bias-adjusted slope with its standard error, and Lewellen's (2004) conditional slope under rho <= `rho_bound`. The gate `gates.predreg_gate` (`quantbox gates predreg`) adds only policy: the two bias-adjusted tests, Bonferroni at family-wise `alpha`, the conditional one only when `gamma < 0` makes it a lower bound, and `min_obs`. `tests/test_predreg.py` holds a seeded Monte-Carlo of the bias and Lewellen's Table 2 (log D/P, 1946-2000) on SBBI.
 
 ## Consequences
 

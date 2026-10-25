@@ -1,4 +1,4 @@
-"""``quantbox gates dsr|nw|factor|bootstrap|episode`` — the acceptance gates as a CLI.
+"""``quantbox gates dsr|nw|factor|bootstrap|episode|predreg`` — the acceptance gates as a CLI.
 
 The maths lives in :mod:`quantbox.gates`; this module only reads files,
 calls the gate and maps the result to an exit code:
@@ -9,7 +9,7 @@ calls the gate and maps the result to an exit code:
 
 With ``--json`` the verdict is one JSON object on stdout; a 2 prints
 ``{"error": ...}`` on stderr. Inputs are per-period return series as ``.csv`` or
-``.parquet``. Paired inputs (``factor``, ``bootstrap``, ``episode --baseline``)
+``.parquet``. Paired inputs (``factor``, ``bootstrap``, ``episode --baseline``, ``predreg``)
 are date-indexed — the first column is the date — and are inner-joined on it, in
 date order; a numeric first column is refused rather than paired by row position.
 A single-series file that carries a date first column is read in date order too.
@@ -34,7 +34,10 @@ import typer
 
 gates_app = typer.Typer(
     name="gates",
-    help="Acceptance gates on a return series. Exit 0 pass, 1 fail, 2 could not compute.",
+    help=(
+        "Acceptance gates on a return series: dsr, nw, factor, bootstrap, episode, predreg. "
+        "Exit 0 pass, 1 fail, 2 could not compute."
+    ),
     no_args_is_help=True,
 )
 
@@ -47,6 +50,7 @@ HEADLINE = {
     "factor": ("alpha_tstat", "t_threshold"),
     "bootstrap": ("probability", "min_probability"),
     "episode": ("ex_episode", "threshold"),
+    "predreg": ("pvalue_adjusted_min", "alpha"),
 }
 
 
@@ -474,3 +478,69 @@ def episode(
         return out
 
     _emit("episode", as_json, compute, returns, baseline)
+
+
+@gates_app.command("predreg")
+def predreg(
+    returns: str = _RETURNS,
+    predictor: str = typer.Option(
+        ..., "--predictor", help="predictor series (e.g. log D/P), date-indexed; may be the --returns file"
+    ),
+    column: str = _COLUMN,
+    predictor_column: str = typer.Option(None, "--predictor-column", help="predictor column of the --predictor file"),
+    rho_bound: float = typer.Option(
+        0.9999, "--rho-bound", help="Lewellen's bound on the predictor's AR(1) rho (the true rho is at most this)"
+    ),
+    alpha: float = typer.Option(0.05, "--alpha", help="family-wise level over the bias-adjusted tests (Bonferroni)"),
+    min_obs: int = typer.Option(60, "--min-obs", help="minimum (r_t, x_t-1) pairs"),
+    allow_nonfinite_drop: bool = _DROP,
+    as_json: bool = _JSON,
+):
+    """Predictive regression r_t on x_t-1: Stambaugh bias-adjusted and Lewellen conditional slopes, one-sided."""
+
+    def compute() -> dict:
+        import pandas as pd
+
+        from quantbox.gates import predreg_gate
+
+        r = _series(returns, column, indexed=True)
+        panel = _read_frame(predictor, indexed=True)
+        numeric = [str(c) for c in panel.select_dtypes("number").columns]
+        if predictor_column is None and len(numeric) != 1:
+            # never the return-name guess: it would pick the RETURN column of a shared file
+            raise _input_error(
+                f"cannot tell which column of {predictor} is the predictor among {numeric} — pass --predictor-column"
+            )
+        pcol = _pick_column(panel, predictor_column, predictor) if predictor_column is not None else numeric[0]
+        if Path(predictor).resolve() == Path(returns).resolve() and pcol == r.name:
+            raise _input_error(f"--predictor column {pcol!r} is the return column itself")
+        try:
+            x = panel[pcol].astype(float)
+        except (ValueError, TypeError) as exc:
+            raise _input_error(f"column {pcol!r} of {predictor} is not numeric ({exc})") from exc
+        j = pd.concat([r.rename("c"), x.rename("b")], axis=1, join="inner").sort_index()
+        if j.empty:
+            raise _input_error(f"{returns} and {predictor} share no dates — nothing to pair")
+        # The lag pairs NEIGHBOURING rows, so a period one file has and the other lacks inside
+        # the shared span would silently pair a return with a predictor two periods old.
+        lo, hi = j.index[0], j.index[-1]
+        for path, s in ((returns, r), (predictor, x)):
+            inside = s.index[(s.index >= lo) & (s.index <= hi)]
+            missing = inside.difference(j.index)
+            if len(missing):
+                raise _input_error(
+                    f"{path}: {len(missing)} date(s) inside the shared span have no partner in the other file "
+                    f"(first {missing[0].isoformat()}) — the lag would pair the wrong periods; align the files first"
+                )
+        out = predreg_gate(
+            j["c"].to_numpy(),
+            j["b"].to_numpy(),
+            rho_bound=rho_bound,
+            alpha=alpha,
+            min_obs=min_obs,
+            allow_nonfinite_drop=allow_nonfinite_drop,
+        )
+        out["first_date"], out["last_date"] = j.index[0], j.index[-1]
+        return out
+
+    _emit("predreg", as_json, compute, returns, predictor)
