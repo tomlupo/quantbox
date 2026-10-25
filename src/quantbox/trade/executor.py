@@ -9,8 +9,9 @@ orchestrator; the stages, in order:
    (enforce mode, issue #90), and the dead-man when no order is executable: a
    residual day (TOM-1778, TOM-2212), a quiet day, or a FROZEN book. The book
    freezes only when a suppressed row is not proven to trap nothing.
-2. **submit** — sell before buy; the order INTENT is written to the ledger
-   before ``broker.place_orders`` (crash-durable, issue #90).
+2. **submit** — sell before buy, in a stable sort that keeps a flip's close
+   leg before its open leg (TOM-2396); the order INTENT is written to the
+   ledger before ``broker.place_orders`` (crash-durable, issue #90).
 3. **classify** — every broker row passes :func:`normalise_results` (the one
    normaliser at the broker seam: an absent status or filled quantity is
    UNKNOWN, never a fill), then books as FILLED / PARTIAL / WORKING / UNKNOWN /
@@ -508,8 +509,11 @@ def execute_orders(
     if executable.empty:
         return _gate_unexecutable(report, orders_df, residuals, broker, alert)
 
-    # Sell before buy: sort by Action descending (Sell > Buy)
-    executable = executable.sort_values(by="Action", ascending=False)
+    # Sell before buy: sort by Action descending (Sell > Buy). The sort is
+    # STABLE, so rows of one side keep the rebalancer's order. A flip is a
+    # close leg then an open leg of the SAME side (TOM-2396), and the close
+    # must reach the venue first: every broker sends rows one by one, in order.
+    executable = executable.sort_values(by="Action", ascending=False, kind="stable")
 
     # Convert to broker-compatible format
     broker_orders_data: list[dict[str, Any]] = []
