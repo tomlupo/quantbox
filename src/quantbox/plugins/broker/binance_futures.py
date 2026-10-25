@@ -381,6 +381,22 @@ class BinanceFuturesBroker:
                         "error": reason,
                     }
                 )
+            else:
+                # ONE result row per submitted order, in order, a rejection
+                # included. The executor binds results to orders by position in
+                # (symbol, side); a missing row let the next same-key order's
+                # fill be booked to this one (PR #310 review, TOM-2396).
+                fills.append(
+                    {
+                        "symbol": sym,
+                        "side": side,
+                        "qty": 0.0,
+                        "price": 0.0,
+                        "order_id": None,
+                        "status": "FAILED",
+                        "error": "placement failed",
+                    }
+                )
         cols = ["symbol", "side", "qty", "price", "order_id", "status", "error"]
         return pd.DataFrame(fills, columns=cols) if fills else pd.DataFrame(columns=cols)
 
