@@ -87,7 +87,7 @@ def split_flips(rebalancing_df: pd.DataFrame) -> pd.DataFrame:
        quantity, value and weight 0. It gets every close exemption and the
        close lot rules.
     2. The OPEN leg is an open from flat to the target: current quantity,
-       value and weight 0. Its ``Weight Delta`` is its own target weight, so
+       value and weight 0. Its ``Weight Delta`` is its own strategy weight, so
        the churn band judges the open leg alone.
 
     The two legs' quantities and weight deltas add up to the original row's.
@@ -106,17 +106,24 @@ def split_flips(rebalancing_df: pd.DataFrame) -> pd.DataFrame:
             continue
         n_flips += 1
         cur, tgt = float(rec["Current Quantity"]), float(rec["Target Quantity"])
-        target_weight = float(rec.get("Target Weight", 0.0) or 0.0)
-        weight_delta = float(rec.get("Weight Delta", 0.0) or 0.0)
+        weight_delta = float(rec["Weight Delta"])
+        # The book writes Weight Delta = strategy weight - Current Weight
+        # (quantbox.trade.book.rebalancing_frame). So the close leg's own delta
+        # is -Current Weight, and the open leg's is the strategy weight: the
+        # band judges the open leg on the same basis as every other row. Two
+        # legs, one sum: the original Weight Delta. A frame without a finite
+        # Current Weight takes it from Target Weight - Weight Delta.
+        current_weight = rec.get("Current Weight")
+        if current_weight is None or not np.isfinite(float(current_weight)):
+            current_weight = float(rec.get("Target Weight", 0.0)) - weight_delta
+        current_weight = float(current_weight)
         close = dict(rec)
         close.update({"Target Quantity": 0.0, "Target Weight": 0.0, "Delta Quantity": -cur})
         if "Target Value" in close:
             close["Target Value"] = 0.0
-        # Weight Delta = Target Weight - Current Weight, so the close leg's own
-        # delta is -Current Weight = Weight Delta - Target Weight.
-        close["Weight Delta"] = weight_delta - target_weight
+        close["Weight Delta"] = -current_weight
         opening = dict(rec)
-        opening.update({"Current Quantity": 0.0, "Delta Quantity": tgt, "Weight Delta": target_weight})
+        opening.update({"Current Quantity": 0.0, "Delta Quantity": tgt, "Weight Delta": weight_delta + current_weight})
         for col in ("Current Value", "Current Weight"):
             if col in opening:
                 opening[col] = 0.0
