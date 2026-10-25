@@ -31,7 +31,7 @@ import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +46,7 @@ FILENAME = "working_orders.json"
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 @dataclass
@@ -208,7 +208,7 @@ class WorkingOrderResolution:
         ``recorded_at`` cannot be parsed is INCLUDED — an unreadable age must
         not silently read as "young enough to ignore".
         """
-        moment = now or datetime.now(timezone.utc)
+        moment = now or datetime.now(UTC)
         out = []
         for rec in self.unresolved:
             age = record_age_seconds(rec, now=moment)
@@ -227,8 +227,8 @@ def record_age_seconds(rec: dict[str, Any], *, now: datetime | None = None) -> f
     except (TypeError, ValueError):
         return None
     if recorded.tzinfo is None:
-        recorded = recorded.replace(tzinfo=timezone.utc)
-    moment = now or datetime.now(timezone.utc)
+        recorded = recorded.replace(tzinfo=UTC)
+    moment = now or datetime.now(UTC)
     return (moment - recorded).total_seconds()
 
 
@@ -281,7 +281,7 @@ def resolve_working_orders(
         return result
 
     drop_ids: set[str] = set()
-    moment = now or datetime.now(timezone.utc)
+    moment = now or datetime.now(UTC)
     for rec in queued:
         order_id = str(rec.get("order_id") or "")
         symbol = str(rec.get("symbol") or "")

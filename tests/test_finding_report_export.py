@@ -250,12 +250,12 @@ def test_the_latest_run_is_refused_when_it_cannot_be_told(tmp_path):
 
 
 def test_run_started_at_parses_the_run_id_timestamp():
-    from datetime import datetime, timezone
+    from datetime import UTC, datetime
 
     from quantbox.run_history import run_started_at
 
     assert run_started_at("2024-02-09__backtest_pipeline_v1__ccd90b192d7d__20261001T074159Z") == datetime(
-        2026, 10, 1, 7, 41, 59, tzinfo=timezone.utc
+        2026, 10, 1, 7, 41, 59, tzinfo=UTC
     )
     assert run_started_at("run_a") is None
     assert run_started_at("x__y__z__notatime") is None

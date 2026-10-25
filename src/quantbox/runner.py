@@ -6,7 +6,7 @@ import json
 import logging
 import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -409,7 +409,7 @@ def _run_capability_checks(data: Any, run_ctx: Any) -> dict[str, dict[str, Any]]
 
 
 def _run_id(asof: str, pipeline_name: str, cfg_hash: str) -> str:
-    ts = datetime.now(timezone.utc).strftime(RUN_TS_FORMAT)
+    ts = datetime.now(UTC).strftime(RUN_TS_FORMAT)
     safe = pipeline_name.replace(".", "_")
     return f"{asof}__{safe}__{cfg_hash}__{ts}"
 
