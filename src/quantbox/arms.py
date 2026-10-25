@@ -270,16 +270,12 @@ def plan_workers(n_arms: int, *, max_workers: int, memory_budget_gb: float, arm_
 def _pool_kwargs(workers: int) -> dict[str, Any]:
     """Executor settings for a parallel batch.
 
-    spawn: no inherited threads or locks. One arm per child on Python 3.11+, so
-    an arm's memory goes back to the OS before the next arm starts in that slot;
-    3.10 has no ``max_tasks_per_child``, so there a worker serves arms in turn.
+    spawn: no inherited threads or locks. One arm per child, so an arm's memory
+    goes back to the OS before the next arm starts in that slot.
     """
     import multiprocessing
 
-    kwargs: dict[str, Any] = {"max_workers": workers, "mp_context": multiprocessing.get_context("spawn")}
-    if sys.version_info >= (3, 11):
-        kwargs["max_tasks_per_child"] = 1
-    return kwargs
+    return {"max_workers": workers, "mp_context": multiprocessing.get_context("spawn"), "max_tasks_per_child": 1}
 
 
 @contextlib.contextmanager

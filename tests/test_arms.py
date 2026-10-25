@@ -415,30 +415,25 @@ def test_a_source_strategy_runs_as_a_variant(tmp_path):
     assert result.notes["variants"] == ["half", "full"]
 
 
-# --- the worker pool honours requires-python >=3.10 (PR #222 review BLOCKER) ---
+# --- the worker pool: spawn, one arm per child (PR #222 review BLOCKER) ---
+# Python 3.10 is no longer supported (TOM-2354), so every interpreter has
+# ``max_tasks_per_child`` and the pool always asks for it.
 
 
-@pytest.mark.parametrize(
-    ("version", "recycles"),
-    [((3, 10, 20), False), ((3, 11, 0), True), ((3, 12, 3), True)],
-)
-def test_the_arm_pool_only_asks_for_child_recycling_where_python_has_it(monkeypatch, version, recycles):
-    """``max_tasks_per_child`` is 3.11+; on 3.10 passing it is a TypeError that
-    kills every parallel batch after its directory already exists."""
+def test_the_arm_pool_recycles_each_child_after_one_arm():
+    """A kwarg the executor does not accept is a TypeError that kills every
+    parallel batch after its directory already exists."""
     import inspect
     from concurrent.futures import ProcessPoolExecutor
 
     from quantbox import arms
 
-    # Unpatched: every kwarg handed over is one THIS interpreter's executor accepts.
-    accepted = inspect.signature(ProcessPoolExecutor.__init__).parameters
-    assert set(arms._pool_kwargs(2)) <= set(accepted)
-
-    monkeypatch.setattr(arms.sys, "version_info", version)
     kwargs = arms._pool_kwargs(2)
+    accepted = inspect.signature(ProcessPoolExecutor.__init__).parameters
+    assert set(kwargs) <= set(accepted)
     assert kwargs["max_workers"] == 2
     assert kwargs["mp_context"].get_start_method() == "spawn"
-    assert ("max_tasks_per_child" in kwargs) is recycles
+    assert kwargs["max_tasks_per_child"] == 1
 
 
 # ----------------------------------------------------------------------

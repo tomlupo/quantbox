@@ -1,8 +1,8 @@
 [project]
 name = "quantbox"
-version = "0.18.0"
+version = "0.19.0"
 description = "Quant research & trading core with plugin marketplace (entry points)."
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 # The base install is what the CORE layer imports (ADR-0010 decision 4,
 # TOM-1451): a client install (robo) gets core and nothing else. A library a
 # core module does not import belongs in an extra below. This file is the one
@@ -78,7 +78,7 @@ override-dependencies = ["multidict>=6.9.1,<7"]
 package-data = { quantbox = ["artifact_schemas/*.schema.json", "line_template/*.tmpl"], "quantbox.plugins" = ["manifest.yaml", "manifest.schema.json"] }
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 120
 exclude = [
     "cookbook/configs/",
@@ -99,6 +99,12 @@ ignore = [
     "E741",    # ambiguous variable name (common in quant: l, O, I)
     "B008",    # function call in default arg (typer uses this)
     "SIM108",  # ternary — readability preference
+    # Raised to py311 by TOM-2354, these two fire on 25 sites, most of them on the
+    # trade path (brokers, trading_pipeline, trade.reconciliation). Fixing them is
+    # its own change: UP042 (StrEnum) changes str() and format() of the members,
+    # and a trade-path edit owes a live shadow run. Remove both lines with that fix.
+    "UP017",   # datetime.UTC alias for timezone.utc
+    "UP042",   # StrEnum for class X(str, Enum)
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -488,7 +494,7 @@ forbidden_modules = ["vectorbt", "numba", "ccxt"]
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.18.0"
+version = "0.19.0"
 version_files = [
     "pyproject.toml:version",
     "src/quantbox/__init__.py:__version__",
