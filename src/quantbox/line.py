@@ -205,6 +205,16 @@ _TEMPLATE_FILES = {
 }
 
 
+#: line kind -> the template holding what its prereg block is anchored to. A ``book`` line
+#: names a system.yaml book; a ``replication`` line names the paper it replicates, in the
+#: keys the qute-research pre-flight's replication mode reads (TOM-2231, TOM-2277).
+LINE_KINDS = {
+    "book": "anchor_book.tmpl",
+    "replication": "anchor_replication.tmpl",
+}
+DEFAULT_KIND = "book"
+
+
 def _template(name: str) -> str:
     return _res_files("quantbox").joinpath("line_template").joinpath(name).read_text(encoding="utf-8")
 
@@ -300,14 +310,20 @@ def new_line(
     question: str | None = None,
     lock: bool = True,
     today: _dt.date | None = None,
+    kind: str = DEFAULT_KIND,
 ) -> dict[str, Any]:
     """Scaffold the Model C line *slug* in *directory* (default ``./<slug>``); return what was pinned.
 
-    Refuses a non-empty target, a slug that is not a lowercase name, and a quantbox ref
-    that predates line support (the skeleton would not run on it).
+    *kind* picks what the README's prereg block is anchored to: ``book`` (a system.yaml
+    book) or ``replication`` (the paper it replicates, no book).
+
+    Refuses a non-empty target, a slug that is not a lowercase name, an unknown kind, and
+    a quantbox ref that predates line support (the skeleton would not run on it).
     """
     if not _SLUG_RE.match(slug):
         raise LineError(f"line slug {slug!r}: use lowercase letters, digits, '-' and '_'")
+    if kind not in LINE_KINDS:
+        raise LineError(f"--kind {kind!r}: use one of {', '.join(LINE_KINDS)}")
     target = Path(directory) if directory is not None else Path.cwd() / slug
     if target.exists() and any(target.iterdir()):
         raise LineError(f"{target} exists and is not empty")
@@ -341,6 +357,7 @@ def new_line(
             "DATASETS_SHA": ds_sha,
             "DATASET": dataset,
             "PINS": render_pins({}),
+            "ANCHOR": _template(LINE_KINDS[kind]).rstrip("\n"),
         }
         target.mkdir(parents=True, exist_ok=True)
         for src, dst in _TEMPLATE_FILES.items():

@@ -257,6 +257,131 @@ def test_cli_new_line_and_repin(tmp_path, fake_qb, datasets_root):
     assert res.exit_code == 1 and "not empty" in res.output
 
 
+# ── kind: replication (TOM-2277) ──────────────────────────────────────────
+
+#: What a researcher writes into the replication README, in the order the `<...>` tokens
+#: appear. Each pair replaces ONE occurrence, so a token the template stops emitting, or a
+#: new one it starts to, leaves a placeholder the pre-flight refuses by name.
+_REPLICATION_FILL = [
+    ("<hypothesis-id>", "crypto-factors"),
+    ("<DOI or URL>", "10.1093/rfs/hhaa113"),
+    ("<YYYY-MM>", "2011-01"),
+    ("<YYYY-MM>", "2018-12"),
+    ("<metric>", "sharpe"),
+    ("<number>", "1.2"),
+    ("# reference_series: <the authors' public series>", "reference_series: CMKT"),  # optional: uncommented
+    ("<YYYY-MM>", "2019-01"),
+    ("<YYYY-MM>", "2023-12"),
+    ("<all legs | k of n arms>", "all legs"),
+    ("<leg>", "sharpe-vs-baseline"),
+    ("<metric>", "sharpe"),
+    ("<number>", "0.1"),
+    ("<number>", "2000"),
+    ("<number>", "20"),
+    ("<number>", "7"),
+    ("<number in (0, 1]>", "0.95"),
+    ("<every arm and probe, including earlier configs for the same idea>", "2"),
+    ("<key>", "min_rebalances"),
+    ("<number>", "12"),
+]
+_LAB_SYSTEM = {"liveness": {"min_rebalances": 12}}
+
+
+def _fill_replication(readme: str) -> str:
+    for token, value in _REPLICATION_FILL:
+        assert token in readme, f"the template no longer carries {token!r}"
+        readme = readme.replace(token, value, 1)
+    return readme
+
+
+def _prereg_block(readme: str) -> dict:
+    block = re.search(r"```yaml\n(prereg:\n.*?)```", readme, re.S)
+    assert block, "README carries no prereg block"
+    return yaml.safe_load(block.group(1))["prereg"]
+
+
+def test_a_replication_line_anchors_its_prereg_to_a_paper_not_a_book(tmp_path, fake_qb, datasets_root):
+    """`kind: replication` + `paper:` in the keys the qute-research pre-flight reads (TOM-2231)."""
+    _scaffold(tmp_path, fake_qb, kind="replication")
+    readme = (tmp_path / "demo/README.md").read_text()
+    prereg = _prereg_block(_fill_replication(readme))
+    assert "book" not in prereg
+    assert prereg["kind"] == "replication"
+    assert prereg["primary_dataset"] == "demo-daily"
+    paper = prereg["paper"]
+    assert set(paper) == {"ref", "sample", "reported", "reference_series", "post_sample"}
+    assert paper["sample"] == {"start": "2011-01", "end": "2018-12"}
+    assert paper["post_sample"] == {"start": "2019-01", "end": "2023-12"}
+    assert paper["reported"] == [{"metric": "sharpe", "value": 1.2}]
+    assert "{{" not in readme
+
+
+def test_a_book_line_is_the_default_and_an_unknown_kind_is_refused(tmp_path, fake_qb, datasets_root):
+    _scaffold(tmp_path, fake_qb)
+    prereg = _prereg_block((tmp_path / "demo/README.md").read_text())
+    assert prereg["book"] == "<a books[].name from system.yaml>" and "kind" not in prereg and "paper" not in prereg
+    with pytest.raises(line.LineError, match="--kind 'paper'"):
+        _scaffold(tmp_path, fake_qb, directory=tmp_path / "other", kind="paper")
+    assert not (tmp_path / "other").exists()
+
+
+def _preflight_module():
+    """The qute-research pre-flight that has a replication mode: `$QUTE_RESEARCH_PREFLIGHT`,
+    else the newest plugin-cache copy defining `check_replication`, else None."""
+    import importlib.util
+
+    candidates = []
+    if os.environ.get("QUTE_RESEARCH_PREFLIGHT"):
+        candidates.append(Path(os.environ["QUTE_RESEARCH_PREFLIGHT"]))
+    cache = Path.home() / ".claude/plugins/cache/qute-plugins/qute-research"
+
+    def semver(p: Path) -> tuple[int, ...]:
+        parts = p.parts[-3].split(".")
+        return tuple(int(x) for x in parts) if all(x.isdigit() for x in parts) else ()
+
+    candidates += sorted(cache.glob("*/scripts/quant_preflight.py"), key=semver, reverse=True)
+    for path in candidates:
+        if path.is_file() and "def check_replication(" in path.read_text(encoding="utf-8"):
+            spec = importlib.util.spec_from_file_location("qute_quant_preflight", str(path))
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module  # its dataclasses resolve annotations through it
+            spec.loader.exec_module(module)
+            return module
+    return None
+
+
+def test_the_replication_readme_passes_the_qute_research_preflight_replication_mode(tmp_path, fake_qb, datasets_root):
+    """The card's verification: the generated block, once filled, passes the REAL pre-flight.
+
+    Skips (saying so) where no qute-research with a replication mode is installed; the
+    test above holds the same keys offline, so CI is not left with nothing.
+    """
+    qp = _preflight_module()
+    if qp is None:
+        pytest.skip("no qute-research pre-flight with a replication mode; set QUTE_RESEARCH_PREFLIGHT")
+    _scaffold(tmp_path, fake_qb, kind="replication")
+    path = tmp_path / "demo/README.md"
+    generated = path.read_text()
+
+    def rows(text: str) -> list[tuple[str, str, str]]:
+        path.write_text(text)
+        report = qp.Report()
+        prereg, _ = qp.check_prereg(report, path, None)
+        assert prereg is not None, report.rows
+        qp.check_prereg_content(report, prereg, 1)
+        if qp.check_replication(report, prereg):
+            qp.check_liveness(report, _LAB_SYSTEM, None, prereg)
+        return report.rows
+
+    filled = rows(_fill_replication(generated))
+    assert [r for r in filled if r[0] != qp.PASS] == []
+    assert {r[1] for r in filled} >= {"book", "paper", "primary-dataset", "placeholders", "liveness"}
+    # not vacuous: the block as generated reads (never BLIND) and is refused for its placeholders
+    unfilled = rows(generated)
+    assert any(r[0] == qp.REFUSE and r[1] == "placeholders" for r in unfilled)
+    assert [r for r in unfilled if r[0] == qp.BLIND] == []
+
+
 # ── repin (offline) ───────────────────────────────────────────────────────
 
 
