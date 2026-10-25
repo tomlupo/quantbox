@@ -9,12 +9,15 @@ orchestrator; the stages, in order:
    (enforce mode, issue #90), and the dead-man when no order is executable: a
    residual day (TOM-1778, TOM-2212), a quiet day, or a FROZEN book. The book
    freezes only when a suppressed row is not proven to trap nothing.
-2. **submit** — sell before buy; the order INTENT is written to the ledger
-   before ``broker.place_orders`` (crash-durable, issue #90).
+2. **submit** — sell before buy, in a stable sort that keeps a flip's close
+   leg before its open leg (TOM-2396); the order INTENT is written to the
+   ledger before ``broker.place_orders`` (crash-durable, issue #90).
 3. **classify** — every broker row passes :func:`normalise_results` (the one
    normaliser at the broker seam: an absent status or filled quantity is
    UNKNOWN, never a fill), then books as FILLED / PARTIAL / WORKING / UNKNOWN /
-   FAILED / SKIPPED, bound one-to-one to its intent.
+   FAILED / SKIPPED, bound one-to-one to its intent. A (symbol, side) whose
+   result rows do not number its submitted orders binds nothing: each of its
+   orders books FAILED with an UNKNOWN fill (:func:`unbound_keys`, TOM-2396).
 4. **working orders** — an order still resting at the venue, or an unconfirmed
    one with an id, is queued so the next cycle books its real outcome.
 5. **report** — the execution report the pipeline stores, and an alert for
@@ -393,6 +396,94 @@ def _gate_unexecutable(
     return report
 
 
+def _result_key(row: Any) -> tuple[str, str]:
+    return (str(row.get("symbol", "")).strip(), str(row.get("side", "")).strip().lower())
+
+
+def unbound_keys(submitted: pd.DataFrame, results: pd.DataFrame) -> set[tuple[str, str]]:
+    """The (symbol, side) keys whose broker results cannot be bound to their orders (TOM-2396).
+
+    The executor binds the k-th result row of a key to the k-th order of that
+    key it submitted. That is exact only when the broker returns ONE row per
+    submitted order of the key. Brokers carry no client order id that echoes
+    the submitted row, so the count is the check. A key with more or fewer
+    result rows than orders is unbound: a missing rejection row would hand the
+    next same-key order's fill to the rejected one. A flip's close and open
+    legs share a key, which is how PR #310's review found it.
+    """
+    want: dict[tuple[str, str], int] = defaultdict(int)
+    got: dict[tuple[str, str], int] = defaultdict(int)
+    for _, row in submitted.iterrows():
+        want[_result_key(row)] += 1
+    for _, row in results.iterrows():
+        got[_result_key(row)] += 1
+    return {key for key in set(want) | set(got) if want[key] != got[key]}
+
+
+def _fail_closed_unbound(
+    report: dict[str, Any],
+    submitted: pd.DataFrame,
+    results: pd.DataFrame,
+    unbound: set[tuple[str, str]],
+    intent_refs: dict[tuple[str, str], list[str | None]],
+    declared_closes: dict[tuple[str, str], deque[bool]],
+    ledger: Any,
+    cycle_id: str | None,
+) -> pd.DataFrame:
+    """Book every order of an unbound key as FAILED with an UNKNOWN fill; return the results left to bind.
+
+    No fill of an unbound key is booked to any order, because none can be told
+    apart. Each submitted order of the key gets its own FAILED row (fill
+    UNKNOWN, no quantity) and its ledger intent closes ``failed``. The broker's
+    own rows, order ids included, go on the report under ``unbound_results``
+    for the operator to reconcile against the venue. The failure alert fires
+    from :func:`report_order_failures` at the end of the run.
+    """
+    keep = [_result_key(r) not in unbound for _, r in results.iterrows()]
+    dropped = results[[not k for k in keep]]
+    report["unbound_results"] = [
+        {
+            "symbol": str(r.get("symbol", "")),
+            "side": str(r.get("side", "")),
+            "status": str(r.get("status", "")),
+            "qty": _safe_float(r.get("qty")),
+            "order_id": None if r.get("order_id") is None or pd.isna(r.get("order_id")) else str(r.get("order_id")),
+        }
+        for _, r in dropped.iterrows()
+    ]
+    for key in sorted(unbound):
+        n_sent = int(sum(_result_key(r) == key for _, r in submitted.iterrows()))
+        n_back = int(sum(_result_key(r) == key for _, r in dropped.iterrows()))
+        error = (
+            f"broker returned {n_back} result row(s) for {n_sent} order(s) on {key[0]} {key[1]}: "
+            "no result can be bound to its order, no fill booked; reconcile against the venue"
+        )
+        logger.error("RESULTS UNBOUND: %s", error)
+        for _, row in submitted.iterrows():
+            if _result_key(row) != key:
+                continue
+            report["orders_details"].append(
+                {
+                    "symbol": key[0],
+                    "action": key[1],
+                    "quantity": 0.0,
+                    "status": "FAILED",
+                    "fill_status": "UNKNOWN",
+                    "error": error,
+                }
+            )
+            report["summary"]["total_failed"] += 1
+        for ref in intent_refs.pop(key, []):
+            if ref is None or ledger is None or cycle_id is None:
+                continue
+            try:
+                ledger.record_result(order_ref=ref, cycle_id=cycle_id, status="failed")
+            except Exception as exc:  # never let the ledger crash the run
+                logger.warning("Result capture failed for %s %s: %s", key[1], key[0], exc)
+        declared_closes.pop(key, None)
+    return results[keep]
+
+
 def execute_orders(
     *,
     broker: BrokerPlugin,
@@ -508,8 +599,11 @@ def execute_orders(
     if executable.empty:
         return _gate_unexecutable(report, orders_df, residuals, broker, alert)
 
-    # Sell before buy: sort by Action descending (Sell > Buy)
-    executable = executable.sort_values(by="Action", ascending=False)
+    # Sell before buy: sort by Action descending (Sell > Buy). The sort is
+    # STABLE, so rows of one side keep the rebalancer's order. A flip is a
+    # close leg then an open leg of the SAME side (TOM-2396), and the close
+    # must reach the venue first: every broker sends rows one by one, in order.
+    executable = executable.sort_values(by="Action", ascending=False, kind="stable")
 
     # Convert to broker-compatible format
     broker_orders_data: list[dict[str, Any]] = []
@@ -720,6 +814,17 @@ def execute_orders(
         # at all), so it must alert on the same path as a per-order rejection.
         report_order_failures(report, alert)
         return report
+
+    # Results bind to orders by position within (symbol, side). That holds only
+    # when the broker returns one row per submitted order of each key. Where it
+    # does not, no row of that key can be bound: fail closed (TOM-2396).
+    unbound: set[tuple[str, str]] = set()
+    if fills is not None and not fills.empty:
+        unbound = unbound_keys(broker_orders, fills)
+        if unbound:
+            fills = _fail_closed_unbound(
+                report, broker_orders, fills, unbound, intent_refs, declared_closes, ledger, cycle_id
+            )
 
     # Process fills and failures
     if fills is not None and not fills.empty:
@@ -972,7 +1077,7 @@ def execute_orders(
         # residual behind the generic FAILED alert).
         if report["summary"]["total_executed"] == 0 and n_skipped_close >= 1:
             _freeze_trapped_residual(report, order_intent, n_skipped, n_skipped_close, alert)
-    else:
+    elif not unbound:
         # Submitted orders but received zero fills — broker-level failure.
         order_list = ", ".join(f"{r['side'].upper()} {r['qty']:.4f} {r['symbol']}" for _, r in broker_orders.iterrows())
         logger.error(

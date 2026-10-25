@@ -673,8 +673,11 @@ def filter_reduce_only(executable: pd.DataFrame, broker: Any) -> pd.DataFrame:
 
     An order reduces |position| iff its signed delta opposes the current
     signed position. Opening/increasing legs are dropped; a reducing leg is
-    clamped to at most the current position magnitude. Fails SAFE: if we cannot
-    read positions, we drop everything (send nothing) rather than risk opening.
+    clamped to at most the position LEFT after the reducing legs kept before
+    it. So two legs on one symbol (a flip's close leg and open leg, TOM-2396)
+    never reduce more than the position: the open leg is dropped once the close
+    leg takes it to zero. Fails SAFE: if we cannot read positions, we drop
+    everything (send nothing) rather than risk opening.
     """
     positions: dict[str, float] = {}
     try:
@@ -713,6 +716,8 @@ def filter_reduce_only(executable: pd.DataFrame, broker: Any) -> pd.DataFrame:
         new_qty = min(qty, abs(cur))  # clamp: never cross zero
         if new_qty <= 0:
             continue
+        # What is left for a later leg of this symbol, moved toward zero.
+        positions[sym] = cur - new_qty if cur > 0 else cur + new_qty
         r = row.copy()
         r["Adjusted Quantity"] = new_qty
         # Exposure-reducing under a FLATTEN gate, i.e. an emergency exit. Mark

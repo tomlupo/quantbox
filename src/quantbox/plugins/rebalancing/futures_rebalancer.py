@@ -47,7 +47,9 @@ def declares_open(current_qty: float, target_qty: float) -> bool:
 
     The one definition every builtin rebalancer writes as ``opens_exposure`` on
     an order row (TOM-1778, TOM-901). A flip through zero is NOT an open: it
-    exits the held side first. The execution stage (:mod:`quantbox.trade.executor`)
+    exits the held side first. The futures rebalancer splits a flip into a
+    close leg and an open leg (:func:`split_flips`, TOM-2396), and each leg
+    declares its own intent. The execution stage (:mod:`quantbox.trade.executor`)
     reads the flag instead of guessing intent from the order's side.
     """
     if target_qty == 0:
@@ -56,6 +58,79 @@ def declares_open(current_qty: float, target_qty: float) -> bool:
         return True
     same_sign = (target_qty > 0) == (current_qty > 0)
     return bool(same_sign and abs(target_qty) > abs(current_qty))
+
+
+def is_flip(current_qty: Any, target_qty: Any) -> bool:
+    """True for a flip through zero: current and target are finite, non-zero and of opposite signs."""
+    try:
+        cur, tgt = float(current_qty), float(target_qty)
+    except (TypeError, ValueError):
+        return False
+    if not (np.isfinite(cur) and np.isfinite(tgt)) or cur == 0 or tgt == 0:
+        return False
+    return (cur > 0) != (tgt > 0)
+
+
+def split_flips(rebalancing_df: pd.DataFrame) -> pd.DataFrame:
+    """One row per order leg: a flip through zero becomes a CLOSE leg, then an OPEN leg (TOM-2396).
+
+    A flip (long to short, or short to long) used to be one order of the whole
+    delta. It was neither a full close nor a partial reduce, so it was not sent
+    reduce-only, and the venue floor judged the whole delta. Carver-HL froze on
+    2026-10-24 and 2026-10-25 for this: ETH long 0.0032 to short 0.000587 was
+    one $8.76 sell, below the $10 floor. But Hyperliquid accepts a reduce-only
+    full close below $10 (SOL, $2.33, 2026-07-22), so the exit was available.
+
+    Each leg is a row the gate chain already knows:
+
+    1. The CLOSE leg is a flat-target close of the held quantity: target
+       quantity, value and weight 0. It gets every close exemption and the
+       close lot rules.
+    2. The OPEN leg is an open from flat to the target: current quantity,
+       value and weight 0. Its ``Weight Delta`` is its own strategy weight, so
+       the churn band judges the open leg alone.
+
+    The two legs' quantities and weight deltas add up to the original row's.
+    Every other row passes through unchanged, and the frame order is kept:
+    the close leg comes before the open leg, in the place of the flip. The
+    executor keeps that order when it sends (a stable sort, sells before buys).
+    """
+    if rebalancing_df.empty or not {"Current Quantity", "Target Quantity"} <= set(rebalancing_df.columns):
+        return rebalancing_df
+    rows: list[dict[str, Any]] = []
+    n_flips = 0
+    for _, row in rebalancing_df.iterrows():
+        rec = row.to_dict()
+        if not is_flip(rec["Current Quantity"], rec["Target Quantity"]):
+            rows.append(rec)
+            continue
+        n_flips += 1
+        cur, tgt = float(rec["Current Quantity"]), float(rec["Target Quantity"])
+        weight_delta = float(rec["Weight Delta"])
+        # The book writes Weight Delta = strategy weight - Current Weight
+        # (quantbox.trade.book.rebalancing_frame). So the close leg's own delta
+        # is -Current Weight, and the open leg's is the strategy weight: the
+        # band judges the open leg on the same basis as every other row. Two
+        # legs, one sum: the original Weight Delta. A frame without a finite
+        # Current Weight takes it from Target Weight - Weight Delta.
+        current_weight = rec.get("Current Weight")
+        if current_weight is None or not np.isfinite(float(current_weight)):
+            current_weight = float(rec.get("Target Weight", 0.0)) - weight_delta
+        current_weight = float(current_weight)
+        close = dict(rec)
+        close.update({"Target Quantity": 0.0, "Target Weight": 0.0, "Delta Quantity": -cur})
+        if "Target Value" in close:
+            close["Target Value"] = 0.0
+        close["Weight Delta"] = -current_weight
+        opening = dict(rec)
+        opening.update({"Current Quantity": 0.0, "Delta Quantity": tgt, "Weight Delta": weight_delta + current_weight})
+        for col in ("Current Value", "Current Weight"):
+            if col in opening:
+                opening[col] = 0.0
+        rows.extend([close, opening])
+    if not n_flips:
+        return rebalancing_df
+    return pd.DataFrame(rows, columns=rebalancing_df.columns)
 
 
 #: ``Order Status`` of an exit the venue rejects at this size, so it is not sent:
@@ -397,7 +472,9 @@ class FuturesRebalancer:
 
         order_records: list[dict[str, Any]] = []
 
-        for _, row in rebalancing_df.iterrows():
+        # A flip through zero is two orders, a close leg then an open leg
+        # (TOM-2396). Each leg is judged below as the close or the open it is.
+        for _, row in split_flips(rebalancing_df).iterrows():
             asset = row["Asset"]
             symbol = asset  # base asset name, broker handles formatting
             action = row["Trade Action"].lower()
@@ -490,7 +567,8 @@ class FuturesRebalancer:
                 # An open from flat or an add on the same side: the only rows a
                 # residual day may leave unsent (TOM-1778), and the declared intent
                 # the trapped-residual counter reads (TOM-901). A flip through zero
-                # is NOT one — it exits the held side.
+                # never reaches here as one row: split_flips made it a close leg
+                # (not an open) and an open leg (an open from flat), TOM-2396.
                 opens_exposure = declares_open(cur_qty, tgt_qty)
 
             # Sent reduce-only.

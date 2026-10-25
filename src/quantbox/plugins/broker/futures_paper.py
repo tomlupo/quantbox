@@ -218,6 +218,9 @@ class FuturesPaperBroker:
 
             if not (mid_price > 0):
                 logger.warning("Invalid price (%r) for %s, skipping order", mid_price, sym)
+                # A visible SKIPPED row, never a vanished order: the executor
+                # binds one result row to each submitted order (TOM-2396).
+                fills.append(skipped_row(sym, side, qty, f"invalid price {mid_price!r}"))
                 continue
 
             signed = qty if side == "buy" else -qty
