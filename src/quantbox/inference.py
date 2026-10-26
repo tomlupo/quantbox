@@ -16,6 +16,8 @@ The interface, grouped by question:
   series, after the finite and degenerate checks).
 - Newey-West / HAC: :func:`hac_ols`, :func:`newey_west_tstat`,
   :func:`newey_west_auto_lags`, :func:`factor_regression`.
+- Predictive regression: :func:`predictive_regression` (OLS, Stambaugh
+  bias-adjusted and Lewellen conditional slopes of r_t on x_{t-1}).
 - Deflated Sharpe Ratio: :func:`deflated_sharpe_ratio`,
   :func:`deflated_sharpe_ratio_from_returns`, :func:`expected_max_sr`,
   :func:`sr_estimator_std`, :class:`DSRResult`.
@@ -396,6 +398,165 @@ def factor_regression(y, factors, factor_names: list[str], lags: int | None = No
         "alpha_tstat": float(alpha_t),
         "alpha_pvalue_onesided": alpha_p,
         "r_squared": r_squared,
+    }
+
+
+# ── predictive regression ──────────────────────────────────────────────────
+#
+# r_t = alpha + beta * x_{t-1} + e_t, with the predictor an AR(1),
+# x_t = phi + rho * x_{t-1} + u_t. When e and u are correlated (a price-scaled
+# ratio such as D/P: a high return lowers the yield, so gamma, the slope of e on
+# u, is < 0), OLS beta is biased by gamma * E[rho_hat - rho] (Stambaugh 1999,
+# "Predictive Regressions", JFE 54(3)), and rho_hat is biased down by about
+# (1 + 3 rho) / T (Kendall 1954). Both corrections below are the coefficient on
+# x_{t-1} in ONE augmented regression, r_t on [1, x_{t-1}, x_t - rho* x_{t-1}],
+# which equals beta_hat - gamma_hat * (rho_hat - rho*) exactly; only rho* differs.
+
+#: Lewellen's (2004) bound on the predictor's autocorrelation: stationarity, rho < 1.
+LEWELLEN_RHO_BOUND = 0.9999
+
+
+def predictive_regression(
+    returns, predictor, *, rho_bound: float = LEWELLEN_RHO_BOUND, allow_nonfinite_drop: bool = False
+) -> dict:
+    """OLS, Stambaugh bias-adjusted and Lewellen conditional slopes of ``returns[t]`` on ``predictor[t-1]``.
+
+    ``returns`` and ``predictor`` are ALIGNED per-period series of one length:
+    row ``t`` holds the return over period ``t`` and the predictor observed at
+    the END of period ``t``. This function does the lag itself, so a caller
+    who lags ``predictor`` first tests a contemporaneous regression; the first
+    return and the last predictor value carry no pair. Different lengths are
+    refused. NaN/Inf raise unless ``allow_nonfinite_drop=True``; a pair
+    ``(r_t, x_{t-1}, x_t)`` with any non-finite entry is then dropped whole, so
+    no surviving row pairs a return with the wrong lag.
+
+    Three estimates of beta, all with classical (not HAC) standard errors, as
+    in both papers; every p-value is ONE-sided, H1: beta > 0 (negate the
+    predictor to test beta < 0):
+
+    - ``beta_ols``: the plain OLS slope, t-tail with ``n - 2`` d.o.f.
+    - ``beta_stambaugh``: ``beta_ols - stambaugh_bias``, where
+      ``stambaugh_bias = gamma * E[rho_hat - rho] = -gamma * (1 + 3 rho_hat)/n``
+      estimates ``E[beta_hat - beta]`` with the first-order AR(1) bias taken
+      at ``rho_hat`` (Stambaugh 1999; Lewellen's "Stambaugh" column). It is
+      the augmented fit at ``rho_corrected = rho_hat + (1 + 3 rho_hat)/n``,
+      which is NOT capped: above 1 it says the correction assumes a
+      non-stationary predictor, which is Lewellen's case for the conditional
+      test. The standard error adds the noise of the correction by the delta
+      method, ``se**2 = se_aug**2 + gamma**2 * (1 + 3/n)**2 * var(rho_hat)``
+      (the first-order form of Amihud and Hurvich 2004, "Predictive
+      Regressions: A Reduced-Bias Estimation and Inference Approach", JFQA
+      39(4)); normal tail. Lewellen simulates this p-value instead.
+    - ``beta_conditional``: Lewellen (2004, "Predicting Returns with Financial
+      Ratios", JFE 74(2), Appendix A.1), the augmented regression with rho
+      fixed at ``rho_bound`` (default 0.9999: the true rho is assumed to be at
+      most that, i.e. the predictor is stationary). Its OLS standard error is
+      exact conditional on the predictor, t-tail with ``n - 3`` d.o.f. With
+      ``gamma < 0`` the bias is largest at the largest rho, so this slope is a
+      LOWER bound on the bias-adjusted beta and the test is conservative
+      (``conditional_conservative``); with ``gamma >= 0`` it is an UPPER
+      bound and must not be read as evidence for beta > 0. It gains power
+      only when ``rho_hat`` is close to the bound; far below it the
+      correction over-adjusts.
+
+    Refuses (:class:`InferenceInputError`) mismatched lengths, a ``rho_bound``
+    outside (0, 1], fewer than 5 usable pairs (the augmented fit has 3
+    parameters), a constant return or predictor series, a predictor whose
+    AR(1) innovations cancel to noise (no ``gamma`` exists), and returns that
+    are an exact function of the predictor (no residual variance). Rows must
+    be CONSECUTIVE periods: a period missing from both series is not
+    detectable here, and the lag would pair across it. All floats are full
+    precision.
+    """
+    import statsmodels.api as sm
+    from scipy.stats import norm
+    from scipy.stats import t as student_t
+
+    if isinstance(rho_bound, bool) or not isinstance(rho_bound, (int, float, np.floating)):
+        raise InferenceInputError(f"rho_bound must be a number in (0, 1], got {rho_bound!r}")
+    if not (math.isfinite(rho_bound) and 0.0 < rho_bound <= 1.0):
+        raise InferenceInputError(f"rho_bound must be in (0, 1] (a stationarity bound on rho), got {rho_bound!r}")
+    r = np.asarray(returns, dtype=float).ravel()
+    x = np.asarray(predictor, dtype=float).ravel()
+    if r.size != x.size:
+        raise InferenceInputError(
+            f"returns has {r.size} observations and predictor {x.size} — a predictive regression needs the "
+            "same periods in both, aligned row by row (the function lags the predictor itself)"
+        )
+    if r.size < 2:
+        raise InferenceInputError(f"need at least 2 aligned periods to form one (r_t, x_t-1) pair, got {r.size}")
+    rows, dropped = require_finite(
+        np.column_stack([r[1:], x[:-1], x[1:]]), allow_nonfinite_drop=allow_nonfinite_drop, what="(r_t, x_t-1, x_t)"
+    )
+    n = int(rows.shape[0])
+    if n < 5:
+        raise InferenceInputError(f"need at least 5 finite (r_t, x_t-1, x_t) pairs for the augmented fit, got {n}")
+    y, x_lag, x_now = rows[:, 0], rows[:, 1], rows[:, 2]
+    if flat(y, ddof=1):
+        raise InferenceInputError("constant returns — there is no variation for the predictor to explain")
+    if flat(x_lag, ddof=1):
+        raise InferenceInputError("constant predictor — its slope is not identified")
+
+    ones = np.ones(n)
+    ols = sm.OLS(y, np.column_stack([ones, x_lag])).fit()
+    ar = sm.OLS(x_now, np.column_stack([ones, x_lag])).fit()
+    u = np.asarray(ar.resid, dtype=float)
+    # Relative to the PREDICTOR's scale, not the residuals' own: an exact AR(1) leaves
+    # residuals that are pure rounding noise, and noise is never flat against itself.
+    if float(np.std(u)) <= DEGENERATE_RTOL * float(np.mean(np.abs(x_now))):
+        raise InferenceInputError(
+            "the predictor is a deterministic AR(1) (its innovations cancel to noise) — gamma is not identified"
+        )
+    rho_hat, rho_se = float(ar.params[1]), float(ar.bse[1])
+    gamma = float(np.dot(np.asarray(ols.resid, dtype=float), u) / np.dot(u, u))
+
+    def augmented(rho_star: float):
+        return sm.OLS(y, np.column_stack([ones, x_lag, x_now - rho_star * x_lag])).fit()
+
+    beta_ols, ols_se = float(ols.params[1]), float(ols.bse[1])
+    ols_t = beta_ols / ols_se
+
+    rho_corrected = rho_hat + (1 + 3 * rho_hat) / n  # rho_hat - E[rho_hat - rho], Kendall's first order
+    aug_s = augmented(rho_corrected)
+    beta_s = float(aug_s.params[1])
+    var_rho_c = (1 + 3 / n) ** 2 * rho_se**2
+    se_s = math.sqrt(float(aug_s.bse[1]) ** 2 + gamma**2 * var_rho_c)
+    t_s = beta_s / se_s
+
+    aug_c = augmented(float(rho_bound))
+    # A return built exactly from the predictor has no residual variance, and statsmodels
+    # would report a noise-sized SE and a t-stat of ~1e16 (as in factor_regression, TOM-1351).
+    if float(np.std(aug_c.resid)) <= DEGENERATE_RTOL * float(np.mean(np.abs(y))):
+        raise InferenceInputError("the returns are an exact function of the predictor — no residual variance")
+    beta_c, se_c = float(aug_c.params[1]), float(aug_c.bse[1])
+    t_c = beta_c / se_c
+
+    return {
+        "n_obs": n,
+        "n_obs_raw": int(r.size - 1),
+        "n_nonfinite_dropped": dropped,
+        "beta_ols": beta_ols,
+        "beta_ols_se": ols_se,
+        "beta_ols_tstat": ols_t,
+        "beta_ols_pvalue_onesided": float(student_t.sf(ols_t, n - 2)),
+        "r_squared": float(ols.rsquared),
+        "rho_hat": rho_hat,
+        "rho_hat_se": rho_se,
+        "rho_corrected": rho_corrected,
+        "gamma": gamma,
+        "corr_e_u": float(np.corrcoef(np.asarray(ols.resid, dtype=float), u)[0, 1]),
+        "stambaugh_bias": beta_ols - beta_s,
+        "beta_stambaugh": beta_s,
+        "beta_stambaugh_se": se_s,
+        "beta_stambaugh_tstat": t_s,
+        "beta_stambaugh_pvalue_onesided": float(norm.sf(t_s)),
+        "rho_bound": float(rho_bound),
+        "beta_conditional": beta_c,
+        "beta_conditional_se": se_c,
+        "beta_conditional_tstat": t_c,
+        "beta_conditional_pvalue_onesided": float(student_t.sf(t_c, n - 3)),
+        "conditional_df": n - 3,
+        "conditional_conservative": bool(gamma < 0),
     }
 
 
@@ -819,6 +980,7 @@ __all__ = [
     "DSRResult",
     "EULER_MASCHERONI",
     "InferenceInputError",
+    "LEWELLEN_RHO_BOUND",
     "MULTIPLE_TESTING_METHODS",
     "MultipleTestingResult",
     "ReturnMoments",
@@ -836,6 +998,7 @@ __all__ = [
     "multiple_testing",
     "newey_west_auto_lags",
     "newey_west_tstat",
+    "predictive_regression",
     "require_finite",
     "return_moments",
     "sr_estimator_std",

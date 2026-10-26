@@ -1,6 +1,6 @@
 """Acceptance gates on a backtest's return series: thresholds and verdicts only (TOM-1351, TOM-1618).
 
-Five deterministic gates, five DIFFERENT questions, each a function returning a
+Six deterministic gates, six DIFFERENT questions, each a function returning a
 JSON-ready dict with a ``gate_pass`` verdict, and each reachable as
 ``quantbox gates <name> --json`` (see :mod:`quantbox.gates_cli`):
 
@@ -13,6 +13,8 @@ JSON-ready dict with a ``gate_pass`` verdict, and each reachable as
   bootstrap  Does a CLAIM about a metric (Sharpe, mean, max drawdown) versus a
              baseline survive a paired stationary block bootstrap?
   episode    Does the claim still hold with the largest drawdown episode removed?
+  predreg    Does a lagged predictor forecast the return once the Stambaugh
+             small-sample bias is removed (Lewellen's conditional test too)?
 
 Metrics DESCRIBE (:mod:`quantbox.metrics`), inference TESTS
 (:mod:`quantbox.inference`), gates DECIDE. Every statistic here comes from
@@ -52,12 +54,15 @@ import numpy as np
 
 from ._numerics import flat
 from .inference import (
+    LEWELLEN_RHO_BOUND,
     InferenceInputError,
     bootstrap,
     deflated_sharpe_ratio,
     factor_regression,
     largest_drawdown_episode,
+    multiple_testing,
     newey_west_tstat,
+    predictive_regression,
     require_finite,
     return_moments,
 )
@@ -299,6 +304,69 @@ def factor_gate(
         "min_obs": min_obs,
         "obs_pass": obs_pass,
         "gate_pass": bool(alpha_pass and obs_pass),
+        "note": note,
+    }
+
+
+# ── predictive regression ──────────────────────────────────────────────────
+
+
+def predreg_gate(
+    returns,
+    predictor,
+    *,
+    rho_bound: float = LEWELLEN_RHO_BOUND,
+    alpha: float = 0.05,
+    min_obs: int = 60,
+    allow_nonfinite_drop: bool = False,
+) -> dict:
+    """Does ``predictor[t-1]`` predict ``returns[t]`` (H1: beta > 0) once the Stambaugh bias is removed?
+
+    The statistics are :func:`quantbox.inference.predictive_regression`. The
+    verdict reads only the bias-adjusted tests, never the OLS slope:
+
+    - the Stambaugh test always;
+    - Lewellen's conditional test (rho at most ``rho_bound``) only when it is a
+      LOWER bound on beta, i.e. ``gamma < 0``. With ``gamma >= 0`` it is an
+      upper bound and is left out of the family (``conditional_in_family``).
+
+    The family is Bonferroni-corrected at family-wise ``alpha``
+    (:func:`quantbox.inference.multiple_testing`), so picking the better of the
+    two tests after the fact cannot buy significance. ``predict_pass`` is any
+    rejection; the gate also needs ``n_obs >= min_obs``. To test beta < 0,
+    negate the predictor.
+    """
+    if isinstance(min_obs, bool) or not isinstance(min_obs, (int, np.integer)) or min_obs <= 0:
+        raise GateInputError(f"min_obs must be a positive whole number, got {min_obs!r}")
+    fit = predictive_regression(returns, predictor, rho_bound=rho_bound, allow_nonfinite_drop=allow_nonfinite_drop)
+    tests = {"stambaugh": fit["beta_stambaugh_pvalue_onesided"]}
+    if fit["conditional_conservative"]:
+        tests["conditional"] = fit["beta_conditional_pvalue_onesided"]
+    family = multiple_testing(list(tests.values()), alpha=alpha, method="bonferroni")
+    adjusted = {name: float(p) for name, p in zip(tests, family.adjusted, strict=True)}
+    rejected = [name for name, rej in zip(tests, family.reject, strict=True) if rej]
+    predict_pass = bool(rejected)
+    obs_pass = bool(fit["n_obs"] >= min_obs)
+    if not obs_pass:
+        note = f"too few predictive pairs ({fit['n_obs']} < {min_obs})"
+    elif predict_pass:
+        note = f"the bias-adjusted slope is significant ({', '.join(rejected)})"
+    elif fit["conditional_conservative"]:
+        note = "no bias-adjusted test rejects beta <= 0"
+    else:
+        note = "no bias-adjusted test rejects beta <= 0; gamma >= 0, so the conditional bound does not apply"
+    return {
+        "gate": "predreg",
+        **fit,
+        "conditional_in_family": bool(fit["conditional_conservative"]),
+        "family_tests": list(tests),
+        "pvalues_adjusted": adjusted,
+        "pvalue_adjusted_min": min(adjusted.values()),
+        "alpha": family.alpha,
+        "predict_pass": predict_pass,
+        "min_obs": int(min_obs),
+        "obs_pass": obs_pass,
+        "gate_pass": bool(predict_pass and obs_pass),
         "note": note,
     }
 
@@ -548,4 +616,5 @@ __all__ = [
     "nw_gate",
     "paired_block_bootstrap",
     "parse_n_trials",
+    "predreg_gate",
 ]
