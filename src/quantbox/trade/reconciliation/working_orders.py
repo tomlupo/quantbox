@@ -99,8 +99,15 @@ class WorkingOrderStore:
         ``order_ref`` is the intent reference from the order/fill ledger, carried
         so that when the fill is finally observed it can be bound back to the
         intent that produced it instead of landing as an orphan result.
+
+        One entry per venue order id: an order already queued is not queued
+        again, so a broker that reports one order twice cannot make the next
+        cycle book its fill twice (PR #315 review).
         """
         records = self.load()
+        if order_id and any(str(r.get("order_id")) == str(order_id) for r in records):
+            logger.warning("Working order %s %s (id=%s) is already queued — not queued twice", side, symbol, order_id)
+            return
         records.append(
             {
                 "symbol": str(symbol),
@@ -380,15 +387,21 @@ def resolve_working_orders(
             entry["price"],
         )
         order_ref = rec.get("order_ref")
-        if ledger is not None and order_ref:
+        if ledger is not None:
+            # An entry with no intent ref (an unbound result, TOM-2422, or an
+            # intent write that failed) is still booked, under the venue's id:
+            # the outcome is durable, and no intent is told it owns it. The
+            # reconciliation close reads only refs that carry an intent.
+            owned = bool(order_ref)
             try:
                 ledger.record_result(
-                    order_ref=str(order_ref),
+                    order_ref=str(order_ref) if owned else f"venue:{order_id}",
                     cycle_id=str(rec.get("cycle_id") or ""),
                     status=to_ledger_status(status),
                     filled_qty=entry["quantity"],
                     avg_px=entry["price"],
                     resolved_late=True,
+                    **({} if owned else {"unowned": True, "symbol": symbol, "side": str(rec.get("side", ""))}),
                 )
             except Exception:  # noqa: BLE001 - ledger write must not lose the resolution
                 logger.exception(
