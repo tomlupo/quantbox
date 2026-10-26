@@ -207,7 +207,7 @@ _TEMPLATE_FILES = {
 
 #: line kind -> the template holding what its prereg block is anchored to. A ``book`` line
 #: names a system.yaml book; a ``replication`` line names the paper it replicates, in the
-#: keys the qute-research pre-flight's replication mode reads (TOM-2231, TOM-2277).
+#: keys the pre-flight's replication mode reads (``quantbox preflight``, ADR-0013; TOM-2231, TOM-2277).
 LINE_KINDS = {
     "book": "anchor_book.tmpl",
     "replication": "anchor_replication.tmpl",

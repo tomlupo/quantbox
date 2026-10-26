@@ -238,6 +238,7 @@ forbidden_modules = [
   "quantbox.plugins.pipeline.fund_selection",
   "quantbox.plugins.validation",
   "quantbox.plugins.validation.**",
+  "quantbox.preflight",
   "quantbox.simulation",
   "quantbox.simulation.**",
   "quantbox.sweep",
@@ -302,6 +303,7 @@ forbidden_modules = [
   "quantbox.plugins.pipeline.fund_selection",
   "quantbox.plugins.validation",
   "quantbox.plugins.validation.**",
+  "quantbox.preflight",
   "quantbox.simulation",
   "quantbox.simulation.**",
   "quantbox.sweep",
@@ -347,6 +349,7 @@ source_modules = [
   "quantbox.plugins.pipeline.fund_selection",
   "quantbox.plugins.validation",
   "quantbox.plugins.validation.**",
+  "quantbox.preflight",  # `quantbox preflight`: the lab's gate before a measured backtest (ADR-0013)
   "quantbox.simulation",  # forecasting and plots; re-exports quantbox.montecarlo
   "quantbox.simulation.**",
   "quantbox.sweep",
