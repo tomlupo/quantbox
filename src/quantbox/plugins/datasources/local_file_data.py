@@ -507,16 +507,21 @@ class LocalFileDataPlugin:
         ``DataLoadError`` that names it (TOM-2421); so is one a non-empty funding
         table lacks, since the engine would charge it zero funding. ``volume`` and
         ``market_cap`` keep only the columns they have: real datasets hold no
-        volume for an index or a bond (bbg-multi-asset lacks 202 of 502).
+        volume for an index or a bond (bbg-multi-asset lacks 202 of 502). A prices
+        FILE that does not exist is not this check: it is logged and read as empty,
+        and the backtest pipeline refuses it before any data is read.
         """
         symbols = universe["symbol"].tolist() if not universe.empty and "symbol" in universe.columns else None
 
-        def _select_cols(df: pd.DataFrame, key: str) -> pd.DataFrame:
-            """For wide-format DataFrames, restrict to the requested symbol columns; refuse a missing one (*key*)."""
+        def _select_cols(df: pd.DataFrame, key: str, *, found: bool = True) -> pd.DataFrame:
+            """For wide-format DataFrames, restrict to the requested symbol columns; refuse a missing one (*key*).
+
+            *found* is False for an inline file that does not exist: there is no table to lack a symbol.
+            """
             if not symbols:
                 return df
             wide = isinstance(df.index, pd.DatetimeIndex) and "symbol" not in df.columns
-            refuse = key == "prices" or (key == "funding_rates" and wide and len(df.columns) > 0)
+            refuse = found and (key == "prices" or (key == "funding_rates" and wide and len(df.columns) > 0))
             if refuse:
                 have = set(df.columns) if wide else set()
                 missing = [s for s in symbols if s not in have]
@@ -569,7 +574,9 @@ class LocalFileDataPlugin:
         self.loaded_paths = self.planned_paths(params)
         ppath, fpath = self.loaded_paths["prices"], self.loaded_paths["funding_rates"]
         if ppath:
-            result["prices"] = _select_cols(_read_file(ppath, asof=asof, symbols=symbols), "prices")
+            result["prices"] = _select_cols(
+                _read_file(ppath, asof=asof, symbols=symbols), "prices", found=Path(ppath).exists()
+            )
         else:
             result["prices"] = pd.DataFrame()
 
