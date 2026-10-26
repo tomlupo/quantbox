@@ -1024,3 +1024,9 @@ if __name__ == "__main__":
     except CouldNotRun as exc:
         print(f"COULD NOT RUN: {exc}", file=sys.stderr)
         sys.exit(2)
+    except Exception:  # noqa: BLE001 — Python exits an uncaught error with 1, which reads as "differs"
+        import traceback
+
+        traceback.print_exc()
+        print("COULD NOT RUN: the compare itself crashed (traceback above)", file=sys.stderr)
+        sys.exit(2)

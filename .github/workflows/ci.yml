@@ -113,11 +113,13 @@ jobs:
           python-version: '3.12'
       - run: uv sync --extra full
       - name: before/after
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
           set -o pipefail
           out="$RUNNER_TEMP/before-after"
           rc=0
-          uv run --no-sync python scripts/before_after.py "origin/${{ github.base_ref }}" "$out" || rc=$?
+          uv run --no-sync python scripts/before_after.py "origin/$BASE_REF" "$out" || rc=$?
           if [ -s "$out/summary.md" ]; then cat "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"; fi
           exit "$rc"
 
