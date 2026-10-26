@@ -18,6 +18,8 @@ orchestrator; the stages, in order:
    FAILED / SKIPPED, bound one-to-one to its intent. A (symbol, side) whose
    result rows do not number its submitted orders binds nothing: each of its
    orders books FAILED with an UNKNOWN fill (:func:`unbound_keys`, TOM-2396).
+   Its WORKING or UNKNOWN rows with an order id are still queued (stage 4),
+   and a key with rows but no submitted order alerts (TOM-2422).
 4. **working orders** — an order still resting at the venue, or an unconfirmed
    one with an id, is queued so the next cycle books its real outcome.
 5. **report** — the execution report the pipeline stores, and an alert for
@@ -429,6 +431,8 @@ def _fail_closed_unbound(
     declared_closes: dict[tuple[str, str], deque[bool]],
     ledger: Any,
     cycle_id: str | None,
+    working_to_queue: list[dict[str, Any]],
+    alert: Alert,
 ) -> pd.DataFrame:
     """Book every order of an unbound key as FAILED with an UNKNOWN fill; return the results left to bind.
 
@@ -436,29 +440,58 @@ def _fail_closed_unbound(
     apart. Each submitted order of the key gets its own FAILED row (fill
     UNKNOWN, no quantity) and its ledger intent closes ``failed``. The broker's
     own rows, order ids included, go on the report under ``unbound_results``
-    for the operator to reconcile against the venue. The failure alert fires
-    from :func:`report_order_failures` at the end of the run.
+    for the operator to reconcile against the venue, and the FAILED rows name
+    those ids, so the failure alert from :func:`report_order_failures` does too.
+
+    A WORKING or UNKNOWN row with an order id is still a live order at the
+    venue: it joins *working_to_queue*, so the next cycle reads its real
+    outcome (TOM-2422). It carries no ``order_ref``, because no intent can be
+    told to own it. A key with result rows and NO submitted order has no order
+    to book FAILED, so it alerts here (site ``orphan_results``).
     """
     keep = [_result_key(r) not in unbound for _, r in results.iterrows()]
     dropped = results[[not k for k in keep]]
-    report["unbound_results"] = [
-        {
-            "symbol": str(r.get("symbol", "")),
-            "side": str(r.get("side", "")),
-            "status": str(r.get("status", "")),
-            "qty": _safe_float(r.get("qty")),
-            "order_id": None if r.get("order_id") is None or pd.isna(r.get("order_id")) else str(r.get("order_id")),
-        }
-        for _, r in dropped.iterrows()
-    ]
+    report["unbound_results"] = []
+    ids: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for _, r in dropped.iterrows():
+        oid = None if r.get("order_id") is None or pd.isna(r.get("order_id")) else str(r.get("order_id"))
+        status = str(r.get("status", ""))
+        queued = bool(oid) and status in ("WORKING", "UNKNOWN")
+        report["unbound_results"].append(
+            {
+                "symbol": str(r.get("symbol", "")),
+                "side": str(r.get("side", "")),
+                "status": status,
+                "qty": _safe_float(r.get("qty")),
+                "order_id": oid,
+                "queued": queued,
+            }
+        )
+        if oid:
+            ids[_result_key(r)].append(oid)
+        if queued:
+            working_to_queue.append(
+                {
+                    "symbol": str(r.get("symbol", "")),
+                    "side": _result_key(r)[1],
+                    "order_id": oid,
+                    "requested_qty": float(r.get("requested_qty", 0) or 0.0),
+                    "reason": f"unbound result ({status}): no intent can own it; reconcile against the venue",
+                    "order_ref": None,
+                }
+            )
+    orphans: list[str] = []
     for key in sorted(unbound):
         n_sent = int(sum(_result_key(r) == key for _, r in submitted.iterrows()))
         n_back = int(sum(_result_key(r) == key for _, r in dropped.iterrows()))
         error = (
             f"broker returned {n_back} result row(s) for {n_sent} order(s) on {key[0]} {key[1]}: "
             "no result can be bound to its order, no fill booked; reconcile against the venue"
+            f" (venue order ids: {', '.join(ids[key]) or 'none'})"
         )
         logger.error("RESULTS UNBOUND: %s", error)
+        if n_sent == 0:
+            orphans.append(f"{key[1].upper()} {key[0]}: {n_back} row(s), order ids {', '.join(ids[key]) or 'none'}")
         for _, row in submitted.iterrows():
             if _result_key(row) != key:
                 continue
@@ -481,6 +514,14 @@ def _fail_closed_unbound(
             except Exception as exc:  # never let the ledger crash the run
                 logger.warning("Result capture failed for %s %s: %s", key[1], key[0], exc)
         declared_closes.pop(key, None)
+    if orphans:
+        report["orphan_results"] = orphans
+        alert(
+            f"⚠️ <b>{len(orphans)} RESULT KEY(S) WITH NO SUBMITTED ORDER</b>\n"
+            f"{escape_html('; '.join(orphans))}\n"
+            "The broker reported orders this run did not send. Nothing booked; reconcile against the venue.",
+            site="orphan_results",
+        )
     return results[keep]
 
 
@@ -823,7 +864,16 @@ def execute_orders(
         unbound = unbound_keys(broker_orders, fills)
         if unbound:
             fills = _fail_closed_unbound(
-                report, broker_orders, fills, unbound, intent_refs, declared_closes, ledger, cycle_id
+                report,
+                broker_orders,
+                fills,
+                unbound,
+                intent_refs,
+                declared_closes,
+                ledger,
+                cycle_id,
+                working_to_queue,
+                alert,
             )
 
     # Process fills and failures
