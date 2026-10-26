@@ -432,6 +432,7 @@ def _fail_closed_unbound(
     ledger: Any,
     cycle_id: str | None,
     working_to_queue: list[dict[str, Any]],
+    has_store: bool,
     alert: Alert,
 ) -> pd.DataFrame:
     """Book every order of an unbound key as FAILED with an UNKNOWN fill; return the results left to bind.
@@ -456,7 +457,8 @@ def _fail_closed_unbound(
     for _, r in dropped.iterrows():
         oid = None if r.get("order_id") is None or pd.isna(r.get("order_id")) else str(r.get("order_id"))
         status = str(r.get("status", ""))
-        queued = bool(oid) and status in ("WORKING", "UNKNOWN")
+        live = bool(oid) and status in ("WORKING", "UNKNOWN")
+        queued = live and has_store
         report["unbound_results"].append(
             {
                 "symbol": str(r.get("symbol", "")),
@@ -469,7 +471,7 @@ def _fail_closed_unbound(
         )
         if oid:
             ids[_result_key(r)].append(oid)
-        if queued:
+        if live:
             working_to_queue.append(
                 {
                     "symbol": str(r.get("symbol", "")),
@@ -873,6 +875,7 @@ def execute_orders(
                 ledger,
                 cycle_id,
                 working_to_queue,
+                working_store is not None,
                 alert,
             )
 
