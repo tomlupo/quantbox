@@ -31,7 +31,7 @@ import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +46,12 @@ FILENAME = "working_orders.json"
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
+
+
+def order_key(rec: Mapping[str, Any]) -> tuple[str, str]:
+    """A venue order's identity: (symbol, order id). Binance order ids are unique per symbol only."""
+    return (str(rec.get("symbol") or ""), str(rec.get("order_id") or ""))
 
 
 @dataclass
@@ -99,8 +104,16 @@ class WorkingOrderStore:
         ``order_ref`` is the intent reference from the order/fill ledger, carried
         so that when the fill is finally observed it can be bound back to the
         intent that produced it instead of landing as an orphan result.
+
+        One entry per venue order (:func:`order_key`): an order already queued is
+        not queued again, so a broker that reports one order twice cannot make
+        the next cycle book its fill twice (PR #315 review).
         """
         records = self.load()
+        key = order_key({"symbol": symbol, "order_id": order_id})
+        if order_id and any(order_key(r) == key for r in records):
+            logger.warning("Working order %s %s (id=%s) is already queued — not queued twice", side, symbol, order_id)
+            return
         records.append(
             {
                 "symbol": str(symbol),
@@ -208,7 +221,7 @@ class WorkingOrderResolution:
         ``recorded_at`` cannot be parsed is INCLUDED — an unreadable age must
         not silently read as "young enough to ignore".
         """
-        moment = now or datetime.now(timezone.utc)
+        moment = now or datetime.now(UTC)
         out = []
         for rec in self.unresolved:
             age = record_age_seconds(rec, now=moment)
@@ -227,8 +240,8 @@ def record_age_seconds(rec: dict[str, Any], *, now: datetime | None = None) -> f
     except (TypeError, ValueError):
         return None
     if recorded.tzinfo is None:
-        recorded = recorded.replace(tzinfo=timezone.utc)
-    moment = now or datetime.now(timezone.utc)
+        recorded = recorded.replace(tzinfo=UTC)
+    moment = now or datetime.now(UTC)
     return (moment - recorded).total_seconds()
 
 
@@ -280,8 +293,8 @@ def resolve_working_orders(
         result.unreadable = list(queued)
         return result
 
-    drop_ids: set[str] = set()
-    moment = now or datetime.now(timezone.utc)
+    drop_keys: set[tuple[str, str]] = set()
+    moment = now or datetime.now(UTC)
     for rec in queued:
         order_id = str(rec.get("order_id") or "")
         symbol = str(rec.get("symbol") or "")
@@ -289,7 +302,7 @@ def resolve_working_orders(
             # An entry with no order id can never be resolved; drop it rather
             # than carry an unanswerable record forever.
             logger.error("Working-order entry for %s carries no order_id — dropping it", symbol or "?")
-            drop_ids.add(order_id)
+            drop_keys.add(order_key(rec))
             continue
 
         try:
@@ -332,7 +345,7 @@ def resolve_working_orders(
                     max_age_days,
                 )
                 result.expired.append(rec)
-                drop_ids.add(order_id)
+                drop_keys.add(order_key(rec))
             continue
 
         status = str(outcome.get("status", "")).strip().upper()
@@ -354,11 +367,11 @@ def resolve_working_orders(
                     max_age_days,
                 )
                 result.expired.append(rec)
-                drop_ids.add(order_id)
+                drop_keys.add(order_key(rec))
             continue
 
         # Terminal: FILLED / PARTIAL / FAILED. Book it and stop tracking it.
-        drop_ids.add(order_id)
+        drop_keys.add(order_key(rec))
         entry = {
             "symbol": symbol,
             "side": str(rec.get("side", "")),
@@ -380,15 +393,21 @@ def resolve_working_orders(
             entry["price"],
         )
         order_ref = rec.get("order_ref")
-        if ledger is not None and order_ref:
+        if ledger is not None:
+            # An entry with no intent ref (an unbound result, TOM-2422, or an
+            # intent write that failed) is still booked, under its (symbol, order id):
+            # the outcome is durable, and no intent is told it owns it. The
+            # reconciliation close reads only refs that carry an intent.
+            owned = bool(order_ref)
             try:
                 ledger.record_result(
-                    order_ref=str(order_ref),
+                    order_ref=str(order_ref) if owned else f"venue:{symbol}:{order_id}",
                     cycle_id=str(rec.get("cycle_id") or ""),
                     status=to_ledger_status(status),
                     filled_qty=entry["quantity"],
                     avg_px=entry["price"],
                     resolved_late=True,
+                    **({} if owned else {"unowned": True, "symbol": symbol, "side": str(rec.get("side", ""))}),
                 )
             except Exception:  # noqa: BLE001 - ledger write must not lose the resolution
                 logger.exception(
@@ -397,6 +416,8 @@ def resolve_working_orders(
                     order_ref,
                 )
 
-    store.drop(drop_ids)
+    if drop_keys:
+        # By (symbol, order id): a resolved ETH/42 must not dequeue a live BTC/42.
+        store.save([r for r in store.load() if order_key(r) not in drop_keys])
     result.checked = True
     return result

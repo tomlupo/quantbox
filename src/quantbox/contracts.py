@@ -53,7 +53,7 @@ classes with a class-level ``meta = PluginMeta(...)`` attribute.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal, Protocol
 
 import pandas as pd
@@ -279,7 +279,7 @@ ValuationBasis = Literal["mark_to_market", "margin_balance"]
 """How a venue values a book: ``BrokerPlugin.valuation_basis`` (see :mod:`quantbox.trade.book`)."""
 
 
-class BrokerCapability(str, Enum):
+class BrokerCapability(StrEnum):
     """An optional thing a broker can do, which the trade path uses only when DECLARED.
 
     A broker declares its capabilities in one class attribute,
@@ -418,7 +418,16 @@ class BrokerPlugin(Protocol):
         get_positions: Current holdings as DataFrame[symbol, qty].
         get_cash: Cash balances as {currency: amount}.
         get_market_snapshot: Current prices/info for symbols.
-        place_orders: Submit orders, returns fills DataFrame.
+        place_orders: Submit orders, returns fills DataFrame. It returns ONE
+            result row per submitted order, in submission order, a failed or
+            skipped order included (TOM-2422). Each row carries the order's
+            ``symbol`` and ``side`` and a ``status``. The executor binds the
+            k-th row of a (symbol, side) to the k-th order of that key it sent:
+            a missing row hands the next same-key order's fill to the wrong
+            order (PR #310). A broker that cannot place the batch at all raises;
+            the executor then books every order FAILED.
+            ``tests/test_broker_place_orders_contract.py`` runs every builtin
+            broker against this.
         fetch_fills: Historical fills since a timestamp.
 
     Optional capabilities are DECLARED, never probed: ``broker_capabilities``

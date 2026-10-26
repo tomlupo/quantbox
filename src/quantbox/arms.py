@@ -38,7 +38,7 @@ import os
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -351,7 +351,7 @@ def run_arms(
     root = Path(spec.artifacts_root or (spec.base.get("artifacts") or {}).get("root") or "artifacts")
     if not root.is_absolute():
         root = Path.cwd() / root
-    batch_id = f"{spec.path.stem}__{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
+    batch_id = f"{spec.path.stem}__{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}"
     batch_dir = root / batch_id
     batch_dir.mkdir(parents=True, exist_ok=False)
 

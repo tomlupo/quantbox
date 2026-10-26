@@ -15,7 +15,7 @@ import json
 import logging
 import math
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -204,7 +204,7 @@ class FuturesPaperBroker:
 
     def place_orders(self, orders: pd.DataFrame) -> pd.DataFrame:
         fills: list[dict[str, Any]] = []
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         for _, o in orders.iterrows():
             sym = str(o["symbol"])
@@ -218,6 +218,9 @@ class FuturesPaperBroker:
 
             if not (mid_price > 0):
                 logger.warning("Invalid price (%r) for %s, skipping order", mid_price, sym)
+                # A visible SKIPPED row, never a vanished order: the executor
+                # binds one result row to each submitted order (TOM-2396).
+                fills.append(skipped_row(sym, side, qty, f"invalid price {mid_price!r}"))
                 continue
 
             signed = qty if side == "buy" else -qty
@@ -422,7 +425,7 @@ class FuturesPaperBroker:
             "entry_prices": self.entry_prices,
             "cumulative_fees": self._cumulative_fees,
             "fill_log": self._fill_log[-1000:],  # Keep last 1000 fills
-            "last_updated": datetime.now(timezone.utc).isoformat(),
+            "last_updated": datetime.now(UTC).isoformat(),
         }
         path = Path(self.state_file)
         path.parent.mkdir(parents=True, exist_ok=True)

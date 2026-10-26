@@ -36,12 +36,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 logger = logging.getLogger(__name__)
 
 
-class ReconState(str, Enum):
+class ReconState(StrEnum):
     """Per-book enforcement state.
 
     Ordered by severity via :data:`_STATE_RANK`:
@@ -101,7 +101,7 @@ def preflight_gate(state: ReconState) -> tuple[bool, bool]:
     return (True, False)
 
 
-class BreakClass(str, Enum):
+class BreakClass(StrEnum):
     """The break taxonomy from issue #87."""
 
     DRIFT = "drift"  # per-symbol target-vs-actual drift > tolerance

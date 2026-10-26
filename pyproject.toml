@@ -1,6 +1,6 @@
 [project]
 name = "quantbox"
-version = "0.19.0"
+version = "0.20.0"
 description = "Quant research & trading core with plugin marketplace (entry points)."
 requires-python = ">=3.11"
 # The base install is what the CORE layer imports (ADR-0010 decision 4,
@@ -99,12 +99,6 @@ ignore = [
     "E741",    # ambiguous variable name (common in quant: l, O, I)
     "B008",    # function call in default arg (typer uses this)
     "SIM108",  # ternary — readability preference
-    # Raised to py311 by TOM-2354, these two fire on 25 sites, most of them on the
-    # trade path (brokers, trading_pipeline, trade.reconciliation). Fixing them is
-    # its own change: UP042 (StrEnum) changes str() and format() of the members,
-    # and a trade-path edit owes a live shadow run. Remove both lines with that fix.
-    "UP017",   # datetime.UTC alias for timezone.utc
-    "UP042",   # StrEnum for class X(str, Enum)
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -494,7 +488,7 @@ forbidden_modules = ["vectorbt", "numba", "ccxt"]
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.19.0"
+version = "0.20.0"
 version_files = [
     "pyproject.toml:version",
     "src/quantbox/__init__.py:__version__",

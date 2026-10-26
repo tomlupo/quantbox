@@ -29,6 +29,23 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.20.0 (2026-10-26)
+
+### Feat
+
+- **inference**: Stambaugh-adjusted predictive regression and gates predreg (TOM-2411) (#313)
+- **line**: quantbox new line --kind replication writes the paper-anchored prereg block (TOM-2277) (#312)
+
+### Fix
+
+- **data**: local_file_data refuses a requested symbol the prices table lacks (TOM-2421) (#314)
+- **trade**: track unbound WORKING/UNKNOWN results, alert on orphan result keys, state the place_orders contract (TOM-2422) (#315)
+- **rebalancing**: split a long/short flip into a reduce-only close and an open (TOM-2396) (#310)
+
+### Refactor
+
+- **lint**: ruff py311 UP017/UP042, datetime.UTC and StrEnum (TOM-2398) (#311)
+
 ## v0.19.0 (2026-10-25)
 
 ### Feat

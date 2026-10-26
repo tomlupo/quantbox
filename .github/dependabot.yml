@@ -1,4 +1,4 @@
-# Weekly bumps for GitHub Actions + Python deps. Grouped to limit
+# Monthly bumps for GitHub Actions + Python deps (weekly until Tom 26.10). Grouped to limit
 # PR noise; security advisories still surface as individual PRs.
 version: 2
 updates:
@@ -10,8 +10,7 @@ updates:
     target-branch: "dev"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "monthly"
     groups:
       actions:
         patterns: ["*"]
@@ -24,8 +23,7 @@ updates:
     target-branch: "dev"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "monthly"
     groups:
       python-deps:
         patterns: ["*"]

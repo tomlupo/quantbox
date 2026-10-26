@@ -254,9 +254,15 @@ def test_partial_add_below_min_notional_still_blocked():
     assert bool(row["reduce_only"]) is False
 
 
-def test_sign_flip_below_min_notional_not_treated_as_reduce():
-    """A target that crosses zero (-100 -> +40) is not a reduce: a reduce-only
-    order could not express it. It stays subject to the floor."""
+def test_sign_flip_below_min_notional_splits_into_a_close_and_an_entry():
+    """A target that crosses zero (-100 -> +40) is two orders (TOM-2396).
+
+    One reduce-only order could not express it, and one ordinary order of the
+    whole delta froze carver-HL on 2026-10-24/25 below the floor. So the flip is
+    a reduce-only full close of the held 100, exempt from the floor, then an
+    entry of 40 that the floor judges alone. Until TOM-2396 this test said the
+    single order stayed subject to the floor; the card changed that requirement.
+    """
     orders = _make_orders(
         [
             _rebal_row(
@@ -271,10 +277,18 @@ def test_sign_flip_below_min_notional_not_treated_as_reduce():
             )
         ]
     )
-    row = orders.iloc[0]
-    assert row["Order Status"] == "Below min notional", row["Order Status"]
-    assert bool(row["Executable"]) is False
-    assert bool(row["reduce_only"]) is False
+    assert list(orders["Asset"]) == ["ARB", "ARB"]
+    close, entry = orders.iloc[0], orders.iloc[1]
+    assert close["Action"] == "Buy" and close["Adjusted Quantity"] == 100.0
+    assert close["Order Status"] == "To be placed", close["Order Status"]
+    assert bool(close["Executable"]) is True
+    assert bool(close["reduce_only"]) is True
+    assert bool(close["full_close"]) is True
+    assert entry["Action"] == "Buy" and entry["Raw Quantity"] == 40.0
+    assert entry["Order Status"] == "Below min notional", entry["Order Status"]
+    assert bool(entry["Executable"]) is False
+    assert bool(entry["reduce_only"]) is False
+    assert bool(entry["opens_exposure"]) is True
 
 
 def test_partial_reduce_clamped_at_zero_on_inconsistent_input():
@@ -1193,13 +1207,16 @@ def test_opens_exposure_flag():
             ),  # partial reduce
         ]
     )
-    assert dict(zip(orders["Asset"], orders["opens_exposure"], strict=True)) == {
-        "A": True,
-        "B": True,
-        "C": False,
-        "D": False,
-        "E": False,
-    }
+    # The flip C is two rows since TOM-2396: its close leg (False), then its
+    # open leg, an open from flat (True).
+    assert list(zip(orders["Asset"], orders["opens_exposure"], strict=True)) == [
+        ("A", True),
+        ("B", True),
+        ("C", False),
+        ("C", True),
+        ("D", False),
+        ("E", False),
+    ]
 
 
 # ---------------------------------------------------------------------------
