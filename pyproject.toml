@@ -414,6 +414,7 @@ forbidden_modules = [
   "quantbox.plugins.pipeline.fund_selection",
   "quantbox.plugins.validation",
   "quantbox.plugins.validation.**",
+  "quantbox.preflight",
   "quantbox.simulation",
   "quantbox.simulation.**",
   "quantbox.sweep",
