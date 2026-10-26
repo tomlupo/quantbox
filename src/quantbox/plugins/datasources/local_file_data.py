@@ -20,6 +20,7 @@ import pandas as pd
 from quantbox._removed import removed_names
 from quantbox.contracts import PluginMeta
 from quantbox.dataset import _resolve_pinned, finite_numbers, load_pinned_dataset, served_prices, unique_rows
+from quantbox.exceptions import DataLoadError
 from quantbox.parquet_io import read_parquet
 
 logger = logging.getLogger(__name__)
@@ -501,14 +502,34 @@ class LocalFileDataPlugin:
 
         Returns dict with keys: ``prices``, ``volume``, ``market_cap``.
         Only ``prices`` is required; others default to empty DataFrames.
+
+        A requested symbol that the prices table lacks is refused with a
+        ``DataLoadError`` that names it (TOM-2421); so is one a non-empty funding
+        table lacks, since the engine would charge it zero funding. ``volume`` and
+        ``market_cap`` keep only the columns they have: real datasets hold no
+        volume for an index or a bond (bbg-multi-asset lacks 202 of 502).
         """
         symbols = universe["symbol"].tolist() if not universe.empty and "symbol" in universe.columns else None
 
-        def _select_cols(df: pd.DataFrame) -> pd.DataFrame:
-            """For wide-format DataFrames, restrict to the requested symbol columns."""
-            if symbols and isinstance(df.index, pd.DatetimeIndex) and "symbol" not in df.columns:
-                available = [s for s in symbols if s in df.columns]
-                return df[available]
+        def _select_cols(df: pd.DataFrame, key: str) -> pd.DataFrame:
+            """For wide-format DataFrames, restrict to the requested symbol columns; refuse a missing one (*key*)."""
+            if not symbols:
+                return df
+            wide = isinstance(df.index, pd.DatetimeIndex) and "symbol" not in df.columns
+            refuse = key == "prices" or (key == "funding_rates" and wide and len(df.columns) > 0)
+            if refuse:
+                have = set(df.columns) if wide else set()
+                missing = [s for s in symbols if s not in have]
+                if missing:
+                    where = f"dataset {self.dataset!r}" if self.dataset else str(self.loaded_paths.get(key) or key)
+                    raise DataLoadError(
+                        self.meta.name,
+                        f"{key} table ({where}) lacks {len(missing)} requested symbol(s): {missing}",
+                        key=key,
+                        missing=missing,
+                    )
+            if wide:
+                return df[[s for s in symbols if s in df.columns]]
             return df
 
         if self.dataset and self._served() is not None:
@@ -529,16 +550,16 @@ class LocalFileDataPlugin:
                 return finite_numbers(unique_rows(frame, self.dataset, what), self.dataset, what)
 
             return {
-                "prices": as_served(_select_cols(_clip_frame(self._pinned(), asof)), "served prices"),
+                "prices": as_served(_select_cols(_clip_frame(self._pinned(), asof), "prices"), "served prices"),
                 "volume": pd.DataFrame(),
                 "market_cap": pd.DataFrame(),
-                "funding_rates": as_served(_select_cols(funding), "served funding_rates"),
+                "funding_rates": as_served(_select_cols(funding, "funding_rates"), "served funding_rates"),
             }
         if self.dataset:
             ds = self._pinned()
             self.loaded_paths = self.planned_paths(params)
             return {
-                key: _select_cols(_clip_frame(getattr(ds, key), asof))
+                key: _select_cols(_clip_frame(getattr(ds, key), asof), key)
                 for key in ("prices", "volume", "market_cap", "funding_rates")
             }
 
@@ -548,27 +569,27 @@ class LocalFileDataPlugin:
         self.loaded_paths = self.planned_paths(params)
         ppath, fpath = self.loaded_paths["prices"], self.loaded_paths["funding_rates"]
         if ppath:
-            result["prices"] = _select_cols(_read_file(ppath, asof=asof, symbols=symbols))
+            result["prices"] = _select_cols(_read_file(ppath, asof=asof, symbols=symbols), "prices")
         else:
             result["prices"] = pd.DataFrame()
 
         # Volume
         vpath = params.get("volume_path") or self.volume_path
         if vpath:
-            result["volume"] = _select_cols(_read_file(vpath, asof=asof, symbols=symbols))
+            result["volume"] = _select_cols(_read_file(vpath, asof=asof, symbols=symbols), "volume")
         else:
             result["volume"] = pd.DataFrame()
 
         # Market cap
         mpath = params.get("market_cap_path") or self.market_cap_path
         if mpath:
-            result["market_cap"] = _select_cols(_read_file(mpath, asof=asof, symbols=symbols))
+            result["market_cap"] = _select_cols(_read_file(mpath, asof=asof, symbols=symbols), "market_cap")
         else:
             result["market_cap"] = pd.DataFrame()
 
         # Funding rates
         if fpath:
-            result["funding_rates"] = _select_cols(_read_file(fpath, asof=asof, symbols=symbols))
+            result["funding_rates"] = _select_cols(_read_file(fpath, asof=asof, symbols=symbols), "funding_rates")
         else:
             result["funding_rates"] = pd.DataFrame()
 

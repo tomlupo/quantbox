@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from quantbox.exceptions import DataLoadError
 from quantbox.plugins.datasources.local_file_data import (
     DUCKDB_AVAILABLE,
     LocalFileDataPlugin,
@@ -237,13 +238,13 @@ class TestLocalFileDataPlugin:
         assert df.empty
 
     def test_empty_prices_in_plugin(self, tmp_path):
-        """Plugin handles an empty prices parquet gracefully."""
+        """An empty prices parquet has no column for a requested symbol: refused by name (TOM-2421)."""
         path = tmp_path / "empty_prices.parquet"
         pd.DataFrame().to_parquet(str(path))
         plugin = LocalFileDataPlugin(prices_path=str(path))
         universe = pd.DataFrame({"symbol": ["BTC"]})
-        result = plugin.load_market_data(universe, "2026-01-30", {})
-        assert result["prices"].empty
+        with pytest.raises(DataLoadError, match=r"\['BTC'\]"):
+            plugin.load_market_data(universe, "2026-01-30", {})
 
     # -- 8. Column type preservation (DatetimeIndex, float values) ---------
 
