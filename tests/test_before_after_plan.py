@@ -88,6 +88,44 @@ def test_a_sibling_strategy_is_not_in_another_configs_closure() -> None:
     assert "quantbox.plugins.strategies.cross_asset_momentum" not in closure
 
 
+def test_a_sibling_strategy_is_still_LOADED() -> None:
+    """The package __init__ imports every strategy, so their import-time code runs (PR #320 review, 2/102)."""
+    cfg = yaml.safe_load((ROOT / "cookbook/configs/run_backtest_beglobal.yaml").read_text())
+    from quantbox.plugins.builtins import BUILTIN_PLUGINS
+
+    roots = ba.config_roots(cfg, BUILTIN_PLUGINS, {"quantbox.runner", "quantbox.registry"}, GRAPH)
+    assert "quantbox.plugins.strategies.cross_asset_momentum" in GRAPH.closure(roots, loaded=True)
+
+
+BODY = "import os\nclass S:\n    w: float = 0.6\n    def run(self):\n        return {}\n"
+
+
+def test_import_time_change_detection() -> None:
+    """Only a change inside function bodies, used by no import-time code, may narrow the selection."""
+    assert not ba.import_time_changed(BODY, BODY.replace("return {}", "return {'x': 1}"))
+    assert ba.import_time_changed(BODY, BODY.replace("0.6", "0.5"))  # a class default runs at import
+    assert ba.import_time_changed(BODY, BODY + "raise RuntimeError('import')\n")  # module-level code
+    assert ba.import_time_changed(None, BODY)  # added (or, the other way, deleted)
+    used = "def f():\n    return 1\nX = f()\n"
+    assert ba.import_time_changed(used, used.replace("return 1", "return 2"))  # called at import
+
+
+def test_a_name_from_a_lock_or_a_run_cannot_leave_its_directory() -> None:  # PR #320 review, 103
+    assert ba.single_name("etf-daily", "dataset") == "etf-daily"
+    for bad in ("../private", "/etc", "a/b", "..", "."):
+        try:
+            ba.single_name(bad, "dataset")
+        except ba.CouldNotRun:
+            continue
+        raise AssertionError(f"{bad!r} was accepted")
+
+
+def test_a_same_day_data_timestamp_still_differs() -> None:  # PR #320 review, 3
+    a = {"asof": "2026-10-26T00:00:00Z"}
+    b = {"asof": "2026-10-26T12:00:00Z"}
+    assert ba.diff_json(a, b) == ['asof: base "2026-10-26T00:00:00Z" -> head "2026-10-26T12:00:00Z"']
+
+
 def test_trade_code_calls_the_decision_but_not_inference() -> None:
     """A touched module in the trade layer's closure owes the shadow run; #313's inference does not."""
     trade = {m for m in GRAPH.edges if "trade" in ba.layers_of(m, LAYERS)}

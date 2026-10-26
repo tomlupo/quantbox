@@ -31,8 +31,10 @@ What it does, in order:
    plugins' modules and the runner, through the import graph at base OR head) holds a
    touched module, when it is touched itself, or when it reads a touched data file.
    An unmapped path selects every config. A package __init__ loaded only because a
-   module inside it was imported does not pull in its sibling re-exports (importing one
-   strategy does not make every strategy part of the run).
+   module inside it was imported still IMPORTS its siblings: a touched sibling selects
+   the config only when its import-time code changed (module statements, class bodies,
+   defaults, decorators), not when only its function bodies did. A rename counts as
+   its delete and its add.
 4. RUN. Each selected config runs at base (a git worktree of the merge base, under
    <out dir>/base-tree) and at head, in a fresh process with PYTHONHASHSEED=0 and
    TZ=UTC. The process prints which quantbox it imported, and a side that imported the
@@ -49,7 +51,8 @@ list never runs here. Both are covered by the release (`/ship`), which runs
 everything.
 5. DIFF. Every file of the two run directories but events.jsonl (timings): JSON field
    by field, parquet frame by frame, text line by line, after masking what differs on
-   every run (run id, timestamps, the checkout path, git and installed packages).
+   every run (the run id, which carries the run's one wall-clock stamp; the checkout and
+   slice paths; the commit; git and installed packages). No other date is masked.
    Floats compare at rel 1e-9, abs 1e-12.
 6. TRADE. A touched trade-step file, or a touched module that trade code calls (the
    code closure of the import-linter trade layer), owes the live shadow run (quantbox-live
@@ -89,20 +92,17 @@ RTOL, ATOL = 1e-9, 1e-12
 MAX_LINES = 40  # differences printed per file
 ALL = "ALL"
 
-# Wall-clock stamps of the run itself. Only a stamp dated on a day the compare ran is
-# masked: a data date ("2024-01-05T00:00:00") is a result and must still differ.
-TIMESTAMP_RES = [
-    re.compile(r"(\d{8})T\d{6}Z"),
-    re.compile(r"(\d{4}-\d{2}-\d{2})[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?"),
-]
-RUN_DAYS: set[str] = set()  # filled by run_days() at the start and the end of the compare
+# No timestamp is masked by its shape. The one wall-clock stamp a run writes is inside its
+# run id (`<asof>__<pipeline>__<hash>__<YYYYmmddTHHMMSSZ>`), which is masked as a whole;
+# any other date in a run's files is a result and must still differ (PR #320 review).
+SINGLE_NAME = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]*\Z")  # one directory entry, never "..", "/" or absolute
 
 
-def run_days() -> None:
-    import datetime as dt
-
-    for now in (dt.datetime.now(dt.UTC), dt.datetime.now()):
-        RUN_DAYS.update({now.strftime("%Y-%m-%d"), now.strftime("%Y%m%d")})
+def single_name(value: str, what: str) -> str:
+    """*value* if it names one entry in a directory; a name from a lock or a run that would leave it is refused."""
+    if not SINGLE_NAME.match(value) or value in (".", ".."):
+        raise CouldNotRun(f"{what} {value!r} is not a single file name; refused rather than joined into a path")
+    return value
 
 
 # Runs ONE config in a fresh process. argv: config path, artifacts root, result file.
@@ -194,14 +194,17 @@ class Graph:
     soft: dict[str, set[str]] = field(default_factory=dict)  # module -> packages it names as strings
     files: dict[str, str] = field(default_factory=dict)  # repo-relative path -> module
 
-    def closure(self, start: set[str]) -> set[str]:
-        """The modules whose code a run of *start* can call.
+    def closure(self, start: set[str], *, loaded: bool = False) -> set[str]:
+        """The modules whose code a run of *start* can CALL (or, with *loaded*, every module it LOADS).
 
         A package's __init__ that is loaded only because a module INSIDE it was imported
         runs its own imports, but its re-exports of sibling modules are never called by
         that module (an explicit import of a sibling is its own edge). So through such a
-        parent edge the closure follows the __init__'s imports from outside the package,
-        not into it: importing one strategy does not make every strategy part of a run.
+        parent edge the called closure follows the __init__'s imports from outside the
+        package, not into it: importing one strategy does not call every strategy.
+        Those siblings are still IMPORTED, so their import-time code runs: the loaded
+        closure keeps them, and a sibling whose import-time code changed is selected
+        through it (:func:`import_time_changed`, PR #320 review findings 2 and 102).
         """
         seen: dict[str, bool] = {}  # module -> reached as a parent only
         todo = [(m, False) for m in start if m in self.edges]
@@ -211,7 +214,7 @@ class Graph:
                 continue
             seen[mod] = as_parent
             for dep in self.edges.get(mod, ()):
-                if as_parent and dep.startswith(mod + "."):
+                if as_parent and not loaded and dep.startswith(mod + "."):
                     continue
                 todo.append((dep, False))
             if mod in self.parents:
@@ -300,6 +303,48 @@ def build_graph(tree: Path, package: str, catalogues: set[str]) -> Graph:
         deps.discard(mod)
         graph.edges[mod] = deps
     return graph
+
+
+def import_time_changed(before: str | None, after: str | None) -> bool:
+    """Whether a module's IMPORT-TIME behaviour can differ between two versions of its source.
+
+    Import time runs everything but function bodies: module statements, class bodies,
+    decorators, defaults. So the two sources are compared with every function body
+    blanked. A change only inside function bodies still counts when a changed function's
+    name is used by that import-time code (`X = helper()`). A file on one side only, or
+    one that does not parse, counts as changed.
+    """
+    if before is None or after is None:
+        return True
+    try:
+        trees = [ast.parse(before), ast.parse(after)]
+    except SyntaxError:
+        return True
+
+    def split(tree: ast.Module) -> tuple[str, dict[str, str], set[str]]:
+        bodies: dict[str, str] = {}
+
+        def blank(node: ast.AST, prefix: str) -> None:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+                    name = f"{prefix}{child.name}"
+                    bodies[name] = "\n".join(ast.dump(s) for s in child.body)
+                    child.body = [ast.Pass()]
+                elif isinstance(child, ast.ClassDef):
+                    blank(child, f"{prefix}{child.name}.")
+                else:
+                    blank(child, prefix)
+
+        blank(tree, "")
+        used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+        used |= {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+        return ast.dump(tree), bodies, used
+
+    (skel_a, bodies_a, used_a), (skel_b, bodies_b, used_b) = split(trees[0]), split(trees[1])
+    if skel_a != skel_b:
+        return True
+    changed = {n.rpartition(".")[2] for n in set(bodies_a) | set(bodies_b) if bodies_a.get(n) != bodies_b.get(n)}
+    return bool(changed & (used_a | used_b))
 
 
 # ------------------------------------------------------------------ mapping
@@ -457,7 +502,11 @@ def pinned_slice(tree: Path, dest: Path) -> tuple[Path | None, list[str]]:
     dest.mkdir(parents=True)
     notes = []
     for name, pin in sorted(pins.items()):
-        pin = str(pin)
+        # A lock is PR content: a name like "../private" would copy from, and write to,
+        # outside the slice (PR #320 review, finding 103).
+        name, pin = single_name(str(name), "datasets.lock entry"), str(pin)
+        if not (src / name).resolve().is_relative_to(src):
+            raise CouldNotRun(f"dataset {name!r} resolves outside {src}; refused")
         here = src / name / "prices.parquet"
         if here.is_file() and _sha256_bytes(here.read_bytes()) == pin:
             shutil.copytree(src / name, dest / name)
@@ -621,8 +670,9 @@ def run_config(side: Side, config: str, out: Path) -> RunResult:
         raise CouldNotRun(
             f"{side.name} imported quantbox from {imported}, not from {side.tree}: the sides are not isolated"
         )
-    shutil.move(str(art_root / result["run_id"]), str(dest))
-    (dest / ".run_id").write_text(result["run_id"])
+    run_id = single_name(str(result["run_id"]), f"{side.name} run id")  # written by the side's own code
+    shutil.move(str(art_root / run_id), str(dest))
+    (dest / ".run_id").write_text(run_id)
     return RunResult(True, run_dir=dest, seconds=seconds)
 
 
@@ -643,9 +693,6 @@ def masker(side: Side, run_id: str, art_root: Path):
     def mask(text: str) -> str:
         for old, new in subs:
             text = text.replace(old, new)
-        run_days()  # a run that crossed midnight stamps two days
-        for rx in TIMESTAMP_RES:
-            text = rx.sub(lambda m: "<TS>" if m.group(1) in RUN_DAYS else m.group(0), text)
         return text
 
     return mask
@@ -784,13 +831,14 @@ def main(argv: list[str]) -> int:
     base_ref, out = argv[0], Path(argv[1]).resolve()
     out.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
-    run_days()
     # The plan beside THIS script, not the checkout's: hotl takes the script from the
     # base branch so a PR cannot rewrite how it is verified, and the plan goes with it.
     plan = load_plan(SCRIPT_TREE)
     head_sha = git("rev-parse", "HEAD").strip()
     base_sha = git("merge-base", base_ref, "HEAD").strip()
-    files = [f for f in git("diff", "--name-only", base_sha, head_sha).splitlines() if f]
+    # --no-renames: a rename is its delete AND its add, so the OLD path is mapped too (a
+    # module moved into tests/ or renamed away still runs what used to import it).
+    files = [f for f in git("diff", "--name-only", "--no-renames", base_sha, head_sha).splitlines() if f]
     print(f"before/after: base {base_ref} (merge base {base_sha[:12]}) vs head {head_sha[:12]}, {len(files)} file(s)")
 
     report = [
@@ -858,11 +906,30 @@ def main(argv: list[str]) -> int:
         # owed by a trade-step file, an unmapped path, or a touched module that trade code
         # calls (the code closure of the import-linter trade layer: decision, metrics, the
         # strategy runner ...), never merely by being an earlier step.
+        # A touched module only LOADED (not called) by a run still matters when its
+        # import-time code changed: read each touched module at both sides once.
+        import_time: dict[str, bool] = {}
+        for m in stepped:
+            if m.module:
+                try:
+                    before = git("show", f"{base_sha}:{m.path}")
+                except CouldNotRun:
+                    before = None  # added at head
+                after = (ROOT / m.path).read_text() if (ROOT / m.path).is_file() else None
+                import_time[m.module] = import_time_changed(before, after)
+
+        def reached(graph: Graph, roots: set[str]) -> set[str]:
+            """Touched modules a run of *roots* calls, or loads with changed import-time code."""
+            touched = set(import_time)
+            return (touched & graph.closure(roots)) | {
+                t for t in touched & graph.closure(roots, loaded=True) if import_time[t]
+            }
+
         trade_called: set[str] = set()
         if layers is not None:
             for graph in graphs:
                 trade_mods = {m for m in graph.edges if "trade" in layers_of(m, layers)}
-                trade_called |= {m.module for m in stepped if m.module} & graph.closure(trade_mods)
+                trade_called |= reached(graph, trade_mods)
         trade_called -= {m.module for m in stepped if m.step == "trade"}
         trade_owed = run_all or bool(trade_called) or any(m.step == "trade" for m in stepped)
         if trade_called:
@@ -879,7 +946,6 @@ def main(argv: list[str]) -> int:
             "",
         ]
 
-        touched_mods = {m.module for m in stepped if m.module}
         touched_paths = {m.path for m in stepped}
         catalogues_by_side = {"head": catalogue_of(head_side), "base": catalogue_of(base_side)}
         runner_roots = {"quantbox.runner", "quantbox.registry"}
@@ -913,9 +979,9 @@ def main(argv: list[str]) -> int:
                     if roots is None:
                         why = f"its plugins could not be read at {side}: runs to be safe"
                         break
-                    hit = sorted(touched_mods & graph.closure(roots))
+                    hit = sorted(reached(graph, roots))
                     if hit:
-                        why = f"its code closure at {side} holds {', '.join(hit[:3])}{' ...' if len(hit) > 3 else ''}"
+                        why = f"at {side} its run calls (or loads, with changed import-time code) {', '.join(hit[:3])}{' ...' if len(hit) > 3 else ''}"
                         break
             if why:
                 selected.append((config, why))
