@@ -111,3 +111,21 @@ def test_a_funding_file_without_a_requested_symbol_is_refused(tmp_path):
     )
     with pytest.raises(DataLoadError, match=r"funding_rates table .* \['BBB'\]"):
         plugin.load_market_data(pd.DataFrame({"symbol": ["AAA", "BBB"]}), "2024-01-10", {})
+
+
+@pytest.mark.parametrize("layout", ["wide", "long"])
+def test_a_funding_file_with_none_of_the_requested_symbols_is_refused(tmp_path, layout):
+    """PR #314 review: a long file is filtered as it is read, so holding none of the symbols gave an empty frame."""
+    _prices(["AAA"]).to_parquet(tmp_path / "prices.parquet")
+    funding = _prices(["BBB"]).mul(1e-4)
+    if layout == "wide":
+        funding.to_parquet(tmp_path / "funding.parquet")
+    else:
+        funding.stack().rename("rate").rename_axis(["date", "symbol"]).reset_index().to_parquet(
+            tmp_path / "funding.parquet", index=False
+        )
+    plugin = LocalFileDataPlugin(
+        prices_path=str(tmp_path / "prices.parquet"), funding_rates_path=str(tmp_path / "funding.parquet")
+    )
+    with pytest.raises(DataLoadError, match=r"funding_rates table .* \['AAA'\]"):
+        plugin.load_market_data(pd.DataFrame({"symbol": ["AAA"]}), "2024-01-10", {})

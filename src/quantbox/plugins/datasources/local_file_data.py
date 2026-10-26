@@ -504,24 +504,28 @@ class LocalFileDataPlugin:
         Only ``prices`` is required; others default to empty DataFrames.
 
         A requested symbol that the prices table lacks is refused with a
-        ``DataLoadError`` that names it (TOM-2421); so is one a non-empty funding
-        table lacks, since the engine would charge it zero funding. ``volume`` and
+        ``DataLoadError`` that names it (TOM-2421); so is one a funding table
+        lacks, since the engine would charge it zero funding. ``volume`` and
         ``market_cap`` keep only the columns they have: real datasets hold no
-        volume for an index or a bond (bbg-multi-asset lacks 202 of 502). A prices
-        FILE that does not exist is not this check: it is logged and read as empty,
-        and the backtest pipeline refuses it before any data is read.
+        volume for an index or a bond (bbg-multi-asset lacks 202 of 502).
+
+        Whether a table EXISTS is decided from its source, never from the frame:
+        a long file is filtered to the requested symbols as it is read, so a file
+        that holds none of them comes back as an empty frame (PR #314 review). A
+        file that does not exist is not this check: it is logged and read as
+        empty, and the backtest pipeline refuses a missing prices file up front.
         """
         symbols = universe["symbol"].tolist() if not universe.empty and "symbol" in universe.columns else None
 
-        def _select_cols(df: pd.DataFrame, key: str, *, found: bool = True) -> pd.DataFrame:
-            """For wide-format DataFrames, restrict to the requested symbol columns; refuse a missing one (*key*).
+        def _select_cols(df: pd.DataFrame, key: str, *, refuse: bool) -> pd.DataFrame:
+            """For wide-format DataFrames, restrict to the requested symbol columns.
 
-            *found* is False for an inline file that does not exist: there is no table to lack a symbol.
+            With *refuse*, the source table of *key* exists, and a requested symbol
+            the frame does not hold is a ``DataLoadError``.
             """
             if not symbols:
                 return df
             wide = isinstance(df.index, pd.DatetimeIndex) and "symbol" not in df.columns
-            refuse = found and (key == "prices" or (key == "funding_rates" and wide and len(df.columns) > 0))
             if refuse:
                 have = set(df.columns) if wide else set()
                 missing = [s for s in symbols if s not in have]
@@ -555,16 +559,24 @@ class LocalFileDataPlugin:
                 return finite_numbers(unique_rows(frame, self.dataset, what), self.dataset, what)
 
             return {
-                "prices": as_served(_select_cols(_clip_frame(self._pinned(), asof), "prices"), "served prices"),
+                "prices": as_served(
+                    _select_cols(_clip_frame(self._pinned(), asof), "prices", refuse=True), "served prices"
+                ),
                 "volume": pd.DataFrame(),
                 "market_cap": pd.DataFrame(),
-                "funding_rates": as_served(_select_cols(funding, "funding_rates"), "served funding_rates"),
+                "funding_rates": as_served(
+                    _select_cols(funding, "funding_rates", refuse=bool(fpath) and Path(fpath).exists()),
+                    "served funding_rates",
+                ),
             }
         if self.dataset:
             ds = self._pinned()
             self.loaded_paths = self.planned_paths(params)
+            # A pinned dataset's frames are wide and read whole: an empty funding
+            # frame is a dataset that serves no funding.
+            refuse = {"prices": True, "funding_rates": len(getattr(ds.funding_rates, "columns", ())) > 0}
             return {
-                key: _select_cols(_clip_frame(getattr(ds, key), asof), key)
+                key: _select_cols(_clip_frame(getattr(ds, key), asof), key, refuse=refuse.get(key, False))
                 for key in ("prices", "volume", "market_cap", "funding_rates")
             }
 
@@ -575,7 +587,7 @@ class LocalFileDataPlugin:
         ppath, fpath = self.loaded_paths["prices"], self.loaded_paths["funding_rates"]
         if ppath:
             result["prices"] = _select_cols(
-                _read_file(ppath, asof=asof, symbols=symbols), "prices", found=Path(ppath).exists()
+                _read_file(ppath, asof=asof, symbols=symbols), "prices", refuse=Path(ppath).exists()
             )
         else:
             result["prices"] = pd.DataFrame()
@@ -583,20 +595,24 @@ class LocalFileDataPlugin:
         # Volume
         vpath = params.get("volume_path") or self.volume_path
         if vpath:
-            result["volume"] = _select_cols(_read_file(vpath, asof=asof, symbols=symbols), "volume")
+            result["volume"] = _select_cols(_read_file(vpath, asof=asof, symbols=symbols), "volume", refuse=False)
         else:
             result["volume"] = pd.DataFrame()
 
         # Market cap
         mpath = params.get("market_cap_path") or self.market_cap_path
         if mpath:
-            result["market_cap"] = _select_cols(_read_file(mpath, asof=asof, symbols=symbols), "market_cap")
+            result["market_cap"] = _select_cols(
+                _read_file(mpath, asof=asof, symbols=symbols), "market_cap", refuse=False
+            )
         else:
             result["market_cap"] = pd.DataFrame()
 
         # Funding rates
         if fpath:
-            result["funding_rates"] = _select_cols(_read_file(fpath, asof=asof, symbols=symbols), "funding_rates")
+            result["funding_rates"] = _select_cols(
+                _read_file(fpath, asof=asof, symbols=symbols), "funding_rates", refuse=Path(fpath).exists()
+            )
         else:
             result["funding_rates"] = pd.DataFrame()
 
