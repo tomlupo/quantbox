@@ -72,7 +72,9 @@ def _sbbi_like(line: Path) -> Path:
 def test_a_column_the_serve_block_leaves_out_is_refused_by_name(line):
     plugin = LocalFileDataPlugin(dataset="sbbi", dataset_lock=str(_sbbi_like(line)))
     universe = plugin.load_universe({"symbols": ["LargeCap_IR", "LargeCap_CAR"]})
-    with pytest.raises(DataLoadError, match=r"lacks 2 requested symbol\(s\): \['LargeCap_IR', 'LargeCap_CAR'\]"):
+    with pytest.raises(
+        DataLoadError, match=r"lacks 2 requested symbol\(s\) at or before 2003-12-31: \['LargeCap_IR', 'LargeCap_CAR'\]"
+    ):
         plugin.load_market_data(universe, "2003-12-31", {})
 
 

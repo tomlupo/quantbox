@@ -524,7 +524,7 @@ class LocalFileDataPlugin:
                     where = f"dataset {self.dataset!r}" if self.dataset else str(self.loaded_paths.get(key) or key)
                     raise DataLoadError(
                         self.meta.name,
-                        f"{key} table ({where}) lacks {len(missing)} requested symbol(s): {missing}",
+                        f"{key} table ({where}) lacks {len(missing)} requested symbol(s) at or before {asof}: {missing}",
                         key=key,
                         missing=missing,
                     )
