@@ -1533,6 +1533,21 @@ def test_the_real_resolver_refuses_an_unpinned_or_moved_build(lab, tmp_path, mon
     _only_refusal(lab.run(resolve=preflight.resolve_dataset), "data[arm.yaml]", phrase)
 
 
+def test_a_config_path_relative_to_the_callers_cwd_keeps_its_meaning(lab, planned, tmp_path, monkeypatch):
+    """PR #319 review, finding 1: a relative config path was resolved AFTER the switch to
+    the line, so `research/line/configs/arm.yaml` became `.../line/research/line/...` and an
+    existing config read as BLIND. Both quantbox calls get the caller's path."""
+    lock = _datasets(lab, tmp_path, monkeypatch, pin=None)
+    lab.plan["dataset"].update(UNRESOLVED)
+    monkeypatch.chdir(lab.root)
+    relative = lab.config.relative_to(lab.root)
+    assert not (lab.line / relative).exists(), "the fixture would not tell the two meanings apart"
+    report = preflight.run(lab.root, lab.line, [relative], resolve=preflight.resolve_dataset)
+    assert report.exit_code == 0, report.rows
+    assert planned == [(str(lab.config.resolve()), lab.line.resolve())]
+    assert f"binds the build {lock} pins" in _rows(report, preflight.PASS)["data[arm.yaml]"]
+
+
 def test_the_real_resolver_that_cannot_find_the_dataset_is_blind(lab, tmp_path, monkeypatch):
     monkeypatch.setenv("QUANTBOX_DATASETS_ROOT", str(tmp_path / "empty-root"))
     lab.plan["dataset"].update(UNRESOLVED)

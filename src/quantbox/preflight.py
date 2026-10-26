@@ -1218,7 +1218,11 @@ def check_replication(report: Report, prereg: dict) -> bool:
 def _asked_from(cwd: Path):
     """Run quantbox's own code as `quantbox <verb>` run from *cwd* would: a relative
     `artifacts.root` or `dataset_lock` resolves from there. Anything quantbox prints
-    goes to stderr, so the report alone is on stdout (as `config explain --json` keeps it)."""
+    goes to stderr, so the report alone is on stdout (as `config explain --json` keeps it).
+
+    Every path the CALLER passes is resolved before this is entered, from the caller's
+    cwd, as the plugin resolved it before its subprocess: inside, a relative path would
+    mean something else (PR #319 review, finding 1)."""
     with contextlib.chdir(cwd), contextlib.redirect_stdout(sys.stderr):
         yield
 
@@ -1231,11 +1235,12 @@ def explain_config(path: Path, cwd: Path) -> dict:
     reports BLIND. A plan with `ok: false` is RETURNED — quantbox saying the run
     cannot start is an answer, not blindness.
     """
+    config = path.resolve()  # from the caller's cwd, before the switch
     try:
         with _asked_from(cwd):
-            return _explain.explain_path(str(path.resolve()))
+            return _explain.explain_path(str(config))
     except Exception as exc:  # noqa: BLE001 — a crash is "could not ask", never a plan
-        raise Unavailable(f"`quantbox config explain {path.resolve()}` raised {type(exc).__name__}: {exc}") from None
+        raise Unavailable(f"`quantbox config explain {config}` raised {type(exc).__name__}: {exc}") from None
 
 
 def _inline_rows(line: Path) -> tuple[list[dict] | None, str | None]:
@@ -1257,12 +1262,13 @@ def resolve_dataset(name: str, config: Path, cwd: Path) -> dict:
     """The build `run -c <config>` binds for a by-name read: :func:`quantbox.dataset_lock.resolve_dataset`
     at :func:`~quantbox.dataset_lock.lock_for_run` (what `quantbox dataset resolve <name> --config
     <config> --json` prints). Raises `Unavailable` with quantbox's reason."""
+    config = config.resolve()  # from the caller's cwd, before the switch
     try:
         with _asked_from(cwd):
-            return _resolve_dataset(name, lock=lock_for_run(config.resolve()))
+            return _resolve_dataset(name, lock=lock_for_run(config))
     except Exception as exc:  # noqa: BLE001 — DatasetResolveError or a crash: either way, no answer
         raise Unavailable(
-            f"`quantbox dataset resolve {name} --config {config.resolve()}` raised {type(exc).__name__}: {exc}"
+            f"`quantbox dataset resolve {name} --config {config}` raised {type(exc).__name__}: {exc}"
         ) from None
 
 
