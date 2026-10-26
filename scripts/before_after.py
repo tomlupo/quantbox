@@ -32,9 +32,10 @@ What it does, in order:
    touched module, when it is touched itself, or when it reads a touched data file.
    An unmapped path selects every config. A package __init__ loaded only because a
    module inside it was imported still IMPORTS its siblings: a touched sibling selects
-   the config only when its import-time code changed (module statements, class bodies,
-   defaults, decorators), not when only its function bodies did. A rename counts as
-   its delete and its add.
+   the config when its import-time code EXECUTES something new (a call, a decorator, a
+   raise), or when it only rebinds names and it, or a module importing it, no longer
+   imports at head. A change only inside function bodies does not
+   (:func:`import_time_changed`). A rename counts as its delete and its add.
 4. RUN. Each selected config runs at base (a git worktree of the merge base, under
    <out dir>/base-tree) and at head, in a fresh process with PYTHONHASHSEED=0 and
    TZ=UTC. The process prints which quantbox it imported, and a side that imported the
@@ -305,46 +306,94 @@ def build_graph(tree: Path, package: str, catalogues: set[str]) -> Graph:
     return graph
 
 
-def import_time_changed(before: str | None, after: str | None) -> bool:
-    """Whether a module's IMPORT-TIME behaviour can differ between two versions of its source.
+#: Nodes that EXECUTE code when the statement holding them runs at import (a pure binding has none).
+EXECUTING = (
+    ast.Call,
+    ast.Raise,
+    ast.Await,
+    ast.Yield,
+    ast.YieldFrom,
+    ast.Delete,
+    ast.Assert,
+    ast.AugAssign,
+    ast.NamedExpr,
+    ast.If,
+    ast.For,
+    ast.AsyncFor,
+    ast.While,
+    ast.Try,
+    ast.With,
+    ast.AsyncWith,
+    ast.Match,
+    ast.Global,
+    ast.Nonlocal,
+)
+
+#: import_time_changed's three answers.
+IMPORT_NONE, IMPORT_BINDINGS, IMPORT_CODE = "none", "bindings", "code"
+
+
+def import_time_changed(before: str | None, after: str | None) -> str:
+    """How a module's IMPORT-TIME behaviour can differ between two versions of its source.
 
     Import time runs everything but function bodies: module statements, class bodies,
-    decorators, defaults. So the two sources are compared with every function body
-    blanked. A change only inside function bodies still counts when a changed function's
-    name is used by that import-time code (`X = helper()`). A file on one side only, or
-    one that does not parse, counts as changed.
+    decorators, defaults. The two sources are compared statement by statement, with
+    every function body blanked and docstrings left out (classes split into their
+    header and their own statements):
+
+    - ``code``: a changed statement executes something (a call, a decorator, a raise,
+      control flow), or a function whose body changed is used by import-time code
+      (``X = helper()``). Also a file on one side only, or one that does not parse.
+    - ``bindings``: the changed statements only bind names (imports, assignments of
+      literals or names, defs and classes without decorators or calls). Such a change
+      alters a run that only LOADS the module just when the module no longer imports,
+      which the caller checks by importing it.
+    - ``none``: only function bodies changed.
     """
     if before is None or after is None:
-        return True
+        return IMPORT_CODE
     try:
         trees = [ast.parse(before), ast.parse(after)]
     except SyntaxError:
-        return True
+        return IMPORT_CODE
 
-    def split(tree: ast.Module) -> tuple[str, dict[str, str], set[str]]:
+    def split(tree: ast.Module) -> tuple[list[tuple[str, ast.AST]], dict[str, str], set[str]]:
+        items: list[tuple[str, ast.AST]] = []
         bodies: dict[str, str] = {}
 
-        def blank(node: ast.AST, prefix: str) -> None:
-            for child in ast.iter_child_nodes(node):
-                if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
-                    name = f"{prefix}{child.name}"
-                    bodies[name] = "\n".join(ast.dump(s) for s in child.body)
-                    child.body = [ast.Pass()]
-                elif isinstance(child, ast.ClassDef):
-                    blank(child, f"{prefix}{child.name}.")
-                else:
-                    blank(child, prefix)
+        def walk(stmts: list[ast.stmt], prefix: str) -> None:
+            for i, stmt in enumerate(stmts):
+                if i == 0 and isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
+                    continue  # a docstring
+                if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
+                    bodies[f"{prefix}{stmt.name}"] = "\n".join(ast.dump(s) for s in stmt.body)
+                    stmt.body = [ast.Pass()]  # decorators and defaults run at import; the body does not
+                elif isinstance(stmt, ast.ClassDef):
+                    inner, stmt.body = stmt.body, []
+                    items.append((f"{prefix}{ast.dump(stmt)}", stmt))  # the header: bases, decorators
+                    walk(inner, f"{prefix}{stmt.name}.")
+                    continue
+                items.append((f"{prefix}{ast.dump(stmt)}", stmt))
 
-        blank(tree, "")
-        used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
-        used |= {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
-        return ast.dump(tree), bodies, used
+        walk(tree.body, "")
+        used = {n.id for _, s in items for n in ast.walk(s) if isinstance(n, ast.Name)}
+        used |= {n.attr for _, s in items for n in ast.walk(s) if isinstance(n, ast.Attribute)}
+        return items, bodies, used
 
-    (skel_a, bodies_a, used_a), (skel_b, bodies_b, used_b) = split(trees[0]), split(trees[1])
-    if skel_a != skel_b:
-        return True
-    changed = {n.rpartition(".")[2] for n in set(bodies_a) | set(bodies_b) if bodies_a.get(n) != bodies_b.get(n)}
-    return bool(changed & (used_a | used_b))
+    (items_a, bodies_a, used_a), (items_b, bodies_b, used_b) = split(trees[0]), split(trees[1])
+    keys_a, keys_b = [k for k, _ in items_a], [k for k, _ in items_b]
+    changed_bodies = {n.rpartition(".")[2] for n in set(bodies_a) | set(bodies_b) if bodies_a.get(n) != bodies_b.get(n)}
+    if changed_bodies & (used_a | used_b):
+        return IMPORT_CODE
+    if keys_a == keys_b:
+        return IMPORT_NONE
+    differing = [s for k, s in items_a if k not in keys_b] + [s for k, s in items_b if k not in keys_a]
+    if not differing:  # the same statements in another order: order runs at import
+        return IMPORT_CODE
+    for stmt in differing:
+        if getattr(stmt, "decorator_list", None) or any(isinstance(n, EXECUTING) for n in ast.walk(stmt)):
+            return IMPORT_CODE
+    return IMPORT_BINDINGS
 
 
 # ------------------------------------------------------------------ mapping
@@ -617,6 +666,20 @@ def make_base(base_sha: str, out: Path) -> Side:
             raise CouldNotRun(f"base venv: uv sync failed: {proc.stderr[-800:]}")
         python = str(tree / ".venv" / "bin" / "python")
     return Side("base", tree, python, side_env(tree, None))
+
+
+def imports_cleanly(side: Side, modules: set[str]) -> bool:
+    """Whether every one of *modules* imports in a fresh process of *side* (its own code)."""
+    code = "import importlib, sys\nfor name in sys.argv[1:]:\n    importlib.import_module(name)\n"
+    proc = subprocess.run(
+        [side.python, "-c", code, *sorted(modules)],
+        cwd=side.tree,
+        capture_output=True,
+        text=True,
+        env=side.env,
+        timeout=300,
+    )
+    return proc.returncode == 0
 
 
 def catalogue_of(side: Side) -> dict[str, dict[str, str]] | None:
@@ -916,7 +979,17 @@ def main(argv: list[str]) -> int:
                 except CouldNotRun:
                     before = None  # added at head
                 after = (ROOT / m.path).read_text() if (ROOT / m.path).is_file() else None
-                import_time[m.module] = import_time_changed(before, after)
+                kind = import_time_changed(before, after)
+                verdict = kind
+                if kind == IMPORT_BINDINGS:
+                    # Only names changed: a loaded-only run differs just if the module, or a
+                    # module that imports it, no longer imports at head (a removed name).
+                    importers = {i for i, deps in head_graph.edges.items() if m.module in deps}
+                    clean = imports_cleanly(head_side, {m.module} | importers)
+                    verdict = IMPORT_NONE if clean else IMPORT_CODE
+                    kind = f"bindings, {'all import at head' if clean else 'an import FAILS at head'}"
+                import_time[m.module] = verdict == IMPORT_CODE
+                print(f"import-time change in {m.module}: {kind}")
 
         def reached(graph: Graph, roots: set[str]) -> set[str]:
             """Touched modules a run of *roots* calls, or loads with changed import-time code."""

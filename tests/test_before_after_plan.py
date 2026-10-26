@@ -101,13 +101,17 @@ BODY = "import os\nclass S:\n    w: float = 0.6\n    def run(self):\n        ret
 
 
 def test_import_time_change_detection() -> None:
-    """Only a change inside function bodies, used by no import-time code, may narrow the selection."""
-    assert not ba.import_time_changed(BODY, BODY.replace("return {}", "return {'x': 1}"))
-    assert ba.import_time_changed(BODY, BODY.replace("0.6", "0.5"))  # a class default runs at import
-    assert ba.import_time_changed(BODY, BODY + "raise RuntimeError('import')\n")  # module-level code
-    assert ba.import_time_changed(None, BODY)  # added (or, the other way, deleted)
+    """code: something runs at import; bindings: only names change; none: only function bodies (PR #320 review)."""
+    itc = ba.import_time_changed
+    assert itc(BODY, BODY.replace("return {}", "return {'x': 1}")) == ba.IMPORT_NONE
+    assert itc(BODY, BODY.replace("0.6", "0.5")) == ba.IMPORT_BINDINGS  # a class default binds a value
+    assert itc(BODY, BODY + "LIMIT = 0.9999\n") == ba.IMPORT_BINDINGS
+    assert itc(BODY, BODY + "raise RuntimeError('import')\n") == ba.IMPORT_CODE  # the carry.py probe
+    assert itc(BODY, BODY + "X = len('a')\n") == ba.IMPORT_CODE  # a call at import
+    assert itc(BODY, BODY.replace("class S:", "@dataclass\nclass S:")) == ba.IMPORT_CODE  # a decorator runs
+    assert itc(None, BODY) == ba.IMPORT_CODE  # added (or, the other way, deleted)
     used = "def f():\n    return 1\nX = f()\n"
-    assert ba.import_time_changed(used, used.replace("return 1", "return 2"))  # called at import
+    assert itc(used, used.replace("return 1", "return 2")) == ba.IMPORT_CODE  # called at import
 
 
 def test_a_name_from_a_lock_or_a_run_cannot_leave_its_directory() -> None:  # PR #320 review, 103
