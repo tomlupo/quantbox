@@ -27,7 +27,7 @@ WHAT IT READS — nothing else
                                    is `prereg:`, in `<line>/README.md` (or
                                    `--prereg`). Prose around it is for people;
                                    the block is what this gate reads.
-  * quantbox's PLAN for each config :func:`quantbox.explain.explain_config`
+  * quantbox's PLAN for each config :func:`quantbox.explain.explain_path`
                                    (quantbox/explain@1, what `quantbox config
                                    explain --json` prints), run from the line: the
                                    engine, the dataset (name, pin, market),
