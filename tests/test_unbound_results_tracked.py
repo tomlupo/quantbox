@@ -122,7 +122,7 @@ def test_guard_the_late_fill_of_an_unbound_order_is_booked_under_its_venue_id(tm
     resolved = resolve_working_orders(store, _Venue(), ledger=ledger).resolved
     assert [(r["order_id"], r["quantity"]) for r in resolved] == [("W1", 0.02)]
     assert store.load() == []
-    slot = ledger.match_intents_to_results()["venue:W1"]
+    slot = ledger.match_intents_to_results()["venue:ETH:W1"]
     assert slot["intent"] is None  # no intent is told it owns the fill
     assert slot["result"]["status"] == "filled" and slot["result"]["filled_qty"] == 0.02
     assert slot["result"]["unowned"] is True and slot["result"]["symbol"] == "ETH"
@@ -135,3 +135,25 @@ def test_guard_one_venue_order_reported_three_times_is_queued_and_booked_once(tm
     store = WorkingOrderStore(book_key="t", root=tmp_path)
     resolved = resolve_working_orders(store, _Venue(), ledger=OrderFillLedger(book_key="t", root=tmp_path)).resolved
     assert sum(r["quantity"] for r in resolved) == 0.02
+
+
+class _OneSymbolVenue(_Venue):
+    """Binance scopes an order id to its symbol: ETH/42 has filled, BTC/42 still works."""
+
+    def fetch_order_result(self, order_id, symbol):
+        if symbol == "ETH":
+            return super().fetch_order_result(order_id, symbol)
+        return {"status": "WORKING", "qty": 0.0, "price": 0.0, "error": ""}
+
+
+def test_guard_two_symbols_with_one_order_id_are_two_orders(tmp_path):
+    """PR #315 round 2: a venue order is (symbol, order id), in the queue, its removal and the ledger ref."""
+    store = WorkingOrderStore(book_key="t", root=tmp_path)
+    for symbol in ("ETH", "BTC"):
+        store.record(symbol=symbol, side="sell", order_id="42", requested_qty=0.02, cycle_id="c1")
+    assert [(q["symbol"], q["order_id"]) for q in store.load()] == [("ETH", "42"), ("BTC", "42")]
+    ledger = OrderFillLedger(book_key="t", root=tmp_path)
+    resolved = resolve_working_orders(store, _OneSymbolVenue(), ledger=ledger).resolved
+    assert [(r["symbol"], r["order_id"]) for r in resolved] == [("ETH", "42")]
+    assert [(q["symbol"], q["order_id"]) for q in store.load()] == [("BTC", "42")]  # still live: still queued
+    assert set(ledger.match_intents_to_results()) == {"venue:ETH:42"}

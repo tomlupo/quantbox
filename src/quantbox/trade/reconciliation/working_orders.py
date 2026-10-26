@@ -49,6 +49,11 @@ def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def order_key(rec: Mapping[str, Any]) -> tuple[str, str]:
+    """A venue order's identity: (symbol, order id). Binance order ids are unique per symbol only."""
+    return (str(rec.get("symbol") or ""), str(rec.get("order_id") or ""))
+
+
 @dataclass
 class WorkingOrderStore:
     """The per-book queue of orders still working at the venue."""
@@ -100,12 +105,13 @@ class WorkingOrderStore:
         so that when the fill is finally observed it can be bound back to the
         intent that produced it instead of landing as an orphan result.
 
-        One entry per venue order id: an order already queued is not queued
-        again, so a broker that reports one order twice cannot make the next
-        cycle book its fill twice (PR #315 review).
+        One entry per venue order (:func:`order_key`): an order already queued is
+        not queued again, so a broker that reports one order twice cannot make
+        the next cycle book its fill twice (PR #315 review).
         """
         records = self.load()
-        if order_id and any(str(r.get("order_id")) == str(order_id) for r in records):
+        key = order_key({"symbol": symbol, "order_id": order_id})
+        if order_id and any(order_key(r) == key for r in records):
             logger.warning("Working order %s %s (id=%s) is already queued — not queued twice", side, symbol, order_id)
             return
         records.append(
@@ -287,7 +293,7 @@ def resolve_working_orders(
         result.unreadable = list(queued)
         return result
 
-    drop_ids: set[str] = set()
+    drop_keys: set[tuple[str, str]] = set()
     moment = now or datetime.now(UTC)
     for rec in queued:
         order_id = str(rec.get("order_id") or "")
@@ -296,7 +302,7 @@ def resolve_working_orders(
             # An entry with no order id can never be resolved; drop it rather
             # than carry an unanswerable record forever.
             logger.error("Working-order entry for %s carries no order_id — dropping it", symbol or "?")
-            drop_ids.add(order_id)
+            drop_keys.add(order_key(rec))
             continue
 
         try:
@@ -339,7 +345,7 @@ def resolve_working_orders(
                     max_age_days,
                 )
                 result.expired.append(rec)
-                drop_ids.add(order_id)
+                drop_keys.add(order_key(rec))
             continue
 
         status = str(outcome.get("status", "")).strip().upper()
@@ -361,11 +367,11 @@ def resolve_working_orders(
                     max_age_days,
                 )
                 result.expired.append(rec)
-                drop_ids.add(order_id)
+                drop_keys.add(order_key(rec))
             continue
 
         # Terminal: FILLED / PARTIAL / FAILED. Book it and stop tracking it.
-        drop_ids.add(order_id)
+        drop_keys.add(order_key(rec))
         entry = {
             "symbol": symbol,
             "side": str(rec.get("side", "")),
@@ -389,13 +395,13 @@ def resolve_working_orders(
         order_ref = rec.get("order_ref")
         if ledger is not None:
             # An entry with no intent ref (an unbound result, TOM-2422, or an
-            # intent write that failed) is still booked, under the venue's id:
+            # intent write that failed) is still booked, under its (symbol, order id):
             # the outcome is durable, and no intent is told it owns it. The
             # reconciliation close reads only refs that carry an intent.
             owned = bool(order_ref)
             try:
                 ledger.record_result(
-                    order_ref=str(order_ref) if owned else f"venue:{order_id}",
+                    order_ref=str(order_ref) if owned else f"venue:{symbol}:{order_id}",
                     cycle_id=str(rec.get("cycle_id") or ""),
                     status=to_ledger_status(status),
                     filled_qty=entry["quantity"],
@@ -410,6 +416,8 @@ def resolve_working_orders(
                     order_ref,
                 )
 
-    store.drop(drop_ids)
+    if drop_keys:
+        # By (symbol, order id): a resolved ETH/42 must not dequeue a live BTC/42.
+        store.save([r for r in store.load() if order_key(r) not in drop_keys])
     result.checked = True
     return result
