@@ -22,7 +22,7 @@ What it writes:
 |---|---|
 | `pyproject.toml` | quantbox at the 40-char SHA the tag names (tag in `[tool.quantbox-line]`), quantbox-datasets at a SHA, and every transitive dependency `==`-pinned in a managed `constraint-dependencies` block |
 | `uv.lock` | resolved under those pins; `uv sync --locked` reproduces it |
-| `README.md` | line frontmatter and the `prereg:` block, placeholders the pre-run gate refuses until filled. The block names a `book:` by default; `--kind replication` writes `kind: replication` and a `paper:` block instead, the keys the qute-research pre-flight's replication mode reads |
+| `README.md` | line frontmatter and the `prereg:` block, placeholders the pre-run gate refuses until filled. The block names a `book:` by default; `--kind replication` writes `kind: replication` and a `paper:` block instead, the keys the pre-flight's replication mode reads |
 | `datasets.lock` | sha256 of the base dataset's `prices.parquet`, read from `$QUANTBOX_DATASETS_ROOT` ([TOM-1349](../../src/quantbox/dataset_lock.py) format) |
 | `config.yaml` | the base backtest: the dataset by name, `execution.lag_bars: 1` |
 | `arms.yaml` | the arms over that base ([`quantbox.arms`](../../src/quantbox/arms.py) format) |
@@ -34,6 +34,17 @@ unpinned and the command warns; pin it with `quantbox-datasets pin <name>`.
 
 Capture the golden once the run is the one you mean, and commit it:
 `QUANTBOX_CAPTURE_GOLDEN=1 uv run pytest -m reproduction`.
+
+## Pre-flight
+
+Before any measured run, commit the `prereg:` block and run the gate from the line
+([ADR-0013](../adr/0013-preflight-in-quantbox.md)):
+
+```bash
+uv run quantbox preflight --lab <lab root> --line . config.yaml   # 0 pass, 1 refuse, 2 could not check
+```
+
+`uv run quantbox preflight --help` lists the options. Exit 1 means do not run the backtest.
 
 ## Repin
 

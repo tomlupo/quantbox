@@ -811,14 +811,10 @@ def dataset_resolve(
 
     Exits 1 when the bytes are not the pinned build, or the dataset cannot be resolved.
     """
-    from .dataset_lock import DatasetResolveError, lock_for_config, resolve_dataset
+    from .dataset_lock import DatasetResolveError, lock_for_run, resolve_dataset
 
     if lock is None and config is not None:
-        cfg = yaml.safe_load(Path(config).read_text(encoding="utf-8")) or {}
-        params_init = ((cfg.get("plugins") or {}).get("data") or {}).get("params_init") or {}
-        explicit = params_init.get("dataset_lock")
-        found = lock_for_config(config)
-        lock = explicit if explicit is not None else (str(found) if found is not None else None)
+        lock = lock_for_run(config)
 
     try:
         resolved = resolve_dataset(name, lock=lock)
@@ -874,7 +870,7 @@ def new_line(
 
     quantbox is pinned to the commit the tag names, every transitive dependency exactly.
     `--kind replication` writes a prereg block anchored to a paper (`kind: replication`,
-    `paper:`) instead of a book, as the qute-research pre-flight's replication mode reads it.
+    `paper:`) instead of a book, as the pre-flight's replication mode reads it (`quantbox preflight`).
     Then: `cd <slug> && uv sync && uv run quantbox run -c config.yaml`.
     """
     line = load("quantbox.line", extra="research")
@@ -982,11 +978,10 @@ def config_explain(
     whether every plugin id resolves, and the artifact root — under run@1's field
     names. Exits 1 with the reason when a plugin, the dataset or the params do not resolve.
     """
-    from .explain import explain_config
+    from .explain import explain_path
 
-    cfg = yaml.safe_load(Path(config).read_text(encoding="utf-8")) or {}
     with contextlib.redirect_stdout(sys.stderr):  # stdout carries ONE JSON document
-        doc = explain_config(cfg, PluginRegistry.discover(), config_path=config)
+        doc = explain_path(config)
     if json:
         print(_as_json(doc))
     else:
@@ -996,6 +991,22 @@ def config_explain(
         typer.echo(f"ERROR: {err}", err=True)
     if not doc["ok"]:
         raise SystemExit(1)
+
+
+@app.command(
+    "preflight",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True, "help_option_names": []},
+    add_help_option=False,
+)
+def preflight(ctx: typer.Context):
+    """Refuse a backtest whose result could not mean anything (ADR-0013). Exit 0 pass, 1 refuse, 2 could not check.
+
+    quantbox preflight --lab <lab root> --line <line dir> [--prereg <file>] [--id <id>]
+    [--runs-dir <dir> ...] <config> ...   (`quantbox preflight --help` for the options)
+    """
+    module = load("quantbox.preflight", extra="research")
+
+    raise SystemExit(module.main(list(ctx.args)))
 
 
 def main():

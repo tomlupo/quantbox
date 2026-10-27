@@ -125,6 +125,20 @@ def _variant_spec(variant: dict[str, Any]) -> dict[str, Any]:
     return spec if isinstance(spec, dict) else {"name": str(spec)}
 
 
+def explain_path(config_path: str | Path) -> dict[str, Any]:
+    """The explain@1 document for the config FILE at *config_path*, as ``quantbox config explain`` reads it.
+
+    One reader for the CLI verb and ``quantbox preflight``: the YAML is loaded as the CLI
+    loads it and the registry is the discovered one, so the two cannot plan differently.
+    """
+    import yaml
+
+    from .registry import PluginRegistry
+
+    cfg = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+    return explain_config(cfg, PluginRegistry.discover(), config_path=config_path)
+
+
 def explain_config(
     cfg: dict[str, Any],
     registry: Any,

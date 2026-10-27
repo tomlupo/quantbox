@@ -80,6 +80,20 @@ def lock_for_config(config_path: str | Path) -> Path | None:
     return find_lock(Path(config_path).resolve().parent)
 
 
+def lock_for_run(config_path: str | Path) -> str | None:
+    """The lock ``quantbox dataset resolve --config <config_path>`` reads for a by-name dataset.
+
+    The config's ``plugins.data.params_init.dataset_lock`` when it names one (a relative
+    path resolves from the cwd, as the data plugin reads it), else :func:`lock_for_config`.
+    One reader for the CLI and ``quantbox preflight``.
+    """
+    cfg = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+    params_init = ((cfg.get("plugins") or {}).get("data") or {}).get("params_init") or {}
+    explicit = params_init.get("dataset_lock")
+    found = lock_for_config(config_path)
+    return explicit if explicit is not None else (str(found) if found is not None else None)
+
+
 def datasets_root() -> Path:
     """``$QUANTBOX_DATASETS_ROOT``, else the installed quantbox-datasets clone's ``datasets/``."""
     env_root = os.environ.get(ROOT_ENV, "")
