@@ -81,37 +81,34 @@ def test_a_config_reaches_its_own_strategy() -> None:
     assert "quantbox.plugins.strategies.cross_asset_momentum" in _closure("cookbook/canonical/configs/momentum.yaml")
 
 
-def test_a_sibling_strategy_is_not_in_another_configs_closure() -> None:
-    """plugins/strategies/__init__ imports every strategy; loading one must not select them all."""
+def test_a_sibling_strategy_is_LOADED_so_it_is_in_the_closure() -> None:
+    """plugins/strategies/__init__ imports every strategy, so their import-time code runs at every run
+    that loads one (PR #320 review: findings 2 and 102, then round 2 finding 1)."""
     closure = _closure("cookbook/configs/run_backtest_beglobal.yaml")
     assert "quantbox.plugins.strategies.beglobal_strategy" in closure
-    assert "quantbox.plugins.strategies.cross_asset_momentum" not in closure
+    assert "quantbox.plugins.strategies.cross_asset_momentum" in closure
+    assert "quantbox.plugins.strategies.carry" in closure
 
 
-def test_a_sibling_strategy_is_still_LOADED() -> None:
-    """The package __init__ imports every strategy, so their import-time code runs (PR #320 review, 2/102)."""
-    cfg = yaml.safe_load((ROOT / "cookbook/configs/run_backtest_beglobal.yaml").read_text())
-    from quantbox.plugins.builtins import BUILTIN_PLUGINS
-
-    roots = ba.config_roots(cfg, BUILTIN_PLUGINS, {"quantbox.runner", "quantbox.registry"}, GRAPH)
-    assert "quantbox.plugins.strategies.cross_asset_momentum" in GRAPH.closure(roots, loaded=True)
-
-
-BODY = "import os\nclass S:\n    w: float = 0.6\n    def run(self):\n        return {}\n"
-
-
-def test_import_time_change_detection() -> None:
-    """code: something runs at import; bindings: only names change; none: only function bodies (PR #320 review)."""
-    itc = ba.import_time_changed
-    assert itc(BODY, BODY.replace("return {}", "return {'x': 1}")) == ba.IMPORT_NONE
-    assert itc(BODY, BODY.replace("0.6", "0.5")) == ba.IMPORT_BINDINGS  # a class default binds a value
-    assert itc(BODY, BODY + "LIMIT = 0.9999\n") == ba.IMPORT_BINDINGS
-    assert itc(BODY, BODY + "raise RuntimeError('import')\n") == ba.IMPORT_CODE  # the carry.py probe
-    assert itc(BODY, BODY + "X = len('a')\n") == ba.IMPORT_CODE  # a call at import
-    assert itc(BODY, BODY.replace("class S:", "@dataclass\nclass S:")) == ba.IMPORT_CODE  # a decorator runs
-    assert itc(None, BODY) == ba.IMPORT_CODE  # added (or, the other way, deleted)
-    used = "def f():\n    return 1\nX = f()\n"
-    assert itc(used, used.replace("return 1", "return 2")) == ba.IMPORT_CODE  # called at import
+def test_a_symlink_in_a_dataset_is_refused(tmp_path, monkeypatch) -> None:  # PR #320 review round 2, 2
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("outside the dataset")
+    root = tmp_path / "clone" / "datasets"
+    (root / "etf-daily").mkdir(parents=True)
+    (root / "etf-daily" / "prices.parquet").write_bytes(b"pinned")
+    (root / "etf-daily" / "extra").symlink_to(outside)
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "datasets.lock").write_text(f"etf-daily: {ba._sha256_bytes(b'pinned')}\n")
+    monkeypatch.setenv("QUANTBOX_DATASETS_ROOT", str(root))
+    try:
+        ba.pinned_slice(tree, tmp_path / "slice")
+    except ba.CouldNotRun as exc:
+        assert "symlink" in str(exc)
+    else:
+        raise AssertionError("a dataset holding a symlink was copied")
+    assert not (tmp_path / "slice" / "etf-daily").exists()
 
 
 def test_a_name_from_a_lock_or_a_run_cannot_leave_its_directory() -> None:  # PR #320 review, 103
@@ -130,13 +127,19 @@ def test_a_same_day_data_timestamp_still_differs() -> None:  # PR #320 review, 3
     assert ba.diff_json(a, b) == ['asof: base "2026-10-26T00:00:00Z" -> head "2026-10-26T12:00:00Z"']
 
 
-def test_trade_code_calls_the_decision_but_not_inference() -> None:
-    """A touched module in the trade layer's closure owes the shadow run; #313's inference does not."""
+def test_trade_code_loads_the_decision_and_inference_but_not_gates() -> None:
+    """A touched module in the trade layer's closure owes the shadow run.
+
+    Trade code LOADS inference: risk.stress_test_risk imports montecarlo.stress_testing, whose
+    package __init__ imports montecarlo.engine, which imports inference. Importing every trade
+    module in a fresh process confirms it (quantbox.inference in sys.modules, quantbox.gates not).
+    """
     trade = {m for m in GRAPH.edges if "trade" in ba.layers_of(m, LAYERS)}
     closure = GRAPH.closure(trade)
     assert "quantbox.decision" in closure
-    assert "quantbox.inference" not in closure
+    assert "quantbox.inference" in closure
     assert "quantbox.gates" not in closure
+    assert "quantbox.plugins.strategies.cross_asset_momentum" not in closure
 
 
 def test_the_backtest_path_reaches_inference() -> None:

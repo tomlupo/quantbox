@@ -30,12 +30,10 @@ What it does, in order:
 3. SELECT. Of the configs compare.yml lists, a config runs when its code closure (its
    plugins' modules and the runner, through the import graph at base OR head) holds a
    touched module, when it is touched itself, or when it reads a touched data file.
-   An unmapped path selects every config. A package __init__ loaded only because a
-   module inside it was imported still IMPORTS its siblings: a touched sibling selects
-   the config when its import-time code EXECUTES something new (a call, a decorator, a
-   raise), or when it only rebinds names and it, or a module importing it, no longer
-   imports at head. A change only inside function bodies does not
-   (:func:`import_time_changed`). A rename counts as its delete and its add.
+   An unmapped path selects every config. The closure is every module the run LOADS,
+   so a package __init__ brings in all its siblings: a change to one strategy selects
+   every config that loads the strategies package. A rename counts as its delete and
+   its add.
 4. RUN. Each selected config runs at base (a git worktree of the merge base, under
    <out dir>/base-tree) and at head, in a fresh process with PYTHONHASHSEED=0 and
    TZ=UTC. The process prints which quantbox it imported, and a side that imported the
@@ -55,7 +53,7 @@ everything.
    every run (the run id, which carries the run's one wall-clock stamp; the checkout and
    slice paths; the commit; git and installed packages). No other date is masked.
    Floats compare at rel 1e-9, abs 1e-12.
-6. TRADE. A touched trade-step file, or a touched module that trade code calls (the
+6. TRADE. A touched trade-step file, or a touched module that trade code loads (the
    code closure of the import-linter trade layer), owes the live shadow run (quantbox-live
    scripts/shadow_run.py). quantbox is public and has no forge runner, so this script
    cannot run it: summary.md names it and the exit is 1.
@@ -195,36 +193,30 @@ class Graph:
     soft: dict[str, set[str]] = field(default_factory=dict)  # module -> packages it names as strings
     files: dict[str, str] = field(default_factory=dict)  # repo-relative path -> module
 
-    def closure(self, start: set[str], *, loaded: bool = False) -> set[str]:
-        """The modules whose code a run of *start* can CALL (or, with *loaded*, every module it LOADS).
+    def closure(self, start: set[str]) -> set[str]:
+        """Every module a run of *start* LOADS: its imports, each module's package, and theirs.
 
-        A package's __init__ that is loaded only because a module INSIDE it was imported
-        runs its own imports, but its re-exports of sibling modules are never called by
-        that module (an explicit import of a sibling is its own edge). So through such a
-        parent edge the called closure follows the __init__'s imports from outside the
-        package, not into it: importing one strategy does not call every strategy.
-        Those siblings are still IMPORTED, so their import-time code runs: the loaded
-        closure keeps them, and a sibling whose import-time code changed is selected
-        through it (:func:`import_time_changed`, PR #320 review findings 2 and 102).
+        A package's __init__ runs when any module inside it is imported, and its own
+        imports run with it, siblings included. Their import-time code executes, and a
+        function it calls can change it from anywhere, so a loaded module counts like a
+        called one. No narrower rule is attempted: two rounds of PR #320's review broke
+        two of them (findings 2 and 102, then round 2 finding 1).
         """
-        seen: dict[str, bool] = {}  # module -> reached as a parent only
-        todo = [(m, False) for m in start if m in self.edges]
+        seen: set[str] = set()
+        todo = [m for m in start if m in self.edges]
         while todo:
-            mod, as_parent = todo.pop()
-            if mod in seen and (seen[mod] is False or as_parent):
+            mod = todo.pop()
+            if mod in seen:
                 continue
-            seen[mod] = as_parent
-            for dep in self.edges.get(mod, ()):
-                if as_parent and not loaded and dep.startswith(mod + "."):
-                    continue
-                todo.append((dep, False))
+            seen.add(mod)
+            todo.extend(self.edges.get(mod, ()))
             if mod in self.parents:
-                todo.append((self.parents[mod], True))
+                todo.append(self.parents[mod])
             # A package named as a string (`f"{pkg}.{name}"`) loads the module the CONFIG
-            # names; that module is a root of its own (config_roots), so here only the
-            # package's own imports are followed, as for a parent.
-            todo.extend((pkg, True) for pkg in self.soft.get(mod, ()))
-        return set(seen)
+            # names; that module is a root of its own (config_roots). The package itself
+            # loads first, with its own imports.
+            todo.extend(self.soft.get(mod, ()))
+        return seen
 
     def importers(self) -> dict[str, set[str]]:
         """module -> the modules that load it (an import, or being its package's member)."""
@@ -304,96 +296,6 @@ def build_graph(tree: Path, package: str, catalogues: set[str]) -> Graph:
         deps.discard(mod)
         graph.edges[mod] = deps
     return graph
-
-
-#: Nodes that EXECUTE code when the statement holding them runs at import (a pure binding has none).
-EXECUTING = (
-    ast.Call,
-    ast.Raise,
-    ast.Await,
-    ast.Yield,
-    ast.YieldFrom,
-    ast.Delete,
-    ast.Assert,
-    ast.AugAssign,
-    ast.NamedExpr,
-    ast.If,
-    ast.For,
-    ast.AsyncFor,
-    ast.While,
-    ast.Try,
-    ast.With,
-    ast.AsyncWith,
-    ast.Match,
-    ast.Global,
-    ast.Nonlocal,
-)
-
-#: import_time_changed's three answers.
-IMPORT_NONE, IMPORT_BINDINGS, IMPORT_CODE = "none", "bindings", "code"
-
-
-def import_time_changed(before: str | None, after: str | None) -> str:
-    """How a module's IMPORT-TIME behaviour can differ between two versions of its source.
-
-    Import time runs everything but function bodies: module statements, class bodies,
-    decorators, defaults. The two sources are compared statement by statement, with
-    every function body blanked and docstrings left out (classes split into their
-    header and their own statements):
-
-    - ``code``: a changed statement executes something (a call, a decorator, a raise,
-      control flow), or a function whose body changed is used by import-time code
-      (``X = helper()``). Also a file on one side only, or one that does not parse.
-    - ``bindings``: the changed statements only bind names (imports, assignments of
-      literals or names, defs and classes without decorators or calls). Such a change
-      alters a run that only LOADS the module just when the module no longer imports,
-      which the caller checks by importing it.
-    - ``none``: only function bodies changed.
-    """
-    if before is None or after is None:
-        return IMPORT_CODE
-    try:
-        trees = [ast.parse(before), ast.parse(after)]
-    except SyntaxError:
-        return IMPORT_CODE
-
-    def split(tree: ast.Module) -> tuple[list[tuple[str, ast.AST]], dict[str, str], set[str]]:
-        items: list[tuple[str, ast.AST]] = []
-        bodies: dict[str, str] = {}
-
-        def walk(stmts: list[ast.stmt], prefix: str) -> None:
-            for i, stmt in enumerate(stmts):
-                if i == 0 and isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
-                    continue  # a docstring
-                if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
-                    bodies[f"{prefix}{stmt.name}"] = "\n".join(ast.dump(s) for s in stmt.body)
-                    stmt.body = [ast.Pass()]  # decorators and defaults run at import; the body does not
-                elif isinstance(stmt, ast.ClassDef):
-                    inner, stmt.body = stmt.body, []
-                    items.append((f"{prefix}{ast.dump(stmt)}", stmt))  # the header: bases, decorators
-                    walk(inner, f"{prefix}{stmt.name}.")
-                    continue
-                items.append((f"{prefix}{ast.dump(stmt)}", stmt))
-
-        walk(tree.body, "")
-        used = {n.id for _, s in items for n in ast.walk(s) if isinstance(n, ast.Name)}
-        used |= {n.attr for _, s in items for n in ast.walk(s) if isinstance(n, ast.Attribute)}
-        return items, bodies, used
-
-    (items_a, bodies_a, used_a), (items_b, bodies_b, used_b) = split(trees[0]), split(trees[1])
-    keys_a, keys_b = [k for k, _ in items_a], [k for k, _ in items_b]
-    changed_bodies = {n.rpartition(".")[2] for n in set(bodies_a) | set(bodies_b) if bodies_a.get(n) != bodies_b.get(n)}
-    if changed_bodies & (used_a | used_b):
-        return IMPORT_CODE
-    if keys_a == keys_b:
-        return IMPORT_NONE
-    differing = [s for k, s in items_a if k not in keys_b] + [s for k, s in items_b if k not in keys_a]
-    if not differing:  # the same statements in another order: order runs at import
-        return IMPORT_CODE
-    for stmt in differing:
-        if getattr(stmt, "decorator_list", None) or any(isinstance(n, EXECUTING) for n in ast.walk(stmt)):
-            return IMPORT_CODE
-    return IMPORT_BINDINGS
 
 
 # ------------------------------------------------------------------ mapping
@@ -556,6 +458,11 @@ def pinned_slice(tree: Path, dest: Path) -> tuple[Path | None, list[str]]:
         name, pin = single_name(str(name), "datasets.lock entry"), str(pin)
         if not (src / name).resolve().is_relative_to(src):
             raise CouldNotRun(f"dataset {name!r} resolves outside {src}; refused")
+        # copytree follows links: a link anywhere under the dataset would copy, and the run
+        # would read, content from outside it (PR #320 review round 2, finding 2).
+        links = [p for p in [src / name, *(src / name).rglob("*")] if p.is_symlink()]
+        if links:
+            raise CouldNotRun(f"dataset {name!r} holds a symlink ({links[0]}); refused rather than followed")
         here = src / name / "prices.parquet"
         if here.is_file() and _sha256_bytes(here.read_bytes()) == pin:
             shutil.copytree(src / name, dest / name)
@@ -666,20 +573,6 @@ def make_base(base_sha: str, out: Path) -> Side:
             raise CouldNotRun(f"base venv: uv sync failed: {proc.stderr[-800:]}")
         python = str(tree / ".venv" / "bin" / "python")
     return Side("base", tree, python, side_env(tree, None))
-
-
-def imports_cleanly(side: Side, modules: set[str]) -> bool:
-    """Whether every one of *modules* imports in a fresh process of *side* (its own code)."""
-    code = "import importlib, sys\nfor name in sys.argv[1:]:\n    importlib.import_module(name)\n"
-    proc = subprocess.run(
-        [side.python, "-c", code, *sorted(modules)],
-        cwd=side.tree,
-        capture_output=True,
-        text=True,
-        env=side.env,
-        timeout=300,
-    )
-    return proc.returncode == 0
 
 
 def catalogue_of(side: Side) -> dict[str, dict[str, str]] | None:
@@ -967,46 +860,18 @@ def main(argv: list[str]) -> int:
         # The backtest (data .. engine) and the live trade path are two branches after the
         # decision: the configs here run the first, the shadow run the second. So trade is
         # owed by a trade-step file, an unmapped path, or a touched module that trade code
-        # calls (the code closure of the import-linter trade layer: decision, metrics, the
+        # loads (the closure of the import-linter trade layer: decision, metrics, the
         # strategy runner ...), never merely by being an earlier step.
-        # A touched module only LOADED (not called) by a run still matters when its
-        # import-time code changed: read each touched module at both sides once.
-        import_time: dict[str, bool] = {}
-        for m in stepped:
-            if m.module:
-                try:
-                    before = git("show", f"{base_sha}:{m.path}")
-                except CouldNotRun:
-                    before = None  # added at head
-                after = (ROOT / m.path).read_text() if (ROOT / m.path).is_file() else None
-                kind = import_time_changed(before, after)
-                verdict = kind
-                if kind == IMPORT_BINDINGS:
-                    # Only names changed: a loaded-only run differs just if the module, or a
-                    # module that imports it, no longer imports at head (a removed name).
-                    importers = {i for i, deps in head_graph.edges.items() if m.module in deps}
-                    clean = imports_cleanly(head_side, {m.module} | importers)
-                    verdict = IMPORT_NONE if clean else IMPORT_CODE
-                    kind = f"bindings, {'all import at head' if clean else 'an import FAILS at head'}"
-                import_time[m.module] = verdict == IMPORT_CODE
-                print(f"import-time change in {m.module}: {kind}")
-
-        def reached(graph: Graph, roots: set[str]) -> set[str]:
-            """Touched modules a run of *roots* calls, or loads with changed import-time code."""
-            touched = set(import_time)
-            return (touched & graph.closure(roots)) | {
-                t for t in touched & graph.closure(roots, loaded=True) if import_time[t]
-            }
-
+        touched_mods = {m.module for m in stepped if m.module}
         trade_called: set[str] = set()
         if layers is not None:
             for graph in graphs:
                 trade_mods = {m for m in graph.edges if "trade" in layers_of(m, layers)}
-                trade_called |= reached(graph, trade_mods)
+                trade_called |= touched_mods & graph.closure(trade_mods)
         trade_called -= {m.module for m in stepped if m.step == "trade"}
         trade_owed = run_all or bool(trade_called) or any(m.step == "trade" for m in stepped)
         if trade_called:
-            note = f"trade code calls {', '.join(sorted(trade_called))}: the shadow run is owed too"
+            note = f"trade code loads {', '.join(sorted(trade_called))}: the shadow run is owed too"
             print(note)
             report += [f"- {note}", ""]
         owed_steps = [s for s in steps[steps.index(earliest) :] if s != "trade" or trade_owed]
@@ -1052,9 +917,9 @@ def main(argv: list[str]) -> int:
                     if roots is None:
                         why = f"its plugins could not be read at {side}: runs to be safe"
                         break
-                    hit = sorted(reached(graph, roots))
+                    hit = sorted(touched_mods & graph.closure(roots))
                     if hit:
-                        why = f"at {side} its run calls (or loads, with changed import-time code) {', '.join(hit[:3])}{' ...' if len(hit) > 3 else ''}"
+                        why = f"at {side} its run loads {', '.join(hit[:3])}{' ...' if len(hit) > 3 else ''}"
                         break
             if why:
                 selected.append((config, why))
