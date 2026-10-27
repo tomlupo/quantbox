@@ -143,6 +143,71 @@ def test_trade_code_loads_the_decision_and_inference_but_not_gates() -> None:
     assert "quantbox.plugins.strategies.cross_asset_momentum" not in closure
 
 
+LAZY_PKG = """
+_PKG = "quantbox.lazy"
+_LAZY = {"Fetcher": f"{_PKG}.fetch:Fetcher", "Other": (f"{_PKG}.other:Other", "data")}
+def __getattr__(name):
+    if name not in _LAZY:
+        raise AttributeError(name)
+    return load(_LAZY[name])
+"""
+
+
+def _lazy_tree(tmp_path: Path, importer: str) -> ba.Graph:
+    """A tree with plugins.datasources' shape: a package whose __getattr__ loads the module its map names."""
+    pkg = tmp_path / "src" / "quantbox"
+    (pkg / "lazy").mkdir(parents=True, exist_ok=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "lazy" / "__init__.py").write_text(LAZY_PKG)
+    (pkg / "lazy" / "fetch.py").write_text("class Fetcher: ...\n")
+    (pkg / "lazy" / "other.py").write_text("class Other: ...\n")
+    (pkg / "user.py").write_text(importer)
+    return ba.build_graph(tmp_path, "src/quantbox", set())
+
+
+def test_a_name_taken_from_a_lazy_export_package_loads_its_target(tmp_path) -> None:  # PR #320 round 4, codex P2
+    """`from pkg import Name` runs pkg.__getattr__, which loads the module pkg's _LAZY names for it."""
+    graph = _lazy_tree(tmp_path, "from quantbox.lazy import Fetcher\n")
+    assert "quantbox.lazy.fetch" in graph.closure({"quantbox.user"})
+    assert "quantbox.lazy.other" not in graph.closure({"quantbox.user"})  # the map is read: one name, one module
+    assert "quantbox.lazy.fetch" not in graph.closure({"quantbox.lazy"})  # loading the package loads no export
+
+
+def test_a_lazy_map_not_read_in_full_widens_to_every_module_below(tmp_path) -> None:
+    graph = _lazy_tree(tmp_path, "from quantbox.lazy import Fetcher\n")
+    (tmp_path / "src" / "quantbox" / "lazy" / "__init__.py").write_text(
+        LAZY_PKG.replace('"Other": (', '"Other": pick(')  # a value this reader cannot evaluate
+    )
+    graph = ba.build_graph(tmp_path, "src/quantbox", set())
+    assert {"quantbox.lazy.fetch", "quantbox.lazy.other"} <= graph.closure({"quantbox.user"})
+
+
+def test_an_import_of_the_lazy_package_itself_may_take_any_name(tmp_path) -> None:
+    for importer in ("import quantbox.lazy\n", "from quantbox import lazy\n", "from quantbox.lazy import *\n"):
+        closure = _lazy_tree(tmp_path, importer).closure({"quantbox.user"})
+        assert {"quantbox.lazy.fetch", "quantbox.lazy.other"} <= closure, importer
+
+
+def test_every_lazy_export_package_is_read_and_an_unread_one_widens() -> None:
+    for pkg, export, module in (
+        ("quantbox.plugins.datasources", "BinanceDataFetcher", "quantbox.plugins.datasources.binance_data"),
+        ("quantbox.plugins.pipeline", "BacktestPipeline", "quantbox.plugins.pipeline.backtest_pipeline"),
+        ("quantbox.plugins.broker", "BinanceFuturesBroker", "quantbox.plugins.broker.binance_futures"),
+        ("quantbox.plugins.publisher", "TelegramPublisher", "quantbox.plugins.publisher.telegram"),
+    ):
+        found = ba.lazy_exports(
+            ba.ast.parse((ROOT / "src" / Path(*pkg.split("."))).joinpath("__init__.py").read_text()), lambda m: m
+        )
+        assert found is not None and found[1], pkg
+        assert found[0][export] == {module}, pkg
+    # only raises (plugins.backtesting) or refuses (removed_names): loads nothing, not lazy
+    assert ba.lazy_exports(ba.ast.parse("def __getattr__(n):\n    raise AttributeError(f'{n}')\n"), lambda m: m) is None
+    assert ba.lazy_exports(ba.ast.parse("__getattr__ = removed_names(__name__)\n"), lambda m: m) is None
+    # a map this reader cannot read in full is not trusted: the caller widens to every module below
+    src = "_M = {'A': make()}\ndef __getattr__(n):\n    return load(_M[n])\n"
+    assert ba.lazy_exports(ba.ast.parse(src), lambda m: m or None) == ({}, False)
+
+
 def _no_datasets_root(monkeypatch) -> None:
     """This runner as public CI sees it: no $QUANTBOX_DATASETS_ROOT and no quantbox-datasets clone."""
     monkeypatch.delenv("QUANTBOX_DATASETS_ROOT", raising=False)

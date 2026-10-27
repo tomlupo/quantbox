@@ -44,8 +44,10 @@ What it does, in order:
    touched module, when it is touched itself, or when it reads a touched data file.
    An unmapped path selects every config. The closure is every module the run LOADS,
    so a package __init__ brings in all its siblings: a change to one strategy selects
-   every config that loads the strategies package. A rename counts as its delete and
-   its add.
+   every config that loads the strategies package. A name taken from a lazy-export
+   package (a `__getattr__` over a `_LAZY` map) loads the module the map names; an
+   import of the package itself, or a map not read in full, loads all of them. A
+   rename counts as its delete and its add.
 4. RUN. Each selected config runs at base (a git worktree of the merge base, under
    <out dir>/base-tree) and at head, in a fresh process with PYTHONHASHSEED=0 and
    TZ=UTC. The process prints which quantbox it imported, and a side that imported the
@@ -254,6 +256,83 @@ def module_of(rel: str, package: str) -> str | None:
     return ".".join(parts)
 
 
+def lazy_exports(node: ast.AST, resolve) -> tuple[dict[str, set[str]], bool] | None:
+    """A module's lazy exports: None when it has no module-level ``__getattr__`` that can load.
+
+    Else (exported name -> the modules taking it loads, read in full?). quantbox's lazy
+    packages (plugins.datasources, .pipeline, .broker, .publisher) keep a dict, ``_LAZY``,
+    of ``name -> "module:Attr"`` (or a tuple starting with it, or an f-string over a
+    module-level constant) that ``__getattr__`` hands to ``quantbox._lazy.load``. Anything
+    else is not read in full, and the caller widens it to every module below. Not lazy: a
+    ``__getattr__`` whose only calls build the exception it raises, and ``removed_names``
+    (quantbox._removed), which refuses names and loads nothing.
+    """
+    func: ast.FunctionDef | None = None
+    assigned: ast.expr | None = None
+    consts: dict[str, str] = {}
+    dicts: dict[str, ast.Dict] = {}
+    for stmt in getattr(node, "body", []):
+        if isinstance(stmt, ast.FunctionDef) and stmt.name == "__getattr__":
+            func = stmt
+        elif isinstance(stmt, ast.Assign | ast.AnnAssign) and stmt.value is not None:
+            for target in stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]:
+                if not isinstance(target, ast.Name):
+                    continue
+                if target.id == "__getattr__":
+                    assigned = stmt.value
+                elif isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str):
+                    consts[target.id] = stmt.value.value
+                elif isinstance(stmt.value, ast.Dict):
+                    dicts[target.id] = stmt.value
+    if func is None:
+        if assigned is None:
+            return None
+        call = assigned.func if isinstance(assigned, ast.Call) else None
+        if isinstance(call, ast.Name) and call.id == "removed_names":
+            return None
+        return {}, False  # a __getattr__ this reader does not know: anything below may load
+    in_raise = {id(n) for r in ast.walk(func) if isinstance(r, ast.Raise) for n in ast.walk(r)}
+    if not any(isinstance(n, ast.Call) and id(n) not in in_raise for n in ast.walk(func)):
+        return None  # it only raises: no name loads a module
+    maps = [dicts[n.id] for n in ast.walk(func) if isinstance(n, ast.Name) and n.id in dicts]
+    if len({id(m) for m in maps}) != 1:
+        return {}, False
+
+    def text(value: ast.expr) -> str | None:
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            return value.value
+        if isinstance(value, ast.Tuple) and value.elts:
+            return text(value.elts[0])
+        if isinstance(value, ast.JoinedStr):
+            parts = []
+            for part in value.values:
+                if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                    parts.append(part.value)
+                elif (
+                    isinstance(part, ast.FormattedValue)
+                    and isinstance(part.value, ast.Name)
+                    and part.value.id in consts
+                    and part.conversion == -1
+                    and part.format_spec is None
+                ):
+                    parts.append(consts[part.value.id])
+                else:
+                    return None
+            return "".join(parts)
+        return None
+
+    out: dict[str, set[str]] = {}
+    complete = True
+    for key, value in zip(maps[0].keys, maps[0].values, strict=True):
+        name = key.value if isinstance(key, ast.Constant) and isinstance(key.value, str) else None
+        target = (text(value) or "").partition(":")[0]
+        if name is None or resolve(target) != target:  # not a quantbox module this tree holds, exactly
+            complete = False
+            continue
+        out[name] = {target}
+    return out, complete
+
+
 def build_graph(tree: Path, package: str, catalogues: set[str]) -> Graph:
     """Static imports, parent packages, and quantbox module names written as strings (outside catalogues)."""
     graph = Graph()
@@ -278,6 +357,28 @@ def build_graph(tree: Path, package: str, catalogues: set[str]) -> Graph:
             name = name.rpartition(".")[0]
         return name or None
 
+    # A module with a lazy-export __getattr__ loads a module only when a NAME is taken
+    # from it. lazy[mod] maps each exported name to the modules it loads; lazy_all[mod]
+    # is what an unknown name (or `import mod`, `*`) may load (PR #320 round 4, codex P2).
+    lazy: dict[str, dict[str, set[str]]] = {}
+    lazy_all: dict[str, set[str]] = {}
+    for mod, (node, _is_pkg) in sources.items():
+        found = lazy_exports(node, resolve)
+        if found is None:
+            continue
+        lazy[mod], complete = found
+        # A map read in full loads at most its targets; any doubt widens to every module below it.
+        below = {m for m in known if m.startswith(mod + ".")}
+        lazy_all[mod] = set().union(*lazy[mod].values()) if complete else below | set().union(*lazy[mod].values())
+        if not complete:
+            lazy[mod] = {}  # no name is trusted from a map not read in full
+
+    def taken(pkg: str, name: str | None) -> set[str]:
+        """What taking *name* from lazy-export *pkg* loads (None, "*": any name). Unknown is everything."""
+        if name is None or name == "*" or not lazy[pkg]:
+            return lazy_all[pkg]
+        return lazy[pkg].get(name, set())  # a name the full map lacks is not lazy: nothing more loads
+
     for mod, (node, is_pkg) in sources.items():
         deps: set[str] = set()
         parent = mod.rpartition(".")[0]
@@ -290,6 +391,8 @@ def build_graph(tree: Path, package: str, catalogues: set[str]) -> Graph:
                     hit = resolve(alias.name)
                     if hit:
                         deps.add(hit)
+                        if hit in lazy and hit == alias.name:  # `import pkg`: any name may be taken later
+                            deps |= taken(hit, None)
             elif isinstance(sub, ast.ImportFrom):
                 if sub.level:
                     anchor = base_pkg.split(".")
@@ -301,6 +404,10 @@ def build_graph(tree: Path, package: str, catalogues: set[str]) -> Graph:
                     hit = resolve(f"{target}.{alias.name}") or resolve(target)
                     if hit:
                         deps.add(hit)
+                        if hit in lazy and hit == target:  # a NAME taken from a lazy-export module
+                            deps |= taken(hit, alias.name)
+                        elif hit in lazy and hit == f"{target}.{alias.name}":  # the lazy module itself
+                            deps |= taken(hit, None)
             elif isinstance(sub, ast.Constant) and isinstance(sub.value, str) and mod not in catalogues:
                 head = sub.value.partition(":")[0]
                 if head.startswith("quantbox.") and head in known:
