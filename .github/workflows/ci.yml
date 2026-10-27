@@ -95,14 +95,19 @@ jobs:
 
   before-after:
     # The PR's result at base and at head, diffed (TOM-2458; .hotl/compare.yml is the
-    # plan, scripts/before_after.py the reader). No LLM: exit 0 identical, 1 differs or
-    # the live shadow run is owed (summary.md says which), anything else could not run.
-    # NOT a required check: making it one is Tom's call. On this GitHub-hosted runner
-    # there is no quantbox-datasets clone (it is private), so a selected config that
-    # reads a dataset by name is NOT AVAILABLE here and is not run. When the rest are
-    # identical the script exits 3 (PARTIAL): the job passes with a warning naming the
-    # configs not checked. 1 (differs, or the shadow run is owed) and 2 (could not run,
-    # or no selected config can run here) stay red. A docs/tests-only PR exits 0.
+    # plan, scripts/before_after.py the reader; its docstring owns the exit table).
+    # No LLM. NOT a required check: making it one is Tom's call.
+    # - 0 identical: pass. A docs/tests-only PR exits 0.
+    # - 3 PARTIAL: this runner has no quantbox-datasets clone (it is private), so a
+    #   config that reads a dataset by name is not run; the rest are identical. Pass
+    #   with a warning naming the configs not checked.
+    # - 5 SHADOW OWED: every config that ran is identical and the live shadow run is
+    #   owed. Pass with a warning (Tom, 2026-10-27): quantbox is public, and the shadow
+    #   run happens in quantbox-live at the pin bump. 5 is quantbox's public-CI split of
+    #   hotl's 1; a private repo running hotl verify maps "shadow owed" through its own
+    #   runner.
+    # - 1 (a config differs) and 2 (could not run, or no selected config can run here)
+    #   stay red.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -126,6 +131,12 @@ jobs:
           if [ -s "$out/summary.md" ]; then cat "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"; fi
           if [ "$rc" -eq 3 ]; then
             echo "::warning title=before/after PARTIAL::not checked on this runner (dataset not available): $(cat "$out/not_checked.txt" 2>/dev/null || echo 'see the job summary')"
+            exit 0
+          fi
+          if [ "$rc" -eq 5 ]; then
+            unchecked=""
+            if [ -s "$out/not_checked.txt" ]; then unchecked="; not checked on this runner (dataset not available): $(cat "$out/not_checked.txt")"; fi
+            echo "::warning title=before/after SHADOW OWED::live shadow run owed: runs in quantbox-live at the pin bump (scripts/shadow_run.py)${unchecked}"
             exit 0
           fi
           exit "$rc"

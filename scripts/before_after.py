@@ -18,10 +18,10 @@ that this script cannot run) and <out dir>/summary.md says what, anything else =
 compare could not run. Decision: vaults/projects/infra/decisions/
 decyzja-2026-10-26-stos-kiss-repo-hotl-fabryka.md, "Lekki compare".
 
-The contract holds for the configs this runner CAN run. One code is added:
+The contract holds for the configs this runner CAN run. Two codes are added:
 
     0  identical: every selected config ran and is identical
-    1  differs, or the live shadow run is owed
+    1  differs: at least one config differs (the shadow run may be owed too)
     2  could not run: a config failed on both sides, or no selected config can run here
     3  PARTIAL: every config that can run here is identical, but at least one could not
        run here because a dataset it reads by name does not resolve on this runner (no
@@ -29,6 +29,11 @@ The contract holds for the configs this runner CAN run. One code is added:
        summary.md lists them under "Not checked on this runner"; <out dir>/not_checked.txt
        names them on one line. Never 0: a config not looked at is not identical.
     4  --plan: nothing was run
+    5  SHADOW OWED: every config that ran is identical (some may be not checked, as in
+       3), and the live shadow run is owed. hotl's contract says 1 here; quantbox
+       splits it because it is public and the shadow run happens only in quantbox-live
+       at the pin bump (Tom, 2026-10-27). A private repo running hotl verify maps
+       "shadow owed" through its own runner.
 
 What it does, in order:
 
@@ -72,7 +77,7 @@ everything.
 6. TRADE. A touched trade-step file, or a touched module that trade code loads (the
    code closure of the import-linter trade layer), owes the live shadow run (quantbox-live
    scripts/shadow_run.py). quantbox is public and has no forge runner, so this script
-   cannot run it: summary.md names it and the exit is 1.
+   cannot run it: summary.md names it and the exit is 5 (1 if a config also differs).
 
 A config that fails on one side only is a difference. A config that fails on both
 could not be compared: the exit is 2, never 0. Before any run, a selected config whose
@@ -619,15 +624,22 @@ def verdict_of(
     differs: list[str],
     trade_owed: bool,
 ) -> tuple[str, int]:
-    """(verdict, exit code). 0, 1 and 2 keep hotl's meaning for the runnable configs; 3 is PARTIAL."""
+    """(verdict, exit code). 0, 1 and 2 keep hotl's meaning for the runnable configs; 3 is PARTIAL,
+    5 is identical with the live shadow run owed (quantbox's public-CI split of hotl's 1)."""
     if n_selected and not n_runnable:  # nothing was looked at: never 3, never 0
         return f"COULD NOT RUN: none of {n_selected} selected config(s) can run on this runner", 2
     if could_not:
         return f"COULD NOT RUN: {len(could_not)} config(s) failed on both sides", 2
-    if differs or trade_owed:
-        parts = [f"{len(differs)} config(s) differ"] if differs else []
-        parts += ["the live shadow run is owed"] if trade_owed else []
-        return "DIFFERS: " + "; ".join(parts), 1
+    if differs:
+        owed = "; the live shadow run is owed" if trade_owed else ""
+        return f"DIFFERS: {len(differs)} config(s) differ{owed}", 1
+    if trade_owed:
+        unchecked = f"; {len(not_available)} not checked on this runner" if not_available else ""
+        return (
+            f"SHADOW OWED: {n_runnable} config(s) ran at base and head and are identical{unchecked}; "
+            "the live shadow run is owed",
+            5,
+        )
     if not_available:
         return (
             f"PARTIAL: {n_runnable} config(s) ran at base and head and are identical; "

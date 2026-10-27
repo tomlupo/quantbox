@@ -5,8 +5,11 @@
 # quantbox's DIFFERENCES from that type's default. The reader is
 # scripts/before_after.py, run as `<script> <base ref> <out dir>` (hotl verify's
 # before_after contract: exit 0 identical, 1 differs with <out dir>/summary.md,
-# anything else could not run; quantbox adds 3 = PARTIAL, the script's docstring
-# owns the table).
+# anything else could not run; quantbox adds 3 = PARTIAL and 5 = identical but the
+# live shadow run owed, the script's docstring owns the table). 5 is quantbox's
+# public-CI split of hotl's 1: the shadow run happens only in quantbox-live at the
+# pin bump (Tom, 2026-10-27). A private repo running hotl verify maps "shadow owed"
+# through its own runner.
 #
 # The quant-lib default is below, between the two marker lines. hotl does not own
 # it yet, so it lives here ONCE: scripts/before_after.py reads this comment block
@@ -118,7 +121,8 @@ configs:
 #   paper and live configs: the trade step; the live shadow run covers them.
 
 # The trade step's run. quantbox is public and has no forge runner, so the
-# before/after cannot run it: it names it as owed and exits 1.
+# before/after cannot run it: it names it as owed and exits 5 (1 when a config
+# also differs).
 shadow_run:
   repo: tomlupo/quantbox-live
   command: "uv run python scripts/shadow_run.py <base sha> <head sha>"

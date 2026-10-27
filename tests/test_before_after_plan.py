@@ -272,9 +272,24 @@ def test_exit_codes_for_configs_not_available_on_this_runner() -> None:
     assert ba.verdict_of(4, 0, missing, [], [], True)[1] == 2
     assert ba.verdict_of(8, 4, missing, ["a.yaml"], [], False)[1] == 2  # failed for another reason
     assert ba.verdict_of(8, 4, missing, [], ["a.yaml"], False)[1] == 1  # a difference stays red
-    assert ba.verdict_of(8, 4, missing, [], [], True)[1] == 1  # so does an owed shadow run
     assert ba.verdict_of(8, 8, {}, [], [], False)[1] == 0
     assert ba.verdict_of(0, 0, {}, [], [], False)[1] == 0  # no config reaches a touched module
+
+
+def test_shadow_owed_with_identical_configs_is_5_and_a_difference_stays_1() -> None:
+    """Requirement change (Tom, 2026-10-27): in quantbox's public CI "shadow owed" is a warning, not red.
+
+    Exit 1 is split: 1 = a config differs (red), 5 = every runnable config identical and the shadow
+    run owed (a warning). Replaces the assertion that an owed shadow run alone gives 1.
+    """
+    missing = {"cookbook/configs/run_stress_test.yaml": ["crypto-spot-daily"]}
+    assert ba.verdict_of(8, 8, {}, [], [], True)[1] == 5  # identical + shadow owed
+    assert ba.verdict_of(0, 0, {}, [], [], True)[1] == 5  # no config selected (#310) + shadow owed
+    assert ba.verdict_of(8, 8, {}, [], ["a.yaml"], True)[1] == 1  # differs + shadow owed: red
+    assert ba.verdict_of(8, 4, missing, [], [], True)[1] == 5  # partial + shadow owed
+    assert "not checked" in ba.verdict_of(8, 4, missing, [], [], True)[0]
+    assert ba.verdict_of(4, 0, missing, [], [], True)[1] == 2  # nothing runnable: unchanged
+    assert ba.verdict_of(8, 4, missing, ["a.yaml"], [], True)[1] == 2  # could not run: unchanged
 
 
 def test_the_backtest_path_reaches_inference() -> None:
