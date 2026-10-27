@@ -1224,8 +1224,7 @@ def traded_weights(run_dir: Path, manifest: dict):
     column as the index in the file's own order — or a ValueError. The axis is never parsed,
     sorted or realigned, no calendar day is known here, and a cell that is not a finite
     number is not a flat position: it refuses (qute-plugins #296 round 3)."""
-    import numpy as np  # noqa: PLC0415 — the gate imports the data stack only where it measures
-
+    from .inference import require_finite  # noqa: PLC0415 — the gate imports the data stack only where it measures
     from .parquet_io import read_parquet  # noqa: PLC0415
 
     files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
@@ -1248,7 +1247,7 @@ def traded_weights(run_dir: Path, manifest: dict):
         values = frame.to_numpy(dtype=float)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{path} holds a weight that is not a number ({exc})") from None
-    bad = int((~np.isfinite(values)).sum())
+    _, bad = require_finite(values.ravel(), allow_nonfinite_drop=True, what="weight")
     if bad:
         raise ValueError(f"{path} has {bad} cell(s) that are not finite numbers")
     return frame.astype(float)
@@ -1755,23 +1754,26 @@ def hygiene_counts(frame, kind: str, name: str, first: date, last: date) -> dict
     import numpy as np  # noqa: PLC0415
     import pandas as pd  # noqa: PLC0415
 
+    from .inference import require_finite  # noqa: PLC0415
+
     raw = frame.loc[within(frame, first, last), name]
     # a null is a bar the instrument did not print (data_validation.json counts those as
     # gaps); a value that is there and is inf, or not a number at all, is non-finite
     values = pd.to_numeric(raw[raw.notna()], errors="coerce").to_numpy(dtype=float)
-    finite = np.isfinite(values)
+    # quantbox.inference owns the NaN/Inf count; here every non-finite value is COUNTED
+    finite, non_finite = require_finite(values, allow_nonfinite_drop=True, what="served")
     if kind == "returns":
-        non_positive = finite & (values <= -1)
-        logs = np.log1p(values[finite & ~non_positive])
+        non_positive = finite <= -1
+        logs = np.log1p(finite[~non_positive])
     else:
-        non_positive = finite & (values <= 0)
-        positive = finite & ~non_positive
-        logs = np.diff(np.log(values[positive])) if positive.sum() > 2 else np.array([])
+        non_positive = finite <= 0
+        positive = finite[~non_positive]
+        logs = np.diff(np.log(positive)) if positive.size > 2 else np.array([])
     z = np.abs(logs - logs.mean()) / logs.std() if logs.size > 2 and logs.std() > 0 else np.array([])
     return {
         "observations": int(values.size),
         "non_positive": int(non_positive.sum()),
-        "non_finite": int((~finite).sum()),
+        "non_finite": non_finite,
         "jumps": int((z > JUMP_K_SIGMA).sum()),
     }
 
