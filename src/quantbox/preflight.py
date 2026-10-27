@@ -1755,8 +1755,7 @@ def hygiene_counts(frame, kind: str, name: str, first: date, last: date) -> dict
     import numpy as np  # noqa: PLC0415
     import pandas as pd  # noqa: PLC0415
 
-    inside = (frame.index >= pd.Timestamp(first)) & (frame.index < pd.Timestamp(last) + pd.Timedelta(days=1))
-    raw = frame.loc[inside, name]
+    raw = frame.loc[within(frame, first, last), name]
     # a null is a bar the instrument did not print (data_validation.json counts those as
     # gaps); a value that is there and is inf, or not a number at all, is non-finite
     values = pd.to_numeric(raw[raw.notna()], errors="coerce").to_numpy(dtype=float)
@@ -2079,12 +2078,16 @@ def check_replication_data(
     _anchor(report, paper, data, line, sorted({row["class"] for row in paper_classes} & held))
 
 
-def class_bars(frame, tickers: list[str], first: date, last: date) -> list[date]:
-    """The dates on which any of `tickers` has a served value, between `first` and `last`."""
+def within(frame, first: date, last: date):
+    """The rows of a served frame dated `first` through `last`, both days whole."""
     import pandas as pd  # noqa: PLC0415
 
-    inside = (frame.index >= pd.Timestamp(first)) & (frame.index < pd.Timestamp(last) + pd.Timedelta(days=1))
-    printed = frame.loc[inside, tickers].notna().any(axis=1)
+    return (frame.index >= pd.Timestamp(first)) & (frame.index < pd.Timestamp(last) + pd.Timedelta(days=1))
+
+
+def class_bars(frame, tickers: list[str], first: date, last: date) -> list[date]:
+    """The dates on which any of `tickers` has a served value, between `first` and `last`."""
+    printed = frame.loc[within(frame, first, last), tickers].notna().any(axis=1)
     return sorted({ts.date() for ts in printed[printed].index})
 
 
