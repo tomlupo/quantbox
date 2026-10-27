@@ -41,10 +41,14 @@ Before any measured run, commit the `prereg:` block and run the gate from the li
 ([ADR-0013](../adr/0013-preflight-in-quantbox.md)):
 
 ```bash
-uv run quantbox preflight --lab <lab root> --line . config.yaml   # 0 pass, 1 refuse, 2 could not check
+uv run quantbox preflight --lab <lab root> --line . config.yaml   # 0 pass, 1 refuse, 2 could not check, 3 flag
 ```
 
 `uv run quantbox preflight --help` lists the options. Exit 1 means do not run the backtest.
+Exit 3 means run, but the finding carries every FLAG row: an arm above the live
+leverage cap, or a book with no confirmed replica parity, is not promotable, and a
+replication on another type of data than the paper's is a proxy test. The binding
+block and the replication data step are [ADR-0014](../adr/0014-preflight-gates.md).
 
 ## Repin
 

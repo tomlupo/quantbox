@@ -3,7 +3,9 @@
 Ported from qute-research 0.13.0 ``scripts/quant_preflight.py``, behaviour-identical,
 so the gate is versioned and pinned with the engine it judges. Where the plugin
 asked quantbox through a subprocess, this module calls the same quantbox code
-in-process (the sites are listed in ADR-0013).
+in-process (the sites are listed in ADR-0013). The gates added since — FLAG, the
+binding count and a replication's data step — measure quantbox's own objects
+(ADR-0014).
 
 A backtest that passes its own criterion can still say nothing about the book
 it names: the primary dataset is a market the book does not trade, the config
@@ -47,6 +49,18 @@ WHAT IT READS — nothing else
                                    a `quantbox/run@N` manifest of a major this
                                    quantbox does not write (:data:`quantbox.run_manifest.SCHEMA_ID`)
                                    is BLIND
+  * a book's replica-parity finding `books[].replica_parity` in system.yaml:
+                                   without a green one, a test on a live book is
+                                   FLAGGED, never promotable (TOM-1412 point 2)
+  * the binding runs               `prereg.binding`: the baseline's and one arm's
+                                   run directories; their `traded_weights` parquet
+                                   is compared bar for bar here (TOM-1412 point 1)
+  * a replication's data           the run's `data_validation.json`
+                                   (:data:`quantbox.instrument_calendar.DATA_VALIDATION_SCHEMA`,
+                                   READ, never recomputed), the table quantbox SERVES
+                                   the primary dataset from (measured here, through
+                                   :func:`quantbox.dataset_lock.served_bytes`), and the
+                                   `prereg.data.anchor` CSV (TOM-1430)
 
 DETERMINISTIC ON PURPOSE. Anything needing judgement — is the criterion the
 right one, is every earlier config counted — belongs to the `prereg-auditor`
@@ -67,11 +81,23 @@ name; a plan field of the wrong type is BLIND, never coerced.
 NOT AN ADVERSARY'S GATE. Commit dates are trusted; a backdated or squashed
 history reads as "frozen early" (preregistration.md § Stated limits).
 
+A FLAG IS A LIMIT THE FINDING CARRIES, NOT A PASS
+-------------------------------------------------
+Some answers do not stop a run but bind what its result may be called: an arm
+above the book's live leverage cap is research Tom ruled allowed, and it can
+never be promotable (TOM-1119); a test on a live book whose replica has no
+confirmed parity finding is not promotable either (TOM-1412 point 2, Tom
+2026-10-25); a replication on data of another type than the paper's is a "proxy
+test", and its verdict can never be `confirmed` (TOM-1430). Such a row is FLAG,
+and the run exits 3, never 0.
+
 EXIT CODES
 ----------
   0  every check passed
   1  at least one REFUSE — do not run the backtest
   2  no refusal, but at least one check COULD NOT LOOK (also: usage errors)
+  3  no refusal and nothing blind, but at least one FLAG — the run may go
+     ahead; every flag binds the finding (see the `finding limits` line)
 
 THE LAB'S YAML. system.yaml, the prereg block and data_inputs.yaml are read by the
 block-style subset parser below, kept from the plugin unchanged: it REFUSES TO
@@ -85,6 +111,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import csv
 import hashlib
 import json
 import math
@@ -102,18 +129,19 @@ from . import explain as _explain
 from . import run_manifest as _run_manifest
 from .dataset_lock import lock_for_run
 from .dataset_lock import resolve_dataset as _resolve_dataset
+from .instrument_calendar import DATA_VALIDATION_SCHEMA
 from .run_history import RUN_TS_FORMAT
 
-__all__ = ["BLIND", "PASS", "REFUSE", "Report", "Unavailable", "main", "render", "run"]
+__all__ = ["BLIND", "FLAG", "PASS", "REFUSE", "Report", "Unavailable", "main", "render", "run"]
 
-PASS, REFUSE, BLIND = "PASS", "REFUSE", "BLIND"
+PASS, REFUSE, BLIND, FLAG = "PASS", "REFUSE", "BLIND", "FLAG"
 
 
 class Unavailable(RuntimeError):
     """quantbox could not produce an answer — the caller reports BLIND, never a pass."""
 
 
-_SCHEMA_RE = re.compile(r"^quantbox/([a-z_]+)@(\d+)$")
+_SCHEMA_RE = re.compile(r"^quantbox/([a-z_-]+)@(\d+)$")
 
 
 def _major(schema_id: str) -> int:
@@ -128,6 +156,7 @@ def _major(schema_id: str) -> int:
 SUPPORTED: dict[str, frozenset[int]] = {
     "run": frozenset({_major(_run_manifest.SCHEMA_ID)}),
     "explain": frozenset({_major(_explain.SCHEMA_ID)}),
+    "data-validation": frozenset({_major(DATA_VALIDATION_SCHEMA)}),
 }
 
 
@@ -189,6 +218,8 @@ FROZEN_FIELDS = (
     "liveness",
     "runs",
     "not_runs",
+    "binding",
+    "data",
 )
 
 
@@ -612,8 +643,11 @@ def _is_number(value) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
-def _is_count(value) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
+def _is_count(value, least: int = 0) -> bool:
+    """THE count contract: an int (not a bool) >= `least`, and `least` is never below 0.
+    A negative count is not a count (qute-plugins #297 round 2: `jumps: -1` passed as
+    measured jumps), so no caller compares a count with a bound itself."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= max(least, 0)
 
 
 def _within(path: Path, root: Path) -> bool:
@@ -755,6 +789,8 @@ class Report:
             return 1
         if BLIND in statuses or not self.rows:
             return 2
+        if FLAG in statuses:
+            return 3
         return 0
 
 
@@ -790,7 +826,9 @@ def _placeholders(node, trail: str = "") -> list[str]:
 def venue_of(book: dict) -> dict:
     """The book's venue with the SAFE answer for anything it fails to declare:
     no shorts, no leverage. `check_system` refuses an incomplete venue by name;
-    nothing downstream may turn the same gap into a traceback — or a permission."""
+    nothing downstream may turn the same gap into a traceback — or a permission.
+    `leverage` is the LIVE cap: what a promotion may hold, never what a backtest
+    may ask for (TOM-1119) — above it, the `leverage[…]` row is a FLAG."""
     venue = book.get("venue") if isinstance(book.get("venue"), dict) else {}
     return {
         "allow_shorts": venue.get("allow_shorts") is True,
@@ -970,7 +1008,7 @@ def check_prereg_content(report: Report, prereg: dict, n_configs: int) -> None:
         report.add(PASS, "ex-largest-episode", f"relabel_to={relabel}")
 
     trials = prereg.get("n_trials")
-    if not _is_count(trials) or trials < 1:
+    if not _is_count(trials, least=1):
         report.add(
             REFUSE,
             "trial-count",
@@ -1066,6 +1104,286 @@ def check_book(report: Report, system: dict, prereg: dict) -> dict | None:
             f"{primary} == books[{book.get('name')}].primary_dataset",
         )
     return book
+
+
+# ── a test on a live book: can it change anything at all (TOM-1412) ────────
+
+
+def frontmatter(path: Path) -> dict:
+    """The YAML frontmatter of a markdown file. Raises ValueError when there is none."""
+    lines = path.read_text(encoding="utf-8").lstrip("﻿").splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise ValueError(f"{path} has no `---` frontmatter")
+    end = next((n for n, ln in enumerate(lines[1:], 1) if ln.strip() == "---"), None)
+    if end is None:
+        raise ValueError(f"{path}: the frontmatter never closes")
+    doc = parse_yaml("\n".join(lines[1:end]))
+    if not isinstance(doc, dict):
+        raise ValueError(f"{path}: the frontmatter is not a mapping")
+    return doc
+
+
+def check_replica_parity(report: Report, lab: Path, book: dict) -> None:
+    """Is the lab's replica of this live book at parity with live, by a reviewed finding
+    (TOM-1412 point 2)? H23 measured an overlay on a replica holding 2.4x less gross than
+    the live book: the test said nothing about the book.
+
+    `books[].replica_parity` names that finding, relative to the lab. Green = `verdict:
+    confirmed` with an independent review `done` and `UPHELD`. Anything else is a FLAG, not
+    a refusal (Tom, 2026-10-25): the row records "no confirmed replica parity", the run
+    goes ahead, and its finding is not promotable, exactly like an arm above the live
+    leverage cap."""
+    # TOM-1412 point 2: this becomes REFUSE once a confirmed parity finding exists (Tom, 2026-10-25).
+    missing = FLAG
+    check, declared, name = "replica-parity", book.get("replica_parity"), book.get("name")
+    limit = "no confirmed replica parity — a finding of this test is NOT PROMOTABLE and must say so"
+    if not isinstance(declared, str) or not declared.strip():
+        report.add(missing, check, f"{name} declares no `replica_parity` finding in system.yaml: {limit}")
+        return
+    path = Path(declared) if Path(declared).is_absolute() else lab / declared
+    try:
+        meta = frontmatter(path)
+    except (OSError, UnicodeDecodeError, ValueError) as exc:  # YamlUnsupported is a ValueError
+        report.add(missing, check, f"{name} replica_parity {declared!r} cannot be read ({exc}): {limit}")
+        return
+    report.read.append(str(path))
+    review = meta.get("review") if isinstance(meta.get("review"), dict) else {}
+    green = meta.get("verdict") == "confirmed" and review.get("status") == "done" and review.get("verdict") == "UPHELD"
+    state = f"verdict {meta.get('verdict')!r}, review {review.get('status')!r} / {review.get('verdict')!r}"
+    if green:
+        report.add(PASS, check, f"{name}: replica at parity with live — {declared} ({state})")
+    else:
+        report.add(missing, check, f"{name}: {declared} has {state}, not confirmed + done + UPHELD: {limit}")
+
+
+#: A weight difference above this is a change, unless `binding.tol` says otherwise.
+BINDING_TOL = 1e-9
+
+
+def binding_applies(prereg: dict, plans: list[tuple[Path, dict]]) -> str | None:
+    """Why this block tests a RULE against a baseline — or None when it does not."""
+    criterion = prereg.get("criterion") if isinstance(prereg.get("criterion"), dict) else {}
+    legs = criterion.get("legs") if isinstance(criterion.get("legs"), list) else []
+    versus = [leg.get("name") for leg in legs if isinstance(leg, dict) and leg.get("versus") == "baseline"]
+    overlays = sorted(
+        {
+            str(o.get("name"))
+            for _, plan in plans
+            for o in (plan.get("overlays") if isinstance(plan.get("overlays"), list) else [])
+            if isinstance(o, dict)
+        }
+    )
+    if overlays:
+        return f"a config applies overlay(s) {overlays}"
+    if versus:
+        return f"leg(s) {versus} are measured versus the baseline"
+    return None
+
+
+def plan_identity(plan: dict, data: DatasetIdentity) -> tuple[str, tuple] | None:
+    """`(config_hash, data)` of a config as quantbox will run it — or None. `data` is
+    `(pin, served table)` from the config's `dataset_identity`, the same answer its
+    `data[…]` row gives: the pin AND, for a `serve` block, the table served from it (one
+    pin can serve two tables). Data that is not pinned gives no identity, so a run of it
+    cannot be matched."""
+    config = plan.get("config_hash") if isinstance(plan, dict) else None
+    if not (isinstance(config, str) and config and isinstance(data.pin, str) and data.pin):
+        return None
+    return config, (data.pin, data.served.run_key() if data.served is not None else None)
+
+
+def _table_said(key: tuple | None) -> str:
+    return "the pin file itself" if key is None else f"the {key[2]} table {str(key[1])[:12]}… {list(key[3] or [])}"
+
+
+def run_data(manifest: dict) -> tuple:
+    """`(pin, served table)` of what a run read, from its own manifest — the same shape as
+    `plan_identity`'s data, so a run and a config, or two runs, compare as one value."""
+    dataset = manifest.get("dataset") if isinstance(manifest.get("dataset"), dict) else {}
+    return dataset.get("sha256"), manifest_serve_key(manifest)
+
+
+def run_identity(run_dir: Path, wanted: list[tuple[str, tuple]]) -> tuple[dict | None, str | None]:
+    """THE check that a run on disk is a run of a config this gate judges, on the data that
+    config reads: its own run_manifest.json must be a `quantbox/run@N` of a major this
+    quantbox reads, name a resolved config whose sha256 starts with a wanted `config_hash`,
+    and read that config's data (`run_data`: the pin and the served table).
+    `(manifest, None)`, or `(None, why not)`."""
+    try:
+        manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        return None, f"run {run_dir}: no readable run_manifest.json ({exc})"
+    problem = schema_problem(manifest, "run")
+    if problem is not None:
+        return None, f"run {run_dir}: its run_manifest.json cannot be read as a run — {problem}"
+    config = manifest.get("config") if isinstance(manifest.get("config"), dict) else {}
+    sha, data = config.get("sha256"), run_data(manifest)
+    datas = [d for hash_, d in wanted if isinstance(sha, str) and sha.startswith(hash_)]
+    if not datas:
+        return (
+            None,
+            f"run {run_dir} ran config {str(sha)[:12]}…, not {sorted(h for h, _ in wanted)} — another config's run",
+        )
+    if data[0] not in [pin for pin, _ in datas]:
+        return (
+            None,
+            f"run {run_dir} read dataset bytes {str(data[0])[:12]}…, not the pinned {str(datas[0][0])[:12]}… — "
+            "another data's run",
+        )
+    if data not in datas:
+        return (
+            None,
+            f"run {run_dir} was served {_table_said(data[1])}, not {_table_said(datas[0][1])} its config serves — "
+            "another data's run",
+        )
+    return manifest, None
+
+
+def traded_weights(run_dir: Path, manifest: dict):
+    """The run's `traded_weights` parquet as quantbox wrote it — one row per BAR, its `date`
+    column as the index in the file's own order — or a ValueError. The axis is never parsed,
+    sorted or realigned, no calendar day is known here, and a cell that is not a finite
+    number is not a flat position: it refuses (qute-plugins #296 round 3)."""
+    from .inference import require_finite  # noqa: PLC0415 — the gate imports the data stack only where it measures
+    from .parquet_io import read_parquet  # noqa: PLC0415
+
+    files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
+    rel = files.get("traded_weights")
+    if not isinstance(rel, str) or not rel:
+        raise ValueError(f"{run_dir}/run_manifest.json names no files.traded_weights")
+    path = run_dir / rel
+    try:
+        frame = read_parquet(path)
+    except Exception as exc:  # noqa: BLE001 — not a parquet frame quantbox wrote: cannot measure
+        raise ValueError(f"{path} is not a parquet frame quantbox wrote: {type(exc).__name__}: {exc}") from None
+    if "date" not in frame.columns:
+        raise ValueError(f"{path} has no `date` column — not quantbox's traded_weights")
+    frame = frame.set_index("date")
+    if frame.empty or not len(frame.columns):
+        raise ValueError(f"{path} has no rows or no instruments")
+    if frame.index.has_duplicates:
+        raise ValueError(f"{path} has a bar on more than one row")
+    try:
+        values = frame.to_numpy(dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{path} holds a weight that is not a number ({exc})") from None
+    _, bad = require_finite(values.ravel(), allow_nonfinite_drop=True, what="weight")
+    if bad:
+        raise ValueError(f"{path} has {bad} cell(s) that are not finite numbers")
+    return frame.astype(float)
+
+
+def binding_count(base, arm, tol: float) -> tuple[int, int]:
+    """`(baseline bars, bars on which any weight differs by more than tol)`, bar for bar.
+    Two runs not on the IDENTICAL bar index raise ValueError: they are never realigned."""
+    import numpy as np  # noqa: PLC0415
+
+    if not base.index.equals(arm.index):
+        raise ValueError(
+            f"the arm ({len(arm.index)} bars) and the baseline ({len(base.index)} bars) are not on the identical "
+            "bar index — the gate compares bar for bar and never realigns two runs"
+        )
+    # an instrument one book never held is a 0 weight in it; the bars are identical above
+    columns = base.columns.union(arm.columns)
+    delta = (
+        arm.reindex(columns=columns, fill_value=0.0).to_numpy()
+        - base.reindex(columns=columns, fill_value=0.0).to_numpy()
+    )
+    return len(base.index), int((np.abs(delta) > tol).any(axis=1).sum())
+
+
+def check_binding(
+    report: Report, prereg: dict, plans: list[tuple[Path, dict]], line: Path, explain=None, identify=None
+) -> None:
+    """Can the test change anything (TOM-1412 point 1)? A rule or overlay measured against
+    a baseline must change the weights on at least `binding.min_share` of the baseline's
+    bars. H23's gate changed 0 of 1449 bars: four bit-identical arms, a result about
+    nothing. Cannot determine = refuse.
+
+    `binding: {min_share, baseline, baseline_run, arm_run, tol}`: `baseline` is the
+    baseline's config, `baseline_run` its run, `arm_run` a run of a config being checked.
+    Each run's own manifest must name its config and that config's pin, and BOTH runs must
+    have read the SAME dataset bytes: a change of data would count as the rule's effect
+    (qute-plugins #296 round 3). The bars are counted here, on the two runs' traded weights."""
+    check = "binding"
+    identify = identify or (lambda _config, plan: dataset_identity(plan, line))
+    why = binding_applies(prereg, plans)
+    if why is None:
+        report.add(
+            PASS, check, "no leg is measured versus a baseline and no config applies an overlay — nothing to bind"
+        )
+        return
+    declared = prereg.get("binding") if isinstance(prereg.get("binding"), dict) else None
+    share = declared.get("min_share") if declared is not None else None
+    tol = declared.get("tol", BINDING_TOL) if declared is not None else None
+    if declared is None or not _is_number(share) or not 0 < share <= 1 or not (_is_number(tol) and tol >= 0):
+        got = "no `binding` block" if declared is None else f"min_share {share!r}, tol {tol!r}"
+        report.add(
+            REFUSE,
+            check,
+            f"{why}, and the block pre-registers no `binding: {{min_share, baseline, baseline_run, arm_run}}` with "
+            f"min_share in (0, 1] and a tol >= 0 (got {got}) — whether the rule can change the weights at all "
+            "cannot be determined",
+        )
+        return
+
+    def where(key: str) -> Path | None:
+        raw = declared.get(key)
+        return (Path(raw) if Path(raw).is_absolute() else line / raw) if isinstance(raw, str) and raw.strip() else None
+
+    problem, base_dir, arm_dir, config = None, where("baseline_run"), where("arm_run"), where("baseline")
+    missing = [k for k, v in (("baseline", config), ("baseline_run", base_dir), ("arm_run", arm_dir)) if v is None]
+    base_manifest = arm_manifest = None
+    if missing:
+        problem = f"`binding` names no {missing}"
+    elif explain is None:
+        problem = "no quantbox to ask what the baseline config is"
+    else:
+        try:
+            plan = explain(config, line)
+        except Unavailable as exc:
+            plan, problem = None, f"quantbox cannot explain the baseline config {config}: {exc}"
+        if problem is None:
+            wanted = None if schema_problem(plan, "explain") else plan_identity(plan, identify(config, plan))
+            arms = [ident for c, p in plans if (ident := plan_identity(p, identify(c, p))) is not None]
+            if wanted is None:
+                problem = f"quantbox's plan for the baseline config {config} gives no config_hash and dataset pin"
+            elif not arms:
+                problem = "quantbox's plans give no config_hash and dataset pin for the configs being checked"
+            else:
+                base_manifest, problem = run_identity(base_dir, [wanted])
+                if problem is None:
+                    arm_manifest, problem = run_identity(arm_dir, arms)
+    if problem is None:
+        read = [run_data(m) for m in (base_manifest, arm_manifest)]
+        if read[0] != read[1]:
+            said = [f"bytes {str(pin)[:12]}… served as {_table_said(table)}" for pin, table in read]
+            problem = (
+                f"the baseline read {said[0]} and the arm {said[1]} — not the same data, so a change of data "
+                "would count as the rule's effect"
+            )
+    if problem is None:
+        try:
+            bars, changed = binding_count(
+                traded_weights(base_dir, base_manifest), traded_weights(arm_dir, arm_manifest), tol
+            )
+        except ValueError as exc:
+            problem = str(exc)
+    if problem is not None:
+        report.add(REFUSE, check, f"{why}; the binding runs cannot be compared — cannot determine: {problem}")
+        return
+    report.read.extend([str(base_dir / "run_manifest.json"), str(arm_dir / "run_manifest.json")])
+    measured = changed / bars
+    said = f"the rule changes the weights on {changed}/{bars} baseline bars ({measured:.1%})"
+    if measured < share:
+        report.add(
+            REFUSE,
+            check,
+            f"{said} < the pre-registered min_share {share:.1%} — the test cannot change anything; fix the baseline "
+            "or the rule before a full run",
+        )
+    else:
+        report.add(PASS, check, f"{said} >= min_share {share:.1%} ({arm_dir} against {base_dir})")
 
 
 # ── a paper replication: anchored to the paper, not to a book ──────────────
@@ -1211,6 +1529,598 @@ def check_replication(report: Report, prereg: dict) -> bool:
     return named and not problems
 
 
+# ── a replication's data, against the paper's (TOM-1430) ───────────────────
+
+#: Data that is rolled from contracts; anything else has no roll.
+ROLLED = {"futures", "forward"}
+DATA_TYPES = ROLLED | {"index", "spot", "etf", "stock", "fund", "bond"}
+RETURN_TYPES = {"total", "excess", "price"}
+ROLL_METHODS = {"back-adjusted", "ratio-adjusted", "unadjusted", "contract-level"}
+#: A forward-filled share above this, on one instrument, is a gap the finding names.
+GAP_FLAG_SHARE = 0.05
+#: Fewer overlapping observations than this, and a correlation is not a measurement.
+ANCHOR_MIN_OBS = 24
+#: A log return this many sigma from the instrument's mean is a jump the finding names.
+JUMP_K_SIGMA = 10.0
+#: How far back from a class's last bar (and on from its first) its own bar spacing is read.
+SPACING_WINDOW_DAYS = 366
+
+
+def _day(value) -> date | None:
+    if isinstance(value, str) and len(value) >= 10:
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def find_data_validation(roots: list[Path]) -> list[Path]:
+    """Every `data_validation.json` under the declared runs roots, once each."""
+    found: dict[Path, None] = {}
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for folder, dirs, files in os.walk(root):
+            dirs[:] = sorted(d for d in dirs if d not in _NEVER_WALKED)
+            if "data_validation.json" in files:
+                found.setdefault((Path(folder) / "data_validation.json").resolve(), None)
+    return sorted(found)
+
+
+def _worst(findings: list[tuple[str, str]]) -> str:
+    statuses = {status for status, _ in findings}
+    return REFUSE if REFUSE in statuses else FLAG if FLAG in statuses else PASS
+
+
+def _classes(block, where: str, problems: list[str], paper: bool) -> list[dict]:
+    """The `classes:` list of `paper.data` (paper=True) or of `data`, checked by name.
+
+    The paper has one row per class. The data may split a class by type (gold spot beside
+    two commodity indices): one row per (class, type), and an instrument in one row only."""
+    rows = block.get("classes") if isinstance(block, dict) else None
+    if not isinstance(rows, list) or not rows:
+        problems.append(f"`{where}.classes` must list the asset classes")
+        return []
+    out, seen, owners = [], set(), {}
+    for n, row in enumerate(rows):
+        name = row.get("class") if isinstance(row, dict) else None
+        if not isinstance(name, str) or not name.strip():
+            problems.append(f"{where}.classes[{n}] needs a `class` name")
+            continue
+        key = name if paper else (name, str(row.get("type")))
+        if key in seen:
+            problems.append(f"{where}.classes: {key!r} twice — which row counts is a guess")
+            continue
+        seen.add(key)
+        if not paper and isinstance(row.get("instruments"), list):
+            for ticker in (t for t in row["instruments"] if isinstance(t, str)):
+                if ticker in owners:
+                    problems.append(f"{where}.classes: instrument {ticker!r} in two rows ({owners[ticker]}, {name})")
+                owners.setdefault(ticker, name)
+        kind = row.get("type")
+        if kind not in DATA_TYPES:
+            problems.append(f"{where}.classes[{name}].type is {kind!r}, not one of {'|'.join(sorted(DATA_TYPES))}")
+        roll = row.get("roll")
+        if kind in ROLLED and roll not in ROLL_METHODS:
+            problems.append(
+                f"{where}.classes[{name}] is {kind} data and `roll` is {roll!r}, not one of "
+                f"{'|'.join(sorted(ROLL_METHODS))} — how contracts are joined decides the returns"
+            )
+        if paper:
+            if not _is_count(row.get("instruments"), least=1):
+                problems.append(f"{where}.classes[{name}].instruments is {row.get('instruments')!r}, not a count >= 1")
+            if row.get("start") is not None and _period(row.get("start"), end=False) is None:
+                problems.append(f"{where}.classes[{name}].start is {row.get('start')!r}, not YYYY-MM or YYYY-MM-DD")
+        else:
+            tickers = row.get("instruments")
+            if not isinstance(tickers, list) or not tickers or not all(isinstance(t, str) and t for t in tickers):
+                problems.append(f"{where}.classes[{name}].instruments must list the data's instrument names")
+        out.append(row)
+    return out
+
+
+def _pearson(xs: list[float], ys: list[float]) -> float | None:
+    """Pearson's r, or None when it is not a number. Each series is scaled by its largest
+    absolute value first, so finite inputs near the float limit cannot overflow to nan."""
+    sx, sy = max(map(abs, xs), default=0.0), max(map(abs, ys), default=0.0)
+    if not (sx > 0 and sy > 0):
+        return None
+    xs, ys = [x / sx for x in xs], [y / sy for y in ys]
+    n = len(xs)
+    mx, my = math.fsum(xs) / n, math.fsum(ys) / n
+    sxx = math.fsum((x - mx) ** 2 for x in xs)
+    syy = math.fsum((y - my) ** 2 for y in ys)
+    if sxx <= 0 or syy <= 0:
+        return None
+    r = math.fsum((x - mx) * (y - my) for x, y in zip(xs, ys, strict=True)) / math.sqrt(sxx * syy)
+    return r if math.isfinite(r) else None
+
+
+def _anchor(report: Report, paper: dict, data: dict, line: Path, classes: list[str]) -> None:
+    """Item 3: the line's per-class series against the author's (or AQR's) public one.
+    `classes` are the paper's classes the data holds: each one needs a pair, or a weak
+    class hides behind a strong one."""
+    check, anchor = "data-anchor", data.get("anchor")
+    series = paper.get("reference_series")
+    if anchor is None:
+        if series:
+            report.add(
+                REFUSE,
+                check,
+                f"the paper declares a public reference series {series!r} and `data.anchor` is absent — the anchor "
+                "correlation cannot be determined",
+            )
+        else:
+            report.add(PASS, check, "no public reference series is declared for this paper — no anchor to compute")
+        return
+    pairs = anchor.get("pairs") if isinstance(anchor, dict) else None
+    floor = anchor.get("min_corr") if isinstance(anchor, dict) else None
+    raw = anchor.get("file") if isinstance(anchor, dict) else None
+    if not isinstance(pairs, list) or not pairs or not _is_number(floor) or not isinstance(raw, str) or not raw:
+        report.add(
+            REFUSE,
+            check,
+            "`data.anchor` needs `file`, a numeric `min_corr` and a list of `pairs` {class, ours, reference}",
+        )
+        return
+    path = Path(raw) if Path(raw).is_absolute() else line / raw
+    try:
+        with path.open(encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+    except (OSError, UnicodeDecodeError, ValueError, csv.Error) as exc:
+        report.add(REFUSE, check, f"anchor file {path} cannot be read — cannot determine: {exc}")
+        return
+    # every observation is one dated row: a count of rows is a count of observations only
+    # when each row names its own date (YYYY-MM or YYYY-MM-DD), and no date comes twice
+    dates = [_period(r.get("date"), end=True) for r in rows]
+    undated = [n for n, d in enumerate(dates) if d is None]
+    repeated = sorted({str(d) for d in dates if d is not None and dates.count(d) > 1})
+    if not rows or undated or repeated:
+        why = (
+            "no rows"
+            if not rows
+            else f"{len(undated)} row(s) with no readable `date` (first row {undated[0] + 2})"
+            if undated
+            else f"date(s) {repeated[:3]} on more than one row"
+        )
+        report.add(
+            REFUSE,
+            check,
+            f"anchor file {path}: {why} — an observation count needs one dated row each; cannot determine",
+        )
+        return
+    report.read.append(str(path))
+    findings: list[tuple[str, str]] = []
+
+    def number(text) -> float | None:
+        try:
+            value = float(text)
+        except (TypeError, ValueError):
+            return None
+        return value if math.isfinite(value) else None
+
+    for pair in pairs:
+        cls = pair.get("class") if isinstance(pair, dict) else None
+        ours, ref = (pair.get("ours"), pair.get("reference")) if isinstance(pair, dict) else (None, None)
+        if not (isinstance(ours, str) and isinstance(ref, str)) or ours not in rows[0] or ref not in rows[0]:
+            findings.append((REFUSE, f"{cls}: columns {ours!r} / {ref!r} not both in {path.name}"))
+            continue
+        if ours == ref:
+            findings.append((REFUSE, f"{cls}: `ours` and `reference` are both {ours!r} — a series against itself"))
+            continue
+        both = [(number(r.get(ours)), number(r.get(ref))) for r in rows]
+        both = [(x, y) for x, y in both if x is not None and y is not None]
+        corr = _pearson([x for x, _ in both], [y for _, y in both]) if len(both) >= ANCHOR_MIN_OBS else None
+        if corr is None:
+            findings.append(
+                (REFUSE, f"{cls}: {len(both)} overlapping observations of {ours} / {ref} — cannot determine")
+            )
+        elif corr < floor:
+            findings.append((FLAG, f"{cls}: corr({ours}, {ref}) = {corr:.2f} < {floor} over {len(both)} obs"))
+        else:
+            findings.append((PASS, f"{cls}: corr({ours}, {ref}) = {corr:.2f} over {len(both)} obs"))
+    paired = {pair.get("class") for pair in pairs if isinstance(pair, dict)}
+    unpaired = sorted(set(classes) - paired)
+    if unpaired:
+        findings.append((REFUSE, f"no anchor pair for the paper class(es) {unpaired} the data holds"))
+    status = _worst(findings)
+    lead = {
+        REFUSE: "cannot determine",
+        FLAG: "WEAK ANCHOR — the data does not track the public series",
+        PASS: "anchored",
+    }
+    report.add(status, check, f"{lead[status]}: " + "; ".join(text for _, text in findings))
+
+
+def served_frame(served: ServedTable):
+    """The prices the run reads, read by the data plugin that reads them for the run —
+    `LocalFileDataPlugin.load_market_data` — with nothing re-implemented here: its file
+    formats (wide, long, CSV), its date label (each row's own calendar date, TOM-1681), the
+    hash anchor of a pinned or served table, and a `serve` block's construction (a returns
+    table becomes a total-return index, so its log return on a bar is log(1 + r)). A
+    file read by path is first held to the hash data_inputs.yaml declares. Returns the
+    frame on a tz-naive date axis; raises ValueError with quantbox's reason when quantbox
+    would not serve it."""
+    import pandas as pd  # noqa: PLC0415 — the gate imports the data stack only where it measures
+
+    from .plugins.datasources.local_file_data import LocalFileDataPlugin  # noqa: PLC0415
+
+    if served.how == "inline":
+        held = _sha256_of(Path(served.file))
+        if held != served.sha256:
+            raise ValueError(f"{served.file} has sha256 {str(held)[:12]}…, not the declared {served.sha256[:12]}…")
+        plugin = LocalFileDataPlugin(prices_path=served.file)
+    else:
+        resolution = served.resolution or {}
+        plugin = LocalFileDataPlugin(dataset=resolution.get("name"), dataset_lock=resolution.get("lock"))
+        plugin.dataset_resolution = resolution
+    try:
+        frame = plugin.load_market_data(pd.DataFrame(), None, {})["prices"]
+    except Exception as exc:  # noqa: BLE001 — quantbox refusing to serve it is the reason, never a traceback
+        raise ValueError(f"quantbox would not serve it: {type(exc).__name__}: {exc}") from None
+    if frame.empty or not isinstance(frame.index, pd.DatetimeIndex):
+        raise ValueError(f"quantbox serves no dated prices from {served.file}")
+    if frame.index.has_duplicates:
+        raise ValueError(f"{served.file} serves a date on more than one row")
+    frame.index = frame.index.tz_localize(None) if frame.index.tz is not None else frame.index
+    return frame.sort_index()
+
+
+def _sha256_of(path: Path) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def hygiene_counts(frame, name: str, first: date, last: date) -> dict:
+    """Per instrument, inside the window the run read: observations, non-positive and
+    non-finite served prices, and log returns more than JUMP_K_SIGMA sigma from the mean.
+    `frame` is what `served_frame` returns: a returns table is already its total-return
+    index, which is non-positive exactly from a return at or below -100 %."""
+    import numpy as np  # noqa: PLC0415
+    import pandas as pd  # noqa: PLC0415
+
+    from .inference import require_finite  # noqa: PLC0415
+
+    raw = frame.loc[within(frame, first, last), name]
+    # a null is a bar the instrument did not print (data_validation.json counts those as
+    # gaps); a value that is there and is inf, or not a number at all, is non-finite
+    values = pd.to_numeric(raw[raw.notna()], errors="coerce").to_numpy(dtype=float)
+    # quantbox.inference owns the NaN/Inf count; here every non-finite value is COUNTED
+    finite, non_finite = require_finite(values, allow_nonfinite_drop=True, what="served")
+    non_positive = finite <= 0
+    positive = finite[~non_positive]
+    logs = np.diff(np.log(positive)) if positive.size > 2 else np.array([])
+    z = np.abs(logs - logs.mean()) / logs.std() if logs.size > 2 and logs.std() > 0 else np.array([])
+    return {
+        "observations": int(values.size),
+        "non_positive": int(non_positive.sum()),
+        "non_finite": non_finite,
+        "jumps": int((z > JUMP_K_SIGMA).sum()),
+    }
+
+
+def bar_spacing(bars: list[date], at_end: bool) -> int | None:
+    """The longest gap, in days, between consecutive bars of a series' OWN observed bars,
+    read over SPACING_WINDOW_DAYS from its last bar (`at_end`) or from its first. It is how
+    far apart the series' bars may be — weekends, holidays, a month — told from the data,
+    never from a computed calendar. None when fewer than two bars fall in that span."""
+    if len(bars) < 2:
+        return None
+    if at_end:
+        edge = bars[-1]
+        span = [d for d in bars if (edge - d).days <= SPACING_WINDOW_DAYS]
+    else:
+        edge = bars[0]
+        span = [d for d in bars if (d - edge).days <= SPACING_WINDOW_DAYS]
+    if len(span) < 2:
+        return None
+    return max((b - a).days for a, b in zip(span, span[1:], strict=False))
+
+
+def check_replication_data(
+    report: Report,
+    prereg: dict,
+    plans: list[tuple[Path, dict]],
+    line: Path,
+    roots: list[Path],
+    data_validation: Path | None = None,
+    identify=None,
+) -> None:
+    """The data-validation step of a replication (TOM-1430): the data is the base of a
+    replication, and TOM-1415 ran 15 index proxies for 58 futures, with gaps, raw rolls
+    and junk tickers found only in review. Before the measured runs:
+
+      1. a coverage table against the paper — instruments per class, start dates, type,
+         roll method, total vs excess return — from `data_validation.json`, which quantbox
+         writes per run; it is READ here, never recomputed. A window's ends are judged on
+         the class's own observed bars in the served table (`bar_spacing`): a series whose
+         bars sit up to N days apart has covered an end it stopped fewer than N days before.
+         No weekday or month calendar is computed (qute-plugins #297, codex P2: Good Friday);
+      2. series hygiene — gaps and a composition that never changes (data_validation.json
+         measures those), non-positive or non-finite served values and k-sigma jumps,
+         measured HERE on the table quantbox serves the run (`serve.kind: returns` as
+         returns), read through the bytes its pin or vouched hash anchors;
+      3. the anchor — per-class correlation with the public series, where one exists;
+      4. data of another type than the paper's: the result is a PROXY TEST, never a
+         replication — `confirmed` is blocked (FLAG `data-type`).
+
+    Which config reads the primary dataset, at which pin, and from which served table, is
+    each config's ONE `dataset_identity` (`identify(config, plan)`, the answer its
+    `data[…]` row gave). pass / flag / block are PASS / FLAG / REFUSE; "cannot determine"
+    is REFUSE.
+    """
+    identify = identify or (lambda _config, plan: dataset_identity(plan, line))
+    paper = prereg.get("paper") if isinstance(prereg.get("paper"), dict) else {}
+    data = prereg.get("data")
+    problems: list[str] = []
+    paper_classes = _classes(paper.get("data"), "paper.data", problems, paper=True)
+    data_classes = _classes(data, "data", problems, paper=False) if isinstance(data, dict) else []
+    if not isinstance(data, dict):
+        problems.append("no `data:` block — what the data IS (class, type, roll, returns per instrument) is undeclared")
+        data = {}
+    paper_returns = (paper.get("data") or {}).get("returns") if isinstance(paper.get("data"), dict) else None
+    for where, value in (("paper.data.returns", paper_returns), ("data.returns", data.get("returns"))):
+        if value not in RETURN_TYPES:
+            problems.append(f"`{where}` is {value!r}, not one of {'|'.join(sorted(RETURN_TYPES))}")
+    if problems:
+        report.add(REFUSE, "data-validation", "the data step cannot be determined: " + "; ".join(problems))
+        return
+
+    # the run's own record of what it read — named, or the ONE under the declared runs
+    if data_validation is None:
+        found = find_data_validation(roots)
+        if len(found) != 1:
+            report.add(
+                REFUSE,
+                "data-validation",
+                f"{len(found)} data_validation.json under {[str(r) for r in roots]} — "
+                + (
+                    "run the data probe first (one run of the primary config; quantbox writes the file)"
+                    if not found
+                    else "name the one to read with --data-validation: " + ", ".join(map(str, found[:4]))
+                ),
+            )
+            return
+        data_validation = found[0]
+    try:
+        validation = json.loads(data_validation.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        report.add(REFUSE, "data-validation", f"{data_validation} cannot be read — cannot determine: {exc}")
+        return
+    problem = schema_problem(validation, "data-validation")
+    calendar = validation.get("calendar") if isinstance(validation, dict) else None
+    instruments = calendar.get("instruments") if isinstance(calendar, dict) else None
+    if problem or not isinstance(instruments, dict):
+        report.add(
+            REFUSE, "data-validation", f"{data_validation}: {problem or 'no calendar.instruments'} — cannot determine"
+        )
+        return
+    # the record is a run of the PRIMARY config, on the bytes that config pins — not any run's
+    primary = prereg.get("primary_dataset")
+    reads = [(plan, ident) for path, plan in plans if (ident := identify(path, plan)).name == primary]
+    wanted = [key for plan, ident in reads if (key := plan_identity(plan, ident)) is not None]
+    served = {ident.served for _, ident in reads}
+    _, problem = (
+        run_identity(data_validation.parent, wanted)
+        if wanted
+        else (None, f"no config being checked reads {primary!r} at a pin")
+    )
+    if problem is not None:
+        report.add(REFUSE, "data-validation", f"{data_validation}: {problem} — cannot determine")
+        return
+    report.read.append(str(data_validation))
+
+    # every instrument the run read belongs to exactly one declared class
+    member = {t: row["class"] for row in data_classes for t in row["instruments"]}
+    unclassed = sorted(set(instruments) - set(member))
+    absent = sorted(set(member) - set(instruments))
+    totals = calendar.get("totals") if isinstance(calendar.get("totals"), dict) else {}
+    without = totals.get("instruments_without_prices")
+    # every number the rows below read must BE there: a missing counter is not a zero
+    unread = [] if isinstance(without, list) else ["calendar.totals.instruments_without_prices"]
+    if not _is_count(calendar.get("rows_without_any_price")):
+        unread.append("calendar.rows_without_any_price")
+    for t, v in sorted(instruments.items()):
+        fields = v if isinstance(v, dict) else {}
+        counts = [fields.get(k) for k in ("window_bars", "observed_bars", "ffilled_bars")]
+        dates = [_day(fields.get(k)) for k in ("first_valid", "last_valid")]
+        if not (_is_count(counts[0], least=1) and all(_is_count(c) for c in counts)) or None in dates:
+            unread.append(t)
+    if unread:
+        report.add(
+            REFUSE,
+            "data-validation",
+            f"{data_validation}: no count or date for {unread[:6]} — window_bars > 0, observed_bars, ffilled_bars, "
+            "first_valid and last_valid per instrument, and the calendar totals — cannot determine",
+        )
+        return
+    empty = sorted(map(str, without))
+    if unclassed or absent or empty:
+        parts = (
+            f"instrument(s) {unclassed} the run read are in no `data.classes` row" if unclassed else "",
+            f"declared instrument(s) {absent} are not in the run" if absent else "",
+            f"instrument(s) {empty} have no prices at all" if empty else "",
+        )
+        report.add(REFUSE, "data-validation", "; ".join(p for p in parts if p) + f" ({data_validation})")
+        return
+    report.add(
+        PASS, "data-validation", f"{data_validation}: {len(instruments)} instrument(s), every one in a declared class"
+    )
+
+    spans = {t: (_day(v["first_valid"]), _day(v["last_valid"])) for t, v in instruments.items()}
+
+    # the served table: ONE table the primary is served from, read through its anchor
+    frame, table, unserved = None, next(iter(served)) if len(served) == 1 else None, None
+    if table is None:
+        told = "a plan quantbox cannot name a served table for" if None in served else f"{len(served)} tables"
+        unserved = f"what quantbox serves the run of {primary!r} is not one table in its plans ({told})"
+    else:
+        try:
+            frame = served_frame(table)
+            missing = sorted(set(instruments) - set(map(str, frame.columns)))
+            if missing:
+                frame, unserved = None, f"{table.file} has no column for {missing[:6]}"
+        except ValueError as exc:
+            unserved = str(exc)
+    if frame is not None:
+        report.read.append(table.file)
+
+    # 1 — coverage table, and 4 — the type
+    sample = _window(paper, "sample", [])
+    post = _window(paper, "post_sample", [])
+    if frame is None:
+        report.add(REFUSE, "data-coverage", f"the served table cannot be read — cannot determine: {unserved}")
+    else:
+        coverage: list[tuple[str, str]] = []
+        proxies: list[str] = []
+        by_class: dict[str, list[dict]] = {}
+        for ours in data_classes:
+            by_class.setdefault(ours["class"], []).append(ours)
+        for row in paper_classes:
+            cls, rows = row["class"], by_class.get(row["class"], [])
+            if not rows:
+                coverage.append((FLAG, f"{cls}: paper {row['instruments']} {row['type']}, data NONE"))
+                continue
+            tickers = [t for ours in rows for t in ours["instruments"]]
+            first = min(spans[t][0] for t in tickers)
+            last = max(spans[t][1] for t in tickers)
+            bars = class_bars(frame, tickers, first, last)
+            start = _period(row.get("start"), end=False) if row.get("start") is not None else sample[0]
+            kinds = " + ".join(
+                f"{len(ours['instruments'])} {ours['type']}" + (f" ({ours['roll']})" if ours.get("roll") else "")
+                for ours in rows
+            )
+            cell = f"{cls}: paper {row['instruments']} {row['type']} from {start}, data {kinds} {first}..{last}"
+            end_gap, start_gap = bar_spacing(bars, at_end=True), bar_spacing(bars, at_end=False)
+            if first > sample[1]:
+                coverage.append((REFUSE, f"{cell} — starts after the paper's sample ends"))
+            elif end_gap is None or start_gap is None:
+                coverage.append(
+                    (REFUSE, f"{cell} — too few observed bars to tell its own bar spacing; cannot determine")
+                )
+            elif last < post[1] and (post[1] - last).days >= end_gap:
+                coverage.append(
+                    (
+                        REFUSE,
+                        f"{cell} — ends {(post[1] - last).days} day(s) before the post-sample end {post[1]}, and its "
+                        f"own bars are at most {end_gap} day(s) apart in its last year",
+                    )
+                )
+            elif (
+                (first > start and (first - start).days >= start_gap)
+                or len(tickers) < row["instruments"]
+                or (row.get("roll") is not None and any(ours.get("roll") != row.get("roll") for ours in rows))
+            ):
+                coverage.append((FLAG, cell))
+            else:
+                coverage.append((PASS, cell))
+            other = sorted({ours["type"] for ours in rows if ours["type"] != row["type"]})
+            if other:
+                proxies.append(f"{cls}: {' + '.join(other)} for the paper's {row['type']}")
+        extra = sorted(set(by_class) - {row["class"] for row in paper_classes})
+        returns = f"returns: paper {paper_returns}, data {data['returns']}"
+        if paper_returns != data["returns"]:
+            coverage.append((FLAG, returns))
+        status = _worst(coverage)
+        report.add(
+            status,
+            "data-coverage",
+            ("the data does not cover what the paper tests — " if status == REFUSE else "")
+            + "; ".join(text for _, text in coverage)
+            + ("" if paper_returns != data["returns"] else f"; {returns}")
+            + (f"; not paper classes: {extra}" if extra else "")
+            + " (window ends judged on each class's own observed bars)",
+        )
+        if proxies:
+            report.add(
+                FLAG,
+                "data-type",
+                "PROXY TEST: " + "; ".join(proxies) + " — the result may be called a proxy test, never a "
+                "replication; verdict `confirmed` is blocked",
+            )
+        else:
+            report.add(PASS, "data-type", "every class is the paper's type of data")
+
+    # 2 — hygiene: what data_validation.json measures, then the served table, measured here
+    hygiene: list[tuple[str, str]] = []
+    gaps = [
+        f"{t} {v['ffilled_bars']}/{v['window_bars']}"
+        for t, v in sorted(instruments.items())
+        if v["ffilled_bars"] / v["window_bars"] > GAP_FLAG_SHARE
+    ]
+    if gaps:
+        hygiene.append((FLAG, f"forward-filled > {GAP_FLAG_SHARE:.0%} of the window: {', '.join(gaps)}"))
+    if calendar["rows_without_any_price"] > 0:
+        hygiene.append((FLAG, f"{calendar['rows_without_any_price']} calendar row(s) with no price at all"))
+    last_bar = max(e for _, e in spans.values())
+    leavers = sorted(t for t, (_, e) in spans.items() if e < last_bar)
+    if leavers:
+        hygiene.append((PASS, f"composition changes: {len(leavers)} instrument(s) end before {last_bar}"))
+    else:
+        hygiene.append(
+            (FLAG, f"SURVIVORSHIP: no instrument leaves the sample before {last_bar} — a list fixed with hindsight")
+        )
+    if frame is None:
+        hygiene.append((REFUSE, f"non-positive / non-finite values and jumps cannot be determined: {unserved}"))
+    else:
+        per = {t: hygiene_counts(frame, t, *spans[t]) for t in sorted(instruments)}
+        unmeasured = sorted(t for t, c in per.items() if not _is_count(c["observations"], least=1))
+        bad = sorted(
+            f"{t} ({c['non_positive']} <=0, {c['non_finite']} non-finite)"
+            for t, c in per.items()
+            if c["non_positive"] or c["non_finite"]
+        )
+        jumps = sorted(f"{t} {c['jumps']}" for t, c in per.items() if c["jumps"])
+        rolled = sorted(t for row in data_classes if row["type"] in ROLLED for t in row["instruments"])
+        if unmeasured:
+            hygiene.append(
+                (REFUSE, f"no served observation of {unmeasured[:6]} in the run's window — cannot determine")
+            )
+        if bad:
+            hygiene.append((REFUSE, f"values that are not prices: {', '.join(bad)}"))
+        if jumps:
+            hygiene.append(
+                (
+                    FLAG,
+                    f"jumps > {JUMP_K_SIGMA} sigma: {', '.join(jumps)}"
+                    + (f" — on rolled data ({', '.join(rolled)}) a roll gap reads as a jump" if rolled else ""),
+                )
+            )
+        if not unmeasured and not bad and not jumps:
+            hygiene.append(
+                (
+                    PASS,
+                    f"no non-positive or non-finite value, no jump > {JUMP_K_SIGMA} sigma (the served {table.kind} "
+                    f"table {table.sha256[:12]}…)",
+                )
+            )
+    report.add(_worst(hygiene), "data-hygiene", "; ".join(text for _, text in hygiene))
+
+    # 3 — the anchor
+    held = {row["class"] for row in data_classes}
+    _anchor(report, paper, data, line, sorted({row["class"] for row in paper_classes} & held))
+
+
+def within(frame, first: date, last: date):
+    """The rows of a served frame dated `first` through `last`, both days whole."""
+    import pandas as pd  # noqa: PLC0415
+
+    return (frame.index >= pd.Timestamp(first)) & (frame.index < pd.Timestamp(last) + pd.Timedelta(days=1))
+
+
+def class_bars(frame, tickers: list[str], first: date, last: date) -> list[date]:
+    """The dates on which any of `tickers` has a served value, between `first` and `last`."""
+    printed = frame.loc[within(frame, first, last), tickers].notna().any(axis=1)
+    return sorted({ts.date() for ts in printed[printed].index})
+
+
 # ── the plan quantbox reports for a config ─────────────────────────────────
 
 
@@ -1272,118 +2182,198 @@ def resolve_dataset(name: str, config: Path, cwd: Path) -> dict:
         ) from None
 
 
-def check_data(
-    report: Report, tag: str, plan: dict, prereg: dict, line: Path, resolve=None
-) -> tuple[str | None, str | None]:
-    """Is what the run will read PINNED, and is it a dataset the prereg names?
+@dataclass(frozen=True)
+class ServedTable:
+    """What quantbox SERVES a run from, and how the data plugin reads it — the three
+    branches of `local_file_data`, never a fourth: `serve` (a manifest `serve` block:
+    :func:`quantbox.dataset.served_prices`), `pinned` (a pinned dataset with no serve block:
+    :func:`quantbox.dataset.load_pinned_dataset`), `inline` (a file read by path, whose
+    hash `data_inputs.yaml` declares). `sha256` is the anchor the bytes are held to — the
+    lock's pin, the table's vouched hash, or the declared hash — never a hash taken here.
+    Two ServedTables are equal when they serve the same bytes the same way; where a file
+    lies, and the resolution it came from, are not part of that."""
+
+    how: str  # "serve" | "pinned" | "inline"
+    sha256: str
+    kind: str  # "prices" | "returns"
+    columns: tuple[str, ...] | None = None
+    file: str = field(default="", compare=False)
+    resolution: dict | None = field(default=None, compare=False, hash=False)
+
+    def run_key(self) -> tuple | None:
+        """What a run manifest records of this table (`dataset.resolved.serve`): the served
+        table of a `serve` block, nothing for the other two (their bytes ARE the pin)."""
+        return ("serve", self.sha256, self.kind, self.columns) if self.how == "serve" else None
+
+
+def manifest_serve_key(manifest: dict) -> tuple | None:
+    """The served table a run manifest records (`dataset.resolved.serve`), as `ServedTable.run_key`."""
+    dataset = manifest.get("dataset") if isinstance(manifest.get("dataset"), dict) else {}
+    resolved = dataset.get("resolved") if isinstance(dataset.get("resolved"), dict) else {}
+    serve = resolved.get("serve")
+    if not isinstance(serve, dict):
+        return None
+    columns = serve.get("columns")
+    return ("serve", serve.get("sha256"), serve.get("kind"), tuple(columns) if isinstance(columns, list) else None)
+
+
+@dataclass(frozen=True)
+class DatasetIdentity:
+    """What one config's run will read: THE dataset identity every check that names a
+    dataset uses — the data row, the binding runs, and a replication's data step. `name`
+    is the dataset as the pre-registration names it (for a file read by path, its
+    `data_inputs.yaml` row's `dataset`); `pin` is the sha256 of the bytes the run binds,
+    set only when they are pinned; `status`/`reason` are the data row; `served` is the
+    table quantbox serves the run, None when it cannot be told."""
+
+    name: str | None
+    market: str | None
+    pin: str | None
+    status: str
+    reason: str
+    served: ServedTable | None = None
+
+
+def _served(resolution, pin: str) -> ServedTable | None:
+    """What a pinned dataset is served as, from quantbox's resolution of it
+    (:func:`quantbox.dataset_lock.resolve_dataset`)."""
+    if not isinstance(resolution, dict) or not isinstance(resolution.get("name"), str):
+        return None
+    serve = resolution.get("serve")
+    if serve is None:
+        where = resolution.get("path")
+        if not isinstance(where, str) or not where:
+            return None
+        file = str(Path(where) / str(resolution.get("pin_file") or "prices.parquet"))
+        return ServedTable("pinned", pin, "prices", None, file, resolution)
+    if not isinstance(serve, dict):
+        return None
+    file, sha, kind, columns = serve.get("file"), serve.get("sha256"), serve.get("kind"), serve.get("columns")
+    if not (isinstance(file, str) and file and isinstance(sha, str) and sha and kind in ("prices", "returns")):
+        return None
+    return ServedTable("serve", sha, kind, tuple(columns) if isinstance(columns, list) else None, file, resolution)
+
+
+def dataset_identity(plan: dict, line: Path, resolve=None) -> DatasetIdentity:
+    """Is what the run will read PINNED, and which dataset is it?
 
     Two ways to be pinned, both read from quantbox's plan, never from config keys:
     a dataset read by name at the build its `datasets.lock` pins (`source: lock`,
     `tier: lock`), or a file read by path whose content hash (`dataset.sha256`)
     is declared in the line's `data_inputs.yaml` — that row's `dataset` is then
-    the dataset's name, and its optional `market` the market. Returns
-    `(dataset name, raw market)`, either None when it cannot be told.
+    the dataset's name, and its optional `market` the market. A by-name read the
+    plan left unresolved is settled by quantbox's resolver (`resolve(name)`).
     """
-    check = f"data[{tag}]"
     dataset = plan.get("dataset") if isinstance(plan.get("dataset"), dict) else {}
     source, sha = dataset.get("source"), dataset.get("sha256")
-    name, market = None, None
+
+    def made(status, reason, name=None, market=None, pin=None, served=None) -> DatasetIdentity:
+        market = market if isinstance(market, str) and market else None
+        return DatasetIdentity(name, market, pin, status, reason, served)
+
     if source == "lock":
         name, market = dataset.get("name"), dataset.get("market")
         if dataset.get("tier") == "lock" and isinstance(sha, str) and sha:
-            report.add(PASS, check, f"{name} read by name at the build datasets.lock pins (sha256 {sha[:12]}…)")
-        elif isinstance(sha, str) and sha:
+            reason = f"{name} read by name at the build datasets.lock pins (sha256 {sha[:12]}…)"
+            return made(PASS, reason, name, market, sha, _served(dataset.get("resolved"), sha))
+        if isinstance(sha, str) and sha:
             # resolved (its bytes were hashed) and still no pin: quantbox SAYS it is unpinned
-            report.add(
+            return made(
                 REFUSE,
-                check,
                 f"{name!r} is read by name but NOT pinned in a datasets.lock (tier {dataset.get('tier')!r}) — "
                 "pin it, so the run reads a build anyone can fetch again",
+                name,
+                market,
             )
-        else:
-            # the plan never resolved the name (a data plugin explain cannot see into):
-            # ask quantbox the narrower question — which build does a run bind for it?
-            name, market = _by_name(report, check, name, dataset, resolve)
-    elif source == "inline":
+        # the plan never resolved the name (a data plugin explain cannot see into):
+        # ask quantbox the narrower question — which build does a run bind for it?
+        return _by_name(name, dataset, resolve)
+    if source == "inline":
         rows, problem = _inline_rows(line)
         hits = [r for r in rows or [] if isinstance(sha, str) and sha and r.get("sha256") == sha]
         if hits:
             name = hits[0].get("dataset") if isinstance(hits[0].get("dataset"), str) else None
-            market = hits[0].get("market")
-            report.add(
+            raw = hits[0].get("path")
+            served = (
+                ServedTable("inline", sha, "prices", None, str(line / raw)) if isinstance(raw, str) and raw else None
+            )
+            return made(
                 PASS,
-                check,
                 f"read by path; its sha256 {sha[:12]}… is declared in data_inputs.yaml ({hits[0].get('path')})",
+                name,
+                hits[0].get("market"),
+                sha,
+                served,
             )
-        else:
-            report.add(
-                REFUSE,
-                check,
-                f"read by path ({dataset.get('name')!r}, sha256 {sha!r}) and that content hash is declared "
-                f"nowhere — {problem or 'no data_inputs.yaml row carries it'}. Read it by name through "
-                "datasets.lock, or declare the file in data_inputs.yaml and run research_freeze.py",
-            )
-    else:
-        report.add(BLIND, check, f"quantbox's plan gives dataset.source {source!r}, neither lock nor inline")
-        return None, None
-    if name is not None:
-        secondary = secondary_datasets(prereg) or []
-        if name != prereg.get("primary_dataset") and name not in secondary:
-            report.add(
-                REFUSE,
-                f"dataset[{tag}]",
-                f"{name!r} is neither the pre-registered primary nor in secondary_datasets {secondary}",
-            )
-    return name, market if isinstance(market, str) and market else None
+        return made(
+            REFUSE,
+            f"read by path ({dataset.get('name')!r}, sha256 {sha!r}) and that content hash is declared "
+            f"nowhere — {problem or 'no data_inputs.yaml row carries it'}. Read it by name through "
+            "datasets.lock, or declare the file in data_inputs.yaml and run research_freeze.py",
+        )
+    return made(BLIND, f"quantbox's plan gives dataset.source {source!r}, neither lock nor inline")
 
 
-def _by_name(report: Report, check: str, name, dataset: dict, resolve) -> tuple[str | None, str | None]:
+def _by_name(name, dataset: dict, resolve) -> DatasetIdentity:
     """A by-name read the plan left unresolved, settled by `quantbox dataset resolve`."""
     why = f"tier {dataset.get('tier')!r}, sha256 null: {dataset.get('warning') or 'no reason given'}"
     if resolve is None or not isinstance(name, str):
-        report.add(BLIND, check, f"{name!r} is read by name, but quantbox's plan does not establish its build ({why})")
-        return name, None
+        reason = f"{name!r} is read by name, but quantbox's plan does not establish its build ({why})"
+        return DatasetIdentity(name, None, None, BLIND, reason)
     try:
         got = resolve(name)
     except Unavailable as exc:
-        report.add(
-            BLIND,
-            check,
+        reason = (
             f"{name!r} is read by name; quantbox's plan does not establish its build ({why}) and "
-            f"`dataset resolve` could not either: {exc}",
+            f"`dataset resolve` could not either: {exc}"
         )
-        return name, None
-    pin, matches = got.get("sha256"), got.get("matches")
+        return DatasetIdentity(name, None, None, BLIND, reason)
+    pin, matches, market = got.get("sha256"), got.get("matches"), got.get("market")
+    market = market if isinstance(market, str) and market else None
     if isinstance(pin, str) and pin and matches is True:
-        report.add(
-            PASS,
-            check,
+        reason = (
             f"{name} read by name; `quantbox dataset resolve` binds the build {got.get('lock')} pins "
-            f"(sha256 {pin[:12]}…{', restored from history' if got.get('restored') else ''})",
+            f"(sha256 {pin[:12]}…{', restored from history' if got.get('restored') else ''})"
         )
-    elif isinstance(pin, str) and pin:
-        report.add(
-            REFUSE,
-            check,
-            f"{name!r}: the bytes on disk are not the pinned build — {got.get('error') or 'matches is not true'}",
-        )
-    else:
-        report.add(
-            REFUSE,
-            check,
-            f"{name!r} is read by name but NOT pinned (`quantbox dataset resolve`: lock {got.get('lock')!r} has no "
-            "pin for it) — pin it, so the run reads a build anyone can fetch again",
-        )
-    market = got.get("market")
-    return name, market if isinstance(market, str) else None
+        return DatasetIdentity(name, market, pin, PASS, reason, _served(got, pin))
+    if isinstance(pin, str) and pin:
+        reason = f"{name!r}: the bytes on disk are not the pinned build — {got.get('error') or 'matches is not true'}"
+        return DatasetIdentity(name, market, None, REFUSE, reason)
+    reason = (
+        f"{name!r} is read by name but NOT pinned (`quantbox dataset resolve`: lock {got.get('lock')!r} has no "
+        "pin for it) — pin it, so the run reads a build anyone can fetch again"
+    )
+    return DatasetIdentity(name, market, None, REFUSE, reason)
 
 
-def check_config(report: Report, path: Path, plan: dict, book: dict, prereg: dict, line: Path, resolve=None) -> None:
+def check_data(
+    report: Report, tag: str, plan: dict, prereg: dict, line: Path, resolve=None, identity=None
+) -> tuple[str | None, str | None]:
+    """The `data[…]` row from the config's `dataset_identity`, and is it a dataset the
+    prereg names? Returns `(dataset name, market)`, either None when it cannot be told."""
+    ident = identity if identity is not None else dataset_identity(plan, line, resolve)
+    report.add(ident.status, f"data[{tag}]", ident.reason)
+    if ident.status == BLIND and ident.name is None:
+        return None, None
+    if ident.name is not None:
+        secondary = secondary_datasets(prereg) or []
+        if ident.name != prereg.get("primary_dataset") and ident.name not in secondary:
+            report.add(
+                REFUSE,
+                f"dataset[{tag}]",
+                f"{ident.name!r} is neither the pre-registered primary nor in secondary_datasets {secondary}",
+            )
+    return ident.name, ident.market
+
+
+def check_config(
+    report: Report, path: Path, plan: dict, book: dict, prereg: dict, line: Path, resolve=None, identity=None
+) -> None:
     """Judge quantbox's plan for one config against the book and the pre-registration."""
     tag = path.name
     venue_can = venue_of(book)
     book_market = canonical_market(book.get("market"))
-    dataset, raw_market = check_data(report, tag, plan, prereg, line, resolve)
+    dataset, raw_market = check_data(report, tag, plan, prereg, line, resolve, identity)
     market = canonical_market(raw_market) if raw_market else None
     is_primary = dataset is not None and dataset == prereg.get("primary_dataset")
     if dataset is None:
@@ -1432,9 +2422,16 @@ def check_config(report: Report, path: Path, plan: dict, book: dict, prereg: dic
     if not _is_number(lev):
         report.add(BLIND, f"leverage[{tag}]", f"quantbox's plan gives venue.max_leverage {lev!r}, not a finite number")
     elif lev > cap:
-        report.add(REFUSE, f"leverage[{tag}]", f"the runner caps gross leverage at {lev} > venue leverage {cap}")
+        # venue.leverage is a PROMOTION limit, not a research cap (Tom, 2026-09-20, TOM-1119):
+        # research may sweep above it; the row records it, and the finding is not promotable
+        report.add(
+            FLAG,
+            f"leverage[{tag}]",
+            f"ABOVE LIVE CAP: the runner caps gross leverage at {lev} > {book.get('name')} venue.leverage {cap} — "
+            "research may ask for it, but this arm's finding is NOT PROMOTABLE and must say so",
+        )
     else:
-        report.add(PASS, f"leverage[{tag}]", f"runner cap {lev} <= {cap}")
+        report.add(PASS, f"leverage[{tag}]", f"runner cap {lev} <= live cap {cap}")
 
     check_execution(report, tag, plan, prereg)
     if market is not None and market == book_market:
@@ -1531,7 +2528,7 @@ def check_execution(report: Report, tag: str, plan: dict, prereg: dict) -> None:
                 "quantbox reports no execution timing for this pipeline — timing is UNKNOWN; "
                 "pre-register `execution.timing` and `execution.plus_one_bar_result: true`",
             )
-    elif not _is_count(lag) or lag < 0:
+    elif not _is_count(lag):
         report.add(BLIND, check, f"quantbox's plan gives execution.lag_bars {lag!r}, not an integer >= 0")
     elif (lag == 0 or execution.get("same_bar") is True) and not (
         isinstance(stated.get("lag0_reason"), str) and stated["lag0_reason"].strip()
@@ -1827,10 +2824,12 @@ def run(
     report: Report | None = None,
     explain=None,
     resolve=resolve_dataset,
+    data_validation: Path | None = None,
 ) -> Report:
     """`explain(config, cwd) -> explain@N dict` and `resolve(name, config, cwd) -> dict` are
     quantbox's answers; tests pass their own. `explain=None` is :func:`explain_config`,
-    looked up when the run starts."""
+    looked up when the run starts. `data_validation` names the run record a replication's
+    data step reads, when the runs hold more than one."""
     explain = explain_config if explain is None else explain
     report = Report() if report is None else report
     system = check_system(report, lab)
@@ -1846,6 +2845,14 @@ def run(
     def resolver_for(path: Path):
         return (lambda name: resolve(name, path, line)) if resolve is not None else None
 
+    identities: dict[Path, DatasetIdentity] = {}
+
+    def identify(path: Path, plan: dict) -> DatasetIdentity:
+        """Each config's ONE dataset identity, asked once and read by every check."""
+        if path not in identities:
+            identities[path] = dataset_identity(plan, line, resolver_for(path))
+        return identities[path]
+
     if prereg is not None:
         check_prereg_content(report, prereg, len(configs))
         check_timing(report, prereg_path, prereg, line, lab, config_roots, list(runs_dirs or []), others)
@@ -1855,14 +2862,19 @@ def run(
         if check_replication(report, prereg):
             check_liveness(report, system, None, prereg)
             for path, plan in plans:
-                check_data(report, path.name, plan, prereg, line, resolver_for(path))
+                check_data(report, path.name, plan, prereg, line, identity=identify(path, plan))
                 check_execution(report, path.name, plan, prereg)
+            declared, _ = declared_paths(prereg, "runs", line)
+            roots = [*(declared or config_roots), *(runs_dirs or [])]
+            check_replication_data(report, prereg, plans, line, roots, data_validation, identify)
     elif system is not None and prereg is not None:
         book = check_book(report, system, prereg)
         if book is not None:
             check_liveness(report, system, book, prereg)
+            check_replica_parity(report, lab, book)
+            check_binding(report, prereg, plans, line, explain, identify)
             for path, plan in plans:
-                check_config(report, path, plan, book, prereg, line, resolver_for(path))
+                check_config(report, path, plan, book, prereg, line, identity=identify(path, plan))
     return report
 
 
@@ -1871,11 +2883,16 @@ def render(report: Report) -> str:
     out.append("files read: " + (", ".join(dict.fromkeys(report.read)) or "(none)"))
     refused = sum(1 for status, _, _ in report.rows if status == REFUSE)
     blind = sum(1 for status, _, _ in report.rows if status == BLIND)
+    flagged = sorted({check for status, check, _ in report.rows if status == FLAG})
+    if flagged:
+        out.append("finding limits: " + ", ".join(flagged) + " — each FLAG row above says what the finding may not be")
     if report.exit_code == 1:
         note = f" (+{blind} could not check)" if blind else ""
         out.append(f"PREFLIGHT: REFUSE ({refused}){note} — do not run the backtest")
     elif report.exit_code == 2:
         out.append(f"PREFLIGHT: COULD NOT CHECK ({blind}) — not a pass")
+    elif report.exit_code == 3:
+        out.append(f"PREFLIGHT: FLAG ({len(flagged)}) — the run may go ahead; the finding carries every flag")
     else:
         out.append(f"PREFLIGHT: PASS ({len(report.rows)} checks)")
     return "\n".join(out)
@@ -1904,6 +2921,11 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="extra artifacts root",
     )
+    parser.add_argument(
+        "--data-validation",
+        type=Path,
+        help="a replication: the run's data_validation.json to read (default: the one under the declared runs)",
+    )
     parser.add_argument("configs", nargs="+", type=Path)
     args = parser.parse_args(argv)
     report = Report()
@@ -1916,6 +2938,7 @@ def main(argv: list[str] | None = None) -> int:
             args.wanted,
             args.runs_dir,
             report=report,
+            data_validation=args.data_validation.resolve() if args.data_validation is not None else None,
         )
     except Exception as exc:  # noqa: BLE001 — a traceback is not a reason, and must never read as a pass
         where = traceback.extract_tb(exc.__traceback__)[-1]
