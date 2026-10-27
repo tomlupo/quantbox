@@ -42,13 +42,16 @@ This ADR records how the gates do that in `quantbox preflight`.
    them and counts BARS on an IDENTICAL index; it never parses, sorts or realigns the
    axis. A NaN weight refuses. No probe file and no sha binding of a probe exist,
    because nothing is measured outside the gate.
-5. **A replication's data step measures the SERVED table (TOM-1430).** The table is
-   the one `dataset_identity` names: a manifest `serve` block's table and kind, or the
-   pin file. Its bytes are read once through `dataset_lock.served_bytes`, which refuses
-   bytes that are not the pin or the vouched hash. A `kind: returns` table is measured
-   as returns: a price is non-positive only at a return <= -100 %. `data_validation.json`
-   is read through its schema major, never recomputed. There is no hygiene probe, and
-   `prereg.data.hygiene` is not read.
+5. **A replication's data step measures the SERVED prices (TOM-1430).** The table is
+   the one `dataset_identity` names: a manifest `serve` block's table, a pinned dataset,
+   or a file read by path. It is read by `LocalFileDataPlugin.load_market_data`, the
+   reader the run uses, so file formats, the calendar-date label and the hash anchors
+   are quantbox's, and a table quantbox refuses to serve refuses with quantbox's reason.
+   A `kind: returns` table is served as its total-return index, so a log return is
+   log(1 + r). `data_validation.json` is read through its schema major, never
+   recomputed. There is no hygiene probe, and `prereg.data.hygiene` is not read.
+   A run's data identity is its pin AND its served table (`dataset.resolved.serve` in
+   its manifest): one pin can serve two tables.
 6. **Coverage ends are judged on the series' own observed bars.** A class has covered
    a window end it stopped N days before when its own bars sit N or more days apart
    somewhere in its last year (its first year at the start side). No weekday, month or
