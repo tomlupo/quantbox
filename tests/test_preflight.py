@@ -46,10 +46,12 @@ books:
       leverage: 3
       funding_modelled: true
     primary_dataset: perp-daily
+    replica_parity: findings/parity.md
   - name: spot-book
     market: spot
     venue: {allow_shorts: false, leverage: 1, funding_modelled: false}
     primary_dataset: spot-daily
+    replica_parity: findings/parity.md
 data:
   canonical_root: datasets
   on_demand_dir: datasets
@@ -110,6 +112,10 @@ plugins:
       dataset: "perp-daily"
 """
 
+#: A green replica-parity finding (TOM-1412 point 2): confirmed, reviewed, UPHELD.
+PARITY = (
+    "---\nverdict: confirmed\nreview:\n  status: done\n  verdict: UPHELD\n---\n\nThe replica holds what live holds.\n"
+)
 FUNDING = "PAR1" + "funding-rates " * 4 + "PAR1"  # parquet magic at both ends, not a 4-byte stub
 T0, T1, T2 = "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", "2026-01-03T00:00:00Z"
 
@@ -210,6 +216,7 @@ class Lab:
 def lab(tmp_path) -> Lab:
     made = Lab(tmp_path / "lab")
     _write(made.root / "system.yaml", SYSTEM)
+    _write(made.root / "findings" / "parity.md", PARITY)
     _write(made.root / "datasets" / "perp-daily" / "funding_rates.parquet", FUNDING)
     _write(made.root / ".gitignore", "artifacts/\n")
     _write(made.readme, _readme(PREREG))
@@ -264,6 +271,8 @@ def test_the_clean_lab_passes(lab):
         "placeholders",
         "secondary-datasets",
         "run-manifest",
+        "replica-parity",
+        "binding",
     ):
         assert family in checks, family
     # quantbox was asked, from the line, about the config itself
@@ -358,9 +367,17 @@ def test_shorts_on_a_spot_secondary_of_a_shorting_book_refuse(lab):
     _only_refusal(lab.run(), "shorts[arm.yaml]", "this config trades spot, not the book's perp")
 
 
-def test_leverage_above_the_venue_refuses(lab):
+def test_leverage_above_the_live_cap_is_recorded_not_refused(lab):
+    """TOM-1119: venue.leverage is a PROMOTION limit, not a research cap. The arm runs; its
+    finding carries the flag and is not promotable (exit 3, never 0)."""
     lab.plan["venue"]["max_leverage"] = 5
-    _only_refusal(lab.run(), "leverage[arm.yaml]", "caps gross leverage at 5 > venue leverage 3")
+    report = lab.run()
+    assert report.exit_code == 3, report.rows
+    assert list(_rows(report, preflight.FLAG)) == ["leverage[arm.yaml]"]
+    flagged = _rows(report, preflight.FLAG)["leverage[arm.yaml]"]
+    assert "ABOVE LIVE CAP" in flagged and "5 > perp-book venue.leverage 3" in flagged and "NOT PROMOTABLE" in flagged
+    out = preflight.render(report)
+    assert "finding limits: leverage[arm.yaml]" in out and "PREFLIGHT: FLAG (1)" in out
 
 
 # ── execution timing ───────────────────────────────────────────────────────
@@ -705,6 +722,7 @@ def test_no_artifacts_root_means_nowhere_to_look_for_runs(lab):
 def test_a_line_outside_git_cannot_prove_its_timing(tmp_path):
     made = Lab(tmp_path / "lab")
     _write(made.root / "system.yaml", SYSTEM)
+    _write(made.root / "findings" / "parity.md", PARITY)
     _write(made.root / "datasets" / "perp-daily" / "funding_rates.parquet", FUNDING)
     _write(made.readme, _readme(PREREG))
     _write(made.config, CONFIG)
@@ -720,7 +738,7 @@ def test_several_prereg_blocks_without_an_id_is_blind_and_with_one_passes(lab):
 
 def test_a_refusal_outranks_blindness(lab):
     lab.plan["dataset"]["market"] = None
-    lab.plan["venue"]["max_leverage"] = 9
+    lab.plan["execution"].update(lag_bars=0, same_bar=True)  # a refusal (leverage is a FLAG since TOM-1119)
     report = lab.run()
     assert _rows(report, preflight.BLIND) and report.exit_code == 1
     assert "could not check" in preflight.render(report)
@@ -946,6 +964,7 @@ def test_no_path_text_can_attribute_a_run_to_another_block(tmp_path, labname):
     path: a worktree called `wt-h2-followup` disowned every run of H1."""
     made = Lab(tmp_path / labname)
     _write(made.root / "system.yaml", SYSTEM)
+    _write(made.root / "findings" / "parity.md", PARITY)
     _write(made.root / "datasets" / "perp-daily" / "funding_rates.parquet", FUNDING)
     _write(made.root / ".gitignore", "artifacts/\n")
     _write(made.readme, _two_blocks())
@@ -1625,13 +1644,109 @@ PAPER = """\
         where: "Table 1, Mkt"
     reference_series: authors-mktrf-vm
     post_sample: {start: 2016-01, end: 2024-12}
+    data:
+      returns: total
+      classes:
+        - {class: equity, instruments: 1, type: index, start: 1926-07}
+        - {class: bond, instruments: 1, type: index, start: 1926-07}
+  data:
+    returns: total
+    classes:
+      - {class: equity, type: index, instruments: [MKT]}
+      - {class: bond, type: index, instruments: [BND]}
+    anchor:
+      file: results/anchor.csv
+      min_corr: 0.5
+      pairs:
+        - {class: equity, ours: ours_eq, reference: ref_eq}
+        - {class: bond, ours: ours_fi, reference: ref_fi}
 """
 REPLICATION = PREREG.replace("  book: perp-book\n", PAPER)
+CONFIG_HASH = "c0ffee12"
+
+
+def monthly_prices(start: str = "1926-07-31", ends: dict | None = None):
+    """Month-end prices of MKT and BND, smooth enough that no log return is a 10-sigma jump.
+    `ends` cuts a series short ({"BND": "2024-12-31"}); BND ends a month before MKT by
+    default, so the composition changes (no survivorship flag)."""
+    import numpy as np
+    import pandas as pd
+
+    ends = {"BND": "2024-12-31", **(ends or {})}
+    index = pd.date_range(start, "2025-01-31", freq="ME")
+    k = np.arange(len(index))
+    frame = pd.DataFrame(
+        {"MKT": 100 * np.exp(0.006 * k + 0.02 * np.sin(k)), "BND": 50 * np.exp(0.003 * k + 0.01 * np.cos(k))},
+        index=index,
+    )
+    for name, end in ends.items():
+        frame.loc[frame.index > pd.Timestamp(end), name] = np.nan
+    return frame
+
+
+def _sha(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _parquet(path: Path, frame) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.rename_axis("date").reset_index().to_parquet(path, index=False)
+    return _sha(path)
+
+
+def serve_data(lab: Lab, frame, kind: str = "prices", run_frame=None, stamp: str = "20260102T000000Z") -> Path:
+    """The replication's primary served from `frame`, pinned, and ONE data-probe run of the
+    config: its run_manifest.json names the config and the pin, its data_validation.json is
+    quantbox's own calendar report (`instrument_calendar`) of what the run read. A `returns`
+    table is served through a manifest `serve` block, its pin file stays prices.parquet."""
+    from quantbox.instrument_calendar import DATA_VALIDATION_SCHEMA, instrument_calendar
+
+    home = lab.root / "datasets" / "perp-daily"
+    if kind == "returns":
+        pin = _parquet(home / "prices.parquet", monthly_prices())
+        table = _parquet(home / "returns.parquet", frame)
+        resolved = {
+            "path": str(home),
+            "sha256": pin,
+            "serve": {"table": "returns", "kind": "returns", "file": str(home / "returns.parquet"), "sha256": table},
+        }
+    else:
+        pin = _parquet(home / "prices.parquet", frame)
+        resolved = {"path": str(home), "sha256": pin}
+    lab.plan["dataset"].update(sha256=pin, resolved=resolved)
+    lab.plan["config_hash"] = CONFIG_HASH
+    run = lab.line / "artifacts" / "arm" / f"probe__{stamp}"
+    manifest = {
+        "schema": "quantbox/run@1",
+        "config": {"sha256": CONFIG_HASH + "0" * 56},
+        "dataset": {"name": "perp-daily", "sha256": pin, "source": "lock"},
+    }
+    _write(run / "run_manifest.json", json.dumps(manifest))
+    report = instrument_calendar(frame if run_frame is None else run_frame).report
+    _write(run / "data_validation.json", json.dumps({"schema": DATA_VALIDATION_SCHEMA, "calendar": report}))
+    return run / "data_validation.json"
+
+
+def anchor_csv(lab: Lab, rows: int = 30, text: str | None = None) -> None:
+    """Monthly returns of the line's class series beside the public ones, tracking them."""
+    import math
+
+    if text is None:
+        lines = ["date,ours_eq,ref_eq,ours_fi,ref_fi"]
+        for n in range(rows):
+            eq, fi = math.sin(n), math.cos(1.7 * n)
+            lines.append(f"{1990 + n // 12}-{n % 12 + 1:02d},{eq:.4f},{0.9 * eq + 0.05:.4f},{fi:.4f},{fi:.4f}")
+        text = "\n".join(lines) + "\n"
+    _write(lab.line / "results" / "anchor.csv", text)
 
 
 @pytest.fixture
 def replication(lab) -> Lab:
     _write(lab.readme, _readme(REPLICATION))
+    serve_data(lab, monthly_prices())
+    anchor_csv(lab)
     lab.commit("a replication prereg")
     return lab
 
@@ -1646,6 +1761,9 @@ def test_a_replication_passes_without_a_book_and_says_what_did_not_apply(replica
     assert "_for_long_only` floors do not bind it" in passed["liveness"]
     # the data pin and the timing still ran; nothing about a venue did
     for family in ("data[arm.yaml]", "execution[arm.yaml]", "prereg-committed", "criterion", "claim-test"):
+        assert family in passed, family
+    # the data step ran, every row of it (TOM-1430)
+    for family in ("data-validation", "data-coverage", "data-type", "data-hygiene", "data-anchor"):
         assert family in passed, family
     checks = {check for _, check, _ in report.rows}
     assert not checks & {"market[arm.yaml]", "shorts[arm.yaml]", "leverage[arm.yaml]", "funding[arm.yaml]"}
@@ -1738,3 +1856,396 @@ def test_the_paper_declaration_is_frozen(replication):
     _write(replication.readme, _readme(REPLICATION.replace("value: 0.0486", "value: 0.0350")))
     replication.commit("move the paper's reported number after the run", date=T2)
     _only_refusal(replication.run(), "prereg-committed", "post-registration")
+
+
+# ── FLAG: a limit the finding carries (TOM-1119, TOM-1412 point 2) ──────────
+
+
+@pytest.mark.parametrize(
+    ("value", "least", "counts"),
+    [
+        (0, 0, True),
+        (3, 1, True),
+        (0, 1, False),
+        (-1, 0, False),
+        (-1, -5, False),  # `least` never goes below 0
+        (True, 0, False),
+        (False, 0, False),
+        (1.0, 0, False),
+        ("1", 0, False),
+        (None, 0, False),
+    ],
+)
+def test_one_count_contract_an_int_at_least_zero_never_a_bool(value, least, counts):
+    """qute-plugins #297 round 2: `jumps: -1` passed as measured jumps. One contract, no caller-side bounds."""
+    assert preflight._is_count(value, least=least) is counts
+
+
+def test_a_flag_exits_3_and_never_reads_as_a_pass():
+    report = preflight.Report()
+    report.add(preflight.PASS, "a", "fine")
+    report.add(preflight.FLAG, "b", "limited")
+    assert report.exit_code == 3
+    report.add(preflight.BLIND, "c", "could not look")
+    assert report.exit_code == 2
+    report.add(preflight.REFUSE, "d", "no")
+    assert report.exit_code == 1
+
+
+def test_a_book_without_a_replica_parity_finding_is_flagged_not_promotable(lab):
+    _write(lab.root / "system.yaml", SYSTEM.replace("    replica_parity: findings/parity.md\n", ""))
+    report = lab.run()
+    assert report.exit_code == 3, report.rows
+    assert "declares no `replica_parity`" in _rows(report, preflight.FLAG)["replica-parity"]
+    assert "NOT PROMOTABLE" in _rows(report, preflight.FLAG)["replica-parity"]
+    assert "finding limits: replica-parity" in preflight.render(report)
+
+
+@pytest.mark.parametrize(
+    ("finding", "phrase"),
+    [
+        (PARITY.replace("verdict: confirmed", "verdict: inconclusive"), "verdict 'inconclusive'"),
+        (PARITY.replace("verdict: UPHELD", "verdict: OVERTURNED"), "'done' / 'OVERTURNED'"),
+        (PARITY.replace("status: done", "status: pending"), "'pending'"),
+        ("no frontmatter at all\n", "cannot be read"),
+    ],
+    ids=["not-confirmed", "not-upheld", "not-reviewed", "unreadable"],
+)
+def test_a_replica_parity_finding_that_is_not_green_is_a_flag(lab, finding, phrase):
+    _write(lab.root / "findings" / "parity.md", finding)
+    report = lab.run()
+    assert report.exit_code == 3, report.rows
+    assert phrase in _rows(report, preflight.FLAG)["replica-parity"]
+
+
+# ── binding: can the rule change the weights at all (TOM-1412 point 1) ──────
+
+BOUND = PREREG.replace("        metric: max_drawdown\n", "        metric: max_drawdown\n        versus: baseline\n") + (
+    "  binding:\n"
+    "    min_share: 0.2\n"
+    "    baseline: configs/baseline.yaml\n"
+    "    baseline_run: artifacts/bind/base__20260102T000000Z\n"
+    "    arm_run: artifacts/bind/arm__20260102T000000Z\n"
+)
+BASE_HASH = "ba5e1111"
+
+
+def weights(changed: int = 3, bars: int = 10, index=None):
+    """A traded-weights frame; the arm moves the first `changed` bars' weights."""
+    import pandas as pd
+
+    index = pd.date_range("2024-01-01", periods=bars, freq="D") if index is None else index
+    base = pd.DataFrame({"A": [0.5] * len(index), "B": [0.5] * len(index)}, index=index)
+    arm = base.copy()
+    arm.iloc[:changed, 0] = 0.25
+    return base, arm
+
+
+def bound(lab: Lab, base, arm, base_pin: str | None = None, base_schema: str = "quantbox/run@1") -> Lab:
+    """A rule measured versus its baseline, with the two runs on disk: each run's manifest
+    names its own config and pin, and its traded weights as quantbox writes them."""
+    _write(lab.readme, _readme(BOUND))
+    _write(lab.line / "configs" / "baseline.yaml", CONFIG)
+    lab.plans["baseline.yaml"] = make_plan(lab)
+    lab.plans["baseline.yaml"]["config_hash"] = BASE_HASH
+    lab.plan["config_hash"] = CONFIG_HASH
+    if base_pin is not None:
+        lab.plans["baseline.yaml"]["dataset"]["sha256"] = base_pin
+    lab.commit("a rule against its baseline")
+    pin = lab.plan["dataset"]["sha256"]
+    for name, frame, config, data, schema in (
+        ("base", base, BASE_HASH, base_pin or pin, base_schema),
+        ("arm", arm, CONFIG_HASH, pin, "quantbox/run@1"),
+    ):
+        run = lab.line / "artifacts" / "bind" / f"{name}__20260102T000000Z"
+        _parquet(run / "traded_weights.parquet", frame)
+        manifest = {
+            "schema": schema,
+            "config": {"sha256": config + "0" * 56},
+            "dataset": {"name": "perp-daily", "sha256": data, "source": "lock"},
+            "files": {"traded_weights": "traded_weights.parquet"},
+        }
+        _write(run / "run_manifest.json", json.dumps(manifest))
+    return lab
+
+
+def test_a_rule_against_a_baseline_with_no_binding_block_refuses(lab):
+    _write(lab.readme, _readme(BOUND.split("  binding:\n")[0]))
+    lab.commit()
+    _only_refusal(lab.run(), "binding", "pre-registers no `binding")
+
+
+@pytest.mark.parametrize(
+    "broken",
+    ["    min_share: 0\n", "    min_share: 1.5\n", "    min_share: true\n", "    min_share: 0.2\n    tol: -1\n"],
+    ids=["zero", "above-one", "a-bool", "negative-tol"],
+)
+def test_a_binding_share_or_tolerance_that_is_not_one_refuses(lab, broken):
+    bound(lab, *weights(changed=3))
+    _write(lab.readme, _readme(BOUND.replace("    min_share: 0.2\n", broken)))
+    lab.commit()
+    _only_refusal(lab.run(), "binding", "with min_share in (0, 1] and a tol >= 0 (got min_share")
+
+
+def test_an_overlay_needs_binding_too(lab):
+    lab.plan["overlays"] = [{"name": "overlay.vol_target.v1"}]
+    _only_refusal(lab.run(), "binding", "a config applies overlay(s) ['overlay.vol_target.v1']")
+
+
+def test_a_rule_that_changes_enough_bars_passes_and_counts_them(lab):
+    report = bound(lab, *weights(changed=3)).run()
+    assert report.exit_code == 0, report.rows
+    assert (
+        "changes the weights on 3/10 baseline bars (30.0%) >= min_share 20.0%"
+        in _rows(report, preflight.PASS)["binding"]
+    )
+
+
+def test_a_rule_that_never_changes_the_weights_refuses(lab):
+    """H23: four arms of a correlation-gated cap, bit-identical, 0 of 1449 bars."""
+    _only_refusal(bound(lab, *weights(changed=0)).run(), "binding", "0/10 baseline bars (0.0%) < the pre-registered")
+
+
+def test_a_baseline_and_an_arm_on_different_datasets_cannot_be_compared(lab):
+    """qute-plugins #296 round 3: each run matched ITS config's pin, the pair was never
+    compared, and a change of data counted as the rule's effect (10/10 bars, exit 0)."""
+    base, arm = weights(changed=0)
+    arm.iloc[:, 0] = 0.3  # every bar differs — because the data differs, not the rule
+    _only_refusal(bound(lab, base, arm, base_pin="d" * 64).run(), "binding", "not the same dataset")
+
+
+@pytest.mark.parametrize("how", ["shifted", "reordered", "a-bar-twice", "shorter"])
+def test_two_runs_not_on_the_identical_bar_index_cannot_be_compared(lab, how):
+    import pandas as pd
+
+    base, arm = weights(changed=3)
+    if how == "shifted":
+        arm.index = arm.index + pd.Timedelta(days=1)
+    elif how == "reordered":
+        arm = arm.iloc[::-1]
+    elif how == "a-bar-twice":
+        arm = pd.concat([arm.iloc[:9], arm.iloc[[8]]])
+    else:
+        arm = arm.iloc[:9]
+    _only_refusal(bound(lab, base, arm).run(), "binding", "cannot determine")
+
+
+def test_bars_are_counted_as_bars_whatever_the_label(lab):
+    """Nine hourly bars and one daily bar: ten bars, never two calendar days."""
+    import pandas as pd
+
+    index = pd.DatetimeIndex([*pd.date_range("2024-01-01", periods=9, freq="h"), pd.Timestamp("2024-01-02")])
+    report = bound(lab, *weights(changed=9, index=index)).run()
+    assert "9/10 baseline bars" in _rows(report, preflight.PASS)["binding"], report.rows
+
+
+def test_a_weight_that_is_not_a_number_is_not_a_flat_position(lab):
+    base, arm = weights(changed=3)
+    arm.iloc[5, 1] = float("nan")
+    _only_refusal(bound(lab, base, arm).run(), "binding", "not finite numbers")
+
+
+def test_a_binding_run_of_an_unknown_manifest_major_refuses(lab):
+    _only_refusal(bound(lab, *weights(changed=3), base_schema="quantbox/run@999").run(), "binding", "quantbox/run@999")
+
+
+def test_a_run_of_another_config_is_not_the_arm(lab):
+    bound(lab, *weights(changed=3))
+    lab.plan["config_hash"] = "feedbeef"
+    _only_refusal(lab.run(), "binding", "another config's run")
+
+
+# ── a replication's data step (TOM-1430) ───────────────────────────────────
+
+
+def test_a_replication_with_no_data_block_refuses(replication):
+    start = REPLICATION.index("  data:\n    returns: total\n")
+    end = REPLICATION.index("reference: ref_fi}\n") + len("reference: ref_fi}\n")
+    _write(replication.readme, _readme(REPLICATION[:start] + REPLICATION[end:]))
+    replication.commit()
+    _only_refusal(replication.run(), "data-validation", "no `data:` block")
+
+
+def test_a_replication_with_no_data_probe_run_refuses(replication):
+    import shutil
+
+    shutil.rmtree(replication.line / "artifacts")
+    _only_refusal(replication.run(), "data-validation", "run the data probe first")
+
+
+def test_a_run_record_of_another_config_is_not_the_primarys(replication):
+    replication.plan["config_hash"] = "feedbeef"
+    _only_refusal(replication.run(), "data-validation", "another config's run")
+
+
+def test_a_run_record_of_an_unknown_major_refuses(replication):
+    record = next((replication.line / "artifacts").rglob("data_validation.json"))
+    record.write_text(record.read_text().replace("data-validation@1", "data-validation@2"))
+    _only_refusal(replication.run(), "data-validation", "quantbox/data-validation@2")
+
+
+WEEKDAY = (
+    REPLICATION.replace("sample: {start: 1926-07, end: 2015-12}", "sample: {start: 2015-01, end: 2020-12}")
+    .replace("post_sample: {start: 2016-01, end: 2024-12}", "post_sample: {start: 2021-01, end: 2024-03}")
+    .replace("start: 1926-07}", "start: 2015-01}")
+)
+
+
+def weekday_prices(last: str, holidays: tuple[str, ...] = ("2023-04-07", "2023-12-25")):
+    """Exchange weekday prices from 2014 through `last`, minus the exchange's holidays."""
+    import numpy as np
+    import pandas as pd
+
+    index = pd.bdate_range("2014-01-01", last).difference(pd.DatetimeIndex(list(holidays)))
+    k = np.arange(len(index))
+    return pd.DataFrame({"MKT": 100 * np.exp(0.0003 * k), "BND": 50 * np.exp(0.0001 * k)}, index=index)
+
+
+@pytest.mark.parametrize(
+    ("last", "holidays", "status", "phrase"),
+    [
+        ("2024-03-28", ("2023-04-07", "2023-12-25"), preflight.PASS, "2014-01-01..2024-03-28"),
+        ("2024-03-27", ("2023-04-07", "2023-12-25"), preflight.REFUSE, "ends 4 day(s) before"),
+        ("2024-03-28", (), preflight.REFUSE, "at most 3 day(s) apart"),
+    ],
+    ids=["good-friday-holiday-in-its-own-bars", "a-day-short-of-it", "no-holiday-in-its-bars"],
+)
+def test_a_window_end_is_judged_on_the_series_own_observed_bars(replication, last, holidays, status, phrase):
+    """codex P2 on qute-plugins #297: a complete US-equity series through Thursday 2024-03-28
+    covers a post-sample that ends 2024-03 — 29 March was Good Friday. A computed weekday
+    calendar demanded the 29th and refused. The series' own bars say a 4-day gap happens."""
+    _write(replication.readme, _readme(WEEKDAY))
+    frame = weekday_prices(last, holidays)
+    serve_data(replication, frame)
+    replication.commit()
+    report = replication.run()
+    row = next(r for st, c, r in report.rows if c == "data-coverage" and st == status)
+    assert phrase in row, report.rows
+
+
+@pytest.mark.parametrize(
+    ("ends", "phrase"),
+    [({"MKT": "2024-11-30", "BND": "2024-11-30"}, "ends 31 day(s) before the post-sample end 2024-12-31")],
+)
+def test_a_monthly_series_a_month_short_refuses(replication, ends, phrase):
+    serve_data(replication, monthly_prices(ends=ends))
+    _refused(replication.run(), "data-coverage", phrase)
+
+
+def test_a_calendar_day_series_two_days_short_refuses(replication):
+    import numpy as np
+    import pandas as pd
+
+    index = pd.date_range("2010-01-01", "2024-12-29", freq="D")
+    k = np.arange(len(index))
+    serve_data(replication, pd.DataFrame({"MKT": 100 * np.exp(1e-4 * k), "BND": 50 * np.exp(5e-5 * k)}, index=index))
+    _refused(replication.run(), "data-coverage", "ends 2 day(s) before the post-sample end 2024-12-31")
+
+
+def returns_of(frame):
+    return frame.pct_change(fill_method=None).iloc[1:]
+
+
+def test_a_returns_table_is_measured_as_returns_not_as_prices(replication):
+    """The served table of a `serve.kind: returns` dataset holds returns: half of them are
+    negative. Read as prices, every one of those is a non-positive PRICE (a false refusal);
+    measured as returns, a price is non-positive only at a return <= -100 %."""
+    served = returns_of(monthly_prices(start="1926-06-30"))
+    assert (served < 0).any().all(), "the fixture would not tell the two readings apart"
+    serve_data(replication, served, kind="returns")
+    report = replication.run()
+    assert report.exit_code == 0, report.rows
+    assert "the served returns table" in _rows(report, preflight.PASS)["data-hygiene"]
+
+
+def test_a_return_at_or_below_minus_100_percent_is_a_non_positive_price(replication):
+    served = returns_of(monthly_prices(start="1926-06-30"))
+    served.iloc[40, 0] = -1.2
+    serve_data(replication, served, kind="returns")
+    _refused(replication.run(), "data-hygiene", "MKT (1 <=0, 0 non-finite)")
+
+
+def test_hygiene_measures_the_bytes_quantbox_serves_not_a_file_that_moved(replication):
+    path = replication.root / "datasets" / "perp-daily" / "prices.parquet"
+    frame = monthly_prices()
+    frame.iloc[5, 0] = -3.0
+    _parquet(path, frame)  # the bytes on disk are no longer the pinned build
+    report = replication.run()
+    _refused(report, "data-hygiene", "not the bytes it was resolved at")
+    _refused(report, "data-coverage", "cannot determine")
+
+
+def test_a_plan_that_names_no_served_table_cannot_be_measured(replication):
+    replication.plan["dataset"].pop("resolved")
+    report = replication.run()
+    _refused(report, "data-hygiene", "a plan quantbox cannot name a served table for")
+    _refused(report, "data-coverage", "cannot determine")
+
+
+def test_a_non_finite_served_price_refuses(replication):
+    frame = monthly_prices()
+    frame.iloc[100, 1] = float("inf")
+    serve_data(replication, frame, run_frame=monthly_prices())
+    _refused(replication.run(), "data-hygiene", "BND (0 <=0, 1 non-finite)")
+
+
+def test_an_instrument_the_served_table_never_prints_in_the_window_cannot_be_measured(replication):
+    import numpy as np
+
+    frame = monthly_prices()
+    frame["BND"] = np.nan
+    serve_data(replication, frame, run_frame=monthly_prices())
+    _refused(replication.run(), "data-hygiene", "no served observation of ['BND']")
+
+
+def test_a_jump_is_flagged_and_named(replication):
+    frame = monthly_prices()
+    frame.iloc[600:, 0] *= 40.0
+    serve_data(replication, frame)
+    report = replication.run()
+    assert report.exit_code == 3, report.rows
+    assert "jumps > 10.0 sigma: MKT 1" in _rows(report, preflight.FLAG)["data-hygiene"]
+
+
+def test_data_of_another_type_than_the_papers_is_a_proxy_test(replication):
+    _write(
+        replication.readme,
+        _readme(
+            REPLICATION.replace(
+                "{class: equity, instruments: 1, type: index,",
+                "{class: equity, instruments: 1, type: futures, roll: back-adjusted,",
+            )
+        ),
+    )
+    replication.commit()
+    report = replication.run()
+    assert report.exit_code == 3, report.rows
+    assert "PROXY TEST: equity: index for the paper's futures" in _rows(report, preflight.FLAG)["data-type"]
+
+
+@pytest.mark.parametrize(
+    ("text", "phrase"),
+    [
+        ("date,ours_eq,ref_eq,ours_fi,ref_fi\n" + "1990-01,1,1,1,1\n1990-02,2,2,2,2\n" * 12, "on more than one row"),
+        ("ours_eq,ref_eq,ours_fi,ref_fi\n" + "1,1,1,1\n" * 30, "no readable `date`"),
+    ],
+    ids=["two-dates-twelve-times", "undated"],
+)
+def test_an_anchor_counts_dated_observations_once_each(replication, text, phrase):
+    anchor_csv(replication, text=text)
+    _only_refusal(replication.run(), "data-anchor", phrase)
+
+
+def test_an_anchor_pair_of_one_column_against_itself_refuses(replication):
+    _write(replication.readme, _readme(REPLICATION.replace("reference: ref_eq}", "reference: ours_eq}")))
+    replication.commit()
+    _only_refusal(replication.run(), "data-anchor", "a series against itself")
+
+
+def test_a_named_run_record_is_read_through_main(replication, planned, capsys):
+    """`--data-validation` names the record when the runs hold more than one."""
+    record = next((replication.line / "artifacts").rglob("data_validation.json"))
+    serve_data(replication, monthly_prices(), stamp="20260103T000000Z")
+    argv = ["--lab", str(replication.root), "--line", str(replication.line), str(replication.config)]
+    assert preflight.main(argv) == 1 and "name the one to read with --data-validation" in capsys.readouterr().out
+    assert preflight.main(["--data-validation", str(record), *argv]) == 0, capsys.readouterr().out

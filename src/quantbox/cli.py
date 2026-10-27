@@ -999,10 +999,10 @@ def config_explain(
     add_help_option=False,
 )
 def preflight(ctx: typer.Context):
-    """Refuse a backtest whose result could not mean anything (ADR-0013). Exit 0 pass, 1 refuse, 2 could not check.
+    """Refuse a backtest whose result could not mean anything (ADR-0013). Exit 0 pass, 1 refuse, 2 could not check, 3 flag.
 
     quantbox preflight --lab <lab root> --line <line dir> [--prereg <file>] [--id <id>]
-    [--runs-dir <dir> ...] <config> ...   (`quantbox preflight --help` for the options)
+    [--runs-dir <dir> ...] [--data-validation <file>] <config> ...   (`quantbox preflight --help` for the options)
     """
     module = load("quantbox.preflight", extra="research")
 
