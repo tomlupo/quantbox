@@ -1696,35 +1696,45 @@ def _parquet(path: Path, frame) -> str:
     return _sha(path)
 
 
-def serve_data(lab: Lab, frame, kind: str = "prices", run_frame=None, stamp: str = "20260102T000000Z") -> Path:
-    """The replication's primary served from `frame`, pinned, and ONE data-probe run of the
-    config: its run_manifest.json names the config and the pin, its data_validation.json is
-    quantbox's own calendar report (`instrument_calendar`) of what the run read. A `returns`
-    table is served through a manifest `serve` block, its pin file stays prices.parquet."""
+def serve_data(
+    lab: Lab, frame, kind: str = "prices", run_frame=None, stamp: str = "20260102T000000Z", inline: str | None = None
+) -> Path:
+    """The replication's primary and ONE data-probe run of its config: the run_manifest.json
+    names the config and the data, the data_validation.json is quantbox's own calendar
+    report (`instrument_calendar`) of what the run read (`run_frame`, default: what quantbox
+    serves). `kind` prices|returns: a by-name dataset whose manifest `serve` block quantbox
+    reads itself (a returns table beside the pinned prices.parquet). `inline`: a file read by
+    path, `data/<inline>` (.parquet or .csv, written as given), declared in data_inputs.yaml."""
+    from quantbox.dataset import served_prices
     from quantbox.instrument_calendar import DATA_VALIDATION_SCHEMA, instrument_calendar
 
-    home = lab.root / "datasets" / "perp-daily"
-    if kind == "returns":
-        pin = _parquet(home / "prices.parquet", monthly_prices())
-        table = _parquet(home / "returns.parquet", frame)
-        resolved = {
-            "path": str(home),
-            "sha256": pin,
-            "serve": {"table": "returns", "kind": "returns", "file": str(home / "returns.parquet"), "sha256": table},
-        }
+    if inline is not None:
+        path = lab.line / "data" / inline
+        path.parent.mkdir(parents=True, exist_ok=True)
+        table = frame if "date" in frame.columns else frame.rename_axis("date").reset_index()
+        table.to_csv(path, index=False) if inline.endswith(".csv") else table.to_parquet(path, index=False)
+        pin = _sha(path)
+        lab.plan["dataset"] = {"name": inline, "sha256": pin, "source": "inline", "tier": "raw", "market": None}
+        rows = f"inputs:\n  - path: data/{inline}\n    sha256: {pin}\n    dataset: perp-daily\n    market: futures\n"
+        _write(lab.line / "data_inputs.yaml", rows)
+        record = {"name": inline, "sha256": pin, "source": "inline"}
+        served = run_frame
     else:
-        pin = _parquet(home / "prices.parquet", frame)
-        resolved = {"path": str(home), "sha256": pin}
-    lab.plan["dataset"].update(sha256=pin, resolved=resolved)
+        home = lab.root / "datasets" / "perp-daily"
+        pin = _parquet(home / "prices.parquet", frame if kind == "prices" else monthly_prices())
+        name = "prices" if kind == "prices" else "returns"
+        sha = pin if kind == "prices" else _parquet(home / "returns.parquet", frame)
+        serve = {"table": name, "kind": kind, "frequency": "1M", "columns": None}
+        serve.update(file=str(home / f"{name}.parquet"), sha256=sha)
+        resolved = {"name": "perp-daily", "path": str(home), "sha256": pin, "lock": None, "serve": serve}
+        lab.plan["dataset"].update(sha256=pin, resolved=resolved)
+        record = {"name": "perp-daily", "sha256": pin, "source": "lock", "resolved": resolved}
+        served = served_prices(resolved) if run_frame is None else run_frame
     lab.plan["config_hash"] = CONFIG_HASH
     run = lab.line / "artifacts" / "arm" / f"probe__{stamp}"
-    manifest = {
-        "schema": "quantbox/run@1",
-        "config": {"sha256": CONFIG_HASH + "0" * 56},
-        "dataset": {"name": "perp-daily", "sha256": pin, "source": "lock"},
-    }
+    manifest = {"schema": "quantbox/run@1", "config": {"sha256": CONFIG_HASH + "0" * 56}, "dataset": record}
     _write(run / "run_manifest.json", json.dumps(manifest))
-    report = instrument_calendar(frame if run_frame is None else run_frame).report
+    report = instrument_calendar(served).report
     _write(run / "data_validation.json", json.dumps({"schema": DATA_VALIDATION_SCHEMA, "calendar": report}))
     return run / "data_validation.json"
 
@@ -2011,7 +2021,23 @@ def test_a_baseline_and_an_arm_on_different_datasets_cannot_be_compared(lab):
     compared, and a change of data counted as the rule's effect (10/10 bars, exit 0)."""
     base, arm = weights(changed=0)
     arm.iloc[:, 0] = 0.3  # every bar differs — because the data differs, not the rule
-    _only_refusal(bound(lab, base, arm, base_pin="d" * 64).run(), "binding", "not the same dataset")
+    _only_refusal(bound(lab, base, arm, base_pin="d" * 64).run(), "binding", "not the same data")
+
+
+def test_two_runs_served_different_tables_from_one_pin_cannot_be_compared(lab):
+    """PR #321 review, finding 101: both runs read the same pinned prices.parquet, but each
+    config's `serve` block served another returns table, and 10/10 changed bars passed."""
+    bound(lab, *weights(changed=3))
+    pin = lab.plan["dataset"]["sha256"]
+    for config, run, sha in (("baseline.yaml", "base", "1" * 64), ("arm.yaml", "arm", "2" * 64)):
+        serve = {"table": "returns", "kind": "returns", "file": "/x/returns.parquet", "sha256": sha, "columns": None}
+        resolved = {"name": "perp-daily", "path": "/x", "sha256": pin, "serve": serve}
+        lab.plans[config]["dataset"]["resolved"] = resolved
+        record = lab.line / "artifacts" / "bind" / f"{run}__20260102T000000Z" / "run_manifest.json"
+        manifest = json.loads(record.read_text())
+        manifest["dataset"]["resolved"] = resolved
+        record.write_text(json.dumps(manifest))
+    _only_refusal(lab.run(), "binding", "not the same data")
 
 
 @pytest.mark.parametrize("how", ["shifted", "reordered", "a-bar-twice", "shorter"])
@@ -2158,11 +2184,18 @@ def test_a_returns_table_is_measured_as_returns_not_as_prices(replication):
     assert "the served returns table" in _rows(report, preflight.PASS)["data-hygiene"]
 
 
-def test_a_return_at_or_below_minus_100_percent_is_a_non_positive_price(replication):
-    served = returns_of(monthly_prices(start="1926-06-30"))
+def test_a_table_quantbox_refuses_to_serve_refuses_with_quantboxs_reason(replication):
+    """A return at or below -100 % is a non-positive total-return price. quantbox refuses
+    to serve it, and the gate says so in quantbox's words, never in its own."""
+    from quantbox.dataset import served_prices
+
+    clean = returns_of(monthly_prices(start="1926-06-30"))
+    served = clean.copy()
     served.iloc[40, 0] = -1.2
-    serve_data(replication, served, kind="returns")
-    _refused(replication.run(), "data-hygiene", "MKT (1 <=0, 0 non-finite)")
+    serve_data(replication, clean, kind="returns")
+    run_frame = served_prices(replication.plan["dataset"]["resolved"])
+    serve_data(replication, served, kind="returns", run_frame=run_frame)
+    _refused(replication.run(), "data-hygiene", "quantbox would not serve it: DatasetServeError")
 
 
 def test_hygiene_measures_the_bytes_quantbox_serves_not_a_file_that_moved(replication):
@@ -2177,16 +2210,59 @@ def test_hygiene_measures_the_bytes_quantbox_serves_not_a_file_that_moved(replic
 
 def test_a_plan_that_names_no_served_table_cannot_be_measured(replication):
     replication.plan["dataset"].pop("resolved")
+    record = next((replication.line / "artifacts").rglob("run_manifest.json"))
+    manifest = json.loads(record.read_text())
+    manifest["dataset"].pop("resolved")
+    record.write_text(json.dumps(manifest))
     report = replication.run()
     _refused(report, "data-hygiene", "a plan quantbox cannot name a served table for")
     _refused(report, "data-coverage", "cannot determine")
 
 
-def test_a_non_finite_served_price_refuses(replication):
+def test_a_non_finite_price_read_by_path_is_counted_and_refuses(replication):
     frame = monthly_prices()
     frame.iloc[100, 1] = float("inf")
-    serve_data(replication, frame, run_frame=monthly_prices())
+    serve_data(replication, frame, run_frame=monthly_prices(), inline="prices.parquet")
     _refused(replication.run(), "data-hygiene", "BND (0 <=0, 1 non-finite)")
+
+
+def test_a_run_served_another_table_than_its_config_serves_is_another_datas_run(replication):
+    """One pin can serve two tables (a `serve` block names its own): the run record must
+    have been served the table the config serves, not only read the same pin."""
+    record = next((replication.line / "artifacts").rglob("run_manifest.json"))
+    manifest = json.loads(record.read_text())
+    manifest["dataset"]["resolved"]["serve"]["sha256"] = "e" * 64
+    record.write_text(json.dumps(manifest))
+    _only_refusal(replication.run(), "data-validation", "another data's run")
+
+
+@pytest.mark.parametrize(
+    ("inline", "shape"), [("prices.csv", "wide"), ("prices.parquet", "long"), ("prices.csv", "long")]
+)
+def test_a_file_read_by_path_is_read_as_the_data_plugin_reads_it(replication, inline, shape):
+    """PR #321 review, finding 1: the gate read parquet wide tables only, and refused a CSV
+    or a long table the data plugin serves the run from."""
+    frame = monthly_prices()
+    if shape == "long":
+        table = frame.rename_axis("date").reset_index().melt(id_vars="date", var_name="symbol", value_name="close")
+        table = table.dropna()
+    else:
+        table = frame
+    serve_data(replication, table, run_frame=frame, inline=inline)
+    report = replication.run()
+    assert report.exit_code == 0, report.rows
+
+
+def test_a_dated_row_is_judged_on_its_own_calendar_date_in_any_timezone(replication):
+    """PR #321 review, findings 2 and 102: Warsaw-midnight dates were converted to UTC, so
+    the first bar became the day before, fell outside the run's window, and a -1 price on
+    it passed. The data plugin labels each row with its own calendar date (TOM-1681)."""
+    frame = monthly_prices()
+    frame.iloc[0, 0] = -1.0
+    zoned = frame.copy()
+    zoned.index = zoned.index.tz_localize("Europe/Warsaw")
+    serve_data(replication, zoned, run_frame=frame, inline="prices.parquet")
+    _refused(replication.run(), "data-hygiene", "MKT (1 <=0, 0 non-finite)")
 
 
 def test_an_instrument_the_served_table_never_prints_in_the_window_cannot_be_measured(replication):

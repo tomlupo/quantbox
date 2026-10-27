@@ -1180,21 +1180,35 @@ def binding_applies(prereg: dict, plans: list[tuple[Path, dict]]) -> str | None:
     return None
 
 
-def plan_identity(plan: dict, data: DatasetIdentity) -> tuple[str, str] | None:
-    """`(config_hash, dataset pin)` of a config as quantbox will run it — or None. The pin
-    is the config's `dataset_identity`, the same answer its `data[…]` row gives: data that
-    is not pinned gives no identity, so a run of it cannot be matched."""
+def plan_identity(plan: dict, data: DatasetIdentity) -> tuple[str, tuple] | None:
+    """`(config_hash, data)` of a config as quantbox will run it — or None. `data` is
+    `(pin, served table)` from the config's `dataset_identity`, the same answer its
+    `data[…]` row gives: the pin AND, for a `serve` block, the table served from it (one
+    pin can serve two tables). Data that is not pinned gives no identity, so a run of it
+    cannot be matched."""
     config = plan.get("config_hash") if isinstance(plan, dict) else None
     if not (isinstance(config, str) and config and isinstance(data.pin, str) and data.pin):
         return None
-    return config, data.pin
+    return config, (data.pin, data.served.run_key() if data.served is not None else None)
 
 
-def run_identity(run_dir: Path, wanted: list[tuple[str, str]]) -> tuple[dict | None, str | None]:
+def _table_said(key: tuple | None) -> str:
+    return "the pin file itself" if key is None else f"the {key[2]} table {str(key[1])[:12]}… {list(key[3] or [])}"
+
+
+def run_data(manifest: dict) -> tuple:
+    """`(pin, served table)` of what a run read, from its own manifest — the same shape as
+    `plan_identity`'s data, so a run and a config, or two runs, compare as one value."""
+    dataset = manifest.get("dataset") if isinstance(manifest.get("dataset"), dict) else {}
+    return dataset.get("sha256"), manifest_serve_key(manifest)
+
+
+def run_identity(run_dir: Path, wanted: list[tuple[str, tuple]]) -> tuple[dict | None, str | None]:
     """THE check that a run on disk is a run of a config this gate judges, on the data that
-    config pins: its own run_manifest.json must be a `quantbox/run@N` of a major this
+    config reads: its own run_manifest.json must be a `quantbox/run@N` of a major this
     quantbox reads, name a resolved config whose sha256 starts with a wanted `config_hash`,
-    and a `dataset.sha256` equal to that config's pin. `(manifest, None)`, or `(None, why not)`."""
+    and read that config's data (`run_data`: the pin and the served table).
+    `(manifest, None)`, or `(None, why not)`."""
     try:
         manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValueError) as exc:
@@ -1203,18 +1217,24 @@ def run_identity(run_dir: Path, wanted: list[tuple[str, str]]) -> tuple[dict | N
     if problem is not None:
         return None, f"run {run_dir}: its run_manifest.json cannot be read as a run — {problem}"
     config = manifest.get("config") if isinstance(manifest.get("config"), dict) else {}
-    dataset = manifest.get("dataset") if isinstance(manifest.get("dataset"), dict) else {}
-    sha, data = config.get("sha256"), dataset.get("sha256")
-    pins = [pin for hash_, pin in wanted if isinstance(sha, str) and sha.startswith(hash_)]
-    if not pins:
+    sha, data = config.get("sha256"), run_data(manifest)
+    datas = [d for hash_, d in wanted if isinstance(sha, str) and sha.startswith(hash_)]
+    if not datas:
         return (
             None,
             f"run {run_dir} ran config {str(sha)[:12]}…, not {sorted(h for h, _ in wanted)} — another config's run",
         )
-    if data not in pins:
+    if data[0] not in [pin for pin, _ in datas]:
         return (
             None,
-            f"run {run_dir} read dataset bytes {str(data)[:12]}…, not the pinned {pins[0][:12]}… — another data's run",
+            f"run {run_dir} read dataset bytes {str(data[0])[:12]}…, not the pinned {str(datas[0][0])[:12]}… — "
+            "another data's run",
+        )
+    if data not in datas:
+        return (
+            None,
+            f"run {run_dir} was served {_table_said(data[1])}, not {_table_said(datas[0][1])} its config serves — "
+            "another data's run",
         )
     return manifest, None
 
@@ -1335,11 +1355,12 @@ def check_binding(
                 if problem is None:
                     arm_manifest, problem = run_identity(arm_dir, arms)
     if problem is None:
-        read = [(m.get("dataset") or {}).get("sha256") for m in (base_manifest, arm_manifest)]
+        read = [run_data(m) for m in (base_manifest, arm_manifest)]
         if read[0] != read[1]:
+            said = [f"bytes {str(pin)[:12]}… served as {_table_said(table)}" for pin, table in read]
             problem = (
-                f"the baseline read dataset bytes {str(read[0])[:12]}… and the arm {str(read[1])[:12]}… — not the "
-                "same dataset, so a change of data would count as the rule's effect"
+                f"the baseline read {said[0]} and the arm {said[1]} — not the same data, so a change of data "
+                "would count as the rule's effect"
             )
     if problem is None:
         try:
@@ -1712,45 +1733,56 @@ def _anchor(report: Report, paper: dict, data: dict, line: Path, classes: list[s
     report.add(status, check, f"{lead[status]}: " + "; ".join(text for _, text in findings))
 
 
-def served_frame(served: ServedTable, name: str):
-    """The table quantbox serves, parsed from the bytes that hash to its anchor
-    (:func:`quantbox.dataset_lock.served_bytes`, the reader the runner trusts), narrowed to
-    `serve.columns`, with its `date` column (or index) as a tz-naive date axis. A date on
-    two rows raises ValueError, as serving refuses it. Values are NOT cleaned: the hygiene
-    row counts what is wrong with them. Raises ValueError when the table cannot be read."""
+def served_frame(served: ServedTable):
+    """The prices the run reads, read by the data plugin that reads them for the run —
+    `LocalFileDataPlugin.load_market_data` — with nothing re-implemented here: its file
+    formats (wide, long, CSV), its date label (each row's own calendar date, TOM-1681), the
+    hash anchor of a pinned or served table, and a `serve` block's construction (a returns
+    table becomes a total-return index, so its log return on a bar is log(1 + r)). A
+    file read by path is first held to the hash data_inputs.yaml declares. Returns the
+    frame on a tz-naive date axis; raises ValueError with quantbox's reason when quantbox
+    would not serve it."""
     import pandas as pd  # noqa: PLC0415 — the gate imports the data stack only where it measures
 
-    from .dataset_lock import DatasetResolveError, served_bytes  # noqa: PLC0415
-    from .parquet_io import read_parquet_bytes  # noqa: PLC0415
+    from .plugins.datasources.local_file_data import LocalFileDataPlugin  # noqa: PLC0415
 
+    if served.how == "inline":
+        held = _sha256_of(Path(served.file))
+        if held != served.sha256:
+            raise ValueError(f"{served.file} has sha256 {str(held)[:12]}…, not the declared {served.sha256[:12]}…")
+        plugin = LocalFileDataPlugin(prices_path=served.file)
+    else:
+        resolution = served.resolution or {}
+        plugin = LocalFileDataPlugin(dataset=resolution.get("name"), dataset_lock=resolution.get("lock"))
+        plugin.dataset_resolution = resolution
     try:
-        frame = read_parquet_bytes(served_bytes({"file": served.file, "sha256": served.sha256}, name))
-    except DatasetResolveError as exc:
-        raise ValueError(str(exc)) from None
-    except Exception as exc:  # noqa: BLE001 — not a parquet table: cannot determine
-        raise ValueError(f"{served.file} is not a parquet table: {type(exc).__name__}: {exc}") from None
-    if "date" in frame.columns:
-        frame = frame.set_index("date")
-    try:
-        index = pd.DatetimeIndex(pd.to_datetime(frame.index))
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{served.file}: its dates cannot be read ({exc})") from None
-    if index.has_duplicates:
-        raise ValueError(f"{served.file} has a date on more than one row — quantbox refuses to serve it")
-    frame.index = index.tz_convert(None) if index.tz is not None else index
-    if served.columns:
-        absent = [c for c in served.columns if c not in frame.columns]
-        if absent:
-            raise ValueError(f"serve.columns {absent} are not in {served.file}")
-        frame = frame[list(served.columns)]
+        frame = plugin.load_market_data(pd.DataFrame(), None, {})["prices"]
+    except Exception as exc:  # noqa: BLE001 — quantbox refusing to serve it is the reason, never a traceback
+        raise ValueError(f"quantbox would not serve it: {type(exc).__name__}: {exc}") from None
+    if frame.empty or not isinstance(frame.index, pd.DatetimeIndex):
+        raise ValueError(f"quantbox serves no dated prices from {served.file}")
+    if frame.index.has_duplicates:
+        raise ValueError(f"{served.file} serves a date on more than one row")
+    frame.index = frame.index.tz_localize(None) if frame.index.tz is not None else frame.index
     return frame.sort_index()
 
 
-def hygiene_counts(frame, kind: str, name: str, first: date, last: date) -> dict:
+def _sha256_of(path: Path) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def hygiene_counts(frame, name: str, first: date, last: date) -> dict:
     """Per instrument, inside the window the run read: observations, non-positive and
-    non-finite served values, and log returns more than JUMP_K_SIGMA sigma from the mean.
-    A `returns` table is a total-return index: its log return on a bar is log(1 + r), and
-    its price is non-positive exactly when a return is at or below -100 %."""
+    non-finite served prices, and log returns more than JUMP_K_SIGMA sigma from the mean.
+    `frame` is what `served_frame` returns: a returns table is already its total-return
+    index, which is non-positive exactly from a return at or below -100 %."""
     import numpy as np  # noqa: PLC0415
     import pandas as pd  # noqa: PLC0415
 
@@ -1762,13 +1794,9 @@ def hygiene_counts(frame, kind: str, name: str, first: date, last: date) -> dict
     values = pd.to_numeric(raw[raw.notna()], errors="coerce").to_numpy(dtype=float)
     # quantbox.inference owns the NaN/Inf count; here every non-finite value is COUNTED
     finite, non_finite = require_finite(values, allow_nonfinite_drop=True, what="served")
-    if kind == "returns":
-        non_positive = finite <= -1
-        logs = np.log1p(finite[~non_positive])
-    else:
-        non_positive = finite <= 0
-        positive = finite[~non_positive]
-        logs = np.diff(np.log(positive)) if positive.size > 2 else np.array([])
+    non_positive = finite <= 0
+    positive = finite[~non_positive]
+    logs = np.diff(np.log(positive)) if positive.size > 2 else np.array([])
     z = np.abs(logs - logs.mean()) / logs.std() if logs.size > 2 and logs.std() > 0 else np.array([])
     return {
         "observations": int(values.size),
@@ -1935,7 +1963,7 @@ def check_replication_data(
         unserved = f"what quantbox serves the run of {primary!r} is not one table in its plans ({told})"
     else:
         try:
-            frame = served_frame(table, str(primary))
+            frame = served_frame(table)
             missing = sorted(set(instruments) - set(map(str, frame.columns)))
             if missing:
                 frame, unserved = None, f"{table.file} has no column for {missing[:6]}"
@@ -2042,7 +2070,7 @@ def check_replication_data(
     if frame is None:
         hygiene.append((REFUSE, f"non-positive / non-finite values and jumps cannot be determined: {unserved}"))
     else:
-        per = {t: hygiene_counts(frame, table.kind, t, *spans[t]) for t in sorted(instruments)}
+        per = {t: hygiene_counts(frame, t, *spans[t]) for t in sorted(instruments)}
         unmeasured = sorted(t for t, c in per.items() if not _is_count(c["observations"], least=1))
         bad = sorted(
             f"{t} ({c['non_positive']} <=0, {c['non_finite']} non-finite)"
@@ -2156,15 +2184,37 @@ def resolve_dataset(name: str, config: Path, cwd: Path) -> dict:
 
 @dataclass(frozen=True)
 class ServedTable:
-    """The table quantbox SERVES a run from: a manifest `serve` block's own table and
-    `serve.kind`, else the pin file as prices. `sha256` is the anchor quantbox holds the
-    bytes to (:func:`quantbox.dataset_lock.served_bytes`) — the lock's pin or the table's
-    vouched hash — never a hash taken by this gate."""
+    """What quantbox SERVES a run from, and how the data plugin reads it — the three
+    branches of `local_file_data`, never a fourth: `serve` (a manifest `serve` block:
+    :func:`quantbox.dataset.served_prices`), `pinned` (a pinned dataset with no serve block:
+    :func:`quantbox.dataset.load_pinned_dataset`), `inline` (a file read by path, whose
+    hash `data_inputs.yaml` declares). `sha256` is the anchor the bytes are held to — the
+    lock's pin, the table's vouched hash, or the declared hash — never a hash taken here.
+    Two ServedTables are equal when they serve the same bytes the same way; where a file
+    lies, and the resolution it came from, are not part of that."""
 
-    file: str
+    how: str  # "serve" | "pinned" | "inline"
     sha256: str
     kind: str  # "prices" | "returns"
     columns: tuple[str, ...] | None = None
+    file: str = field(default="", compare=False)
+    resolution: dict | None = field(default=None, compare=False, hash=False)
+
+    def run_key(self) -> tuple | None:
+        """What a run manifest records of this table (`dataset.resolved.serve`): the served
+        table of a `serve` block, nothing for the other two (their bytes ARE the pin)."""
+        return ("serve", self.sha256, self.kind, self.columns) if self.how == "serve" else None
+
+
+def manifest_serve_key(manifest: dict) -> tuple | None:
+    """The served table a run manifest records (`dataset.resolved.serve`), as `ServedTable.run_key`."""
+    dataset = manifest.get("dataset") if isinstance(manifest.get("dataset"), dict) else {}
+    resolved = dataset.get("resolved") if isinstance(dataset.get("resolved"), dict) else {}
+    serve = resolved.get("serve")
+    if not isinstance(serve, dict):
+        return None
+    columns = serve.get("columns")
+    return ("serve", serve.get("sha256"), serve.get("kind"), tuple(columns) if isinstance(columns, list) else None)
 
 
 @dataclass(frozen=True)
@@ -2187,20 +2237,21 @@ class DatasetIdentity:
 def _served(resolution, pin: str) -> ServedTable | None:
     """What a pinned dataset is served as, from quantbox's resolution of it
     (:func:`quantbox.dataset_lock.resolve_dataset`)."""
-    if not isinstance(resolution, dict):
+    if not isinstance(resolution, dict) or not isinstance(resolution.get("name"), str):
         return None
     serve = resolution.get("serve")
     if serve is None:
         where = resolution.get("path")
         if not isinstance(where, str) or not where:
             return None
-        return ServedTable(str(Path(where) / str(resolution.get("pin_file") or "prices.parquet")), pin, "prices")
+        file = str(Path(where) / str(resolution.get("pin_file") or "prices.parquet"))
+        return ServedTable("pinned", pin, "prices", None, file, resolution)
     if not isinstance(serve, dict):
         return None
     file, sha, kind, columns = serve.get("file"), serve.get("sha256"), serve.get("kind"), serve.get("columns")
     if not (isinstance(file, str) and file and isinstance(sha, str) and sha and kind in ("prices", "returns")):
         return None
-    return ServedTable(file, sha, kind, tuple(columns) if isinstance(columns, list) else None)
+    return ServedTable("serve", sha, kind, tuple(columns) if isinstance(columns, list) else None, file, resolution)
 
 
 def dataset_identity(plan: dict, line: Path, resolve=None) -> DatasetIdentity:
@@ -2243,7 +2294,9 @@ def dataset_identity(plan: dict, line: Path, resolve=None) -> DatasetIdentity:
         if hits:
             name = hits[0].get("dataset") if isinstance(hits[0].get("dataset"), str) else None
             raw = hits[0].get("path")
-            served = ServedTable(str(line / raw), sha, "prices") if isinstance(raw, str) and raw else None
+            served = (
+                ServedTable("inline", sha, "prices", None, str(line / raw)) if isinstance(raw, str) and raw else None
+            )
             return made(
                 PASS,
                 f"read by path; its sha256 {sha[:12]}… is declared in data_inputs.yaml ({hits[0].get('path')})",
