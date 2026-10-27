@@ -98,8 +98,11 @@ jobs:
     # plan, scripts/before_after.py the reader). No LLM: exit 0 identical, 1 differs or
     # the live shadow run is owed (summary.md says which), anything else could not run.
     # NOT a required check: making it one is Tom's call. On this GitHub-hosted runner
-    # there is no quantbox-datasets clone, so a selected config that reads a dataset by
-    # name cannot run and the job exits 2 and says so; a docs/tests-only PR exits 0.
+    # there is no quantbox-datasets clone (it is private), so a selected config that
+    # reads a dataset by name is NOT AVAILABLE here and is not run. When the rest are
+    # identical the script exits 3 (PARTIAL): the job passes with a warning naming the
+    # configs not checked. 1 (differs, or the shadow run is owed) and 2 (could not run,
+    # or no selected config can run here) stay red. A docs/tests-only PR exits 0.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -121,6 +124,10 @@ jobs:
           rc=0
           uv run --no-sync python scripts/before_after.py "origin/$BASE_REF" "$out" || rc=$?
           if [ -s "$out/summary.md" ]; then cat "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"; fi
+          if [ "$rc" -eq 3 ]; then
+            echo "::warning title=before/after PARTIAL::not checked on this runner (dataset not available): $(cat "$out/not_checked.txt" 2>/dev/null || echo 'see the job summary')"
+            exit 0
+          fi
           exit "$rc"
 
   datasets-lock-check:

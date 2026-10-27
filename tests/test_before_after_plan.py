@@ -10,6 +10,7 @@ the PR, not here.
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import yaml
@@ -140,6 +141,45 @@ def test_trade_code_loads_the_decision_and_inference_but_not_gates() -> None:
     assert "quantbox.inference" in closure
     assert "quantbox.gates" not in closure
     assert "quantbox.plugins.strategies.cross_asset_momentum" not in closure
+
+
+def _no_datasets_root(monkeypatch) -> None:
+    """This runner as public CI sees it: no $QUANTBOX_DATASETS_ROOT and no quantbox-datasets clone."""
+    monkeypatch.delenv("QUANTBOX_DATASETS_ROOT", raising=False)
+    monkeypatch.setitem(sys.modules, "quantbox_datasets", None)  # import then raises ImportError
+    monkeypatch.setitem(sys.modules, "quantbox_datasets.lock", None)
+
+
+def test_a_config_whose_dataset_does_not_resolve_is_not_available(monkeypatch) -> None:  # PR #320 CI run 40550761629
+    _no_datasets_root(monkeypatch)
+    assert ba.unavailable_datasets("cookbook/configs/run_backtest_beglobal.yaml", (ROOT,)) == ["etf-daily"]
+    assert ba.unavailable_datasets("cookbook/configs/run_stress_test.yaml", (ROOT,)) == ["crypto-spot-daily"]
+    assert ba.unavailable_datasets("cookbook/canonical/configs/momentum.yaml", (ROOT,)) == []  # bundled data
+
+
+def test_a_datasets_root_or_a_line_copy_makes_it_available(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("QUANTBOX_DATASETS_ROOT", str(tmp_path))
+    assert ba.unavailable_datasets("cookbook/configs/run_backtest_beglobal.yaml", (ROOT,)) == []
+    _no_datasets_root(monkeypatch)
+    line = tmp_path / "line"
+    (line / "datasets" / "frozen").mkdir(parents=True)
+    (line / "datasets.lock").write_text("frozen: abc\n")
+    (line / "config.yaml").write_text("plugins:\n  data:\n    params_init:\n      dataset: frozen\n")
+    assert ba.unavailable_datasets("config.yaml", (line,)) == []
+    (line / "config.yaml").write_text("plugins:\n  data:\n    params_init:\n      dataset: absent\n")
+    assert ba.unavailable_datasets("config.yaml", (line,)) == ["absent"]
+
+
+def test_exit_codes_for_configs_not_available_on_this_runner() -> None:
+    missing = {"cookbook/configs/run_stress_test.yaml": ["crypto-spot-daily"]}
+    assert ba.verdict_of(8, 4, missing, [], [], False)[1] == 3  # the rest identical: PARTIAL, never 0
+    assert ba.verdict_of(4, 0, missing, [], [], False)[1] == 2  # nothing could run: nothing was looked at
+    assert ba.verdict_of(4, 0, missing, [], [], True)[1] == 2
+    assert ba.verdict_of(8, 4, missing, ["a.yaml"], [], False)[1] == 2  # failed for another reason
+    assert ba.verdict_of(8, 4, missing, [], ["a.yaml"], False)[1] == 1  # a difference stays red
+    assert ba.verdict_of(8, 4, missing, [], [], True)[1] == 1  # so does an owed shadow run
+    assert ba.verdict_of(8, 8, {}, [], [], False)[1] == 0
+    assert ba.verdict_of(0, 0, {}, [], [], False)[1] == 0  # no config reaches a touched module
 
 
 def test_the_backtest_path_reaches_inference() -> None:

@@ -5,7 +5,8 @@
 # quantbox's DIFFERENCES from that type's default. The reader is
 # scripts/before_after.py, run as `<script> <base ref> <out dir>` (hotl verify's
 # before_after contract: exit 0 identical, 1 differs with <out dir>/summary.md,
-# anything else could not run).
+# anything else could not run; quantbox adds 3 = PARTIAL, the script's docstring
+# owns the table).
 #
 # The quant-lib default is below, between the two marker lines. hotl does not own
 # it yet, so it lives here ONCE: scripts/before_after.py reads this comment block

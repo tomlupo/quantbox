@@ -10,13 +10,25 @@ The before/after of a quantbox PR: the result at base and at head, diffed (TOM-2
     uv run python scripts/before_after.py [--plan] <base ref> <out dir>
 
 --plan prints the per-file mapping and the configs it would run, runs nothing, and
-exits 3 (a plan is not a comparison).
+exits 4 (a plan is not a comparison).
 
 hotl verify's contract (tomlupo/hotl README, "Adopt in a repo" step 6): run from the
 HEAD checkout; exit 0 = base and head identical, 1 = they differ (or a step is owed
 that this script cannot run) and <out dir>/summary.md says what, anything else = the
 compare could not run. Decision: vaults/projects/infra/decisions/
 decyzja-2026-10-26-stos-kiss-repo-hotl-fabryka.md, "Lekki compare".
+
+The contract holds for the configs this runner CAN run. One code is added:
+
+    0  identical: every selected config ran and is identical
+    1  differs, or the live shadow run is owed
+    2  could not run: a config failed on both sides, or no selected config can run here
+    3  PARTIAL: every config that can run here is identical, but at least one could not
+       run here because a dataset it reads by name does not resolve on this runner (no
+       line copy and no datasets root: public CI has no quantbox-datasets clone).
+       summary.md lists them under "Not checked on this runner"; <out dir>/not_checked.txt
+       names them on one line. Never 0: a config not looked at is not identical.
+    4  --plan: nothing was run
 
 What it does, in order:
 
@@ -59,7 +71,10 @@ everything.
    cannot run it: summary.md names it and the exit is 1.
 
 A config that fails on one side only is a difference. A config that fails on both
-(no datasets root, say) could not be compared: the exit is 2, never 0.
+could not be compared: the exit is 2, never 0. Before any run, a selected config whose
+by-name dataset does not resolve here (quantbox.dataset_lock: no datasets root and no
+line copy beside its lock) is NOT AVAILABLE ON THIS RUNNER and is not run: exit 3 when
+the rest are identical, 2 when nothing else could run.
 """
 
 import ast
@@ -403,6 +418,89 @@ def config_roots(
     for pkg in {p for pkgs in graph.soft.values() for p in pkgs}:
         roots.update(f"{pkg}.{n}" for n in names if f"{pkg}.{n}" in graph.edges)
     return roots
+
+
+# ------------------------------------------------------------- availability
+
+
+def dataset_available(name: str, lock: Path | None) -> bool:
+    """Does by-name *name* resolve on this runner? quantbox's own resolver (quantbox.dataset_lock) decides.
+
+    False only when there is no datasets root ($QUANTBOX_DATASETS_ROOT, or an installed
+    quantbox-datasets clone) AND no copy of *name* in the line beside *lock*. With a root,
+    a name it lacks is the run's to report: that config fails on both sides, exit 2.
+    """
+    from quantbox.dataset_lock import DatasetResolveError, _locate, datasets_root
+
+    try:
+        datasets_root()
+        return True
+    except DatasetResolveError:
+        pass
+    try:
+        _locate(name, lock)  # with no root, only the line's own copy can answer
+        return True
+    except DatasetResolveError:
+        return False
+
+
+def unavailable_datasets(config: str, trees: tuple[Path, ...]) -> list[str]:
+    """The by-name datasets *config* reads, at any of *trees*, that do not resolve on this runner."""
+    from quantbox.dataset_lock import lock_for_config
+
+    missing: list[str] = []
+    for tree in trees:
+        path = tree / config
+        if not path.is_file():
+            continue
+        cfg = yaml.safe_load(path.read_text()) or {}
+        params_init = ((cfg.get("plugins") or {}).get("data") or {}).get("params_init") or {}
+        name = params_init.get("dataset")
+        if not isinstance(name, str) or not name or name in missing:
+            continue
+        explicit = params_init.get("dataset_lock")  # as the runner binds it: the config's own, else the nearest
+        lock = (tree / explicit) if isinstance(explicit, str) else lock_for_config(path)
+        if not dataset_available(name, lock):
+            missing.append(name)
+    return missing
+
+
+def not_checked_lines(not_available: dict[str, list[str]]) -> list[str]:
+    return [
+        "## Not checked on this runner",
+        "",
+        "A dataset these configs read by name does not resolve here: no datasets root",
+        "($QUANTBOX_DATASETS_ROOT) and no line copy. They were not run at either side.",
+        "",
+        *[f"- `{c}`: needs {', '.join(f'`{n}`' for n in names)}" for c, names in not_available.items()],
+        "",
+    ]
+
+
+def verdict_of(
+    n_selected: int,
+    n_runnable: int,
+    not_available: dict[str, list[str]],
+    could_not: list[str],
+    differs: list[str],
+    trade_owed: bool,
+) -> tuple[str, int]:
+    """(verdict, exit code). 0, 1 and 2 keep hotl's meaning for the runnable configs; 3 is PARTIAL."""
+    if n_selected and not n_runnable:  # nothing was looked at: never 3, never 0
+        return f"COULD NOT RUN: none of {n_selected} selected config(s) can run on this runner", 2
+    if could_not:
+        return f"COULD NOT RUN: {len(could_not)} config(s) failed on both sides", 2
+    if differs or trade_owed:
+        parts = [f"{len(differs)} config(s) differ"] if differs else []
+        parts += ["the live shadow run is owed"] if trade_owed else []
+        return "DIFFERS: " + "; ".join(parts), 1
+    if not_available:
+        return (
+            f"PARTIAL: {n_runnable} config(s) ran at base and head and are identical; "
+            f"{len(not_available)} not checked on this runner",
+            3,
+        )
+    return f"IDENTICAL: {n_runnable} config(s) ran at base and head", 0
 
 
 # ------------------------------------------------------------------ running
@@ -779,13 +877,14 @@ def mapping_lines(mapped: list[Mapped]) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    plan_only = "--plan" in argv  # print the mapping and the selection, run nothing, exit 3
+    plan_only = "--plan" in argv  # print the mapping and the selection, run nothing, exit 4
     argv = [a for a in argv if a != "--plan"]
     if len(argv) != 2 or argv[0] in ("-h", "--help"):
         print((__doc__ or "").split("\n\n", 1)[-1])  # past the bash preamble
         return 0 if argv and argv[0] in ("-h", "--help") else 2
     base_ref, out = argv[0], Path(argv[1]).resolve()
     out.mkdir(parents=True, exist_ok=True)
+    (out / "not_checked.txt").unlink(missing_ok=True)  # a reused out dir must not carry an earlier run's list
     started = time.monotonic()
     # The plan beside THIS script, not the checkout's: hotl takes the script from the
     # base branch so a PR cannot rewrite how it is verified, and the plan goes with it.
@@ -933,13 +1032,33 @@ def main(argv: list[str]) -> int:
         report += [f"- run `{c}`: {w}" for c, w in selected]
         report += [f"- skip `{c}`: no touched module in its code closure" for c in skipped]
         report.append("")
+        # A config whose by-name dataset does not resolve on this runner is not run: it
+        # cannot be compared here, and running it would only fail on both sides.
+        not_available = {
+            c: missing for c, _ in selected if (missing := unavailable_datasets(c, (ROOT, base_side.tree)))
+        }
+        runnable = [(c, w) for c, w in selected if c not in not_available]
+        if not_available:
+            print(f"not checked on this runner: {len(not_available)} of {len(selected)} selected config(s)")
+            for config, names in not_available.items():
+                print(f"  not available  {config}  (needs {', '.join(names)})")
+            report += not_checked_lines(not_available)
+            (out / "not_checked.txt").write_text(
+                ", ".join(f"{c} ({', '.join(n)})" for c, n in not_available.items()) + "\n"
+            )
         if plan_only:  # never 0: a plan is not a comparison
-            print("--plan: nothing run (exit 3)")
-            write_summary(out, [*report, "**PLAN ONLY**: nothing was run (exit 3)."])
-            return 3
+            print("--plan: nothing run (exit 4)")
+            write_summary(out, [*report, "**PLAN ONLY**: nothing was run (exit 4)."])
+            return 4
+        if selected and not runnable:
+            verdict, code = verdict_of(len(selected), 0, not_available, [], [], trade_owed)
+            report += [f"**{verdict}** (exit {code}, {time.monotonic() - started:.1f}s)"]
+            write_summary(out, report)
+            print(f"{verdict} (exit {code}); report: {out / 'summary.md'}")
+            return code
 
-        # The pinned slice, per side, only when a selected config reads a dataset by name.
-        if any("dataset:" in p.read_text() for c, _ in selected for p in (ROOT / c, base_side.tree / c) if p.is_file()):
+        # The pinned slice, per side, only when a runnable config reads a dataset by name.
+        if any("dataset:" in p.read_text() for c, _ in runnable for p in (ROOT / c, base_side.tree / c) if p.is_file()):
             report += ["## Pinned slice (datasets.lock)", ""]
             for side in (base_side, head_side):
                 root, notes = pinned_slice(side.tree, out / f"{side.name}-datasets")
@@ -951,7 +1070,7 @@ def main(argv: list[str]) -> int:
 
         differs, could_not = [], []
         results: list[str] = []
-        for config, _why in selected:
+        for config, _why in runnable:
             rb = run_config(base_side, config, out)
             rh = run_config(head_side, config, out)
             timing = f"base {rb.seconds:.1f}s, head {rh.seconds:.1f}s"
@@ -1001,14 +1120,7 @@ def main(argv: list[str]) -> int:
             report += ["## Trade step", "", owed, ""]
 
         elapsed = time.monotonic() - started
-        if could_not:
-            verdict, code = f"COULD NOT RUN: {len(could_not)} config(s) failed on both sides", 2
-        elif differs or trade_owed:
-            parts = [f"{len(differs)} config(s) differ"] if differs else []
-            parts += ["the live shadow run is owed"] if trade_owed else []
-            verdict, code = "DIFFERS: " + "; ".join(parts), 1
-        else:
-            verdict, code = f"IDENTICAL: {len(selected)} config(s) ran at base and head", 0
+        verdict, code = verdict_of(len(selected), len(runnable), not_available, could_not, differs, trade_owed)
         report += [f"**{verdict}** (exit {code}, {elapsed:.1f}s)"]
         write_summary(out, report)
         print(f"{verdict} (exit {code}, {elapsed:.1f}s); report: {out / 'summary.md'}")
