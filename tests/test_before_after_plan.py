@@ -183,9 +183,39 @@ def test_a_lazy_map_not_read_in_full_widens_to_every_module_below(tmp_path) -> N
 
 
 def test_an_import_of_the_lazy_package_itself_may_take_any_name(tmp_path) -> None:
-    for importer in ("import quantbox.lazy\n", "from quantbox import lazy\n", "from quantbox.lazy import *\n"):
+    for importer in (
+        "import quantbox.lazy\n",
+        "from quantbox import lazy\n",
+        "from quantbox.lazy import *\n",
+        "import quantbox.lazy.fetch\n",  # binds `quantbox`: quantbox.lazy.Other is reachable too
+    ):
         closure = _lazy_tree(tmp_path, importer).closure({"quantbox.user"})
         assert {"quantbox.lazy.fetch", "quantbox.lazy.other"} <= closure, importer
+
+
+def test_a_lazy_map_bound_in_more_than_one_place_is_not_trusted(tmp_path) -> None:  # round 4 fix-delta review
+    """Each shape below adds or moves a name the dict literal does not show; the closure must still hold it."""
+    base = '_PKG = "quantbox.lazy"\n_LAZY = {"Fetcher": f"{_PKG}.fetch:Fetcher"}\n'
+    getattr_def = "def __getattr__(name):\n    return load({maps}[name])\n"
+    shapes = {
+        "item set": base + '_LAZY["Other"] = f"{_PKG}.other:Other"\n' + getattr_def.format(maps="_LAZY"),
+        "update": base + '_LAZY.update({"Other": f"{_PKG}.other:Other"})\n' + getattr_def.format(maps="_LAZY"),
+        "second map": base
+        + '_MORE = {k: f"{_PKG}.other:Other" for k in ["Other"]}\n'
+        + getattr_def.format(maps="{**_LAZY, **_MORE}"),
+        "conditional": base + "if True:\n    " + getattr_def.format(maps="_LAZY").replace("\n    ", "\n        "),
+    }
+    for shape, source in shapes.items():
+        graph = _lazy_tree(tmp_path, "from quantbox.lazy import Other\n")
+        (tmp_path / "src" / "quantbox" / "lazy" / "__init__.py").write_text(source)
+        graph = ba.build_graph(tmp_path, "src/quantbox", set())
+        assert "quantbox.lazy.other" in graph.closure({"quantbox.user"}), shape
+    # a constant rebound after the map: the map's targets cannot be read
+    source = base.replace('"quantbox.lazy"', '"quantbox.lazy.sub"') + '_PKG = "quantbox.lazy"\n'
+    assert ba.lazy_exports(ba.ast.parse(source + getattr_def.format(maps="_LAZY")), lambda m: m or None) == (
+        {},
+        False,
+    )
 
 
 def test_every_lazy_export_package_is_read_and_an_unread_one_widens() -> None:

@@ -46,7 +46,9 @@ What it does, in order:
    so a package __init__ brings in all its siblings: a change to one strategy selects
    every config that loads the strategies package. A name taken from a lazy-export
    package (a `__getattr__` over a `_LAZY` map) loads the module the map names; an
-   import of the package itself, or a map not read in full, loads all of them. A
+   import of the package itself (or of a module below it, which binds the package
+   too), or a map not read in full (bound twice, extended, conditional), loads every
+   module below the package. A
    rename counts as its delete and its add.
 4. RUN. Each selected config runs at base (a git worktree of the merge base, under
    <out dir>/base-tree) and at head, in a fresh process with PYTHONHASHSEED=0 and
@@ -256,6 +258,10 @@ def module_of(rel: str, package: str) -> str | None:
     return ".".join(parts)
 
 
+def _named(target: ast.expr, name: str) -> bool:
+    return isinstance(target, ast.Name) and target.id == name
+
+
 def lazy_exports(node: ast.AST, resolve) -> tuple[dict[str, set[str]], bool] | None:
     """A module's lazy exports: None when it has no module-level ``__getattr__`` that can load.
 
@@ -267,35 +273,53 @@ def lazy_exports(node: ast.AST, resolve) -> tuple[dict[str, set[str]], bool] | N
     ``__getattr__`` whose only calls build the exception it raises, and ``removed_names``
     (quantbox._removed), which refuses names and loads nothing.
     """
-    func: ast.FunctionDef | None = None
-    assigned: ast.expr | None = None
-    consts: dict[str, str] = {}
-    dicts: dict[str, ast.Dict] = {}
-    for stmt in getattr(node, "body", []):
-        if isinstance(stmt, ast.FunctionDef) and stmt.name == "__getattr__":
-            func = stmt
-        elif isinstance(stmt, ast.Assign | ast.AnnAssign) and stmt.value is not None:
-            for target in stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]:
-                if not isinstance(target, ast.Name):
-                    continue
-                if target.id == "__getattr__":
-                    assigned = stmt.value
-                elif isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str):
-                    consts[target.id] = stmt.value.value
-                elif isinstance(stmt.value, ast.Dict):
-                    dicts[target.id] = stmt.value
-    if func is None:
-        if assigned is None:
-            return None
-        call = assigned.func if isinstance(assigned, ast.Call) else None
+    body = getattr(node, "body", [])
+    # Every binding of __getattr__ anywhere in the module (under if/try too), and every name
+    # bound more than once: a map or constant bound twice is not read in full.
+    defs = [n for n in ast.walk(node) if isinstance(n, ast.FunctionDef) and n.name == "__getattr__"]
+    stores: dict[str, int] = {}
+    for n in ast.walk(node):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store | ast.Del):
+            stores[n.id] = stores.get(n.id, 0) + 1
+    assigned = [s.value for s in body if isinstance(s, ast.Assign) and any(_named(t, "__getattr__") for t in s.targets)]
+    if not defs and stores.get("__getattr__", 0) == 0:
+        return None
+    if not defs:
+        top = assigned[0] if len(assigned) == 1 and stores["__getattr__"] == 1 else None
+        call = top.func if isinstance(top, ast.Call) else None
         if isinstance(call, ast.Name) and call.id == "removed_names":
-            return None
+            return None  # quantbox._removed: refuses names, loads nothing
         return {}, False  # a __getattr__ this reader does not know: anything below may load
+    func = defs[0]
+    if len(defs) != 1 or func not in body or stores.get("__getattr__", 0):
+        return {}, False  # defined twice, conditionally, or rebound: not read in full
     in_raise = {id(n) for r in ast.walk(func) if isinstance(r, ast.Raise) for n in ast.walk(r)}
     if not any(isinstance(n, ast.Call) and id(n) not in in_raise for n in ast.walk(func)):
         return None  # it only raises: no name loads a module
-    maps = [dicts[n.id] for n in ast.walk(func) if isinstance(n, ast.Name) and n.id in dicts]
-    if len({id(m) for m in maps}) != 1:
+    consts: dict[str, str] = {}
+    dicts: dict[str, ast.Dict] = {}
+    for stmt in body:
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+            name = stmt.targets[0].id
+            if stores.get(name) != 1:
+                continue
+            if isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str):
+                consts[name] = stmt.value.value
+            elif isinstance(stmt.value, ast.Dict):
+                dicts[name] = stmt.value
+    # The one map __getattr__ reads; any other module-level binding it reads (a second map, a
+    # comprehension, a name bound twice) may name more modules, so the map is not trusted.
+    params = {a.arg for a in ast.walk(func.args) if isinstance(a, ast.arg)}
+    local = {n.id for n in ast.walk(func) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
+    read = {n.id for n in ast.walk(func) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+    module_bound = {n for n, count in stores.items() if count} - params - local
+    maps = [dicts[n] for n in read if n in dicts]
+    if len(maps) != 1 or (read & module_bound) - set(dicts):
+        return {}, False
+    map_name = next(n for n in read if n in dicts)
+    # The map may be named nowhere else: `_LAZY.update(...)` or `_LAZY[k] = v` adds names.
+    uses = sum(1 for n in ast.walk(node) if isinstance(n, ast.Name) and n.id == map_name)
+    if uses != 1 + sum(1 for n in ast.walk(func) if isinstance(n, ast.Name) and n.id == map_name):
         return {}, False
 
     def text(value: ast.expr) -> str | None:
@@ -391,8 +415,11 @@ def build_graph(tree: Path, package: str, catalogues: set[str]) -> Graph:
                     hit = resolve(alias.name)
                     if hit:
                         deps.add(hit)
-                        if hit in lazy and hit == alias.name:  # `import pkg`: any name may be taken later
-                            deps |= taken(hit, None)
+                    # `import pkg` binds pkg; `import pkg.sub` binds the top name, so
+                    # `pkg.Name` is reachable too: any name of each lazy package on the path.
+                    for pkg in lazy:
+                        if alias.name == pkg or (alias.asname is None and alias.name.startswith(pkg + ".")):
+                            deps |= taken(pkg, None)
             elif isinstance(sub, ast.ImportFrom):
                 if sub.level:
                     anchor = base_pkg.split(".")
