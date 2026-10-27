@@ -47,8 +47,8 @@ What it does, in order:
    every config that loads the strategies package. A name taken from a lazy-export
    package (a `__getattr__` over a `_LAZY` map) loads the module the map names; an
    import of the package itself (or of a module below it, which binds the package
-   too), or a map not read in full (bound twice, extended, conditional), loads every
-   module below the package. A
+   too) loads every module the map names; a map not read in full (bound twice,
+   extended, conditional) loads every module below the package. A
    rename counts as its delete and its add.
 4. RUN. Each selected config runs at base (a git worktree of the merge base, under
    <out dir>/base-tree) and at head, in a fresh process with PYTHONHASHSEED=0 and
