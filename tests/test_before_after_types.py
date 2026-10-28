@@ -135,6 +135,15 @@ def test_same_types_and_values_are_identical(tmp_path) -> None:
     assert (found, compared) == ({}, 1)
 
 
+def test_nullable_float_column_compares(tmp_path) -> None:
+    """A nullable Float64 column with a null compares (nulls leave before the cast) and finds the change."""
+    a = pd.DataFrame({"w": pd.array([0.5, None], dtype="Float64")})
+    b = pd.DataFrame({"w": pd.array([0.6, None], dtype="Float64")})
+    found, _ = _runs(tmp_path, "w.parquet", a, b)
+    assert "w.parquet" in found
+    assert _runs(tmp_path / "same", "w.parquet", a, a.copy()) == ({}, 1)
+
+
 def test_float_tolerance_is_unchanged(tmp_path) -> None:
     """Floats keep rel 1e-9, abs 1e-12: a last-bit change is not a difference."""
     a = pd.DataFrame({"w": [0.1 + 0.2]})

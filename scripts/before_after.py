@@ -1034,7 +1034,7 @@ def diff_parquet(a: Path, b: Path) -> list[str]:
             continue
         keep = ~nx
         if pd.api.types.is_float_dtype(x):
-            xv, yv = x.to_numpy(dtype=float)[keep], y.to_numpy(dtype=float)[keep]
+            xv, yv = x[keep].to_numpy(dtype=float), y[keep].to_numpy(dtype=float)  # nulls out first (Float64)
             bad = ~np.isclose(xv, yv, rtol=RTOL, atol=ATOL)
             if bad.any():
                 worst = np.max(np.abs(xv[bad] - yv[bad]))
