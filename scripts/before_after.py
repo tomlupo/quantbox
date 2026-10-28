@@ -78,7 +78,9 @@ everything.
    schema, the pandas metadata (index kind, column-index dtype; not the writer's
    versions), the row count, then each column; a column arrow does not find equal is
    walked row by row and into its lists and structs, and the first differing path
-   (column, row, nested index) is reported. JSON: a value's type (null, boolean, number,
+   (column, row, nested index) is reported. A value is decoded only where that is exact: a
+   temporal leaf as its integer storage, a dictionary column as its dictionary and its
+   indices; a column of any other type is refused (exit 2), never called identical. JSON: a value's type (null, boolean, number,
    string, array, object; true is not 1, and 1 vs 1.0 is one type, number). Floats,
    nested ones too, compare at rel 1e-9, abs 1e-12; every other value compares exactly.
    A text file that is not UTF-8 compares as bytes.
@@ -1036,32 +1038,65 @@ def _pandas_meta(schema) -> Any:
     return {k: v for k, v in json.loads(raw).items() if k not in PANDAS_WRITER_KEYS}
 
 
-def _holds_dictionary(dtype, top: bool = False) -> bool:
-    """Does *dtype* hold a dictionary type BELOW its top level (in a list, struct or map)?
-    to_pylist would decode it and drop the dictionary, and diff_parquet compares only a
-    top-level one, so such a column is refused rather than passed (#326 round 1)."""
+def _lossless_type(dtype):
+    """The type a column of *dtype* is decoded through, so that to_pylist keeps every stored bit;
+    None where that is not established, and the column is refused, never passed (#326 rounds 1-2).
+
+    A leaf whose Python value is exact (null, bool, integers, floats, strings, binaries,
+    decimals) decodes as itself. A temporal leaf decodes as its integer storage: to_pylist turns
+    time64[ns] into datetime.time and drops the nanoseconds. Its unit and zone are in the schema,
+    which is already equal. Lists, structs and maps decode through their children. Anything else,
+    a dictionary included (diff_parquet compares a top-level one by its parts), is refused.
+    """
     import pyarrow as pa
 
-    if pa.types.is_dictionary(dtype):
-        return not top or _holds_dictionary(dtype.value_type)
-    return any(_holds_dictionary(dtype.field(i).type) for i in range(dtype.num_fields))
-
-
-def _dictionary_values(column) -> list[Any]:
-    """The dictionary of a dictionary-encoded column, after unify_dictionaries: every chunk shares it."""
-    return column.chunk(0).dictionary.to_pylist() if column.num_chunks else []
+    t = pa.types
+    if t.is_timestamp(dtype) or t.is_date64(dtype) or t.is_time64(dtype) or t.is_duration(dtype):
+        return pa.int64()
+    if t.is_date32(dtype) or t.is_time32(dtype):
+        return pa.int32()
+    exact = (t.is_null, t.is_boolean, t.is_integer, t.is_floating, t.is_string, t.is_large_string)
+    exact += (t.is_binary, t.is_large_binary, t.is_fixed_size_binary, t.is_decimal)
+    if any(is_(dtype) for is_ in exact):
+        return dtype
+    if t.is_map(dtype):
+        key, item = _lossless_type(dtype.key_type), _lossless_type(dtype.item_type)
+        if key is None or item is None:
+            return None
+        return pa.map_(dtype.key_field.with_type(key), dtype.item_field.with_type(item))
+    if t.is_list(dtype) or t.is_large_list(dtype) or t.is_fixed_size_list(dtype):
+        child = _lossless_type(dtype.value_type)
+        if child is None:
+            return None
+        field = dtype.value_field.with_type(child)
+        if t.is_fixed_size_list(dtype):
+            return pa.list_(field, dtype.list_size)
+        return pa.large_list(field) if t.is_large_list(dtype) else pa.list_(field)
+    if t.is_struct(dtype):
+        fields = [dtype.field(i) for i in range(dtype.num_fields)]
+        children = [_lossless_type(f.type) for f in fields]
+        if any(c is None for c in children):
+            return None
+        return pa.struct([f.with_type(c) for f, c in zip(fields, children, strict=True)])
+    return None
 
 
 def _shown(value: Any) -> str:
     return repr(value)[:200]  # for the report only; no comparison reads it
 
 
+def _label(column, row: int) -> str:
+    """The index value at *row*, for the report only: arrow's own text, which keeps nanoseconds."""
+    return " ".join(column.slice(row, 1).to_string().split()).strip("[] ")[:200]
+
+
 def diff_parquet(a: Path, b: Path) -> list[str]:
     """The two arrow tables, compared by structure (TOM-2547): the stored schema first (names,
     types, nullability, index columns included), then the pandas metadata, the row count, and
     each column's values. pandas is not read: its display coerces, and a decimal and a string
-    both read as object. A column that arrow finds equal is equal; any other is walked row by
-    row with first_difference, which keeps types and applies the float tolerance at the leaves."""
+    both read as object. A column that arrow finds equal is equal; any other is decoded through
+    _lossless_type and walked row by row with first_difference, which keeps types and applies
+    the float tolerance at the leaves. A type with no lossless decoding is refused."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -1084,29 +1119,35 @@ def diff_parquet(a: Path, b: Path) -> list[str]:
     ta, tb = ta.unify_dictionaries(), tb.unify_dictionaries()  # one dictionary per column, over chunks
     out = []
     for name, ca, cb in zip(sa.names, ta.columns, tb.columns, strict=True):
-        # to_pylist decodes a dictionary column (a pandas categorical) into its values, which
-        # drops the dictionary: its order (which sorts an ordered categorical) and any unused
-        # entry. So the dictionary is compared first, as values (#326 round 1).
-        if _holds_dictionary(ca.type, top=True):
-            raise CouldNotRun(f"{a.name}: column {name!r} holds a dictionary below its top level; not compared")
-        if pa.types.is_dictionary(ca.type):
-            da, db = (_dictionary_values(c) for c in (ca, cb))
-            hit = first_difference(da, db, f"{name}.dictionary")
+        dictionary = pa.types.is_dictionary(ca.type)
+        storage = _lossless_type(ca.type.value_type if dictionary else ca.type)
+        if storage is None:
+            raise CouldNotRun(f"{a.name}: column {name!r} of type {ca.type} has no lossless decoding; not compared")
+        if dictionary:
+            # A dictionary column (a pandas categorical) compares by its two parts: the dictionary,
+            # whose order sorts an ordered categorical and which may hold unused entries, then the
+            # indices. Decoding to values would drop the first (#326 round 1).
+            da, db = ca.combine_chunks(), cb.combine_chunks()  # one dictionary each, after unify
+            va, vb = da.dictionary.cast(storage).to_pylist(), db.dictionary.cast(storage).to_pylist()
+            hit = first_difference(va, vb, f"{name}.dictionary")
             if hit:
                 out.append(
-                    f"{name}: dictionary (categories) differ at {hit[0]}: base {_shown(da)} -> head {_shown(db)}"
+                    f"{name}: dictionary (categories) differ at {hit[0]}: base {_shown(va)} -> head {_shown(vb)}"
                 )
                 continue
-        if ca.equals(cb):  # exact, type-aware; a NaN is never equal here, so such a column walks
+            xs, ys = da.indices.to_pylist(), db.indices.to_pylist()
+        elif ca.equals(cb):  # exact, type-aware; a NaN is never equal here, so such a column walks
             continue
+        else:
+            xs, ys = ca.cast(storage).to_pylist(), cb.cast(storage).to_pylist()
         bad = [
             (i, hit)
-            for i, (x, y) in enumerate(zip(ca.to_pylist(), cb.to_pylist(), strict=True))
+            for i, (x, y) in enumerate(zip(xs, ys, strict=True))
             if (hit := first_difference(x, y, f"{name}[row {i}]"))
         ]
         if bad:
             row, (path, x, y) = bad[0]
-            at = f" (index {_shown(ta.column(index[0])[row].as_py())})" if len(index) == 1 else ""
+            at = f" (index {_label(ta.column(index[0]), row)})" if len(index) == 1 else ""
             out.append(
                 f"{name}: {len(bad)} of {ta.num_rows} rows differ, first at {path}{at}: base {_shown(x)} -> head {_shown(y)}"
             )

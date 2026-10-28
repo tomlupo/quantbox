@@ -149,8 +149,51 @@ def test_dictionary_below_the_top_level_is_refused(tmp_path) -> None:
         values = pa.DictionaryArray.from_arrays(indices, pa.array(dictionary))
         return pa.table({"l": pa.ListArray.from_arrays(pa.array([0, 1], type=pa.int32()), values)})
 
-    with pytest.raises(ba.CouldNotRun, match="below its top level"):
+    with pytest.raises(ba.CouldNotRun, match="no lossless decoding"):
         _runs(tmp_path, "l.parquet", table(["a", "z"]), table(["a", "y"]))
+
+
+# ------------------------------------------------------------------ #326 round 2: temporal values
+
+
+def _one(name: str, array) -> pa.Table:
+    return pa.table({name: array})
+
+
+def test_time64_ns_change_differs(tmp_path) -> None:
+    """The review's reproduction: to_pylist turns 1 ns and 2 ns both into datetime.time(0, 0)."""
+    a = _one("t", pa.array([1], type=pa.time64("ns")))
+    b = _one("t", pa.array([2], type=pa.time64("ns")))
+    found, _ = _runs(tmp_path, "t.parquet", a, b)
+    assert found.get("t.parquet"), "a 1 ns change in a time64[ns] column compared identical"
+
+
+def test_timestamp_ns_change_inside_a_list_differs(tmp_path) -> None:
+    ts = pa.list_(pa.timestamp("ns", tz="UTC"))
+    a = _one("l", pa.array([[1_700_000_000_000_000_000]], type=ts))
+    b = _one("l", pa.array([[1_700_000_000_000_000_001]], type=ts))
+    found, _ = _runs(tmp_path, "l.parquet", a, b)
+    assert found.get("l.parquet"), "a 1 ns change inside a list<timestamp[ns]> compared identical"
+    assert "l[row 0][0]" in found["l.parquet"][0], found["l.parquet"]
+
+
+def test_duration_ns_change_inside_a_struct_differs(tmp_path) -> None:
+    st = pa.struct([("d", pa.duration("ns"))])
+    found, _ = _runs(
+        tmp_path, "s.parquet", _one("s", pa.array([{"d": 1}], type=st)), _one("s", pa.array([{"d": 2}], type=st))
+    )
+    assert found.get("s.parquet"), "a 1 ns change in a struct's duration[ns] compared identical"
+
+
+def test_same_temporal_columns_are_equal(tmp_path) -> None:
+    table = pa.table(
+        {
+            "t": pa.array([1, None], type=pa.time64("ns")),
+            "ts": pa.array([1, 2], type=pa.timestamp("ns", tz="UTC")),
+            "d": pa.array([0, 1], type=pa.date32()),
+        }
+    )
+    assert _runs(tmp_path, "t.parquet", table, table) == ({}, 1)
 
 
 # ------------------------------------------------------------------ the class: other lossy paths
