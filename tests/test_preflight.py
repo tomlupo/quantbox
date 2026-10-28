@@ -2325,3 +2325,182 @@ def test_a_named_run_record_is_read_through_main(replication, planned, capsys):
     argv = ["--lab", str(replication.root), "--line", str(replication.line), str(replication.config)]
     assert preflight.main(argv) == 1 and "name the one to read with --data-validation" in capsys.readouterr().out
     assert preflight.main(["--data-validation", str(record), *argv]) == 0, capsys.readouterr().out
+
+
+# ── release review #322 (v0.21.0): three fail-opens, each reproduction a guard ──
+#
+# Finding 2 (TOM-2483): the PyYAML fallback read a number the subset parser refuses.
+# Finding 3 (TOM-2548): claim-test counts passed as "a finite number" when invalid.
+# Finding 101 (TOM-2548): a run dir the walk could not look into read as empty.
+
+AMBIGUOUS = ["010", "0x10", "1_0", "1:30", "1e3", "1.0e3"]
+#: An anchor sends system.yaml to the PyYAML fallback BEFORE the subset parser reaches a number.
+ANCHORED = "base: &b {x: 1}\n"
+
+
+@pytest.mark.parametrize("prefix", ["", ANCHORED], ids=["plain", "fallback-by-anchor"])
+@pytest.mark.parametrize("spelling", AMBIGUOUS)
+def test_an_ambiguous_live_cap_is_blind_on_every_yaml_path(lab, spelling, prefix):
+    """The reproduction: `venue.leverage: 010` gave PASS "runner cap 3 <= live cap 8", exit 0."""
+    _write(lab.root / "system.yaml", prefix + SYSTEM.replace("      leverage: 3\n", f"      leverage: {spelling}\n"))
+    lab.commit()
+    report = lab.run()
+    _blind(report, "system")
+    assert "YAML readers disagree about" in _rows(report, preflight.BLIND)["system"]
+    assert not any(check.startswith("leverage[") for _, check, _ in report.rows)
+
+
+def test_the_fallback_still_reads_a_clean_file_and_a_quoted_spelling_is_text(lab):
+    """The control: the anchor alone falls back and passes; quoting `010` makes it text, and
+    text is not a cap (refused by name, never read as 8)."""
+    _write(lab.root / "system.yaml", ANCHORED + SYSTEM)
+    lab.commit()
+    assert lab.run().exit_code == 0
+    _write(lab.root / "system.yaml", ANCHORED + SYSTEM.replace("      leverage: 3\n", "      leverage: '010'\n"))
+    lab.commit()
+    _refused(lab.run(), "system", "venue.leverage must be a finite number")
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["a: &x 1\nb: 010\n", "a: &x 1\nb: [1, 0x10]\n", "a: &x 1\n010: v\n", "010: v\n", "a: &x 010\nb: *x\n"],
+    ids=["value-after-anchor", "in-flow", "key-after-anchor", "key", "anchored-number"],
+)
+def test_load_yaml_never_hands_back_an_ambiguous_number(tmp_path, text):
+    path = tmp_path / "doc.yaml"
+    _write(path, text)
+    with pytest.raises(preflight.YamlRefused, match="YAML readers disagree about"):
+        preflight.load_yaml(path)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "phrase"),
+    [
+        ("draws: 2000", "draws: -1", "claim_test.draws"),
+        ("draws: 2000", "draws: 0", "claim_test.draws"),
+        ("draws: 2000", "draws: 2000.5", "claim_test.draws"),
+        ("draws: 2000", "draws: true", "claim_test.draws"),
+        ("mean_block: 30", "mean_block: -0.5", "claim_test.mean_block"),
+        ("mean_block: 30", "mean_block: 0", "claim_test.mean_block"),
+        ("mean_block: 30", "mean_block: 0.5", "claim_test.mean_block"),
+        ("mean_block: 30", "mean_block: .inf", "claim_test.mean_block"),
+        ("seed: 7", "seed: -1", "claim_test.seed"),
+        ("seed: 7", "seed: 7.5", "claim_test.seed"),
+        ("seed: 7", "seed: true", "claim_test.seed"),
+    ],
+)
+def test_a_bootstrap_count_outside_its_domain_refuses(lab, old, new, phrase):
+    """The reproduction: `draws: -1`, `mean_block: -0.5`, `seed: -1` gave PASS claim-test, exit 0."""
+    _write(lab.readme, _readme(PREREG.replace(old, new)))
+    lab.commit()
+    _only_refusal(lab.run(), "claim-test", phrase)
+
+
+@pytest.mark.parametrize(
+    ("old", "new"), [("seed: 7", "seed: 0"), ("mean_block: 30", "mean_block: 1"), ("mean_block: 30", "mean_block: 2.5")]
+)
+def test_a_bootstrap_count_at_the_edge_of_its_domain_passes(lab, old, new):
+    _write(lab.readme, _readme(PREREG.replace(old, new)))
+    lab.commit()
+    assert lab.run().exit_code == 0
+
+
+@pytest.mark.parametrize("floor", ["-2", "1.5"])
+def test_an_anchor_floor_that_is_not_a_correlation_refuses(replication, floor):
+    """Swept with finding 3: `min_corr: -2` is passed by every correlation, so it is no floor."""
+    _write(replication.readme, _readme(REPLICATION.replace("min_corr: 0.5", f"min_corr: {floor}")))
+    replication.commit()
+    _only_refusal(replication.run(), "data-anchor", "a `min_corr` in [-1, 1]")
+
+
+def _run_before_the_criterion(lab: Lab) -> Path:
+    """The finding-101 setup: the declared root is `artifacts`, and a quantbox run dated
+    2025-12-31 (before the criterion, committed 2026-01-01) sits in `artifacts/arm`."""
+    lab.plan["artifacts_root"] = str(lab.line / "artifacts")
+    arm = lab.line / "artifacts" / "arm"
+    _write(arm / "x__20251231T000000Z" / "run_manifest.json", json.dumps({"schema": "quantbox/run@1"}))
+    return arm
+
+
+def test_a_run_before_the_criterion_refuses_the_control_for_finding_101(lab):
+    _run_before_the_criterion(lab)
+    report = lab.run()
+    _only_refusal(report, "prereg-committed", "predates the criterion")
+    assert "1 quantbox run manifest(s)" in _rows(report, preflight.PASS)["run-manifest"]
+
+
+def test_a_symlinked_run_dir_is_blind_never_an_empty_one(lab, tmp_path):
+    """The reproduction: the same run behind a symlink gave PASS, "0 evidence item(s) found"."""
+    arm = _run_before_the_criterion(lab)
+    elsewhere = tmp_path / "elsewhere" / "arm"
+    elsewhere.parent.mkdir()
+    arm.rename(elsewhere)
+    arm.symlink_to(elsewhere, target_is_directory=True)
+    report = lab.run()
+    _blind(report, "prereg-committed")
+    _blind(report, "run-manifest")
+    for check in ("prereg-committed", "run-manifest"):
+        said = _rows(report, preflight.BLIND)[check]
+        assert str(arm) in said and "symlinked directory" in said, said
+
+
+def test_a_visible_post_registration_still_refuses_beside_a_symlink(lab, tmp_path):
+    """A refusal outranks blindness: what the walk DID see still refuses, and says what it could not."""
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (lab.line / "artifacts" / "arm").mkdir(parents=True)
+    (lab.line / "artifacts" / "arm" / "linked").symlink_to(target, target_is_directory=True)
+    (lab.line / "results" / "x__20251231T000000Z").mkdir(parents=True)
+    report = lab.run()
+    _refused(report, "prereg-committed", "predates")
+    assert "symlinked directory" in _rows(report, preflight.REFUSE)["prereg-committed"]
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads a chmod 000 directory")
+def test_an_unreadable_run_dir_is_blind_never_an_empty_one(lab):
+    """The reproduction: the same run under `chmod 000` gave PASS, "0 evidence item(s) found"."""
+    arm = _run_before_the_criterion(lab)
+    arm.chmod(0)
+    try:
+        report = lab.run()
+    finally:
+        arm.chmod(0o755)
+    _blind(report, "prereg-committed")
+    _blind(report, "run-manifest")
+    for check in ("prereg-committed", "run-manifest"):
+        assert str(arm) in _rows(report, preflight.BLIND)[check]
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads a chmod 000 file")
+def test_an_unreadable_run_manifest_is_blind_not_a_manifest_that_claims_no_schema(lab):
+    manifest = lab.line / "artifacts" / "arm" / "x__20260102T000000Z" / "run_manifest.json"
+    _write(manifest, json.dumps({"schema": "quantbox/run@9"}))
+    manifest.chmod(0)
+    try:
+        report = lab.run()
+    finally:
+        manifest.chmod(0o644)
+    _blind(report, "run-manifest")
+    assert str(manifest) in _rows(report, preflight.BLIND)["run-manifest"]
+
+
+def test_a_symlinked_dir_under_a_replications_runs_is_blind_for_its_data_step(replication, tmp_path):
+    """The same walk finds the run's data_validation.json: a second one may lie behind the link."""
+    target = tmp_path / "elsewhere" / "probe2"
+    target.mkdir(parents=True)
+    link = replication.line / "artifacts" / "arm" / "probe2"
+    link.symlink_to(target, target_is_directory=True)
+    report = replication.run()
+    _blind(report, "data-validation")
+    assert str(link) in _rows(report, preflight.BLIND)["data-validation"]
+
+
+def test_a_pruned_symlink_is_not_blind(lab, tmp_path):
+    """`.venv` is never walked outside a declared root, whether or not it is a symlink: the
+    row already says it was not walked, and a lab venv often is one."""
+    target = tmp_path / "venv"
+    target.mkdir()
+    (lab.line / ".venv").symlink_to(target, target_is_directory=True)
+    report = lab.run()
+    assert report.exit_code == 0, report.rows
+    assert "never walked: ['.venv']" in _rows(report, preflight.PASS)["prereg-committed"]
