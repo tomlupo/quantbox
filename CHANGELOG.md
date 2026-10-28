@@ -29,6 +29,14 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.21.1 (2026-10-28)
+
+### Fix
+
+- **compare**: parquet values by structure, no display strings (TOM-2547) (#326)
+- **compare**: type before value in before_after.py diffs (TOM-2547) (#325)
+- **preflight**: ambiguous numbers on every YAML path, bootstrap counts in domain, one checked walk (TOM-2483, TOM-2548) (#324)
+
 ## v0.21.0 (2026-10-28)
 
 ### Feat
