@@ -71,7 +71,8 @@ BLIND IS NOT CLEAN
 ------------------
 A file this gate needs and cannot parse, a git read that failed, a plan quantbox
 could not produce, a plan or a run manifest of a schema major this quantbox does not read, a
-number YAML readers disagree about, a duplicate key, an unexpected exception
+number YAML readers disagree about, a duplicate key, a directory the evidence walk
+cannot look into (unreadable, or a symlink it does not follow), an unexpected exception
 inside the gate itself: that check reports BLIND and the run exits 2. A refusal
 outranks blindness (exit 1), and nothing blind ever exits 0.
 
@@ -103,7 +104,8 @@ THE LAB'S YAML. system.yaml, the prereg block and data_inputs.yaml are read by t
 block-style subset parser below, kept from the plugin unchanged: it REFUSES TO
 GUESS. Anchors, aliases, tags, merge keys and multi-line flow collections raise,
 and such a file is then read by PyYAML with duplicate keys refused. A duplicate
-key or a second document is BLIND under either reader. A config is never read
+key, a second document or a number YAML readers disagree about (`010`, `0x10`,
+`1e3`) is BLIND under either reader, never a fallback. A config is never read
 here: quantbox's plan is.
 """
 
@@ -117,6 +119,7 @@ import json
 import math
 import os
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -231,11 +234,19 @@ class YamlUnsupported(ValueError):
 
 
 class YamlRefused(YamlUnsupported):
-    """YAML that NO reader gets to decide: a duplicate key, a second document.
+    """YAML that NO reader gets to decide: a duplicate key, a second document, a
+    number readers disagree about.
 
-    PyYAML would answer — last key wins, first document wins — and that answer
-    is exactly the ambiguity a gate must not inherit. Never falls back.
+    PyYAML would answer — last key wins, first document wins, `010` is 8 — and that
+    answer is exactly the ambiguity a gate must not inherit. Never falls back.
     """
+
+
+class YamlAmbiguousNumber(YamlRefused):
+    """A plain scalar spelled like a number that YAML 1.1 and 1.2 readers read
+    differently (`_AMBIGUOUS_NUMBER_RE`). Refused on EVERY path: by the subset
+    parser, and in the PyYAML fallback whatever construct sent the file there
+    (TOM-2483: `venue.leverage: 010` passed as a live cap of 8)."""
 
 
 _KEY_RE = re.compile(r"""^(?:"([^"]+)"|'([^']+)'|([^\s:#\-\[\]{}&*!|>'"%@`][^:#]*?)):(?:\s+(.*))?$""")
@@ -306,11 +317,17 @@ def _scalar(text: str):
         return float("-inf") if text.startswith("-") else float("inf")
     if _NAN_RE.match(text):
         return float("nan")
-    if _AMBIGUOUS_NUMBER_RE.match(text):
-        raise YamlUnsupported(
-            f"number-shaped scalar that YAML readers disagree about: {text!r} — write it as a plain decimal"
-        )
+    _refuse_ambiguous_number(text)
     return text
+
+
+def _refuse_ambiguous_number(text: str) -> None:
+    """THE ambiguous-number refusal, for the subset parser and the PyYAML fallback alike."""
+    if _AMBIGUOUS_NUMBER_RE.match(text.strip()):
+        raise YamlAmbiguousNumber(
+            f"number-shaped scalar that YAML readers disagree about: {text.strip()!r} — write it as a plain "
+            "decimal, or quote it to mean the text"
+        )
 
 
 def _flow(text: str):
@@ -478,6 +495,8 @@ class _Parser:
                     return out
                 raise YamlUnsupported(f"not a `key: value` line: {raw!r}")
             key = match.group(1) or match.group(2) or match.group(3).strip()
+            if match.group(3) is not None:
+                _refuse_ambiguous_number(key)  # PyYAML would make `010:` the key 8
             if key == "<<":
                 raise YamlUnsupported("merge key `<<`")
             if key in out:
@@ -549,7 +568,10 @@ def load_yaml(path: Path):
     Same arrangement as `qute_review_policy`: the stdlib reader is THE parser,
     PyYAML the bonus. A config using anchors or merge keys is read on a box
     that has PyYAML (a lab venv does) and goes BLIND on one that does not —
-    never half-read.
+    never half-read. What the subset REFUSES (`YamlRefused`: a duplicate key, a second
+    document, an ambiguous number) never falls back, and the fallback holds every plain
+    scalar to the same number refusal: an anchor on line 1 does not let `010` on line 9
+    through as 8.
     """
     text = path.read_text(encoding="utf-8")
     try:
@@ -571,9 +593,40 @@ def load_yaml(path: Path):
                 return super().construct_mapping(node, deep=deep)
 
         try:
-            return yaml.load(text, Loader=_NoDuplicates)  # noqa: S506 — SafeLoader subclass
+            loader = _NoDuplicates(text)  # its reader checks the text: a YAMLError too
         except yaml.YAMLError as exc:
             raise YamlUnsupported(f"not valid YAML: {exc}") from None
+        try:
+            # what yaml.load does, with the node tree held up to the subset parser's
+            # number refusal before a single value is constructed
+            node = loader.get_single_node()
+            if node is None:
+                return None
+            _refuse_ambiguous_nodes(node, yaml)
+            return loader.construct_document(node)
+        except yaml.YAMLError as exc:
+            raise YamlUnsupported(f"not valid YAML: {exc}") from None
+        finally:
+            loader.dispose()
+
+
+def _refuse_ambiguous_nodes(root, yaml) -> None:
+    """Every PLAIN scalar of a composed PyYAML document — value or key, through anchors
+    and aliases — held to `_refuse_ambiguous_number`. A quoted or block scalar is text
+    to every reader, so it is not a number anyone disagrees about."""
+    stack, seen = [root], set()
+    while stack:
+        node = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        if isinstance(node, yaml.ScalarNode):
+            if node.style is None and isinstance(node.value, str):
+                _refuse_ambiguous_number(node.value)
+        elif isinstance(node, yaml.SequenceNode):
+            stack.extend(node.value)
+        elif isinstance(node, yaml.MappingNode):
+            stack.extend(part for pair in node.value for part in pair)
 
 
 # ── reading the declared files ─────────────────────────────────────────────
@@ -706,18 +759,63 @@ def _stamp_of(name: str) -> float | None:
     return stamp.replace(tzinfo=UTC).timestamp()
 
 
-def run_evidence(root: Path, everything: bool, found: dict, undatable: list[str], unwalked: set[str]) -> None:
+def walk(root: Path, unseen: list[str]):
+    """THE checked traversal under every evidence scanner (`run_evidence`,
+    `check_run_manifests`, `find_data_validation`): `os.walk(root)`, top-down, and the
+    caller may prune `dirs` in place — but nothing it could not look into is ever read
+    as an empty, clean directory (release review #322, finding 101). Each goes to
+    `unseen`, by path, and the caller reports BLIND:
+
+      * a directory os.walk cannot list (`chmod 000`, a traversal error);
+      * a symlinked directory left in `dirs` after the caller pruned — os.walk never
+        follows one, so what is under it was never looked at;
+      * a root that is there but cannot be stat-ed, or is not a directory.
+
+    A root that does not exist at all is no place a run landed: nothing to walk. `root`
+    itself may be a symlink: it is followed, so it IS looked into."""
+    try:
+        root.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        unseen.append(f"{root}: {exc.strerror or exc}")
+        return
+    try:
+        mode = root.stat().st_mode
+    except OSError as exc:  # a dangling symlink, or a parent it cannot pass
+        unseen.append(f"{root}: {exc.strerror or exc}")
+        return
+    if not stat.S_ISDIR(mode):
+        unseen.append(f"{root}: not a directory")
+        return
+
+    def failed(exc: OSError) -> None:
+        unseen.append(f"{exc.filename}: {exc.strerror or exc}")
+
+    for folder, dirs, files in os.walk(root, onerror=failed):
+        yield folder, dirs, files
+        for name in dirs:  # what the caller kept; a symlink among it is never descended
+            if os.path.islink(os.path.join(folder, name)):
+                unseen.append(f"{Path(folder) / name}: a symlinked directory, never followed — not looked inside")
+
+
+def _unseen_said(unseen: list[str]) -> str:
+    return f"{len(unseen)} place(s) the walk could not look into, never read as empty: " + "; ".join(unseen[:3])
+
+
+def run_evidence(
+    root: Path, everything: bool, found: dict, undatable: list[str], unwalked: set[str], unseen: list[str]
+) -> None:
     """Collect what says "a run happened" under `root` into `found`.
 
     `everything=True` is for a DECLARED runs root: every file under it is a run's
     output, whatever it is called and however the directory is named (hidden,
     `node_modules`, inside a dataset directory — a declared root is always walked).
     Elsewhere only run MANIFESTS (`*manifest*.json`) and run-stamped directories
-    count. Evidence whose time cannot be read goes to `undatable`, never away.
+    count. Evidence whose time cannot be read goes to `undatable`, never away; a
+    directory the walk cannot look into goes to `unseen` (`walk`).
     """
-    if not root.is_dir():
-        return
-    for folder, dirs, files in os.walk(root):
+    for folder, dirs, files in walk(root, unseen):
         here = Path(folder)
         stamps_only = not everything and any(part in _STAMPS_ONLY for part in here.relative_to(root).parts)
         kept = []
@@ -990,9 +1088,17 @@ def check_prereg_content(report: Report, prereg: dict, n_configs: int) -> None:
         if not _is_number(probability) or not 0 < probability <= 1:
             bad.append(f"claim_test.min_probability is {probability!r}, not a number in (0, 1]")
         if "bootstrap" in str(test.get("method")).lower():
-            for key in ("draws", "mean_block", "seed"):
-                if not _is_number(test.get(key)):
-                    bad.append(f"claim_test.{key} must be a number")
+            # each in the domain `quantbox.inference.bootstrap` runs, never just "a number":
+            # draws is the loop count, the stationary bootstrap starts a block with
+            # probability 1 / mean_block (a geometric length's mean is >= 1), and numpy
+            # seeds no negative number (release review #322, finding 3: -1 / -0.5 / -1 passed)
+            draws, block, seed = test.get("draws"), test.get("mean_block"), test.get("seed")
+            if not _is_count(draws, least=1):
+                bad.append(f"claim_test.draws is {draws!r}, not an integer count of resamples >= 1")
+            if not (_is_number(block) and block >= 1):
+                bad.append(f"claim_test.mean_block is {block!r}, not a finite mean block length >= 1")
+            if not _is_count(seed):
+                bad.append(f"claim_test.seed is {seed!r}, not an integer >= 0")
     report.add(REFUSE if bad else PASS, "claim-test", "; ".join(bad) or str(test.get("method")))
 
     episode = prereg.get("ex_largest_episode")
@@ -1555,13 +1661,12 @@ def _day(value) -> date | None:
     return None
 
 
-def find_data_validation(roots: list[Path]) -> list[Path]:
-    """Every `data_validation.json` under the declared runs roots, once each."""
+def find_data_validation(roots: list[Path], unseen: list[str]) -> list[Path]:
+    """Every `data_validation.json` under the declared runs roots, once each; a directory
+    the walk cannot look into goes to `unseen` (`walk`) — a second record may lie there."""
     found: dict[Path, None] = {}
     for root in roots:
-        if not root.is_dir():
-            continue
-        for folder, dirs, files in os.walk(root):
+        for folder, dirs, files in walk(root, unseen):
             dirs[:] = sorted(d for d in dirs if d not in _NEVER_WALKED)
             if "data_validation.json" in files:
                 found.setdefault((Path(folder) / "data_validation.json").resolve(), None)
@@ -1657,11 +1762,14 @@ def _anchor(report: Report, paper: dict, data: dict, line: Path, classes: list[s
     pairs = anchor.get("pairs") if isinstance(anchor, dict) else None
     floor = anchor.get("min_corr") if isinstance(anchor, dict) else None
     raw = anchor.get("file") if isinstance(anchor, dict) else None
-    if not isinstance(pairs, list) or not pairs or not _is_number(floor) or not isinstance(raw, str) or not raw:
+    # a floor below -1 is passed by every correlation: it is not a floor (review #322 sweep)
+    floor_ok = _is_number(floor) and -1 <= floor <= 1
+    if not isinstance(pairs, list) or not pairs or not floor_ok or not isinstance(raw, str) or not raw:
         report.add(
             REFUSE,
             check,
-            "`data.anchor` needs `file`, a numeric `min_corr` and a list of `pairs` {class, ours, reference}",
+            "`data.anchor` needs `file`, a `min_corr` in [-1, 1] and a list of `pairs` {class, ours, reference}"
+            + (f" (min_corr is {floor!r})" if not floor_ok else ""),
         )
         return
     path = Path(raw) if Path(raw).is_absolute() else line / raw
@@ -1875,7 +1983,15 @@ def check_replication_data(
 
     # the run's own record of what it read — named, or the ONE under the declared runs
     if data_validation is None:
-        found = find_data_validation(roots)
+        unseen: list[str] = []
+        found = find_data_validation(roots, unseen)
+        if unseen:
+            report.add(
+                BLIND,
+                "data-validation",
+                "which data_validation.json is the run's cannot be told: " + _unseen_said(sorted(set(unseen))),
+            )
+            return
         if len(found) != 1:
             report.add(
                 REFUSE,
@@ -2552,11 +2668,9 @@ def check_run_manifests(report: Report, roots: list[Path]) -> None:
     is BLIND — its fields may not mean what this quantbox would read them as.
     """
     seen: set[Path] = set()
-    known, unknown = 0, []
+    known, unknown, unseen = 0, [], []
     for root in roots:
-        if not root.is_dir():
-            continue
-        for folder, dirs, files in os.walk(root):
+        for folder, dirs, files in walk(root, unseen):
             dirs[:] = [d for d in dirs if d not in _NEVER_WALKED]
             if "run_manifest.json" not in files:
                 continue
@@ -2566,8 +2680,11 @@ def check_run_manifests(report: Report, roots: list[Path]) -> None:
             seen.add(path)
             try:
                 doc = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, ValueError):
+            except (UnicodeDecodeError, ValueError):
                 continue  # not JSON: claims no schema; still dated as evidence
+            except OSError as exc:  # it may claim any schema: unread is not "claims none"
+                unseen.append(f"{path}: {exc.strerror or exc}")
+                continue
             if not is_quantbox_document(doc, "run"):
                 continue
             problem = schema_problem(doc, "run")
@@ -2575,12 +2692,12 @@ def check_run_manifests(report: Report, roots: list[Path]) -> None:
                 unknown.append(f"{path}: {problem}")
             else:
                 known += 1
-    if unknown:
-        report.add(
-            BLIND,
-            "run-manifest",
-            f"{len(unknown)} run manifest(s) this quantbox cannot read: " + "; ".join(unknown[:3]),
+    if unknown or unseen:
+        said = (
+            [f"{len(unknown)} run manifest(s) this quantbox cannot read: " + "; ".join(unknown[:3])] if unknown else []
         )
+        said += [_unseen_said(sorted(set(unseen)))] if unseen else []
+        report.add(BLIND, "run-manifest", "; ".join(said))
     else:
         reads = ", ".join(f"quantbox/run@{n}" for n in sorted(SUPPORTED["run"]))
         report.add(PASS, "run-manifest", f"{known} quantbox run manifest(s), every one {reads}")
@@ -2699,18 +2816,19 @@ def check_timing(
     found: dict = {}
     undatable: list[str] = []
     unwalked: set[str] = set()
+    unseen: list[str] = []
     walked: list[str] = []
     for root in mine + extra_roots:
-        run_evidence(root, True, found, undatable, unwalked)
+        run_evidence(root, True, found, undatable, unwalked, unseen)
         walked.append(f"{root} (declared: every file)")
-    run_evidence(line, False, found, undatable, unwalked)
+    run_evidence(line, False, found, undatable, unwalked, unseen)
     walked.append(f"{line} (manifests + run-stamped dirs)")
     for root in mine:
         parent = root.parent
         if _within(parent, line):
             continue
         if _within(parent, lab):
-            run_evidence(parent, False, found, undatable, unwalked)
+            run_evidence(parent, False, found, undatable, unwalked, unseen)
             walked.append(f"{parent} (parent of a declared root)")
         else:
             walked.append(f"NOT {parent}: outside the lab, only the declared root itself was walked")
@@ -2753,12 +2871,15 @@ def check_timing(
         "; " + "; ".join(notes) if notes else ""
     )
     frozen = f"frozen at {frozen_sha[:10]} ({_iso(frozen_at)})"
+    # what the walk could not look into never reads as empty: a pass over it is BLIND,
+    # and a refusal found anyway still refuses (a refusal outranks blindness)
+    blind = ("; and " + _unseen_said(sorted(set(unseen))) + " — not a pass") if unseen else ""
+
+    def passed(text: str) -> None:
+        report.add(BLIND if unseen else PASS, check, text + blind)
+
     if not counted:
-        report.add(
-            PASS,
-            check,
-            f"{frozen}; no run evidence counts against this block — {looked}",
-        )
+        passed(f"{frozen}; no run evidence counts against this block — {looked}")
         return
     first, last = counted[0], counted[-1]
     now = time.time() if now is None else now
@@ -2767,7 +2888,7 @@ def check_timing(
             REFUSE,
             check,
             f"run evidence dated in the FUTURE: {last.path} ({_iso(last.when)} from "
-            f"{last.source}) — a run time that cannot be true cannot show the criterion came first",
+            f"{last.source}) — a run time that cannot be true cannot show the criterion came first" + blind,
         )
     elif first.when <= frozen_at:
         report.add(
@@ -2776,14 +2897,12 @@ def check_timing(
             f"first run evidence {first.path} ({_iso(first.when)} from {first.source}) "
             f"predates the criterion's last change {frozen_sha[:10]} ({_iso(frozen_at)}) — that "
             "is a post-registration. If it is another hypothesis's run, THAT block declares it under "
-            f"`runs:`; if it is not a run, list it under `not_runs:` with a reason — {looked}",
+            f"`runs:`; if it is not a run, list it under `not_runs:` with a reason — {looked}" + blind,
         )
     else:
-        report.add(
-            PASS,
-            check,
+        passed(
             f"{frozen}, before the earliest of {len(counted)} counted item(s) "
-            f"({_iso(first.when)} from {first.source}: {first.path}) — {looked}",
+            f"({_iso(first.when)} from {first.source}: {first.path}) — {looked}"
         )
 
 
