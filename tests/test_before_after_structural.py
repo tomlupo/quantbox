@@ -112,6 +112,47 @@ def test_list_of_bool_vs_list_of_int_differs(tmp_path) -> None:
     assert found.get("b.parquet"), "list<bool> vs list<int64> compared identical"
 
 
+# ------------------------------------------------------------------ #326 round 1: dictionaries
+
+
+def _categorical(values, categories, ordered=False) -> pd.DataFrame:
+    return pd.DataFrame({"x": pd.Categorical(values, categories=categories, ordered=ordered)})
+
+
+def test_ordered_category_order_change_differs(tmp_path) -> None:
+    """The review's reproduction: the same values, the categories reordered, so sorting changes."""
+    a = _categorical(["a", "b"], ["a", "b"], ordered=True)
+    b = _categorical(["a", "b"], ["b", "a"], ordered=True)
+    found, _ = _runs(tmp_path, "c.parquet", a, b)
+    assert found.get("c.parquet"), "an ordered categorical's order changed and compared identical"
+    assert "dictionary" in found["c.parquet"][0], found["c.parquet"]
+
+
+def test_unused_category_change_differs(tmp_path) -> None:
+    a = _categorical(["a", "a"], ["a", "z"])
+    b = _categorical(["a", "a"], ["a", "y"])
+    found, _ = _runs(tmp_path, "c.parquet", a, b)
+    assert found.get("c.parquet"), "an unused category was replaced and compared identical"
+
+
+def test_same_categorical_is_equal(tmp_path) -> None:
+    frame = _categorical(["a", "b", None], ["a", "b", "c"], ordered=True)
+    assert _runs(tmp_path, "c.parquet", frame, frame.copy()) == ({}, 1)
+
+
+def test_dictionary_below_the_top_level_is_refused(tmp_path) -> None:
+    """A list of dictionary values would decode and lose its dictionary: refused, never identical."""
+    import pytest
+
+    def table(dictionary):
+        indices = pa.array([0], type=pa.int8())
+        values = pa.DictionaryArray.from_arrays(indices, pa.array(dictionary))
+        return pa.table({"l": pa.ListArray.from_arrays(pa.array([0, 1], type=pa.int32()), values)})
+
+    with pytest.raises(ba.CouldNotRun, match="below its top level"):
+        _runs(tmp_path, "l.parquet", table(["a", "z"]), table(["a", "y"]))
+
+
 # ------------------------------------------------------------------ the class: other lossy paths
 
 

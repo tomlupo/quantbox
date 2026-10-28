@@ -1036,6 +1036,22 @@ def _pandas_meta(schema) -> Any:
     return {k: v for k, v in json.loads(raw).items() if k not in PANDAS_WRITER_KEYS}
 
 
+def _holds_dictionary(dtype, top: bool = False) -> bool:
+    """Does *dtype* hold a dictionary type BELOW its top level (in a list, struct or map)?
+    to_pylist would decode it and drop the dictionary, and diff_parquet compares only a
+    top-level one, so such a column is refused rather than passed (#326 round 1)."""
+    import pyarrow as pa
+
+    if pa.types.is_dictionary(dtype):
+        return not top or _holds_dictionary(dtype.value_type)
+    return any(_holds_dictionary(dtype.field(i).type) for i in range(dtype.num_fields))
+
+
+def _dictionary_values(column) -> list[Any]:
+    """The dictionary of a dictionary-encoded column, after unify_dictionaries: every chunk shares it."""
+    return column.chunk(0).dictionary.to_pylist() if column.num_chunks else []
+
+
 def _shown(value: Any) -> str:
     return repr(value)[:200]  # for the report only; no comparison reads it
 
@@ -1046,6 +1062,7 @@ def diff_parquet(a: Path, b: Path) -> list[str]:
     each column's values. pandas is not read: its display coerces, and a decimal and a string
     both read as object. A column that arrow finds equal is equal; any other is walked row by
     row with first_difference, which keeps types and applies the float tolerance at the leaves."""
+    import pyarrow as pa
     import pyarrow.parquet as pq
 
     ta, tb = pq.read_table(a), pq.read_table(b)
@@ -1064,8 +1081,22 @@ def diff_parquet(a: Path, b: Path) -> list[str]:
     if ta.num_rows != tb.num_rows:
         return [f"rows: base {ta.num_rows} -> head {tb.num_rows}"]
     index = [c for c in (_pandas_meta(sa) or {}).get("index_columns") or [] if isinstance(c, str) and c in sa.names]
+    ta, tb = ta.unify_dictionaries(), tb.unify_dictionaries()  # one dictionary per column, over chunks
     out = []
     for name, ca, cb in zip(sa.names, ta.columns, tb.columns, strict=True):
+        # to_pylist decodes a dictionary column (a pandas categorical) into its values, which
+        # drops the dictionary: its order (which sorts an ordered categorical) and any unused
+        # entry. So the dictionary is compared first, as values (#326 round 1).
+        if _holds_dictionary(ca.type, top=True):
+            raise CouldNotRun(f"{a.name}: column {name!r} holds a dictionary below its top level; not compared")
+        if pa.types.is_dictionary(ca.type):
+            da, db = (_dictionary_values(c) for c in (ca, cb))
+            hit = first_difference(da, db, f"{name}.dictionary")
+            if hit:
+                out.append(
+                    f"{name}: dictionary (categories) differ at {hit[0]}: base {_shown(da)} -> head {_shown(db)}"
+                )
+                continue
         if ca.equals(cb):  # exact, type-aware; a NaN is never equal here, so such a column walks
             continue
         bad = [
