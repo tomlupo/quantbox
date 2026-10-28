@@ -73,7 +73,10 @@ everything.
    by field, parquet frame by frame, text line by line, after masking what differs on
    every run (the run id, which carries the run's one wall-clock stamp; the checkout and
    slice paths; the commit; git and installed packages). No other date is masked.
-   Floats compare at rel 1e-9, abs 1e-12.
+   TYPE comes before value (TOM-2547): a parquet file's stored schema, its axes' dtypes,
+   each column's dtype and null mask; a JSON value's type (null, boolean, number, string,
+   array, object; true is not 1, and 1 vs 1.0 is one type, number). Floats compare at
+   rel 1e-9, abs 1e-12; every other value compares exactly.
 6. TRADE. A touched trade-step file, or a touched module that trade code loads (the
    code closure of the import-linter trade layer), owes the live shadow run (quantbox-live
    scripts/shadow_run.py). quantbox is public and has no forge runner, so this script
@@ -908,10 +911,36 @@ def masked_json(node: Any, mask) -> Any:
     return node
 
 
+def json_type(value: Any) -> str:
+    """The JSON type of a decoded value. bool is tested before number: bool is an int in Python."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int | float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return type(value).__name__  # not from json.loads; its own type, never equal to a JSON one
+
+
 def close(a: Any, b: Any) -> bool:
-    if isinstance(a, bool) or isinstance(b, bool):
-        return a == b
-    if isinstance(a, int | float) and isinstance(b, int | float):
+    """Equal in JSON TYPE, then in value (TOM-2547). Python's == says True == 1 and 0 == False.
+
+    JSON types: null, boolean, number, string (lists and dicts are walked by diff_json).
+    int and float are ONE type, number: RFC 8259 has one number type, and JSON Schema's
+    "integer" accepts 1.0. The compare never told 1 from 1.0, and still does not. Two ints
+    compare exactly: the float tolerance is for rounding, and a count has none.
+    """
+    if json_type(a) != json_type(b):
+        return False
+    if json_type(a) == "number":
+        if isinstance(a, int) and isinstance(b, int):
+            return a == b
         if isinstance(a, float) and isinstance(b, float) and math.isnan(a) and math.isnan(b):
             return True
         return math.isclose(a, b, rel_tol=RTOL, abs_tol=ATOL)
@@ -939,10 +968,35 @@ def diff_json(a: Any, b: Any, where: str = "") -> list[str]:
     return [f"{where}: base {json.dumps(a, default=str)[:200]} -> head {json.dumps(b, default=str)[:200]}"]
 
 
+def _level_types(index) -> list[str]:
+    """The dtype of each level of a pandas axis. Index.equals ignores it: [1, 2] equals [1.0, 2.0]."""
+    return [str(index.get_level_values(i).dtype) for i in range(index.nlevels)]
+
+
+def _parquet_types(path: Path) -> list[tuple[str, str]]:
+    """(field, arrow type) of each stored column, index columns included. The file's own types:
+    pandas reads a decimal and a string column both as object, and both print '0.5'."""
+    import pyarrow.parquet as pq
+
+    return [(field.name, str(field.type)) for field in pq.read_schema(path)]
+
+
 def diff_parquet(a: Path, b: Path) -> list[str]:
+    """TYPE before value (TOM-2547): the stored schema, the axes' dtypes and label types, each
+    column's dtype and null mask, and only then the values. A float column compares within
+    RTOL/ATOL, every other column exactly."""
     import numpy as np
     import pandas as pd
 
+    ta, tb = _parquet_types(a), _parquet_types(b)
+    if ta != tb:
+        changed = [f"{n}: {t}" for n, t in ta if (n, t) not in tb]
+        new = [f"{n}: {t}" for n, t in tb if (n, t) not in ta]
+        if not changed and not new:
+            return [
+                f"schema: same fields in another order, base {[n for n, _ in ta][:10]} -> head {[n for n, _ in tb][:10]}"
+            ]
+        return [f"schema: base {changed[:10]} -> head {new[:10]}"]
     fa, fb = pd.read_parquet(a), pd.read_parquet(b)
     out = []
     if fa.shape != fb.shape:
@@ -953,24 +1007,46 @@ def diff_parquet(a: Path, b: Path) -> list[str]:
             sorted(map(str, set(fb.columns) - set(fa.columns))),
         )
         out.append(f"columns: only at base {gone[:10]}, only at head {new[:10]}")
+    elif [type(c).__name__ for c in fa.columns] != [type(c).__name__ for c in fb.columns]:  # 1 == True
+        out.append(
+            f"column labels: base types {[type(c).__name__ for c in fa.columns][:10]} -> head {[type(c).__name__ for c in fb.columns][:10]}"
+        )
+    for axis, ia, ib in (("index", fa.index, fb.index), ("column index", fa.columns, fb.columns)):
+        if _level_types(ia) != _level_types(ib):
+            out.append(f"{axis} dtype: base {_level_types(ia)} -> head {_level_types(ib)}")
     if not fa.index.equals(fb.index):
         out.append(
             f"index: base {len(fa.index)} rows [{fa.index.min()} .. {fa.index.max()}] -> head {len(fb.index)} rows [{fb.index.min()} .. {fb.index.max()}]"
         )
     if out:
         return out
-    for col in fa.columns:
-        x, y = fa[col], fb[col]
-        if pd.api.types.is_numeric_dtype(x) and pd.api.types.is_numeric_dtype(y) and not pd.api.types.is_bool_dtype(x):
-            xv, yv = x.to_numpy(dtype=float), y.to_numpy(dtype=float)
-            bad = ~np.isclose(xv, yv, rtol=RTOL, atol=ATOL, equal_nan=True)
+    for i, col in enumerate(fa.columns):
+        x, y = fa.iloc[:, i], fb.iloc[:, i]
+        if x.dtype != y.dtype:
+            out.append(f"{col}: dtype base {x.dtype} -> head {y.dtype}")
+            continue
+        nx, ny = x.isna().to_numpy(), y.isna().to_numpy()
+        if not np.array_equal(nx, ny):
+            moved = nx != ny
+            out.append(
+                f"{col}: null at base vs not at head (or back) in {int(moved.sum())} of {len(x)} rows, first at {fa.index[moved.argmax()]}"
+            )
+            continue
+        keep = ~nx
+        if pd.api.types.is_float_dtype(x):
+            xv, yv = x.to_numpy(dtype=float)[keep], y.to_numpy(dtype=float)[keep]
+            bad = ~np.isclose(xv, yv, rtol=RTOL, atol=ATOL)
             if bad.any():
-                worst = np.nanmax(np.abs(xv[bad] - yv[bad])) if bad.any() else 0.0
-                first = fa.index[bad.argmax()]
-                out.append(f"{col}: {int(bad.sum())} of {len(xv)} values differ, max |d| {worst:.3g}, first at {first}")
-        elif not x.astype(str).equals(y.astype(str)):
-            n = int((x.astype(str) != y.astype(str)).sum())
-            out.append(f"{col}: {n} of {len(x)} values differ")
+                worst = np.max(np.abs(xv[bad] - yv[bad]))
+                first = fa.index[keep][bad.argmax()]
+                out.append(f"{col}: {int(bad.sum())} of {len(x)} values differ, max |d| {worst:.3g}, first at {first}")
+        else:  # same dtype, same nulls: exact, as text (int, bool, datetime, string, decimal, nested)
+            xs, ys = x[keep].astype(str).to_numpy(), y[keep].astype(str).to_numpy()
+            bad = xs != ys
+            if bad.any():
+                out.append(
+                    f"{col}: {int(bad.sum())} of {len(x)} values differ, first at {fa.index[keep][bad.argmax()]}"
+                )
     return out
 
 
