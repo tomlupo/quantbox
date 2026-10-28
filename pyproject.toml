@@ -1,6 +1,6 @@
 [project]
 name = "quantbox"
-version = "0.20.0"
+version = "0.21.0"
 description = "Quant research & trading core with plugin marketplace (entry points)."
 requires-python = ">=3.11"
 # The base install is what the CORE layer imports (ADR-0010 decision 4,
@@ -238,6 +238,7 @@ forbidden_modules = [
   "quantbox.plugins.pipeline.fund_selection",
   "quantbox.plugins.validation",
   "quantbox.plugins.validation.**",
+  "quantbox.preflight",
   "quantbox.simulation",
   "quantbox.simulation.**",
   "quantbox.sweep",
@@ -302,6 +303,7 @@ forbidden_modules = [
   "quantbox.plugins.pipeline.fund_selection",
   "quantbox.plugins.validation",
   "quantbox.plugins.validation.**",
+  "quantbox.preflight",
   "quantbox.simulation",
   "quantbox.simulation.**",
   "quantbox.sweep",
@@ -347,6 +349,7 @@ source_modules = [
   "quantbox.plugins.pipeline.fund_selection",
   "quantbox.plugins.validation",
   "quantbox.plugins.validation.**",
+  "quantbox.preflight",  # `quantbox preflight`: the lab's gate before a measured backtest (ADR-0013)
   "quantbox.simulation",  # forecasting and plots; re-exports quantbox.montecarlo
   "quantbox.simulation.**",
   "quantbox.sweep",
@@ -411,6 +414,7 @@ forbidden_modules = [
   "quantbox.plugins.pipeline.fund_selection",
   "quantbox.plugins.validation",
   "quantbox.plugins.validation.**",
+  "quantbox.preflight",
   "quantbox.simulation",
   "quantbox.simulation.**",
   "quantbox.sweep",
@@ -488,7 +492,7 @@ forbidden_modules = ["vectorbt", "numba", "ccxt"]
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.20.0"
+version = "0.21.0"
 version_files = [
     "pyproject.toml:version",
     "src/quantbox/__init__.py:__version__",

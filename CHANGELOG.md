@@ -29,6 +29,14 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.21.0 (2026-10-28)
+
+### Feat
+
+- **compare**: .hotl/compare.yml (quant-lib) and scripts/before_after.py, a non-required CI job (TOM-2458) (#320)
+- **preflight**: FLAG exit 3, leverage and replica parity as flags, the binding count and a replication's data step (TOM-2471) (#321)
+- **research**: quantbox preflight, the qute-research pre-flight ported into quantbox (TOM-2457) (#319)
+
 ## v0.20.0 (2026-10-26)
 
 ### Feat

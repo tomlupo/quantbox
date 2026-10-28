@@ -1,0 +1,130 @@
+# quantbox's compare plan: what a PR's before/after runs (TOM-2458).
+#
+# Decision: vaults/projects/infra/decisions/decyzja-2026-10-26-stos-kiss-repo-hotl-fabryka.md,
+# section "Lekki compare". A repo declares only its `type:`; this file holds only
+# quantbox's DIFFERENCES from that type's default. The reader is
+# scripts/before_after.py, run as `<script> <base ref> <out dir>` (hotl verify's
+# before_after contract: exit 0 identical, 1 differs with <out dir>/summary.md,
+# anything else could not run; quantbox adds 3 = PARTIAL and 5 = identical but the
+# live shadow run owed, the script's docstring owns the table). 5 is quantbox's
+# public-CI split of hotl's 1: the shadow run happens only in quantbox-live at the
+# pin bump (Tom, 2026-10-27). A private repo running hotl verify maps "shadow owed"
+# through its own runner.
+#
+# The quant-lib default is below, between the two marker lines. hotl does not own
+# it yet, so it lives here ONCE: scripts/before_after.py reads this comment block
+# (strip "# " from each line, parse it as YAML), so the block and the behaviour
+# cannot drift. When hotl adopts the default, move the block to hotl and delete
+# it here.
+#
+# --- quant-lib default ---
+# type: quant-lib
+# steps: [data, signal, decision, engine, trade]
+# # A path that matches `ignore` maps to no step: it cannot change a result.
+# ignore:
+#   - "docs/**"
+#   - "**/*.md"
+#   - "tests/**"
+#   - ".github/**"
+#   - ".claude/**"
+#   - ".hotl/**"
+#   - "LICENSE"
+#   - ".gitignore"
+#   - "CHANGELOG*"
+# # A path maps to the EARLIEST step whose globs match it.
+# paths:
+#   data: ["datasets.lock", "**/datasources/**", "**/data/**"]
+#   signal: ["**/strategies/**", "**/features/**", "**/signals/**"]
+#   decision: ["**/decision.py", "**/overlays/**"]
+#   engine: ["**/engine/**", "**/backtesting/**", "**/metrics.py"]
+#   trade: ["**/trade/**", "**/broker/**", "**/rebalancing/**"]
+# # What is run: the canonical configs on the slice datasets.lock pins, at base and
+# # at head, diffing what Tom reads. A trade-step diff also owes the live shadow run.
+# runs: canonical configs on datasets.lock; trade adds the shadow run
+# # Safety: a path that maps to no step runs EVERY step. A repo script may narrow
+# # the plan (quantbox: the import graph), never widen what is skipped.
+# unknown: all
+# --- end quant-lib default ---
+
+type: quant-lib
+
+# Added to the default's globs, step by step. Paths are repo-relative.
+paths:
+  data:
+    - "src/quantbox/dataset.py"
+    - "src/quantbox/dataset_lock.py"
+    - "src/quantbox/parquet_io.py"
+    - "src/quantbox/universe.py"
+    - "src/quantbox/market_cap.py"
+    - "src/quantbox/instrument_calendar.py"
+    - "src/quantbox/montecarlo/**"  # data.synthetic.v1 draws its prices here
+    - "cookbook/canonical/fixture*.parquet"
+    - "cookbook/canonical/build_fixture.py"
+  signal:
+    - "src/quantbox/strategy_runner.py"
+    - "src/quantbox/indicators.py"
+  decision:
+    - "src/quantbox/overlays.py"
+  engine:
+    - "src/quantbox/inference.py"
+    - "src/quantbox/gates.py"
+    - "src/quantbox/gates_cli.py"
+    - "src/quantbox/performance.py"
+    - "src/quantbox/execution.py"
+    - "src/quantbox/execution_schedule.py"
+    - "src/quantbox/financing.py"
+    - "src/quantbox/funding_guard.py"
+    - "src/quantbox/simulation/**"
+    - "src/quantbox/plugins/validation/**"
+    - "src/quantbox/plugins/pipeline/backtest_pipeline.py"
+    - "src/quantbox/plugins/pipeline/blocks.py"
+    - "src/quantbox/plugins/pipeline/_report.py"
+    - "src/quantbox/plugins/pipeline/fund_selection.py"
+  # trade: every module of the import-linter `trade` layer (pyproject.toml
+  # [tool.importlinter], read through scripts/layer_map.py) maps to trade, so the
+  # layer map, not a second list here, owns which modules are trade code.
+  trade: []
+
+# A src/quantbox/**.py module no glob matches takes the earliest step of the
+# modules that import it (static imports, plus quantbox module names written as
+# strings for quantbox._lazy.load). With no stepped importer it maps to no step,
+# and an unmapped path runs everything.
+import_graph:
+  package: src/quantbox
+  # Plugin catalogues name EVERY plugin as a string. Their string edges are left
+  # out, or every config would depend on every plugin. A config's plugins come
+  # from the config itself instead.
+  catalogues:
+    - quantbox.plugins.builtins
+    - quantbox.plugins.datasources
+    - quantbox.plugins.pipeline
+    - quantbox.plugins.broker
+    - quantbox.plugins.publisher
+    - quantbox.registry
+    - quantbox._removed  # names the NEW import paths in ImportError messages; loads nothing
+
+# The configs the before/after may run: backtests on the pinned slice
+# (datasets.lock) or on bundled data. A config runs when its code closure holds a
+# touched module, when it is itself touched, or when it reads a touched data file.
+configs:
+  - cookbook/canonical/configs/momentum.yaml
+  - cookbook/canonical/configs/trend_catcher_simple.yaml
+  - cookbook/configs/example_minimal.yaml
+  - cookbook/configs/run_backtest_beglobal.yaml
+  - cookbook/configs/run_backtest_portfolio_optimizer.yaml
+  - cookbook/configs/run_backtest_overlay_reversal_derisk.yaml
+  - cookbook/configs/run_stress_test.yaml
+  - cookbook/configs/run_synthetic_backtest.yaml
+# Left out, and why (the script does not read this list; it is the record):
+#   run_backtest_crypto_trend, run_backtest_ml_prediction: live Binance data, not a pinned slice.
+#   run_fund_selection: reads ./data/curated/prices.parquet, which is not in the repo.
+#   paper and live configs: the trade step; the live shadow run covers them.
+
+# The trade step's run. quantbox is public and has no forge runner, so the
+# before/after cannot run it: it names it as owed and exits 5 (1 when a config
+# also differs).
+shadow_run:
+  repo: tomlupo/quantbox-live
+  command: "uv run python scripts/shadow_run.py <base sha> <head sha>"
+  where: "forge, as tom, in a quantbox-live checkout (never as prod, never with prod's keys)"
+  rule: "Every P5 merge needs a live shadow run (Tom, 2026-10-10, EPIC TOM-1445)"
