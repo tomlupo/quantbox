@@ -40,6 +40,11 @@ OLD_SPELLINGS = [
     ("100L", pd.offsets.Milli(100)),
     ("10U", pd.offsets.Micro(10)),
     ("1N", pd.offsets.Nano(1)),
+    # compound, fractional and numeric-anchor spellings (codex on #331)
+    ("1H30T", pd.Timedelta(minutes=90)),
+    ("1D1H", pd.Timedelta(hours=25)),
+    ("1.5H", pd.Timedelta(minutes=90)),
+    ("SM-15", pd.offsets.SemiMonthEnd(day_of_month=15)),
 ]
 
 UNCHANGED = ["1D", "1W", "W-FRI", "2W", "ME", "6ME", "MS", "QS", "YS", "BMS", "1min", "1h", "100ms", "not-an-offset"]
@@ -47,7 +52,12 @@ UNCHANGED = ["1D", "1W", "W-FRI", "2W", "ME", "6ME", "MS", "QS", "YS", "BMS", "1
 
 @pytest.mark.parametrize(("old", "offset"), OLD_SPELLINGS)
 def test_an_old_spelling_keeps_its_meaning(old, offset):
-    assert to_offset(pandas_offset_alias(old)) == offset
+    """A Timedelta expectation (compound, fractional) is compared as the tick offset's span."""
+    got = to_offset(pandas_offset_alias(old))
+    if isinstance(offset, pd.Timedelta):
+        assert pd.Timedelta(got) == offset
+    else:
+        assert got == offset
 
 
 @pytest.mark.parametrize("spec", UNCHANGED)

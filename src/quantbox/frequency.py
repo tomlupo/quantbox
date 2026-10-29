@@ -224,23 +224,34 @@ _RENAMED_ALIASES = {
     "U": "us",
     "N": "ns",
 }
-_ALIAS_RE = re.compile(r"^(?P<n>[+-]?\d*)(?P<alias>[A-Z]+)(?P<anchor>-[A-Z]{3})?$")
+# One offset token: a multiplier (integer or fractional, signed), the alias, an
+# optional anchor ("-DEC", "-FRI", "-15"). pandas also reads compound strings,
+# tokens in a row ("1H30T", "1D1H"); each token is mapped on its own.
+_TOKEN_RE = re.compile(r"(?P<n>[+-]?\d*(?:\.\d+)?)(?P<alias>[A-Za-z]+)(?P<anchor>-[A-Za-z0-9]+)?")
+_SPEC_RE = re.compile(r"(?:[+-]?\d*(?:\.\d+)?[A-Za-z]+(?:-[A-Za-z0-9]+)?)+")
+
+
+def _rename_token(match: re.Match[str]) -> str:
+    alias = _RENAMED_ALIASES.get(match["alias"], match["alias"])
+    return f"{match['n']}{alias}{match['anchor'] or ''}"
 
 
 def pandas_offset_alias(spec: str) -> str:
-    """*spec* with a pre-2.2 offset alias in its pandas 2.2+ spelling: ``"6M"`` -> ``"6ME"``.
+    """*spec* with each pre-2.2 offset alias in its pandas 2.2+ spelling: ``"6M"`` -> ``"6ME"``.
 
-    The ONE place quantbox maps a user's frequency string for pandas 3; every
-    call site that hands one to pandas goes through it. ``"1Y"`` -> ``"1YE"``,
+    The ONE place quantbox maps a user's OFFSET string for pandas 3; every call
+    site that hands one to pandas as an offset goes through it (a ``Frequency``
+    bar size is a ``pd.Timedelta``, not an offset). ``"1Y"`` -> ``"1YE"``,
     ``"Q-DEC"`` -> ``"QE-DEC"``, ``"1A"`` -> ``"1YE"``, ``"4H"`` -> ``"4h"``,
-    ``"5T"`` -> ``"5min"``, ``"AS-JAN"`` -> ``"YS-JAN"``. Every other string
-    (``"1D"``, ``"1W"``, ``"ME"``, ``"MS"``, ``"1min"``, garbage) is returned
-    unchanged, so pandas still parses or refuses it as before.
+    ``"5T"`` -> ``"5min"``, ``"AS-JAN"`` -> ``"YS-JAN"``, ``"SM-15"`` ->
+    ``"SME-15"``, ``"1.5H"`` -> ``"1.5h"``, and per token in a compound string:
+    ``"1H30T"`` -> ``"1h30min"``. Every other string (``"1D"``, ``"1W"``,
+    ``"ME"``, ``"MS"``, ``"1min"``, garbage) is returned unchanged, so pandas
+    still parses or refuses it as before.
     """
-    match = _ALIAS_RE.match(spec)
-    if match is None or match["alias"] not in _RENAMED_ALIASES:
+    if not _SPEC_RE.fullmatch(spec):
         return spec
-    return f"{match['n']}{_RENAMED_ALIASES[match['alias']]}{match['anchor'] or ''}"
+    return _TOKEN_RE.sub(_rename_token, spec)
 
 
 def parse_rebalance_offset(spec: str | pd.DateOffset) -> pd.DateOffset:
