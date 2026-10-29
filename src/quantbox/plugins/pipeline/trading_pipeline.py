@@ -23,6 +23,7 @@ from typing import Any, ClassVar
 import numpy as np
 import pandas as pd
 
+from quantbox._numerics import WEIGHT_ATOL
 from quantbox.contracts import (
     ArtifactStore,
     BrokerCapability,
@@ -72,9 +73,12 @@ logger = logging.getLogger(__name__)
 
 
 def _target_dict(weights: dict[str, float]) -> dict[str, float]:
-    """Target weights as the order generators take them: ``{symbol: weight}``, zeros dropped, largest first."""
+    """Target weights as the order generators take them: ``{symbol: weight}``, zeros and dust dropped, largest first.
+
+    Dust is a weight within ``WEIGHT_ATOL`` (1e-12) of zero: optimizer noise, no position.
+    """
     s = pd.Series(weights, dtype=float)
-    s = s[s != 0].sort_values(ascending=False)
+    s = s[~(s.abs() <= WEIGHT_ATOL)].sort_values(ascending=False)
     return {str(k): float(v) for k, v in s.items()}
 
 
