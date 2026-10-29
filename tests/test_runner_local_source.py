@@ -108,6 +108,55 @@ def test_load_local_source_malformed_string_raises():
         _load_local_source_class("not_a_valid_source_string")
 
 
+# TOM-2514: the shape of the H60 Faber line plugin (dev-loop 2026-10-28). With string
+# annotations, @dataclass looks the module up in sys.modules to resolve ClassVar; a module
+# exec'd outside sys.modules failed with "'NoneType' object has no attribute '__dict__'".
+_FUTURE_ANNOTATIONS_SRC = """
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import ClassVar
+
+from quantbox.contracts import PluginMeta
+
+
+@dataclass
+class FutureStrategy:
+    meta: ClassVar[PluginMeta] = PluginMeta(
+        name="lab.strategy.future.v1",
+        kind="strategy",
+        version="0.0.1",
+        core_compat=">=0.1,<0.2",
+        status="research",
+        description="Line plugin with string annotations.",
+    )
+    lookback: int = 10
+
+    def run(self, data, params=None):
+        return {"weights": data["prices"].tail(1) * 0}
+"""
+
+
+def test_load_local_source_with_future_annotations_loads(tmp_path: Path):
+    p = tmp_path / "future_strat.py"
+    p.write_text(_FUTURE_ANNOTATIONS_SRC)
+    cls = _load_local_source_class(f"{p}:FutureStrategy", expected_kind="strategy")
+    assert cls.meta.name == "lab.strategy.future.v1"
+    assert cls(lookback=3).lookback == 3
+
+
+def test_load_local_source_failed_exec_leaves_no_module(tmp_path: Path):
+    import sys
+
+    p = tmp_path / "broken_strat.py"
+    p.write_text("raise RuntimeError('broken at import')\n")
+    before = {m for m in sys.modules if m.startswith("_quantbox_localsource__broken_strat__")}
+    with pytest.raises(RuntimeError, match="broken at import"):
+        _load_local_source_class(f"{p}:Whatever")
+    after = {m for m in sys.modules if m.startswith("_quantbox_localsource__broken_strat__")}
+    assert after == before
+
+
 # --- _resolve_plugin_cls (resolution + safety rails) ---
 
 

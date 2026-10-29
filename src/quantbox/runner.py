@@ -5,6 +5,7 @@ import importlib.util
 import json
 import logging
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -115,7 +116,15 @@ def _load_local_source_class(source: str, expected_kind: str | None = None) -> t
     if spec_obj is None or spec_obj.loader is None:
         raise ImportError(f"Cannot create module spec for: {path}")
     module = importlib.util.module_from_spec(spec_obj)
-    spec_obj.loader.exec_module(module)
+    # Registered before exec, as importlib does for any import: @dataclass resolves string
+    # annotations (``from __future__ import annotations``) through sys.modules (TOM-2514).
+    # A failed exec leaves no half-loaded module behind.
+    sys.modules[module_name] = module
+    try:
+        spec_obj.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(module_name, None)
+        raise
 
     cls = getattr(module, class_name, None)
     if cls is None:
