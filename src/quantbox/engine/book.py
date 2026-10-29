@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import math
 from collections.abc import Mapping
 from typing import Any
 
@@ -199,6 +200,17 @@ def _join(frames: list[tuple[Any, pd.DataFrame]], level_names: list | None) -> p
     return joined
 
 
+def _ticker_label(column: Any) -> str:
+    """A weights column as the refusal names it: a missing label reads ``None``.
+
+    pandas 3 stores a ``None`` column label as NaN in a string-dtype index, so
+    ``str()`` would name it ``'nan'``, a label the caller never wrote.
+    """
+    if column is None or (isinstance(column, float) and math.isnan(column)):
+        return "None"
+    return str(column)
+
+
 def _missing_tickers(prices: pd.DataFrame, slices: list[tuple[Any, pd.DataFrame]], where: str) -> None:
     """A non-zero weight on a ticker with no price column at all is refused, on every schedule (TOM-1500).
 
@@ -207,7 +219,12 @@ def _missing_tickers(prices: pd.DataFrame, slices: list[tuple[Any, pd.DataFrame]
     book the strategy did not decide. A column of zeros holds nothing and passes.
     """
     missing = sorted(
-        {str(c) for _, w in slices for c in w.columns if c not in prices.columns and (w[c].fillna(0.0) != 0).any()}
+        {
+            _ticker_label(c)
+            for _, w in slices
+            for c in w.columns
+            if c not in prices.columns and (w[c].fillna(0.0) != 0).any()
+        }
     )
     if missing:
         raise ValueError(

@@ -36,6 +36,7 @@ Example
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -47,6 +48,7 @@ import pandas_market_calendars as mcal
 __all__ = [
     "FREQUENCY_ALIASES",
     "Frequency",
+    "pandas_offset_alias",
     "parse_rebalance_offset",
     "rebalancing_dates",
     "resolve_pipeline_frequency",
@@ -192,6 +194,73 @@ def resolve_pipeline_frequency(params: dict[str, Any], prices_params: dict[str, 
 # ---------------------------------------------------------------------------
 
 
+# The offset aliases pandas 2.2 renamed and pandas 3 removed ("1M" raises
+# "Invalid frequency" there). Users and configs keep writing "1M" / "6M" / "4H";
+# quantbox maps them to the new spelling, which pandas 2.2+ and 3 both read the
+# same way. The alias is matched WHOLE and case-sensitive, so "MS", "QS", "YS"
+# (period starts) and the lowercase spellings pass through untouched.
+_RENAMED_ALIASES = {
+    # period ends
+    "M": "ME",
+    "BM": "BME",
+    "SM": "SME",
+    "CBM": "CBME",
+    "Q": "QE",
+    "BQ": "BQE",
+    "Y": "YE",
+    "BY": "BYE",
+    "A": "YE",
+    "BA": "BYE",
+    # year starts
+    "AS": "YS",
+    "BAS": "BYS",
+    # intraday and business hours
+    "H": "h",
+    "BH": "bh",
+    "CBH": "cbh",
+    "T": "min",
+    "S": "s",
+    "L": "ms",
+    "U": "us",
+    "N": "ns",
+}
+# One offset token: a multiplier (integer or fractional, signed), the alias, an
+# optional anchor ("-DEC", "-FRI", "-15"). pandas also reads compound strings,
+# tokens in a row ("1H30T", "1D1H"); each token is mapped on its own.
+#
+# The string is read token by token, left to right, each token matched once
+# and never revisited: linear in the length. A single regex over the whole
+# string (`(token)+` with fullmatch) backtracked exponentially on a bad string
+# ("A"*26 + "!": 13 s; "-A"*32 + "!": 2 s), because its optional parts let
+# the same text split many ways (review rounds 3 and 4 on #331).
+_TOKEN_RE = re.compile(r"(?P<n>[+-]?\d*(?:\.\d+)?)(?P<alias>[A-Za-z]++)(?P<anchor>-[A-Za-z0-9]++)?+")
+
+
+def pandas_offset_alias(spec: str) -> str:
+    """*spec* with each pre-2.2 offset alias in its pandas 2.2+ spelling: ``"6M"`` -> ``"6ME"``.
+
+    The ONE place quantbox maps a user's OFFSET string for pandas 3; every call
+    site that hands one to pandas as an offset goes through it (a ``Frequency``
+    bar size is a ``pd.Timedelta``, not an offset). ``"1Y"`` -> ``"1YE"``,
+    ``"Q-DEC"`` -> ``"QE-DEC"``, ``"1A"`` -> ``"1YE"``, ``"4H"`` -> ``"4h"``,
+    ``"5T"`` -> ``"5min"``, ``"AS-JAN"`` -> ``"YS-JAN"``, ``"1.5H"`` ->
+    ``"1.5h"``, and per token in a compound string:
+    ``"1H30T"`` -> ``"1h30min"``. Every other string (``"1D"``, ``"1W"``,
+    ``"ME"``, ``"MS"``, ``"1min"``, garbage) is returned unchanged, so pandas
+    still parses or refuses it as before.
+    """
+    parts: list[str] = []
+    pos = 0
+    while pos < len(spec):
+        token = _TOKEN_RE.match(spec, pos)
+        if token is None:
+            return spec  # not an offset string: pandas parses or refuses it as is
+        alias = _RENAMED_ALIASES.get(token["alias"], token["alias"])
+        parts.append(f"{token['n']}{alias}{token['anchor'] or ''}")
+        pos = token.end()
+    return "".join(parts) if parts else spec
+
+
 def parse_rebalance_offset(spec: str | pd.DateOffset) -> pd.DateOffset:
     """Strict parser for rebalance-frequency strings (e.g. ``"1D"``, ``"1W"``, ``"1M"``).
 
@@ -235,7 +304,7 @@ def parse_rebalance_offset(spec: str | pd.DateOffset) -> pd.DateOffset:
             f"{spec[:-1] + 'min'!r} for minutes to disambiguate."
         )
 
-    return pd.tseries.frequencies.to_offset(spec)
+    return pd.tseries.frequencies.to_offset(pandas_offset_alias(spec))
 
 
 def _period_end(offset: pd.DateOffset) -> bool:
