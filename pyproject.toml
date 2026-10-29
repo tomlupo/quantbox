@@ -8,9 +8,10 @@ requires-python = ">=3.11"
 # core module does not import belongs in an extra below. This file is the one
 # owner of every list; docs point here.
 dependencies = [
-  # pandas 2 and 3 both: the lock runs the suite on 3, and consumers still on
-  # pandas 2 (robo, which caps numpy below 2.2) must still resolve. Code that
-  # differs between them goes through one helper (quantbox.frequency.pandas_offset_alias).
+  # pandas 2 and 3 both: the lock runs the suite on 3, and a consumer pinned to
+  # pandas 2 must still resolve (quantbox-lab, quantbox-live, robo pin quantbox;
+  # robo caps numpy below 2.2, which resolves to pandas 3 + numpy 2.1 or to
+  # pandas 2). Offset aliases go through quantbox.frequency.pandas_offset_alias.
   "pandas>=2.3.3,<4",
   # The floor is the lowest numpy the suite was run on, not the lock's version:
   # the full suite passes on 1.26.4 and on 2.1.3 (TOM-1451). No core code needs

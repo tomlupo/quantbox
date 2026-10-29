@@ -287,8 +287,7 @@ def apply_rebalancing(
     if frequency == "D":
         return weights
 
-    # Get rebalance dates
-    # 'M' is the config spelling; pandas 3 resamples month-ends only as 'ME'.
+    # Get rebalance dates ('M' -> 'ME' for pandas 3: quantbox.frequency.pandas_offset_alias)
     rebalanced = weights.resample(pandas_offset_alias(frequency)).first()
 
     # Forward fill to daily

@@ -194,11 +194,13 @@ def resolve_pipeline_frequency(params: dict[str, Any], prices_params: dict[str, 
 # ---------------------------------------------------------------------------
 
 
-# The period-end aliases pandas 2.2 renamed and pandas 3 removed ("1M" raises
-# "Invalid frequency" there). Users and configs keep writing "1M" / "6M" / "1Y";
+# The offset aliases pandas 2.2 renamed and pandas 3 removed ("1M" raises
+# "Invalid frequency" there). Users and configs keep writing "1M" / "6M" / "4H";
 # quantbox maps them to the new spelling, which pandas 2.2+ and 3 both read the
-# same way (a month-end, a year-end, ...).
-_PERIOD_END_ALIASES = {
+# same way. The alias is matched WHOLE and case-sensitive, so "MS", "QS", "YS"
+# (period starts) and the lowercase spellings pass through untouched.
+_RENAMED_ALIASES = {
+    # period ends
     "M": "ME",
     "BM": "BME",
     "SM": "SME",
@@ -209,21 +211,36 @@ _PERIOD_END_ALIASES = {
     "BY": "BYE",
     "A": "YE",
     "BA": "BYE",
+    # year starts
+    "AS": "YS",
+    "BAS": "BYS",
+    # intraday and business hours
+    "H": "h",
+    "BH": "bh",
+    "CBH": "cbh",
+    "T": "min",
+    "S": "s",
+    "L": "ms",
+    "U": "us",
+    "N": "ns",
 }
 _ALIAS_RE = re.compile(r"^(?P<n>[+-]?\d*)(?P<alias>[A-Z]+)(?P<anchor>-[A-Z]{3})?$")
 
 
 def pandas_offset_alias(spec: str) -> str:
-    """*spec* with a pre-2.2 period-end alias in its pandas 2.2+ spelling: ``"6M"`` -> ``"6ME"``.
+    """*spec* with a pre-2.2 offset alias in its pandas 2.2+ spelling: ``"6M"`` -> ``"6ME"``.
 
-    ``"1Y"`` -> ``"1YE"``, ``"Q-DEC"`` -> ``"QE-DEC"``, ``"1A"`` -> ``"1YE"``. Every other
-    string (``"1D"``, ``"1W"``, ``"ME"``, ``"1min"``, garbage) is returned unchanged,
-    so pandas still parses or refuses it as before.
+    The ONE place quantbox maps a user's frequency string for pandas 3; every
+    call site that hands one to pandas goes through it. ``"1Y"`` -> ``"1YE"``,
+    ``"Q-DEC"`` -> ``"QE-DEC"``, ``"1A"`` -> ``"1YE"``, ``"4H"`` -> ``"4h"``,
+    ``"5T"`` -> ``"5min"``, ``"AS-JAN"`` -> ``"YS-JAN"``. Every other string
+    (``"1D"``, ``"1W"``, ``"ME"``, ``"MS"``, ``"1min"``, garbage) is returned
+    unchanged, so pandas still parses or refuses it as before.
     """
     match = _ALIAS_RE.match(spec)
-    if match is None or match["alias"] not in _PERIOD_END_ALIASES:
+    if match is None or match["alias"] not in _RENAMED_ALIASES:
         return spec
-    return f"{match['n']}{_PERIOD_END_ALIASES[match['alias']]}{match['anchor'] or ''}"
+    return f"{match['n']}{_RENAMED_ALIASES[match['alias']]}{match['anchor'] or ''}"
 
 
 def parse_rebalance_offset(spec: str | pd.DateOffset) -> pd.DateOffset:
@@ -269,7 +286,6 @@ def parse_rebalance_offset(spec: str | pd.DateOffset) -> pd.DateOffset:
             f"{spec[:-1] + 'min'!r} for minutes to disambiguate."
         )
 
-    # "1M" / "1Y" stay the user-facing spelling; pandas 3 reads only "1ME" / "1YE".
     return pd.tseries.frequencies.to_offset(pandas_offset_alias(spec))
 
 
