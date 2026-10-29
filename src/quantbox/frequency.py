@@ -36,6 +36,7 @@ Example
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -47,6 +48,7 @@ import pandas_market_calendars as mcal
 __all__ = [
     "FREQUENCY_ALIASES",
     "Frequency",
+    "pandas_offset_alias",
     "parse_rebalance_offset",
     "rebalancing_dates",
     "resolve_pipeline_frequency",
@@ -192,6 +194,38 @@ def resolve_pipeline_frequency(params: dict[str, Any], prices_params: dict[str, 
 # ---------------------------------------------------------------------------
 
 
+# The period-end aliases pandas 2.2 renamed and pandas 3 removed ("1M" raises
+# "Invalid frequency" there). Users and configs keep writing "1M" / "6M" / "1Y";
+# quantbox maps them to the new spelling, which pandas 2.2+ and 3 both read the
+# same way (a month-end, a year-end, ...).
+_PERIOD_END_ALIASES = {
+    "M": "ME",
+    "BM": "BME",
+    "SM": "SME",
+    "CBM": "CBME",
+    "Q": "QE",
+    "BQ": "BQE",
+    "Y": "YE",
+    "BY": "BYE",
+    "A": "YE",
+    "BA": "BYE",
+}
+_ALIAS_RE = re.compile(r"^(?P<n>[+-]?\d*)(?P<alias>[A-Z]+)(?P<anchor>-[A-Z]{3})?$")
+
+
+def pandas_offset_alias(spec: str) -> str:
+    """*spec* with a pre-2.2 period-end alias in its pandas 2.2+ spelling: ``"6M"`` -> ``"6ME"``.
+
+    ``"1Y"`` -> ``"1YE"``, ``"Q-DEC"`` -> ``"QE-DEC"``, ``"1A"`` -> ``"1YE"``. Every other
+    string (``"1D"``, ``"1W"``, ``"ME"``, ``"1min"``, garbage) is returned unchanged,
+    so pandas still parses or refuses it as before.
+    """
+    match = _ALIAS_RE.match(spec)
+    if match is None or match["alias"] not in _PERIOD_END_ALIASES:
+        return spec
+    return f"{match['n']}{_PERIOD_END_ALIASES[match['alias']]}{match['anchor'] or ''}"
+
+
 def parse_rebalance_offset(spec: str | pd.DateOffset) -> pd.DateOffset:
     """Strict parser for rebalance-frequency strings (e.g. ``"1D"``, ``"1W"``, ``"1M"``).
 
@@ -235,7 +269,8 @@ def parse_rebalance_offset(spec: str | pd.DateOffset) -> pd.DateOffset:
             f"{spec[:-1] + 'min'!r} for minutes to disambiguate."
         )
 
-    return pd.tseries.frequencies.to_offset(spec)
+    # "1M" / "1Y" stay the user-facing spelling; pandas 3 reads only "1ME" / "1YE".
+    return pd.tseries.frequencies.to_offset(pandas_offset_alias(spec))
 
 
 def _period_end(offset: pd.DateOffset) -> bool:

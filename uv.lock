@@ -2778,7 +2778,7 @@ requires-dist = [
     { name = "matplotlib", marker = "extra == 'viz'", specifier = ">=3.11.2" },
     { name = "numba", marker = "extra == 'vectorbt'", specifier = ">=0.68.0" },
     { name = "numpy", specifier = ">=1.26.4" },
-    { name = "pandas", specifier = ">=2.3.3" },
+    { name = "pandas", specifier = ">=2.3.3,<4" },
     { name = "pandas-market-calendars", specifier = ">=5.5.0" },
     { name = "plotly", marker = "extra == 'research'", specifier = ">=6.5.2,<7" },
     { name = "pyarrow", specifier = ">=26.0.0" },

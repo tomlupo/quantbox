@@ -47,6 +47,7 @@ import numpy as np
 import pandas as pd
 
 from quantbox.contracts import PluginMeta, StrategyContext
+from quantbox.frequency import pandas_offset_alias
 from quantbox.strategy_runner import resolve_annualize
 from quantbox.universe import DEFAULT_STABLECOINS
 
@@ -287,7 +288,8 @@ def apply_rebalancing(
         return weights
 
     # Get rebalance dates
-    rebalanced = weights.resample(frequency).first()
+    # 'M' is the config spelling; pandas 3 resamples month-ends only as 'ME'.
+    rebalanced = weights.resample(pandas_offset_alias(frequency)).first()
 
     # Forward fill to daily
     rebalanced = rebalanced.reindex(weights.index).ffill()
