@@ -55,6 +55,7 @@ from typing import Any
 
 import pandas as pd
 
+from quantbox._numerics import is_held
 from quantbox.contracts import (
     ArtifactStore,
     BrokerPlugin,
@@ -792,7 +793,7 @@ class BacktestPipeline:
 
         # Save latest aggregated weights (same as TradingPipeline)
         latest_weights = weights_history.iloc[-1]
-        agg_records = [{"symbol": str(k), "weight": float(v)} for k, v in latest_weights.items() if v != 0]
+        agg_records = [{"symbol": str(k), "weight": float(v)} for k, v in latest_weights.items() if is_held(v)]
         a_agg_w = store.put_parquet("aggregated_weights", pd.DataFrame(agg_records))
 
         # Save full weights history
@@ -1222,7 +1223,7 @@ class BacktestPipeline:
 
         # Risk checks on primary variant's latest targets
         latest = primary["weights_history"].iloc[-1] if len(primary["weights_history"]) else pd.Series(dtype=float)
-        agg_records = [{"symbol": str(k), "weight": float(v)} for k, v in latest.items() if v != 0]
+        agg_records = [{"symbol": str(k), "weight": float(v)} for k, v in latest.items() if is_held(v)]
         risk_findings: list[dict[str, Any]] = []
         for rp in risk:
             try:

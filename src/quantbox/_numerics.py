@@ -1,9 +1,10 @@
-"""The framework's one "cancelled to floating-point noise" test (internal).
+"""The framework's "cancelled to floating-point noise" tests (internal).
 
 :mod:`quantbox.metrics` (a statistic with no answer is NaN) and
 :mod:`quantbox.inference` (an input that cannot produce a statistic is refused)
 both ask the same question of a series: is its spread real, or rounding noise?
-They ask it here, so the threshold and the test exist once.
+The pipelines ask it of a weight: is it a position, or optimizer dust? They ask
+here, so each threshold and test exists once.
 """
 
 from __future__ import annotations
@@ -27,6 +28,22 @@ import numpy as np
 # every observation is exactly zero, scale is 0 and the test reduces to
 # std <= 0, which still holds.
 DEGENERATE_RTOL = 1e-12
+
+
+# A portfolio weight within this of zero is no position: optimizer dust. A
+# solver that lands on the zero bound returns 1e-15-ish, not 0.0, and which
+# symbols carry dust moves with the BLAS build (numpy 2.3.5 vs 2.5.4 swapped
+# SYN_001 for SYN_004 in the synthetic backtest, #331). 1e-12 is the weight
+# tolerance the engine already used as copies (engine/groups._TOL, the two
+# book-equality checks in engine/schedule.py); they read it from here now.
+# Every list that drops zero weights (aggregated_weights, trade targets, the
+# order generators' targets) drops dust with it.
+WEIGHT_ATOL = 1e-12
+
+
+def is_held(weight: float) -> bool:
+    """A weight that is a position: NOT within WEIGHT_ATOL of zero. A NaN weight is kept, as ``!= 0`` kept it."""
+    return not abs(weight) <= WEIGHT_ATOL
 
 
 def flat(x, *, ddof: int = 0) -> bool:

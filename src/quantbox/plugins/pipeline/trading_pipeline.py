@@ -23,6 +23,7 @@ from typing import Any, ClassVar
 import numpy as np
 import pandas as pd
 
+from quantbox._numerics import WEIGHT_ATOL, is_held
 from quantbox.contracts import (
     ArtifactStore,
     BrokerCapability,
@@ -72,9 +73,12 @@ logger = logging.getLogger(__name__)
 
 
 def _target_dict(weights: dict[str, float]) -> dict[str, float]:
-    """Target weights as the order generators take them: ``{symbol: weight}``, zeros dropped, largest first."""
+    """Target weights as the order generators take them: ``{symbol: weight}``, zeros and dust dropped, largest first.
+
+    Dust is a weight within ``WEIGHT_ATOL`` (1e-12) of zero: optimizer noise, no position.
+    """
     s = pd.Series(weights, dtype=float)
-    s = s[s != 0].sort_values(ascending=False)
+    s = s[~(s.abs() <= WEIGHT_ATOL)].sort_values(ascending=False)
     return {str(k): float(v) for k, v in s.items()}
 
 
@@ -1485,10 +1489,10 @@ class TradingPipeline:
             return decision, {
                 **valued,
                 "orders": pd.DataFrame(columns=list(ORDER_COLUMNS)),
-                "weights": {str(k): float(v) for k, v in held.items() if v != 0},
+                "weights": {str(k): float(v) for k, v in held.items() if is_held(v)},
             }
         assert decision.targets is not None
-        targets = {str(k): float(v) for k, v in decision.targets.items() if v != 0}
+        targets = {str(k): float(v) for k, v in decision.targets.items() if is_held(v)}
         result = generate(targets)
         result["orders"] = self._hold_untraded(result.get("orders"), decision.trades)
         logger.info(
