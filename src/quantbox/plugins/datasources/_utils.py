@@ -22,6 +22,7 @@ import pandas as pd
 from quantbox._lazy import load
 from quantbox._removed import removed_names
 from quantbox.duckdb_io import fetch_df
+from quantbox.exceptions import MissingExtraError
 from quantbox.frequency import FREQUENCY_ALIASES
 from quantbox.market_cap import MarketCapProvider as _MarketCapProvider
 from quantbox.market_cap import load_pit_market_cap as _load_pit_market_cap
@@ -168,6 +169,17 @@ def normalize_data_frequency(frequency: str) -> str:
 # ============================================================================
 
 
+def _utc(ts: pd.Timestamp) -> pd.Timestamp:
+    """*ts* as a UTC instant; a naive timestamp is read as UTC."""
+    return ts.tz_localize("UTC") if ts.tz is None else ts.tz_convert("UTC")
+
+
+def _utc_series(dates: pd.Series) -> pd.Series:
+    """*dates* as UTC instants; naive dates are read as UTC."""
+    dates = pd.to_datetime(dates)
+    return dates.dt.tz_localize("UTC") if dates.dt.tz is None else dates.dt.tz_convert("UTC")
+
+
 class OHLCVCache:
     """DuckDB-backed Parquet cache for OHLCV data.
 
@@ -212,22 +224,41 @@ class OHLCVCache:
             return None
 
         glob_pattern = str(tdir / "*.parquet")
-        duckdb = load("duckdb", extra="data")  # outside the try: a missing extra is not "no cache"
+        query = f"""
+            SELECT date, open, high, low, close, volume
+            FROM read_parquet('{glob_pattern}')
+            WHERE date >= '{start_date}' AND date <= '{end_date}'
+            ORDER BY date
+        """
         try:
-            query = f"""
-                SELECT date, open, high, low, close, volume
-                FROM read_parquet('{glob_pattern}')
-                WHERE date >= '{start_date}' AND date <= '{end_date}'
-                ORDER BY date
-            """
-            df = fetch_df(duckdb, query)
+            df = self._query_utc(query)
             if df.empty:
                 return None
             df["date"] = pd.to_datetime(df["date"])
             return df
+        except MissingExtraError:
+            raise  # a missing extra is not "no cache"
         except Exception as exc:
             logger.debug("Cache read failed for %s: %s", ticker, exc)
             return None
+
+    @staticmethod
+    def _query_utc(query: str) -> pd.DataFrame:
+        """*query* on a duckdb connection whose session timezone is UTC.
+
+        ``date >= '2024-01-02'`` on a tz-aware column compares in the SESSION's
+        timezone, and a default session takes the box's: a New York box cut the
+        window at 05:00 UTC, a Tokyo box at 15:00 UTC the day before. A UTC
+        session cuts at UTC midnight on every box; a naive column compares as is.
+        Tz-aware dates come back in UTC.
+        """
+        duckdb = load("duckdb", extra="data")
+        con = duckdb.connect()
+        try:
+            con.execute("SET TimeZone = 'UTC'")
+            return fetch_df(con, query)
+        finally:
+            con.close()
 
     def get_last_date(self, ticker: str, interval: str = "1d") -> pd.Timestamp | None:
         """Get the most recent cached date for a ticker."""
@@ -236,24 +267,28 @@ class OHLCVCache:
             return None
 
         glob_pattern = str(tdir / "*.parquet")
-        duckdb = load("duckdb", extra="data")  # outside the try: a missing extra is not "no cache"
+        query = f"SELECT MAX(date) AS last_date FROM read_parquet('{glob_pattern}')"
         try:
-            query = f"SELECT MAX(date) AS last_date FROM read_parquet('{glob_pattern}')"
-            result = fetch_df(duckdb, query)
+            result = self._query_utc(query)
             val = result["last_date"].iloc[0]
             if pd.isna(val):
                 return None
             return pd.Timestamp(val)
+        except MissingExtraError:
+            raise  # a missing extra is not "no cache"
         except Exception:
             return None
 
     def is_fresh(self, ticker: str, end_date: str, interval: str = "1d") -> bool:
-        """Check if cached data is fresh enough to skip re-fetching."""
+        """Check if cached data is fresh enough to skip re-fetching.
+
+        Both sides are compared in UTC (a naive date is read as UTC): a tz-aware
+        cache against a naive *end_date* raised TypeError before.
+        """
         last = self.get_last_date(ticker, interval)
         if last is None:
             return False
-        target = pd.Timestamp(end_date)
-        return (target - last) < timedelta(hours=self.fresh_ttl_hours)
+        return (_utc(pd.Timestamp(end_date)) - _utc(last)) < timedelta(hours=self.fresh_ttl_hours)
 
     def store(self, ticker: str, df: pd.DataFrame, interval: str = "1d") -> None:
         """Append new OHLCV data to the cache.
@@ -270,16 +305,19 @@ class OHLCVCache:
         store_df = df[["date", "open", "high", "low", "close", "volume"]].copy()
         store_df["date"] = pd.to_datetime(store_df["date"])
 
-        # Deduplicate against existing cache using exact timestamps
+        # Deduplicate against existing cache using exact timestamps, compared as UTC
+        # instants. The window is the new rows' first and last instant in UTC, to
+        # the second: a date-only end bound dropped every bar after 00:00 of the
+        # last day from the check, so an intraday re-store wrote them twice.
+        new_utc = _utc_series(store_df["date"])
         existing = self.get_cached(
             ticker,
-            store_df["date"].min().strftime("%Y-%m-%d"),
-            store_df["date"].max().strftime("%Y-%m-%d"),
+            new_utc.min().strftime("%Y-%m-%d %H:%M:%S"),
+            new_utc.max().strftime("%Y-%m-%d %H:%M:%S"),
             interval=interval,
         )
         if existing is not None and not existing.empty:
-            existing_ts = set(existing["date"])
-            store_df = store_df[~store_df["date"].isin(existing_ts)]
+            store_df = store_df[~new_utc.isin(set(_utc_series(existing["date"])))]
 
         if store_df.empty:
             return
