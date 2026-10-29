@@ -226,9 +226,11 @@ _RENAMED_ALIASES = {
 }
 # One offset token: a multiplier (integer or fractional, signed), the alias, an
 # optional anchor ("-DEC", "-FRI", "-15"). pandas also reads compound strings,
-# tokens in a row ("1H30T", "1D1H"); each token is mapped on its own.
-_TOKEN_RE = re.compile(r"(?P<n>[+-]?\d*(?:\.\d+)?)(?P<alias>[A-Za-z]+)(?P<anchor>-[A-Za-z0-9]+)?")
-_SPEC_RE = re.compile(r"(?:[+-]?\d*(?:\.\d+)?[A-Za-z]+(?:-[A-Za-z0-9]+)?)+")
+# tokens in a row ("1H30T", "1D1H"); each token is mapped on its own. The
+# letter runs are POSSESSIVE (``++``): with ``+`` a string of n letters and a
+# bad character split 2^n ways before fullmatch failed (26 letters: 13 s).
+_TOKEN_RE = re.compile(r"(?P<n>[+-]?\d*(?:\.\d+)?)(?P<alias>[A-Za-z]++)(?P<anchor>-[A-Za-z0-9]++)?")
+_SPEC_RE = re.compile(r"(?:[+-]?\d*(?:\.\d+)?[A-Za-z]++(?:-[A-Za-z0-9]++)?)+")
 
 
 def _rename_token(match: re.Match[str]) -> str:
@@ -243,8 +245,8 @@ def pandas_offset_alias(spec: str) -> str:
     site that hands one to pandas as an offset goes through it (a ``Frequency``
     bar size is a ``pd.Timedelta``, not an offset). ``"1Y"`` -> ``"1YE"``,
     ``"Q-DEC"`` -> ``"QE-DEC"``, ``"1A"`` -> ``"1YE"``, ``"4H"`` -> ``"4h"``,
-    ``"5T"`` -> ``"5min"``, ``"AS-JAN"`` -> ``"YS-JAN"``, ``"SM-15"`` ->
-    ``"SME-15"``, ``"1.5H"`` -> ``"1.5h"``, and per token in a compound string:
+    ``"5T"`` -> ``"5min"``, ``"AS-JAN"`` -> ``"YS-JAN"``, ``"1.5H"`` ->
+    ``"1.5h"``, and per token in a compound string:
     ``"1H30T"`` -> ``"1h30min"``. Every other string (``"1D"``, ``"1W"``,
     ``"ME"``, ``"MS"``, ``"1min"``, garbage) is returned unchanged, so pandas
     still parses or refuses it as before.

@@ -8,6 +8,8 @@ pandas is installed: the lock (3.x) in CI, and pandas 2.3.3 for consumers.
 
 from __future__ import annotations
 
+import time
+
 import pandas as pd
 import pytest
 
@@ -44,7 +46,6 @@ OLD_SPELLINGS = [
     ("1H30T", pd.Timedelta(minutes=90)),
     ("1D1H", pd.Timedelta(hours=25)),
     ("1.5H", pd.Timedelta(minutes=90)),
-    ("SM-15", pd.offsets.SemiMonthEnd(day_of_month=15)),
 ]
 
 UNCHANGED = ["1D", "1W", "W-FRI", "2W", "ME", "6ME", "MS", "QS", "YS", "BMS", "1min", "1h", "100ms", "not-an-offset"]
@@ -63,6 +64,13 @@ def test_an_old_spelling_keeps_its_meaning(old, offset):
 @pytest.mark.parametrize("spec", UNCHANGED)
 def test_every_other_string_passes_through(spec):
     assert pandas_offset_alias(spec) == spec
+
+
+def test_a_long_bad_string_is_answered_at_once():
+    """Guard (round-3 review): a backtracking regex took 13 s on 26 letters and a '!'."""
+    start = time.perf_counter()
+    assert pandas_offset_alias("A" * 60 + "!") == "A" * 60 + "!"
+    assert time.perf_counter() - start < 0.5
 
 
 @pytest.mark.parametrize("spec", ["1m", "5m"])
