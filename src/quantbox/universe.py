@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from quantbox.duckdb_io import fetch_df
 from quantbox.exceptions import MissingExtraError
 from quantbox.lot_step import lot_step
 
@@ -406,7 +407,7 @@ def select_universe_duckdb(
     FROM mc_filtered
     """
 
-    result = con.execute(query).df()
+    result = fetch_df(con, query)
     con.close()
 
     universe = result.pivot(index="date", columns="ticker", values="in_universe")

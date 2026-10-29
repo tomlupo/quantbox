@@ -20,6 +20,7 @@ import pandas as pd
 from quantbox._removed import removed_names
 from quantbox.contracts import PluginMeta
 from quantbox.dataset import _resolve_pinned, finite_numbers, load_pinned_dataset, served_prices, unique_rows
+from quantbox.duckdb_io import fetch_df
 from quantbox.exceptions import DataLoadError
 from quantbox.parquet_io import read_parquet
 
@@ -210,7 +211,11 @@ def _file_timezones(path: str) -> dict[str, str]:
 
 
 def _restore_timezones(df: pd.DataFrame, tzs: dict[str, str]) -> pd.DataFrame:
-    """Give duckdb's tz-aware columns back the file's own timezone (duckdb hands back its session's)."""
+    """Give duckdb's tz-aware columns back the file's own timezone (duckdb hands back its session's).
+
+    Reads the frame from :func:`quantbox.duckdb_io.fetch_df`: duckdb 2.0 hands a
+    nanosecond tz-aware column back NAIVE, in UTC, and this check would skip it.
+    """
     for col, tz in tzs.items():
         if col in df.columns and isinstance(df[col].dtype, pd.DatetimeTZDtype):
             df[col] = df[col].dt.tz_convert(tz)
@@ -243,7 +248,7 @@ def _read_via_duckdb(path: str, ext: str, asof: str | None, symbols: list[str] |
         if symbols and "symbol" in types:
             sym_list = ", ".join(f"'{s}'" for s in symbols)
             where = f" WHERE symbol IN ({sym_list})"
-        df = _restore_timezones(con.execute(f"SELECT * FROM {read_fn}{where}").fetchdf(), tzs)
+        df = _restore_timezones(fetch_df(con, f"SELECT * FROM {read_fn}{where}"), tzs)
         return _date_column_and_cut(df, index_cols, asof)
     except Exception as exc:
         logger.warning("DuckDB read failed for %s: %s, falling back to pandas", path, exc)

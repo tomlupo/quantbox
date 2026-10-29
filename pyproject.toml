@@ -160,6 +160,7 @@ source_modules = [
   "quantbox.dataset",
   "quantbox.dataset_lock",
   "quantbox.decision",
+  "quantbox.duckdb_io",  # duckdb -> pandas fetch that keeps a TIMESTAMPTZ_NS column tz-aware
   "quantbox.engine",  # the seam with the rsims code; engine.vectorbt is research
   "quantbox.engine._lag",
   "quantbox.engine.base",
@@ -444,6 +445,7 @@ source_modules = [
   "quantbox.dataset",
   "quantbox.dataset_lock",
   "quantbox.decision",
+  "quantbox.duckdb_io",
   "quantbox.engine",
   "quantbox.engine._lag",
   "quantbox.engine.base",
