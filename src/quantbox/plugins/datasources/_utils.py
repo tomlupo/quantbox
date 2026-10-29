@@ -21,6 +21,7 @@ import pandas as pd
 
 from quantbox._lazy import load
 from quantbox._removed import removed_names
+from quantbox.duckdb_io import fetch_df
 from quantbox.frequency import FREQUENCY_ALIASES
 from quantbox.market_cap import MarketCapProvider as _MarketCapProvider
 from quantbox.market_cap import load_pit_market_cap as _load_pit_market_cap
@@ -219,7 +220,7 @@ class OHLCVCache:
                 WHERE date >= '{start_date}' AND date <= '{end_date}'
                 ORDER BY date
             """
-            df = duckdb.query(query).df()
+            df = fetch_df(duckdb, query)
             if df.empty:
                 return None
             df["date"] = pd.to_datetime(df["date"])
@@ -238,7 +239,7 @@ class OHLCVCache:
         duckdb = load("duckdb", extra="data")  # outside the try: a missing extra is not "no cache"
         try:
             query = f"SELECT MAX(date) AS last_date FROM read_parquet('{glob_pattern}')"
-            result = duckdb.query(query).df()
+            result = fetch_df(duckdb, query)
             val = result["last_date"].iloc[0]
             if pd.isna(val):
                 return None

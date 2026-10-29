@@ -19,6 +19,7 @@ import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 from quantbox._lazy import load
+from quantbox.duckdb_io import fetch_df
 
 logger = logging.getLogger(__name__)
 
@@ -211,11 +212,14 @@ class DuckDBEngine:
 
     def query(self, sql: str, params: dict | None = None) -> pa.Table:
         """Execute SQL and return PyArrow Table."""
-        return self.execute(sql, params).arrow()
+        # A relation's to_arrow_table: duckdb 2.0 removed ``arrow()`` from a connection
+        # and warns that a DB-API result's arrow output copies the rows.
+        rel = self.conn.sql(sql, params=params) if params else self.conn.sql(sql)
+        return rel.to_arrow_table()
 
     def query_df(self, sql: str, params: dict | None = None):
         """Execute SQL and return pandas DataFrame."""
-        return self.execute(sql, params).df()
+        return fetch_df(self.conn, sql, params)
 
     # ── views ──
 
