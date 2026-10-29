@@ -330,7 +330,7 @@ def schedule_book(
     if pol.cadence == "tranche":
         targets = blend_tranches(targets, pol.tranches)
     inside_exe = inside[exe_rows] if len(exe_rows) else np.zeros((0, n_inst), dtype=bool)
-    outside_targeted = (targets != 0) & ~inside_exe
+    outside_targeted = ~(np.abs(targets) <= WEIGHT_ATOL) & ~inside_exe  # dust is no target; NaN kept
     max_outside = np.where(outside_targeted, np.abs(targets), 0.0).max(axis=0) if len(targets) else np.zeros(n_inst)
     targets = np.where(inside_exe, targets, 0.0)
 
