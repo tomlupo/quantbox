@@ -30,6 +30,8 @@ from collections.abc import Sequence
 import numpy as np
 import pandas as pd
 
+from quantbox._numerics import WEIGHT_ATOL
+
 __all__ = ["fixed_commission_backtest_with_funding", "positions_from_no_trade_buffer"]
 
 logger = logging.getLogger(__name__)
@@ -79,7 +81,7 @@ def positions_from_no_trade_buffer(
 
     for j in range(num_assets):
         tw = current_target_weights[j]
-        if np.isnan(tw) or tw == 0:
+        if np.isnan(tw) or abs(tw) <= WEIGHT_ATOL:  # a zero or dust target closes the position
             target_positions[j] = 0
         elif current_weights[j] < tw - trade_buffer:
             target_positions[j] = (tw - trade_buffer) * cap_equity / current_prices[j]
