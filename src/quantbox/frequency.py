@@ -226,16 +226,14 @@ _RENAMED_ALIASES = {
 }
 # One offset token: a multiplier (integer or fractional, signed), the alias, an
 # optional anchor ("-DEC", "-FRI", "-15"). pandas also reads compound strings,
-# tokens in a row ("1H30T", "1D1H"); each token is mapped on its own. The
-# letter runs are POSSESSIVE (``++``): with ``+`` a string of n letters and a
-# bad character split 2^n ways before fullmatch failed (26 letters: 13 s).
-_TOKEN_RE = re.compile(r"(?P<n>[+-]?\d*(?:\.\d+)?)(?P<alias>[A-Za-z]++)(?P<anchor>-[A-Za-z0-9]++)?")
-_SPEC_RE = re.compile(r"(?:[+-]?\d*(?:\.\d+)?[A-Za-z]++(?:-[A-Za-z0-9]++)?)+")
-
-
-def _rename_token(match: re.Match[str]) -> str:
-    alias = _RENAMED_ALIASES.get(match["alias"], match["alias"])
-    return f"{match['n']}{alias}{match['anchor'] or ''}"
+# tokens in a row ("1H30T", "1D1H"); each token is mapped on its own.
+#
+# The string is read token by token, left to right, each token matched once
+# and never revisited: linear in the length. A single regex over the whole
+# string (`(token)+` with fullmatch) backtracked exponentially on a bad string
+# ("A"*26 + "!": 13 s; "-A"*32 + "!": 2 s), because its optional parts let
+# the same text split many ways (review rounds 3 and 4 on #331).
+_TOKEN_RE = re.compile(r"(?P<n>[+-]?\d*(?:\.\d+)?)(?P<alias>[A-Za-z]++)(?P<anchor>-[A-Za-z0-9]++)?+")
 
 
 def pandas_offset_alias(spec: str) -> str:
@@ -251,9 +249,16 @@ def pandas_offset_alias(spec: str) -> str:
     ``"ME"``, ``"MS"``, ``"1min"``, garbage) is returned unchanged, so pandas
     still parses or refuses it as before.
     """
-    if not _SPEC_RE.fullmatch(spec):
-        return spec
-    return _TOKEN_RE.sub(_rename_token, spec)
+    parts: list[str] = []
+    pos = 0
+    while pos < len(spec):
+        token = _TOKEN_RE.match(spec, pos)
+        if token is None:
+            return spec  # not an offset string: pandas parses or refuses it as is
+        alias = _RENAMED_ALIASES.get(token["alias"], token["alias"])
+        parts.append(f"{token['n']}{alias}{token['anchor'] or ''}")
+        pos = token.end()
+    return "".join(parts) if parts else spec
 
 
 def parse_rebalance_offset(spec: str | pd.DateOffset) -> pd.DateOffset:

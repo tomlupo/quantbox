@@ -66,10 +66,15 @@ def test_every_other_string_passes_through(spec):
     assert pandas_offset_alias(spec) == spec
 
 
-def test_a_long_bad_string_is_answered_at_once():
-    """Guard (round-3 review): a backtracking regex took 13 s on 26 letters and a '!'."""
+@pytest.mark.parametrize(
+    "bad",
+    ["A" * 5000 + "!", "-A" * 5000 + "!", "W" + "-1D" * 5000 + "!", "1a" * 5000 + "!", "1" * 5000 + "!"],
+    ids=["letters", "minus-letter", "anchor-signed", "digit-letter", "digits"],
+)
+def test_a_long_bad_string_is_answered_at_once(bad):
+    """Guard (review rounds 3, 4): whole-string regexes took 13 s on 26 letters, 2 s on "-A"*32."""
     start = time.perf_counter()
-    assert pandas_offset_alias("A" * 60 + "!") == "A" * 60 + "!"
+    assert pandas_offset_alias(bad) == bad
     assert time.perf_counter() - start < 0.5
 
 
