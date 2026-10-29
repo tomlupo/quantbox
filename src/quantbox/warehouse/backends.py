@@ -9,6 +9,7 @@ Adapted from quantlabnew/datalayer backends.
 from __future__ import annotations
 
 import logging
+import warnings
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime
@@ -212,10 +213,13 @@ class DuckDBEngine:
 
     def query(self, sql: str, params: dict | None = None) -> pa.Table:
         """Execute SQL and return PyArrow Table."""
-        # A relation's to_arrow_table: duckdb 2.0 removed ``arrow()`` from a connection
-        # and warns that a DB-API result's arrow output copies the rows.
-        rel = self.conn.sql(sql, params=params) if params else self.conn.sql(sql)
-        return rel.to_arrow_table()
+        # to_arrow_table: duckdb 2.0 removed ``arrow()`` from a connection. Through
+        # execute, not sql: on 2.0 ``sql`` refuses a connection that still holds an
+        # unfinished execute result (table_exists, materialize leave one). 2.0 warns
+        # that this copies the rows; the old ``arrow()`` path copied them too.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Arrow output on a DB-API result", category=UserWarning)
+            return self.execute(sql, params).to_arrow_table()
 
     def query_df(self, sql: str, params: dict | None = None):
         """Execute SQL and return pandas DataFrame."""
