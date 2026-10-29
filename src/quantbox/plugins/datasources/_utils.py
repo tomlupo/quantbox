@@ -322,9 +322,15 @@ class OHLCVCache:
         if store_df.empty:
             return
 
-        # Write as a new shard
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Write as a NEW shard. A second-resolution name let two stores in one
+        # second write the same file, the second replacing the first's rows;
+        # the name carries microseconds, and an existing name is never reused.
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         path = tdir / f"{ts}.parquet"
+        n = 1
+        while path.exists():
+            path = tdir / f"{ts}_{n}.parquet"
+            n += 1
         store_df.to_parquet(path, engine="pyarrow", index=False)
         logger.debug("Cached %d rows for %s -> %s", len(store_df), ticker, path)
 
