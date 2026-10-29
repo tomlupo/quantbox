@@ -72,7 +72,11 @@ everything.
 5. DIFF. Every file of the two run directories but events.jsonl (timings): JSON field
    by field, parquet frame by frame, text line by line, after masking what differs on
    every run (the run id, which carries the run's one wall-clock stamp; the checkout and
-   slice paths; the commit; git and installed packages). No other date is masked.
+   slice paths; the commit; git and installed packages; the engine version, which is a
+   package version too: run_manifest.json engine.version and, in finding_report.json's
+   "Run provenance" table, the "engine" row's "<name> <version>" label, each side's own,
+   TOM-2566; the engine name and every other row and number still compare). No other
+   date is masked.
    TYPE comes before value (TOM-2547), and no value is compared through a display string.
    Parquet: the arrow tables read from the files, never the pandas frames: the stored
    schema, the pandas metadata (index kind, column-index dtype; not the writer's
@@ -918,6 +922,41 @@ def masked_json(node: Any, mask) -> Any:
     return node
 
 
+ENGINE_VERSION = "<ENGINE_VERSION>"
+
+
+def engine_of(run: Path) -> tuple[Any, Any]:
+    """(name, version) of the engine a run recorded in its run_manifest.json; (None, None) if none."""
+    try:
+        engine = json.loads((run / "run_manifest.json").read_text()).get("engine")
+    except (OSError, ValueError, AttributeError):
+        return None, None
+    return (engine.get("name"), engine.get("version")) if isinstance(engine, dict) else (None, None)
+
+
+def mask_engine_version(name: str, node: Any, engine: tuple[Any, Any]) -> Any:
+    """*node* with the engine version a run records masked, and nothing else (TOM-2566).
+
+    Only run_manifest.json's engine.version and the "engine" row of finding_report.json's
+    "Run provenance" table, where a cell is exactly that side's "<name> <version>" label.
+    """
+    engine_name, version = engine
+    if version is None or not isinstance(node, dict):
+        return node
+    if name == "run_manifest.json" and isinstance(node.get("engine"), dict) and "version" in node["engine"]:
+        node["engine"]["version"] = ENGINE_VERSION
+    elif name == "finding_report.json":
+        label = " ".join(str(x) for x in (engine_name, version) if x)
+        masked = " ".join(str(x) for x in (engine_name, ENGINE_VERSION) if x)
+        for table in node.get("tables") or []:
+            if not isinstance(table, dict) or table.get("title") != "Run provenance":
+                continue
+            for row in table.get("rows") or []:
+                if isinstance(row, list) and row and row[0] == "engine":
+                    row[1:] = [masked if cell == label else cell for cell in row[1:]]
+    return node
+
+
 def json_type(value: Any) -> str:
     """The JSON type of a decoded value. bool is tested before number: bool is an int in Python."""
     if value is None:
@@ -1158,6 +1197,7 @@ def diff_runs(base: Side, head: Side, a: Path, b: Path, out: Path) -> tuple[dict
     """(file -> its differences, how many files were compared). Zero compared is not identical."""
     mask_a = masker(base, (a / ".run_id").read_text(), out / "_run")
     mask_b = masker(head, (b / ".run_id").read_text(), out / "_run")
+    engine_a, engine_b = engine_of(a), engine_of(b)
     names = sorted(({p.name for p in a.iterdir()} | {p.name for p in b.iterdir()}) - EXCLUDED_FILES - {".run_id"})
     found: dict[str, list[str]] = {}
     for name in names:
@@ -1169,7 +1209,8 @@ def diff_runs(base: Side, head: Side, a: Path, b: Path, out: Path) -> tuple[dict
             lines = diff_parquet(fa, fb)
         elif name.endswith(".json"):
             lines = diff_json(
-                masked_json(json.loads(fa.read_text()), mask_a), masked_json(json.loads(fb.read_text()), mask_b)
+                mask_engine_version(name, masked_json(json.loads(fa.read_text()), mask_a), engine_a),
+                mask_engine_version(name, masked_json(json.loads(fb.read_text()), mask_b), engine_b),
             )
         else:
             lines = diff_text(fa.read_bytes(), fb.read_bytes(), mask_a, mask_b)
