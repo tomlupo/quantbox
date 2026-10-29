@@ -23,7 +23,7 @@ from typing import Any, ClassVar
 import numpy as np
 import pandas as pd
 
-from quantbox._numerics import WEIGHT_ATOL
+from quantbox._numerics import WEIGHT_ATOL, is_held
 from quantbox.contracts import (
     ArtifactStore,
     BrokerCapability,
@@ -1489,10 +1489,10 @@ class TradingPipeline:
             return decision, {
                 **valued,
                 "orders": pd.DataFrame(columns=list(ORDER_COLUMNS)),
-                "weights": {str(k): float(v) for k, v in held.items() if v != 0},
+                "weights": {str(k): float(v) for k, v in held.items() if is_held(v)},
             }
         assert decision.targets is not None
-        targets = {str(k): float(v) for k, v in decision.targets.items() if v != 0}
+        targets = {str(k): float(v) for k, v in decision.targets.items() if is_held(v)}
         result = generate(targets)
         result["orders"] = self._hold_untraded(result.get("orders"), decision.trades)
         logger.info(

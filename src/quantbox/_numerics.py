@@ -33,10 +33,11 @@ DEGENERATE_RTOL = 1e-12
 # A portfolio weight within this of zero is no position: optimizer dust. A
 # solver that lands on the zero bound returns 1e-15-ish, not 0.0, and which
 # symbols carry dust moves with the BLAS build (numpy 2.3.5 vs 2.5.4 swapped
-# SYN_001 for SYN_004 in the synthetic backtest, #331). The engine already
-# treats weights this way: engine/schedule.py compares books "within 1e-12",
-# and engine/rsims_sim.py trades no change below 1e-12 absolute. Weight lists
-# that drop zeros (aggregated_weights, trade targets) use the same number.
+# SYN_001 for SYN_004 in the synthetic backtest, #331). 1e-12 is the weight
+# tolerance the engine already used as copies (engine/groups._TOL, the two
+# book-equality checks in engine/schedule.py); they read it from here now.
+# Every list that drops zero weights (aggregated_weights, trade targets, the
+# order generators' targets) drops dust with it.
 WEIGHT_ATOL = 1e-12
 
 
