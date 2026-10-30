@@ -29,6 +29,12 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.21.2 (2026-10-30)
+
+### Fix
+
+- **broker**: give HyperliquidBroker the readonly flag Kraken, Binance and IBKR carry
+
 ## v0.21.1 (2026-10-28)
 
 ### Fix
