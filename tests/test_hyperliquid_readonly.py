@@ -11,8 +11,8 @@ ccxt is stubbed at the module boundary: ``ccxt.hyperliquid`` is replaced by a
 fake exchange that records every call, so the broker is built through its real
 ``__init__`` / ``__post_init__`` (the path that failed in prod) with no
 network, no credentials and no capital. A write that slipped past the guard
-would show up in the fake's call log, and the fake refuses to place anything
-for a readonly broker on top of that.
+would show up in the fake's call log, which every write-path test asserts is
+unchanged by the refused call.
 """
 
 from __future__ import annotations
@@ -37,8 +37,9 @@ class _FakeExchange:
         self.calls: list[str] = []
 
     def __getattr__(self, name):
-        # Any venue method the fake does not define (cancel_order, edit_order, ...)
-        # is a write this file never expects; record it and fail loudly.
+        # The venue's write methods (create_order, cancel_order, edit_order, ...):
+        # recorded, and answered "accepted", so the default broker can still place
+        # an order. A readonly test asserts none of them appears in the log.
         if name in _WRITE_METHODS:
 
             def _write(*args, **kwargs):
@@ -88,6 +89,16 @@ class _FakeExchange:
     def fetch_order(self, order_id, symbol):
         self.calls.append("fetch_order")
         return {"id": order_id, "status": "closed", "amount": 0.01, "filled": 0.01, "average": 60000.0}
+
+    has = {"fetchFundingHistory": True}
+
+    def fetch_my_trades(self, symbol, since=None):
+        self.calls.append("fetch_my_trades")
+        return [{"side": "buy", "amount": 0.01, "price": 60000.0, "datetime": "2026-10-30T05:00:00Z"}]
+
+    def fetch_funding_history(self, since=None, params=None):
+        self.calls.append("fetch_funding_history")
+        return [{"amount": -0.5, "timestamp": since}]
 
 
 @pytest.fixture
@@ -159,6 +170,14 @@ def test_readonly_broker_reads_positions_and_equity(fake_ccxt):
     pos = b.get_positions()
     assert pos.set_index("symbol").loc["BTC", "qty"] == pytest.approx(0.01)
     assert b.get_equity() > 0
+    assert _writes(b) == []
+
+
+def test_readonly_broker_reads_fills_and_funding(fake_ccxt):
+    b = _build(readonly=True)
+    fills = b.fetch_fills("2026-10-29")
+    assert len(fills) == 1
+    assert b.fetch_funding_payments("2026-10-29", "2026-10-30") == pytest.approx(-0.5)
     assert _writes(b) == []
 
 
