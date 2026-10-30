@@ -178,6 +178,11 @@ class HyperliquidBroker:
                     "type": "object",
                     "description": "Python-only: a RiskConfig object (position/leverage/loss limits); default limits apply.",
                 },
+                "readonly": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Block order placement (reads only).",
+                },
             },
         },
     )
@@ -191,6 +196,9 @@ class HyperliquidBroker:
 
     # Risk config
     risk: RiskConfig = field(default_factory=RiskConfig)
+
+    # Access: True blocks every order-placing path (reads only)
+    readonly: bool = False
 
     # State
     _exchange: ccxt.hyperliquid | None = field(default=None, repr=False)
@@ -279,6 +287,7 @@ class HyperliquidBroker:
             "network": "testnet" if self.testnet else "mainnet",
             "wallet": self.wallet_address[:10] + "..." if self.wallet_address else None,
             "risk_config": self.risk.describe(),
+            "readonly": self.readonly,
             "features": [
                 "No geo-restrictions",
                 "No KYC",
@@ -512,6 +521,8 @@ class HyperliquidBroker:
         the venue accepted but did not actually fill is reported FAILED/PARTIAL,
         never an unconditional FILLED. See :mod:`quantbox.plugins.broker._fills`.
         """
+        if self.readonly:
+            raise PermissionError("readonly broker: order placement disabled")
         rows: list[dict[str, Any]] = []
         n_failed = 0
         # Accepted by the venue and still working when the confirmation window
@@ -808,6 +819,8 @@ class HyperliquidBroker:
         Returns:
             Order result or None if failed
         """
+        if self.readonly:
+            raise PermissionError("readonly broker: order placement disabled")
         market_symbol = self._get_market_symbol(symbol)
         if not market_symbol:
             logger.error(f"Unknown symbol: {symbol}")
@@ -905,6 +918,8 @@ class HyperliquidBroker:
 
     def close_position(self, symbol: str) -> dict | None:
         """Close an existing position."""
+        if self.readonly:
+            raise PermissionError("readonly broker: order placement disabled")
         positions = self._get_positions_dict()
         pos = positions.get(symbol)
 
@@ -962,6 +977,9 @@ class HyperliquidBroker:
         Returns:
             Dict with orders executed and summary
         """
+        # A dry run only computes the trades; every live run places orders.
+        if self.readonly and not dry_run:
+            raise PermissionError("readonly broker: order placement disabled")
         # Check risk limits
         if not self._check_risk_limits(target_weights):
             return {"error": "Risk limits exceeded", "orders": []}
