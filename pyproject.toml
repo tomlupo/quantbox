@@ -12,11 +12,11 @@ dependencies = [
   # pandas 2 must still resolve (quantbox-lab, quantbox-live, robo pin quantbox;
   # robo caps numpy below 2.2, which resolves to pandas 3 + numpy 2.1 or to
   # pandas 2). Offset aliases go through quantbox.frequency.pandas_offset_alias.
-  "pandas>=2.3.3,<4",
+  "pandas>=3.1.0,<4",
   # The floor is the lowest numpy the suite was run on, not the lock's version:
   # the full suite passes on 1.26.4 and on 2.1.3 (TOM-1451). No core code needs
   # numpy 2. A client caps numpy below 2.2 (robo), so do not raise it lightly.
-  "numpy>=1.26.4",
+  "numpy>=2.4.6",
   "scipy>=1.17.1",
   "pyarrow>=26.0.0",
   "pyyaml>=6.0.3",
@@ -30,14 +30,14 @@ dependencies = [
 # Per-audience extras (ADR-0010). Without one, a module that needs it raises
 # MissingExtraError naming it, on import or on use; it never fails bare.
 # [data]: the data-source clients (datasources, market_cap, the duckdb store).
-data = ["duckdb>=1.5.6", "httpx>=0.28.1", "pycoingecko>=3.2.0", "requests>=2.34.2"]
+data = ["duckdb>=2.0.0", "httpx>=0.28.1", "pycoingecko>=3.2.0", "requests>=2.34.2"]
 # [research]: the research layer's libraries (reports need plotly) plus [data].
 # plotly stays below 7: plotly 7 dropped 'scattermapbox', and vectorbt 1.0's
 # template still sets it, so 'import vectorbt' raises ValueError (TOM-2066).
 # The vectorbt that drops it (1.1) needs numpy>=2.4 and pandas>=3, so a
 # consumer on pandas 2 still gets vectorbt 1.0: the cap holds while pandas 2 is
 # supported.
-research = ["quantbox[data]", "plotly>=6.5.2,<7"]
+research = ["quantbox[data]", "plotly>=7.1.0,<8"]
 # [trade]: the venue clients brokers and publishers import. requests is
 # declared, not borrowed from ccxt: the Binance-futures and Hyperliquid brokers
 # import it for their Telegram notices.
@@ -45,7 +45,7 @@ trade = ["ccxt>=4.5.90", "httpx>=0.28.1", "requests>=2.34.2"]
 # The vectorbt backtest engine (quantbox.bt, adapters.vectorbt, run_vectorbt,
 # engine: vectorbt, quantbox.sweep sweep/run_grid). Without it those raise
 # MissingExtraError naming this extra; everything else imports (TOM-1334).
-vectorbt = ["vectorbt>=1.0.0", "numba>=0.68.0"]
+vectorbt = ["vectorbt>=1.2.0", "numba>=0.68.1"]
 ibkr = ["ib_insync"]
 binance = ["python-binance"]
 ccxt = ["ccxt>=4.5.90"]
@@ -58,7 +58,7 @@ full = ["quantbox[data,research,trade,vectorbt,ibkr,binance,ccxt,ml,simulation,v
 quantbox = "quantbox.cli:main"
 
 [build-system]
-requires = ["uv_build>=0.13.5,<0.14.0"]
+requires = ["uv_build>=0.13.6,<0.14.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
@@ -70,8 +70,8 @@ dev = [
     # beyond core: the suite exercises datasources, the store and reports.
     "quantbox[research,vectorbt]",
     "commitizen>=4.19.3",
-    "pytest>=9.1.1",
-    "ruff>=0.17.2",
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
     "import-linter>=2.15",
 ]
 
