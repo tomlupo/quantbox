@@ -90,6 +90,13 @@ exclude = [
     # Nested worktrees are separate checkouts; linting them lints another
     # branch and, worse,  REWRITES files someone else is editing.
     ".worktrees/",
+    # Moved verbatim from qute-agents (TOM-3166): byte-identical copies are the
+    # move's proof, and live-book-health.py runs on core's system python, so
+    # ruff's rewrites (UP017 datetime.UTC, reformatting) wait for their own PR.
+    "scripts/live-book-health.py",
+    "scripts/quantbox-iface.py",
+    "scripts/test_live_book_health.py",
+    "scripts/test_quantbox_iface.py",
 ]
 
 [tool.ruff.lint]
