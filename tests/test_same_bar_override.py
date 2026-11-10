@@ -377,6 +377,19 @@ def test_the_finding_report_export_marks_a_research_run(tmp_path):
             assert not isinstance(value, bool), path
 
 
+def test_a_line_results_file_cannot_hide_that_a_run_is_research(tmp_path):
+    _, run_dir = _run(tmp_path, copy.deepcopy(OVERRIDE))
+    extra = tmp_path / "results.json"
+    line_axis = {"name": "Look-ahead", "status": "pass", "note": "line's own"}
+    extra.write_text(json.dumps({"audit": {"axes": [line_axis]}}), encoding="utf-8")
+    axes = export_finding_report(run_dir, extra=extra)["audit"]["axes"]
+    assert axes[0]["name"] == "Execution timing" and axes[0]["status"] == "fail" and REASON in axes[0]["note"]
+    assert axes[1:] == [line_axis]
+    extra.write_text(json.dumps({"kpis": [{"label": "Sharpe", "value": 2.0}]}), encoding="utf-8")
+    with pytest.raises(ValueError, match="RESEARCH run's hero cards"):
+        export_finding_report(run_dir, extra=extra)
+
+
 def test_the_finding_report_export_of_a_backtest_is_unchanged(tmp_path):
     _, run_dir = _run(tmp_path, None)
     payload = export_finding_report(run_dir)

@@ -47,8 +47,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from quantbox._numerics import WEIGHT_ATOL
+
 EXCESS = ("redistribute", "cash")
-_TOL = 1e-12
+_TOL = WEIGHT_ATOL
 
 #: ``backtest.pipeline.v1`` ``group_limits``: for validate and config explain.
 GROUP_LIMITS_SCHEMA: dict[str, Any] = {

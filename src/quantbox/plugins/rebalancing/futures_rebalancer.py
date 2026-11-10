@@ -29,6 +29,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from quantbox._numerics import WEIGHT_ATOL
 from quantbox.contracts import BrokerPlugin, PluginMeta
 from quantbox.decision import gross_cap, risk_caps_row
 from quantbox.engine.policy import TRANCHES_MOVED
@@ -259,8 +260,9 @@ class FuturesRebalancer:
         weights into orders.
         """
         s = pd.Series(risk_caps_row(weights, **self.risk_rules(params)), dtype=float)
-        # Drop zeros and sort by absolute value descending
-        s = s[s != 0].reindex(s[s != 0].abs().sort_values(ascending=False).index)
+        # Drop zeros and optimizer dust, sort by absolute value descending
+        kept = s[~(s.abs() <= WEIGHT_ATOL)]
+        s = kept.reindex(kept.abs().sort_values(ascending=False).index)
         return {str(k): float(v) for k, v in s.items()}
 
     def risk_rules(self, params: dict[str, Any]) -> dict[str, Any]:

@@ -8,6 +8,7 @@ from typing import Any
 import pandas as pd
 
 from quantbox._lazy import load
+from quantbox.duckdb_io import fetch_df
 from quantbox.exceptions import MissingExtraError
 from quantbox.parquet_io import read_parquet as _read_parquet
 
@@ -173,4 +174,4 @@ class FileArtifactStore:
             return pd.concat(frames, ignore_index=True)
         _log_accelerator_once("duckdb")
         query = f"SELECT * FROM read_parquet({paths!r})"
-        return duckdb.sql(query).df()
+        return fetch_df(duckdb, query)

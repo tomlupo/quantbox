@@ -296,6 +296,66 @@ def test_primary_picks_the_arm_the_hero_cards_report(tmp_path):
         export_finding_report(run_dir, primary="nope")
 
 
+def test_benchmark_names_the_arm_drawn_as_the_benchmark(tmp_path):
+    run_dir = _variants_run(tmp_path)
+    payload = export_finding_report(run_dir, benchmark="all_a")
+    assert {ln["name"]: ln["benchmark"] for ln in payload["series"]["lines"]} == {
+        "all_a": True,
+        "benchmark_5050": False,
+    }
+    with pytest.raises(ValueError, match="no arm named 'nope' \\(benchmark\\)"):
+        export_finding_report(run_dir, benchmark="nope")
+
+
+#: A line's results file, as a line saves it: the sections only its own analysis has.
+LINE_RESULTS = {
+    "lab": "quantbox-lab",
+    "kpis": [{"label": "Conditional t", "value": 4.42, "format": "num", "tone": "good"}],
+    "robustness": {
+        "intro": "one-sided p by window",
+        "cells": [{"row": "1946-2000", "col": "OLS", "metric": "p", "value": 0.04, "status": "pass"}],
+    },
+    "audit": {"axes": [{"name": "Look-ahead", "status": "pass", "note": "lagged predictor"}]},
+    "tables": [
+        {"title": "By window", "columns": ["window", "t"], "rows": [["1946-2000", 4.42], ["2001-2024", -0.74]]},
+        {"title": "Sensitivity", "columns": ["k", "diff"], "rows": [["k = 1", 0.0091]]},
+    ],
+}
+
+
+def test_a_line_results_file_adds_its_tables_and_replaces_the_other_sections(tmp_path):
+    run_dir = _variants_run(tmp_path)
+    extra = tmp_path / "results.json"
+    extra.write_text(json.dumps(LINE_RESULTS), encoding="utf-8")
+    engine = export_finding_report(run_dir)
+    payload = export_finding_report(run_dir, extra=extra)
+    for key in ("lab", "kpis", "robustness", "audit"):
+        assert payload[key] == LINE_RESULTS[key]
+    # the line's tables first, the runs' provenance last; series and metrics stay the engine's
+    assert payload["tables"] == [*LINE_RESULTS["tables"], engine["tables"][-1]]
+    assert payload["tables"][-1]["title"] == "Run provenance"
+    assert payload["series"] == engine["series"]
+    assert payload["metrics"] == engine["metrics"]
+    assert json.loads(extra.read_text()) == LINE_RESULTS  # the file is read, never changed
+
+
+@pytest.mark.parametrize(
+    ("content", "match"),
+    [
+        ({"series": {"dates": [], "lines": []}}, "cannot come from a results file"),
+        ({"schema": SCHEMA_ID, "tables": [{"title": "t", "columns": ["a"], "rows": [[1]]}]}, "cannot come"),
+        ({"kpis": []}, "empty section"),
+        ({"tables": {"title": "t"}}, "tables is a list"),
+        ([{"title": "t"}], "a JSON object"),
+    ],
+)
+def test_a_results_file_is_refused_when_it_is_not_payload_sections(tmp_path, content, match):
+    extra = tmp_path / "results.json"
+    extra.write_text(json.dumps(content), encoding="utf-8")
+    with pytest.raises(ValueError, match=match):
+        export_finding_report(GOLDEN, extra=extra)
+
+
 def test_a_directory_without_runs_is_refused(tmp_path):
     with pytest.raises(FileNotFoundError, match="no run"):
         export_finding_report(tmp_path)
@@ -436,6 +496,20 @@ def test_cli_report_export_prints_to_stdout_without_out():
     assert json.loads(res.stdout)["schema"] == SCHEMA_ID
 
 
+def test_cli_report_export_takes_a_line_results_file_and_a_benchmark(tmp_path):
+    run_dir = _variants_run(tmp_path)
+    extra = tmp_path / "results.json"
+    extra.write_text(json.dumps(LINE_RESULTS), encoding="utf-8")
+    out = tmp_path / "finding.json"
+    args = ["report", "export", str(run_dir), "--format", SCHEMA_ID, "-o", str(out)]
+    res = CliRunner().invoke(app, [*args, "--extra", str(extra), "--benchmark", "all_a"])
+    assert res.exit_code == 0, res.output
+    assert json.loads(out.read_text()) == export_finding_report(run_dir, benchmark="all_a", extra=extra)
+    extra.write_text(json.dumps({"series": {}}), encoding="utf-8")
+    res = CliRunner().invoke(app, [*args, "--extra", str(extra)])
+    assert res.exit_code == 1 and "cannot come from a results file" in res.output
+
+
 def test_cli_report_export_refuses_an_unknown_format():
     res = CliRunner().invoke(app, ["report", "export", str(GOLDEN), "--format", "qute-research/finding-report@2"])
     assert res.exit_code == 2
@@ -478,16 +552,21 @@ def _finding(path: Path, sharpe: float) -> Path:
     return path
 
 
-@pytest.mark.parametrize("source", ["golden", "variants"])
+@pytest.mark.parametrize("source", ["golden", "variants", "variants+line results"])
 def test_the_qute_research_renderer_accepts_the_export(tmp_path, source):
     script = _renderer()
     if script is None or not script.is_file():
         pytest.skip("qute-research renderer not found (set QUTE_RESEARCH_ROOT) — NOT CHECKED")
     run_dir = GOLDEN if source == "golden" else _variants_run(tmp_path)
+    extra = None
+    if source.endswith("line results"):
+        extra = tmp_path / "results.json"
+        extra.write_text(json.dumps(LINE_RESULTS), encoding="utf-8")
     data = tmp_path / "finding_report.json"
-    payload = export_finding_report(run_dir)
+    payload = export_finding_report(run_dir, extra=extra)
     data.write_text(json.dumps(payload), encoding="utf-8")
-    sharpe = next(k for k in payload["kpis"] if k.get("key") == "backtest_sharpe")["value"]
+    hero = export_finding_report(run_dir)["kpis"]
+    sharpe = next(k for k in hero if k.get("key") == "backtest_sharpe")["value"]
     assert math.isfinite(sharpe)
     finding = _finding(tmp_path / "2026-10-01-inconclusive-export-check.md", sharpe)
     page = tmp_path / "finding.html"
@@ -500,3 +579,5 @@ def test_the_qute_research_renderer_accepts_the_export(tmp_path, source):
     assert proc.returncode == 0, proc.stderr
     html = page.read_text(encoding="utf-8")
     assert 'id="robustness"' in html and 'id="provenance"' in html
+    if extra is not None:
+        assert "Sensitivity" in html and "Conditional t" in html and "lagged predictor" in html

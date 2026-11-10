@@ -937,12 +937,21 @@ def report_export(
     fmt: str = typer.Option(..., "--format", help="Export format: qute-research/finding-report@1"),
     out: str = typer.Option(None, "--out", "-o", help="Write here instead of stdout"),
     primary: str = typer.Option(None, "--primary", help="The arm the hero cards report (default: the first)"),
+    benchmark: str = typer.Option(
+        None, "--benchmark", help='The arm drawn as the benchmark (default: an arm named "bench...")'
+    ),
+    extra: str = typer.Option(
+        None,
+        "--extra",
+        help="A line's results JSON: kpis/metrics/robustness/audit/lab replace the engine's, its tables are added",
+    ),
 ):
     """Export a run's returns, drawdowns, metrics, robustness across arms and provenance.
 
     The qute-research /finding-report renderer reads the result with --data; it owns
-    the page and the contract. Exits 1 when there is no run under PATH, 2 on an
-    unknown --format.
+    the page and the contract. --extra adds what only the line's own analysis has.
+    Exits 1 when there is no run under PATH or a name or the results file is
+    refused, 2 on an unknown --format.
     """
     finding_export = load("quantbox.finding_export", extra="research")
 
@@ -951,7 +960,7 @@ def report_export(
             f"unknown format {fmt!r}; supported: {', '.join(finding_export.FORMATS)}", param_hint="--format"
         )
     try:
-        payload = finding_export.export_finding_report(path, primary=primary)
+        payload = finding_export.export_finding_report(path, primary=primary, benchmark=benchmark, extra=extra)
     except (FileNotFoundError, ValueError) as exc:
         typer.echo(f"ERROR: {exc}", err=True)
         raise SystemExit(1) from exc

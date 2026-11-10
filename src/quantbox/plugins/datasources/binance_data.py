@@ -70,6 +70,7 @@ except ModuleNotFoundError as exc:  # the Binance REST client needs the [data] e
 from quantbox.market_cap import MarketCapProvider
 from quantbox.plugins.datasources._utils import (
     OHLCVCache,
+    _utc,
     interval_step,
     resolve_screen_inputs,
     retry_transient,
@@ -499,8 +500,10 @@ data = fetcher.get_market_data(['BTC', 'ETH'], lookback_days=90)
         if self._ohlcv_cache is not None:
             cached = self._ohlcv_cache.get_cached(ticker, start_date, end_date, interval=interval)
             if cached is not None and not cached.empty:
-                last_cached = cached["date"].max()
-                target_end = pd.Timestamp(end_date)
+                # Compared as UTC instants (a naive date is read as UTC): a tz-aware
+                # cache against the naive end_date raised TypeError before.
+                last_cached = _utc(cached["date"].max())
+                target_end = _utc(pd.Timestamp(end_date))
                 if last_cached >= target_end - timedelta(hours=self.cache_fresh_ttl_hours * 24):
                     cached["ticker"] = ticker
                     try:

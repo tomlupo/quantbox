@@ -14,6 +14,7 @@ from typing import Any
 
 import pandas as pd
 
+from quantbox._numerics import is_held
 from quantbox.contracts import PluginMeta, RunResult
 from quantbox.exceptions import MissingExtraError
 from quantbox.trade.notifier import escape_html
@@ -75,7 +76,7 @@ def _format_portfolio_rebalancing(
         curr_w = float(entry.get("current_weight", 0))
         tgt_w = float(entry.get("target_weight", 0))
         delta_w = float(entry.get("weight_delta", 0))
-        if curr_w != 0 or tgt_w != 0:
+        if is_held(curr_w) or is_held(tgt_w):  # a row per position; dust is none
             asset = escape_html(str(entry.get("asset", ""))[:6].ljust(6))
             rows.append(f"{asset}{curr_w * 100:6.1f}%{tgt_w * 100:7.1f}%{delta_w * 100:+7.1f}%")
             total_curr += curr_w

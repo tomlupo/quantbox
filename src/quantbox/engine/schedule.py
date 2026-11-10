@@ -68,6 +68,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from quantbox._numerics import WEIGHT_ATOL
 from quantbox.execution import SameBarOverride
 from quantbox.financing import LEVERAGE_MODES, NET_EXPOSURE_TOLERANCE
 from quantbox.frequency import _period_end, parse_rebalance_offset, rebalancing_dates
@@ -194,7 +195,7 @@ def _decision_weight_age(
             continue
         traded = vals[lo - 1] if lo > 0 else np.zeros(vals.shape[1])
         window = vals[lo:hi]
-        moved = np.flatnonzero((np.abs(window - traded) > 1e-12).any(axis=1))
+        moved = np.flatnonzero((np.abs(window - traded) > WEIGHT_ATOL).any(axis=1))
         if not len(moved):
             continue
         step_at = pd.Timestamp(stamps[lo + moved[0]])
@@ -202,7 +203,7 @@ def _decision_weight_age(
         step_period = period.rollforward(step_at.normalize())
         if later < len(all_dec) and period.rollforward(all_dec[later].normalize()) == step_period:
             continue  # the step's own period has a decision after it, which trades it
-        if (np.abs(window[moved[0] :] - window[moved[0]]) > 1e-12).any():
+        if (np.abs(window[moved[0] :] - window[moved[0]]) > WEIGHT_ATOL).any():
             continue  # keeps moving up to the next execution bar: daily variation, not a stamped step
         stale_rows.append(k)
         missed.append(step_at.isoformat())
@@ -329,7 +330,7 @@ def schedule_book(
     if pol.cadence == "tranche":
         targets = blend_tranches(targets, pol.tranches)
     inside_exe = inside[exe_rows] if len(exe_rows) else np.zeros((0, n_inst), dtype=bool)
-    outside_targeted = (targets != 0) & ~inside_exe
+    outside_targeted = ~(np.abs(targets) <= WEIGHT_ATOL) & ~inside_exe  # dust is no target; NaN kept
     max_outside = np.where(outside_targeted, np.abs(targets), 0.0).max(axis=0) if len(targets) else np.zeros(n_inst)
     targets = np.where(inside_exe, targets, 0.0)
 

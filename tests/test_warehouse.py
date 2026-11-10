@@ -385,3 +385,22 @@ class TestIngestion:
         results = ingest_run(tmp_warehouse, store, tables=["targets"])
         assert "targets" in results
         assert "fills" not in results
+
+
+def test_engine_reads_after_materialize_and_table_exists(tmp_db, tmp_path):
+    """Replay of the review finding on the duckdb 2.0 PR: query after a partial fetch.
+
+    materialize and table_exists leave an unfinished execute result on the
+    connection; on duckdb 2.0 a read through ``con.sql`` then raised
+    ResourceInUseException, and ``query`` raised AttributeError (``arrow()`` is gone).
+    A tz-aware nanosecond column keeps its zone through both reads.
+    """
+    path = tmp_path / "tz.parquet"
+    pd.DataFrame({"date": pd.date_range("2024-01-01", periods=2, tz="Europe/Warsaw"), "x": [1.0, 2.0]}).to_parquet(path)
+    tmp_db.materialize("t", f"SELECT * FROM read_parquet('{path}')")
+    assert tmp_db.table_exists("t")
+    df = tmp_db.query_df("SELECT * FROM t")
+    table = tmp_db.query("SELECT * FROM t")
+    assert df["date"].dt.tz is not None
+    assert list(df["date"].dt.tz_convert("Europe/Warsaw").dt.hour) == [0, 0]
+    assert table.num_rows == 2 and table.schema.field("date").type.tz is not None

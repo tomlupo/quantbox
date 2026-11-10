@@ -26,6 +26,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from quantbox.frequency import pandas_offset_alias
+
 # --- Frequency helpers ---
 
 _FREQ_TO_PERIODS: dict[str, int] = {
@@ -49,7 +51,7 @@ def _resample_to_freq(
     """Resample prices to a lower frequency using last observation."""
     if freq.upper() in ("B", "D"):
         return prices
-    return prices.resample(freq.upper()).last().dropna(how="all")
+    return prices.resample(pandas_offset_alias(freq.upper())).last().dropna(how="all")
 
 
 def _smoothed_returns_frame(prices: pd.DataFrame, roll: int = 1) -> pd.DataFrame:
@@ -705,10 +707,7 @@ def _compute_ewma_lw_at_date(
     half_life_obs: float,
 ) -> tuple[np.ndarray, float, int]:
     """Resample, build rolling-sum returns, compute EWMA-LW-const-corr covariance."""
-    if freq.upper() not in ("B", "D"):
-        prices_resampled = prices_slice.resample(freq.upper()).last().dropna(how="all")
-    else:
-        prices_resampled = prices_slice
+    prices_resampled = _resample_to_freq(prices_slice, freq)
 
     # Same convention as the sample estimators: for roll=1 the plain
     # pct_change; for roll=3 the Bartlett-lag-2 rolling sum, scaled back

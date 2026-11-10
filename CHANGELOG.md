@@ -29,6 +29,23 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.22.0 (2026-11-10)
+
+### Feat
+
+- **deps**: support pandas 3 alongside pandas 2, lock pandas 3.1 and vectorbt 1.2 (#331)
+
+### Fix
+
+- **broker**: give HyperliquidBroker the readonly flag Kraken, Binance and IBKR carry (#336)
+- **engine**: optimizer dust is no position in the policy, the rsims buffer, the overlay and the reports (#335)
+- **datasources**: compare the cache-hit end date in UTC in binance, binance futures and kraken (#334)
+- **pipeline**: a weight within 1e-12 of zero is dust, not a position (#333)
+- **cache**: compare OHLCV cache dates in UTC on every box (#332)
+- **duckdb**: keep tz-aware ns timestamps tz-aware on duckdb 2.0, lift the 1.5.6 hold (#330)
+- **runner**: register a local-source module in sys.modules before exec (TOM-2514) (#329)
+- **compare**: mask the engine version a run records (TOM-2566) (#327)
+
 ## v0.21.2 (2026-10-30)
 
 ### Fix

@@ -46,6 +46,7 @@ from typing import Any
 
 import pandas as pd
 
+from quantbox._numerics import WEIGHT_ATOL
 from quantbox._removed import removed_names
 from quantbox.financing import FINANCING_SCHEMA, LEVERAGE_SCHEMA
 from quantbox.instrument_calendar import DEFAULT_EXECUTION_CALENDAR, EXECUTION_CALENDARS, resolve_execution_calendar
@@ -425,7 +426,7 @@ def exposure_metrics(weights: pd.DataFrame, prefix: str) -> dict[str, float]:
         f"{prefix}_mean_net_exposure": float(w.sum(axis=1).mean()),
         f"{prefix}_short_gross_share": short_gross / total_gross if total_gross > 0 else 0.0,
         f"{prefix}_mean_turnover": float(turnover.mean()),
-        f"{prefix}_flat_bar_share": float((gross == 0).mean()),
+        f"{prefix}_flat_bar_share": float((gross <= WEIGHT_ATOL).mean()),  # a dust-only bar is flat
     }
 
 

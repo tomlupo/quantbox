@@ -79,6 +79,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from quantbox._numerics import WEIGHT_ATOL, is_held
+
 logger = logging.getLogger(__name__)
 
 #: The single-key spellings (TOM-1450), in the order the docs list them.
@@ -584,7 +586,10 @@ def place_bar(
             if corridor is None:
                 raise ValueError("place_bar: a corridor trigger needs the (below, above) corridor arrays")
             below, above = corridor
-            cells = (drifted < target - below) | (drifted > target + above) | ((target == 0) & (drifted != 0))
+            # A zero target still holding a position: dust (within WEIGHT_ATOL) is zero on both sides.
+            flat_target = np.abs(target) <= WEIGHT_ATOL
+            still_held = ~(np.abs(drifted) <= WEIGHT_ATOL)
+            cells = (drifted < target - below) | (drifted > target + above) | (flat_target & still_held)
         hit = bool((cells & trades).any())
         placed = hit
     keep = trades if placed else np.zeros_like(ordered)
@@ -904,7 +909,7 @@ def decide_rebalance(
     if held is not None:
         held = pd.Series(held, dtype=float)
         held.index = held.index.astype(str)
-        extra = [c for c in held.index if c not in set(columns) and held[c] != 0]
+        extra = [c for c in held.index if c not in set(columns) and is_held(held[c])]  # dust is no position
         if extra:  # held but never decided: its target is 0
             frame = frame.reindex(columns=[*columns, *extra], fill_value=0.0)
             columns = frame.columns

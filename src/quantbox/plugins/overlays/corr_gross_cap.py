@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from quantbox._numerics import WEIGHT_ATOL
 from quantbox.contracts import PluginMeta
 
 
@@ -84,7 +85,7 @@ class CorrGrossCapOverlay:
 
         prices = data["prices"].reindex(columns=weights.columns)
         returns = prices.pct_change(fill_method=None)
-        held = weights.reindex(returns.index).fillna(0.0).ne(0.0)
+        held = weights.reindex(returns.index).fillna(0.0).abs().gt(WEIGHT_ATOL)  # dust is no position
         corr = mean_pairwise_corr(returns, held, window).reindex(weights.index)
         gross = weights.abs().sum(axis=1)
         gated = (corr > threshold) & (gross > max_gross)
