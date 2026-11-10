@@ -85,6 +85,7 @@ quantbox run -c <config>           # run a pipeline
 quantbox run --dry-run -c <config> # dry run (no side effects)
 quantbox run --json -c <config>    # print only the run manifest (quantbox/run@1); logs on stderr
 quantbox report export <run-or-arms-dir> --format qute-research/finding-report@1 [-o out.json]
+        [--extra <line-results>.json] [--benchmark <arm>]
                                    # the data the qute-research finding page renders
 quantbox config explain <config> --json  # what a run WOULD do (quantbox/explain@1), nothing simulated
 quantbox approve --run-dir <path>  # write approval file for a run's orders
@@ -114,6 +115,10 @@ Each run writes to `artifacts/<run_id>/`:
   owns the page and the contract). `quantbox report export` writes the same for a run or a
   directory of arms (each arm's newest run, by the timestamp that ends its run id); a variants
   run's arms come from `variant_returns.parquet` (long: `date, variant, returns`).
+  `--extra` takes what only a line's own analysis has, a JSON file the line saved with some of
+  `lab`, `kpis`, `metrics`, `robustness`, `audit` and `tables` in the payload's shapes: its
+  tables come before the provenance table, each other section replaces the engine's, and series
+  and provenance always come from the runs, so a line needs no report adapter of its own.
   The manifest's `reports.finding_report` says whether the run produced it; when the export
   fails, the run's results stand, `produced` is false with the `error`, and `quantbox run`
   prints `FINDING REPORT: NOT PRODUCED` in its summary.
