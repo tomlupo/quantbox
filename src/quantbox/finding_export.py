@@ -28,6 +28,15 @@ the finding's ``backtest_sharpe`` and are toned ``bad``, the chart title and
 provenance say research, and ``audit.axes`` carries a failed "Execution timing"
 axis with the recorded reason. Equity, drawdown and the per-year returns
 in ``robustness`` are compounded from the run's own returns file.
+
+What the runs cannot carry, a line's own analysis can: ``extra`` names a JSON file
+the line saved (its results), holding some of ``lab``, ``kpis``, ``metrics``,
+``robustness``, ``audit`` and ``tables`` in the payload's own shapes. Its tables
+come before the run provenance table; each other section replaces the engine's.
+The series and the provenance always come from the runs, and a RESEARCH run keeps
+what marks it: its failed "Execution timing" axes lead the line's audit, and the
+line's kpis are refused. So a line renders its page from this export and its saved
+results, with no adapter of its own.
 """
 
 from __future__ import annotations
@@ -47,6 +56,8 @@ from .run_manifest import SCHEMA_ID as RUN_SCHEMA_ID
 from .run_manifest import research_note, run_kind
 
 SCHEMA_ID = "qute-research/finding-report@1"
+#: The sections a line's results file may give (``extra=``).
+EXTRA_SECTIONS = ("lab", "kpis", "metrics", "robustness", "audit", "tables")
 FORMATS = (SCHEMA_ID,)
 FILENAME = "finding_report.json"
 
@@ -209,7 +220,7 @@ def _date_labels(index: pd.DatetimeIndex) -> list[str]:
     return [d.isoformat() for d in naive]
 
 
-def _series_block(arms: list[Arm]) -> dict[str, Any]:
+def _series_block(arms: list[Arm], benchmark: str | None = None) -> dict[str, Any]:
     frame = pd.concat({a.name: a.returns for a in arms}, axis=1).sort_index()
     lines = []
     for arm in arms:
@@ -224,7 +235,7 @@ def _series_block(arms: list[Arm]) -> dict[str, Any]:
                 "name": arm.name,
                 "equity": [_round(v) for v in equity],
                 "drawdown": [_round(v) for v in drawdown],
-                "benchmark": "bench" in arm.name.lower(),
+                "benchmark": arm.name == benchmark if benchmark else "bench" in arm.name.lower(),
             }
         )
     title = "Equity (growth of 1)"
@@ -363,21 +374,47 @@ def _provenance_table(arms: list[Arm]) -> dict[str, Any]:
     }
 
 
-def export_finding_report(path: str | Path, *, primary: str | None = None) -> dict[str, Any]:
+def _load_extra(path: str | Path) -> dict[str, Any]:
+    """A line's results file: some of :data:`EXTRA_SECTIONS`, none empty; anything else is refused."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: a results file is a JSON object of payload sections")
+    unknown = sorted(set(data) - set(EXTRA_SECTIONS))
+    if unknown:
+        raise ValueError(
+            f"{path}: {unknown} cannot come from a results file; it gives only {list(EXTRA_SECTIONS)}"
+            " (series and provenance come from the runs)"
+        )
+    empty = sorted(k for k, v in data.items() if not v)
+    if empty:
+        raise ValueError(f"{path}: empty section(s) {empty}; omit them instead")
+    if "tables" in data and not isinstance(data["tables"], list):
+        raise ValueError(f"{path}: tables is a list of tables")
+    return data
+
+
+def export_finding_report(
+    path: str | Path,
+    *,
+    primary: str | None = None,
+    benchmark: str | None = None,
+    extra: str | Path | None = None,
+) -> dict[str, Any]:
     """The ``qute-research/finding-report@1`` payload for the run or arms under ``path``.
 
     ``primary`` names the arm the hero cards report (default: the first);
     the finding page refuses a Sharpe card that disagrees with the finding's
     ``backtest_sharpe``, so it must be the arm the finding is about.
+    ``benchmark`` names the arm drawn as the benchmark (default: any arm whose
+    name contains "bench"). ``extra`` is a line's results file (module docstring).
     """
     arms = load_arms(path)
     names = [a.name for a in arms]
-    if primary is None:
-        hero = arms[0]
-    elif primary in names:
-        hero = arms[names.index(primary)]
-    else:
-        raise ValueError(f"no arm named {primary!r}; arms are {names}")
+    for label, name in (("primary", primary), ("benchmark", benchmark)):
+        if name is not None and name not in names:
+            raise ValueError(f"no arm named {name!r} ({label}); arms are {names}")
+    hero = arms[names.index(primary)] if primary else arms[0]
+    line = _load_extra(extra) if extra is not None else {}
 
     payload: dict[str, Any] = {"schema": SCHEMA_ID, "lab": "quantbox"}
     if (Path(path) / "run_manifest.json").is_file():
@@ -385,7 +422,7 @@ def export_finding_report(path: str | Path, *, primary: str | None = None) -> di
     kpis = _kpis(hero)
     if kpis:
         payload["kpis"] = kpis
-    payload["series"] = _series_block(arms)
+    payload["series"] = _series_block(arms, benchmark)
     for key, block in (
         ("metrics", _metrics_block(arms)),
         ("robustness", _robustness_block(arms)),
@@ -393,7 +430,13 @@ def export_finding_report(path: str | Path, *, primary: str | None = None) -> di
     ):
         if block is not None:
             payload[key] = block
-    payload["tables"] = [_provenance_table(arms)]
+    payload["tables"] = [*line.pop("tables", []), _provenance_table(arms)]
+    research_axes = (payload.get("audit") or {}).get("axes", [])
+    if research_axes and "kpis" in line:
+        raise ValueError(f"{extra}: a RESEARCH run's hero cards are the engine's; drop kpis from the results file")
+    if research_axes and "audit" in line:
+        line["audit"] = {**line["audit"], "axes": [*research_axes, *line["audit"].get("axes", [])]}
+    payload.update(line)
     return payload
 
 
