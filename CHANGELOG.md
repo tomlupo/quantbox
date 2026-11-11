@@ -29,6 +29,12 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.23.0 (2026-11-10)
+
+### Feat
+
+- **finding-export**: a line's results file and a named benchmark in report export (TOM-3140) (#345)
+
 ## v0.22.0 (2026-11-10)
 
 ### Feat
