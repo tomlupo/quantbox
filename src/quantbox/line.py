@@ -53,6 +53,9 @@ _TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 _QB_DEP_RE = re.compile(r'"quantbox(\[[^\]]*\])? @ git\+(?P<url>[^"@]+)@(?P<sha>[^"#]+)",(?P<comment>[^\n]*)')
 _REF_LINE_RE = re.compile(r'^quantbox-ref = "[^"]*"$', re.M)
 _SHA_LINE_RE = re.compile(r'^quantbox-sha = "[^"]*"$', re.M)
+_ITEM_START_RE = re.compile(r"\s*(?:(?:[-*]|\d+\.)\s|\|)")  # list item or table row
+_CITED_SCRIPT_RE = re.compile(r"`([\w./-]+\.py)`")
+_CITED_ENGINE_RE = re.compile(r"quantbox v?(\d+\.\d+\.\d+)")
 
 
 class LineError(RuntimeError):
@@ -380,6 +383,32 @@ def new_line(
     }
 
 
+def _stale_evidence(readme: str, engine: EngineRef) -> list[str]:
+    """The scripts *readme* cites as run on a quantbox other than *engine*: ``script.py (quantbox X.Y.Z, README.md:N)``.
+
+    The README cites evidence in prose, so the unit is a paragraph or one list item (its
+    wrapped lines included): a backticked ``*.py`` beside a ``quantbox X.Y.Z`` is that
+    script's engine. A block that also names the new engine (its tag, or the first 7 chars
+    of its SHA) is current. A table row is its own block. Only reports, and it is a heuristic
+    over prose (it can list a script a paragraph merely mentions): check the list by hand.
+    """
+    tag = _TAG_RE.match(engine.ref)
+    new_version = ".".join(tag.groups()) if tag else None
+    blocks: list[tuple[int, str]] = []  # (first line number, text)
+    for n, row in enumerate(readme.splitlines(), 1):
+        if blocks and row.strip() and not _ITEM_START_RE.match(row) and blocks[-1][1]:
+            blocks[-1] = (blocks[-1][0], blocks[-1][1] + " " + row.strip())
+        else:
+            blocks.append((n, row.strip()))
+    stale: list[str] = []
+    for n, text in blocks:
+        versions = _CITED_ENGINE_RE.findall(text)
+        if not versions or new_version in versions or engine.sha[:7] in text:
+            continue
+        stale += [f"{s} (quantbox {versions[0]}, README.md:{n})" for s in dict.fromkeys(_CITED_SCRIPT_RE.findall(text))]
+    return stale
+
+
 def repin(
     line_dir: str | Path,
     *,
@@ -390,7 +419,8 @@ def repin(
     """Move *line_dir*'s quantbox pin to *ref* (default: the latest tag) and re-derive every exact pin.
 
     The URL defaults to the one the line already pins. Refuses, before writing anything,
-    a ref that predates line support. Returns old and new ref/SHA.
+    a ref that predates line support. Returns old and new ref/SHA, and ``stale_evidence``:
+    the scripts the line README cites as run on another engine than the new pin.
     """
     line_dir = Path(line_dir)
     pyproject_path = line_dir / "pyproject.toml"
@@ -418,10 +448,13 @@ def repin(
         pyproject_path.write_text(text, encoding="utf-8")
         n_pins = _derive_pins(line_dir, tree, lock=lock)
 
+    readme = line_dir / "README.md"
+    stale = _stale_evidence(readme.read_text(encoding="utf-8"), engine) if readme.is_file() else []
     return {
         "line": str(line_dir),
         "from": {"ref": old_ref, "sha": old_sha},
         "to": {"url": engine.url, "ref": engine.ref, "sha": engine.sha},
         "pinned_packages": n_pins,
+        "stale_evidence": stale,
         "locked": lock,
     }

@@ -416,6 +416,58 @@ def test_repin_moves_sha_tag_and_every_derived_pin(tmp_path, fake_qb, datasets_r
     assert strip.sub("X", before) == strip.sub("X", after)
 
 
+_README_EVIDENCE = """# demo
+
+- **Measured on the pinned engine** (quantbox 0.10.0 `abc1234`): `diag_current.py`, output
+  `results/current.txt`.
+- The synthetic timing toy (quantbox 0.9.0 `def5678`) ran `diag_timing_toy.py`, then
+  `diag_second.py` too; it is superseded.
+  The wrapped line still belongs to that item: `diag_third.py`.
+- A script `uncited.py` with no engine beside it is not evidence of anything.
+
+Paragraph: `diag_para.py` ran on quantbox v0.9.0
+and on the next line says nothing more.
+
+| Script | Engine |
+|---|---|
+| `tab_old.py` | quantbox 0.9.0 |
+| `tab_new.py` | quantbox 0.10.0 |
+| `tab_older.py` | quantbox 0.8.0 |
+"""
+
+
+def test_repin_names_the_cited_scripts_that_ran_on_another_engine(tmp_path, fake_qb, datasets_root):
+    _scaffold(tmp_path, fake_qb, quantbox_ref="v0.9.0")
+    target = tmp_path / "demo"
+    (target / "README.md").write_text(_README_EVIDENCE)
+    before = (target / "pyproject.toml").read_text()
+
+    result = line.repin(target, lock=False)  # v0.9.0 -> v0.10.0
+
+    assert result["to"]["ref"] == "v0.10.0"
+    assert result["stale_evidence"] == [
+        "diag_timing_toy.py (quantbox 0.9.0, README.md:5)",
+        "diag_second.py (quantbox 0.9.0, README.md:5)",
+        "diag_third.py (quantbox 0.9.0, README.md:5)",
+        "diag_para.py (quantbox 0.9.0, README.md:10)",
+        # a table row is its own block: one row on the new engine hides no other row
+        "tab_old.py (quantbox 0.9.0, README.md:15)",
+        "tab_older.py (quantbox 0.8.0, README.md:17)",
+    ]
+    # reporting only: the pins were rewritten exactly as without a README to read
+    assert result["pinned_packages"] > 0 and (target / "pyproject.toml").read_text() != before
+
+
+def test_repin_reports_no_stale_evidence_for_a_current_or_missing_readme(tmp_path, fake_qb, datasets_root):
+    _scaffold(tmp_path, fake_qb, quantbox_ref="v0.9.0")
+    target = tmp_path / "demo"
+    sha7 = _git(fake_qb, "rev-parse", "v0.10.0")[:7]
+    (target / "README.md").write_text(f"- `diag.py` ran on quantbox 0.10.0\n- `other.py` on quantbox 0.9.0 `{sha7}`\n")
+    assert line.repin(target, lock=False)["stale_evidence"] == []
+    (target / "README.md").unlink()
+    assert line.repin(target, ref="v0.10.0", lock=False)["stale_evidence"] == []
+
+
 def test_repin_refuses_a_ref_that_predates_line_support(tmp_path, fake_qb, datasets_root):
     """Same gate as new_line: a repin must not move a line onto an engine that cannot run it."""
     _scaffold(tmp_path, fake_qb, quantbox_ref="v0.10.0")
