@@ -427,6 +427,12 @@ _README_EVIDENCE = """# demo
 
 Paragraph: `diag_para.py` ran on quantbox v0.9.0
 and on the next line says nothing more.
+
+| Script | Engine |
+|---|---|
+| `tab_old.py` | quantbox 0.9.0 |
+| `tab_new.py` | quantbox 0.10.0 |
+| `tab_older.py` | quantbox 0.8.0 |
 """
 
 
@@ -444,6 +450,9 @@ def test_repin_names_the_cited_scripts_that_ran_on_another_engine(tmp_path, fake
         "diag_second.py (quantbox 0.9.0, README.md:5)",
         "diag_third.py (quantbox 0.9.0, README.md:5)",
         "diag_para.py (quantbox 0.9.0, README.md:10)",
+        # a table row is its own block: one row on the new engine hides no other row
+        "tab_old.py (quantbox 0.9.0, README.md:15)",
+        "tab_older.py (quantbox 0.8.0, README.md:17)",
     ]
     # reporting only: the pins were rewritten exactly as without a README to read
     assert result["pinned_packages"] > 0 and (target / "pyproject.toml").read_text() != before

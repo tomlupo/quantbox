@@ -53,7 +53,7 @@ _TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 _QB_DEP_RE = re.compile(r'"quantbox(\[[^\]]*\])? @ git\+(?P<url>[^"@]+)@(?P<sha>[^"#]+)",(?P<comment>[^\n]*)')
 _REF_LINE_RE = re.compile(r'^quantbox-ref = "[^"]*"$', re.M)
 _SHA_LINE_RE = re.compile(r'^quantbox-sha = "[^"]*"$', re.M)
-_ITEM_START_RE = re.compile(r"\s*(?:[-*]|\d+\.)\s")
+_ITEM_START_RE = re.compile(r"\s*(?:(?:[-*]|\d+\.)\s|\|)")  # list item or table row
 _CITED_SCRIPT_RE = re.compile(r"`([\w./-]+\.py)`")
 _CITED_ENGINE_RE = re.compile(r"quantbox v?(\d+\.\d+\.\d+)")
 
@@ -389,7 +389,8 @@ def _stale_evidence(readme: str, engine: EngineRef) -> list[str]:
     The README cites evidence in prose, so the unit is a paragraph or one list item (its
     wrapped lines included): a backticked ``*.py`` beside a ``quantbox X.Y.Z`` is that
     script's engine. A block that also names the new engine (its tag, or the first 7 chars
-    of its SHA) is current. Only reports; the README is the line's to edit.
+    of its SHA) is current. A table row is its own block. Only reports, and it is a heuristic
+    over prose (it can list a script a paragraph merely mentions): check the list by hand.
     """
     tag = _TAG_RE.match(engine.ref)
     new_version = ".".join(tag.groups()) if tag else None
