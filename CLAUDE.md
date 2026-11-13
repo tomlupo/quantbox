@@ -323,6 +323,10 @@ links here rather than restating it — this policy has drifted twice now
 (TOM-354; then again across three files by 2026-08-18). `conductor.yml`
 (`release.branch`) is the machine-readable half and must agree.
 
+0. **Who decides.** A release is cut only on Tom's recorded "tak" (Tom,
+   2026-11-11): one release per day's batch, never per merge, never on an
+   agent's or a bot's own judgement. This covers `/ship` and the promotion PR
+   into `main`; without the "tak" in the thread or card, work stays on `dev`.
 1. **Feature work → PR to `dev`.** `ci.yml` runs on `dev` PRs; the
    independent-reviewer gate runs on **`main`** PRs only.
 2. **Release → `/ship` on `dev`.** One act: bump, changelog, `uv.lock`, commit,
