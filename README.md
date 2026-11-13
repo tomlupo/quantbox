@@ -47,6 +47,25 @@ See [backtesting guide](docs/playbooks/backtesting.md) for engine options and pa
 quantbox run -c cookbook/configs/run_futures_paper_crypto_trend.yaml
 ```
 
+## Architecture
+
+One run, from config to verdict. Each box names the module that does the step in
+`src/quantbox/`; [the audience layers](docs/architecture/README.md) and
+[ADR-0008](docs/adr/0008-engine-seam.md) / [ADR-0009](docs/adr/0009-metrics-inference-gates.md) say why it is cut this way.
+
+```mermaid
+flowchart LR
+    cfg["YAML config<br/>runner.py"] --> data["Data<br/>plugins/datasources/"]
+    data --> strat["Strategy<br/>strategy_runner.py<br/>plugins/strategies/"]
+    strat --> dec["Decision<br/>decision.py"]
+    dec --> eng["Engine<br/>engine/"]
+    eng --> met["Metrics: describe<br/>metrics.py"]
+    met --> inf["Inference: test<br/>inference.py"]
+    inf --> gates["Gates: decide<br/>gates.py"]
+    gates --> cli["quantbox gates<br/>gates_cli.py"]
+    met --> exp["quantbox report export<br/>finding_export.py"]
+```
+
 ## Plugins
 
 All plugins are config-driven and discovered automatically. List registered plugins:
