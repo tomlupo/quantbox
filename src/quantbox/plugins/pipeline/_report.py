@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 from quantbox._lazy import load
-from quantbox.metrics import compute_drawdown_series, compute_rolling_sharpe, period_returns
+from quantbox.metrics import compute_drawdown_series, compute_rolling_sharpe, period_returns, total_return_label
 
 _TEMPLATE_PATH = Path(__file__).parent / "templates" / "research_report.html"
 
@@ -54,7 +54,7 @@ def generate_summary_md(
     m = metrics
     strategies_str = ", ".join(strategy_names) if strategy_names else "—"
     rows = [
-        ("Total Return", _pct(m.get("total_return", 0))),
+        ("Total return", total_return_label(m.get("total_return", 0))),  # with its wealth multiple (TOM-3764)
         ("CAGR", _pct(m.get("cagr", 0))),
         ("Sharpe Ratio", _f2(m.get("sharpe", 0))),
         ("Sortino Ratio", _f2(m.get("sortino", 0))),
@@ -659,7 +659,7 @@ def _build_per_variant_table_chart(variant_results: dict[str, dict[str, Any]]) -
     cols = [
         ("Variant", lambda n, r: n),
         ("Strategy", lambda n, r: r.get("strategy_name", "")),
-        ("Total Return", lambda n, r: f"{r['metrics'].get('total_return', 0) * 100:.1f}%"),
+        ("Total Return", lambda n, r: total_return_label(r["metrics"].get("total_return", 0))),
         ("CAGR", lambda n, r: f"{r['metrics'].get('cagr', 0) * 100:.1f}%"),
         ("Sharpe", lambda n, r: f"{r['metrics'].get('sharpe', 0):.2f}"),
         ("Sortino", lambda n, r: f"{r['metrics'].get('sortino', 0):.2f}"),
