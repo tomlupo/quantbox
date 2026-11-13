@@ -107,7 +107,8 @@ def test_first_decision_drops_earlier_months() -> None:
         ({"c_rule": "rolling"}, "unknown c_rule"),
         ({"rv_form": "log"}, "unknown rv_form"),
         ({"c_window": None}, "needs c_window"),
-        ({"c_window": ["2050-01", "2060-12"]}, "holds 0 months"),
+        ({"c_window": ["2050-01", "2060-12"]}, "does not cover c_window"),
+        ({"c_window": ["1930-01", "1930-01"]}, "holds 1 months"),
         ({"vol_lookback": 60}, "vol_lookback"),
     ],
 )
@@ -125,3 +126,44 @@ def test_daily_path_vol_power_2_squares_the_scale_and_defaults_are_untouched() -
     sigma = prices["MKT"].pct_change().std()
     assert one["weights"]["MKT"].iloc[-1] == 0.2 / (sigma * np.sqrt(252))
     assert two["weights"]["MKT"].iloc[-1] == pytest.approx((0.2 / (sigma * np.sqrt(252))) ** 2, rel=1e-12)
+
+
+def _flat(month: str) -> np.ndarray:
+    """The seeded returns with every return in ``month`` set to 0 (stale or forward-filled quotes)."""
+    x = _returns()
+    x[DAYS.tz_localize(None).to_period("M") == pd.Period(month, "M")] = 0.0
+    return x
+
+
+@pytest.mark.parametrize("rule", ["full", "expanding"])
+def test_refuses_a_month_with_no_variance_and_names_it(rule: str) -> None:
+    """RV2 = 0 would give w = c / 0 = inf, and an inf pair that poisons every later c (review, round 1)."""
+    with pytest.raises(ValueError, match=r"RV2.*1931-03"):
+        _run(_prices(_flat("1931-03")), c_rule=rule, min_months=6)
+
+
+def test_a_flat_month_no_weight_reads_is_not_refused() -> None:
+    """Only the months whose vol enters a weight or a pair are checked: first_decision drops 1927-03."""
+    w = _run(_prices(_flat("1927-03")), first_decision="1930-01", c_window=["1930-01", "1935-12"])["weights"]["MKT"]
+    assert np.isfinite(w).all() and w.index[0] == pd.Timestamp("1930-01-31", tz="UTC")
+
+
+@pytest.mark.parametrize(
+    "loaded",
+    [slice("1928-01-01", None), slice(None, "1934-06-30")],  # loaded after c_window starts / ends before it
+)
+def test_full_refuses_a_c_window_the_loaded_data_does_not_cover(loaded: slice) -> None:
+    """A partly loaded window would fit c on the months it has, a different level with no warning."""
+    with pytest.raises(ValueError, match="does not cover c_window"):
+        _run(_prices().loc[loaded])
+
+
+def test_refuses_an_unknown_param_name() -> None:
+    """A typo ('vol_pwr: 2') used to run inverse vol without a word."""
+    with pytest.raises(ValueError, match="unknown param.*vol_pwr"):
+        _run(_prices(), vol_pwr=2)
+
+
+def test_pipeline_injected_params_are_still_accepted() -> None:
+    out = VolMatchedBuyHoldStrategy(ticker="MKT").run({"prices": _prices()}, {"_pipeline_annualize": 252.0})
+    assert (out["weights"]["MKT"] > 0).all()

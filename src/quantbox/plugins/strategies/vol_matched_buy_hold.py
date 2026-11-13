@@ -30,6 +30,9 @@ Per calendar month t, at its last bar (the decision bar), with data through that
 timing), ``c_rule: expanding`` the same ratio over the pairs through t, from
 ``min_months`` pairs on. ``first_decision`` drops the months before it.
 ``target_annual_vol`` and ``trading_days`` do not enter this weight.
+Refused, not computed: a month whose RV2 enters a weight or a pair and is not > 0 and finite
+(a flat month of stale quotes would make the weight c / 0), and a ``c_window`` the loaded
+data does not cover from its first month to its last (c would be fitted on fewer months).
 
 The plugin never shifts a weight: the engine fills next bar (ADR-0005).
 """
@@ -43,6 +46,7 @@ import numpy as np
 import pandas as pd
 
 from quantbox.contracts import PluginMeta, StrategyContext
+from quantbox.params_schema import resolve_params_schema
 from quantbox.strategy_runner import resolve_annualize
 
 RV_WINDOWS = (None, "ME")
@@ -154,8 +158,13 @@ class VolMatchedBuyHoldStrategy:
         self, data: dict[str, Any], params: dict[str, Any] | None = None, context: StrategyContext | None = None
     ) -> dict[str, Any]:
         if params:
+            # A key the schema does not name is a typo, not a default; `_`-keys are the pipeline's own.
+            known = set(resolve_params_schema(type(self))["properties"])
+            unknown = sorted(k for k in params if k not in known and not k.startswith("_"))
+            if unknown:
+                raise ValueError(f"vol_matched_buy_hold: unknown params {unknown}; use {sorted(known)}")
             for k, v in params.items():
-                if hasattr(self, k):
+                if k in known:
                     setattr(self, k, v)
 
         if self.vol_power not in VOL_POWERS:
@@ -220,9 +229,29 @@ class VolMatchedBuyHoldStrategy:
     def _run_monthly(self, prices: pd.DataFrame) -> dict[str, Any]:
         """rv_window ME: weight c / vol_t at each month's decision bar, held to the next (module docstring)."""
         m = monthly_inputs(prices[self.ticker].sort_index(), self.rv_form, self.vol_power)
-        if self.first_decision is not None:
-            m = m.loc[m.index >= pd.Period(self.first_decision, "M")]
         window = tuple(self.c_window) if self.c_window is not None else None
+        loaded = (m.index[0], m.index[-1])
+        partial = (
+            window is not None
+            and len(window) == 2
+            and (loaded[0] > pd.Period(window[0], "M") or loaded[1] < pd.Period(window[1], "M"))
+        )
+        if self.c_rule == "full" and partial:
+            raise ValueError(
+                f"vol_matched_buy_hold: the loaded data ({loaded[0]}..{loaded[1]}) does not cover "
+                f"c_window {list(window)}; load all of it (prices.lookback_days)"
+            )
+        first = pd.Period(self.first_decision, "M") if self.first_decision is not None else loaded[0]
+        # Every vol that enters a weight (months >= first) or a pair (vol_{t-1}, so one month earlier)
+        # must be > 0 and finite. Only the data's first month may have none: no return before its first bar.
+        rv2 = m.loc[m.index >= first - 1, "rv2"]
+        bad = rv2.index[~(np.isfinite(rv2) & (rv2 > 0)) & ~((rv2.index == loaded[0]) & rv2.isna())]
+        if len(bad):
+            raise ValueError(
+                f"vol_matched_buy_hold: RV2 is not > 0 and finite in {[str(b) for b in bad]} for {self.ticker!r} "
+                "(a month of flat or stale quotes); its weight would be c / 0"
+            )
+        m = m.loc[m.index >= first]
         m["c"] = scale_constant(m, self.c_rule, window, self.min_months)
         m["w"] = m["c"] / m["vol"]
         decided = m.dropna(subset=["w"])
