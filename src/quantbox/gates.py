@@ -1,6 +1,6 @@
 """Acceptance gates on a backtest's return series: thresholds and verdicts only (TOM-1351, TOM-1618).
 
-Six deterministic gates, six DIFFERENT questions, each a function returning a
+Seven deterministic gates, seven DIFFERENT questions, each a function returning a
 JSON-ready dict with a ``gate_pass`` verdict, and each reachable as
 ``quantbox gates <name> --json`` (see :mod:`quantbox.gates_cli`):
 
@@ -15,6 +15,8 @@ JSON-ready dict with a ``gate_pass`` verdict, and each reachable as
   episode    Does the claim still hold with the largest drawdown episode removed?
   predreg    Does a lagged predictor forecast the return once the Stambaugh
              small-sample bias is removed (Lewellen's conditional test too)?
+  replicate  Does the series replicate a reference (a paper's, an index's)?
+             PASS, FAIL, or DEFECT when the correlation is below a floor.
 
 Metrics DESCRIBE (:mod:`quantbox.metrics`), inference TESTS
 (:mod:`quantbox.inference`), gates DECIDE. Every statistic here comes from
@@ -66,7 +68,7 @@ from .inference import (
     require_finite,
     return_moments,
 )
-from .metrics import drawdown_fields, sharpe_ratio
+from .metrics import correlation, drawdown_fields, sharpe_ratio
 from .metrics import max_drawdown as _max_drawdown
 
 DEFAULT_N_TRIALS: tuple[int, ...] = (1, 5, 10, 20, 50, 100)
@@ -603,11 +605,84 @@ def episode_gate(
     }
 
 
+# ── replication against a reference series ────────────────────────────────
+
+#: replication_gate's verdicts; only PASS is ``gate_pass``
+REPLICATION_VERDICTS = ("PASS", "FAIL", "DEFECT")
+
+
+def replication_gate(
+    returns,
+    reference,
+    *,
+    freq: str | None = None,
+    start=None,
+    end=None,
+    min_corr: float = 0.85,
+    floor: float = 0.70,
+    min_obs: int = 12,
+) -> dict:
+    """Does ``returns`` replicate ``reference``? PASS, FAIL or DEFECT on the correlation (TOM-3699).
+
+    The statistic is :func:`quantbox.metrics.correlation` on ``freq`` inside
+    ``start``..``end`` (dated Series, pairwise NaN masking). The verdict:
+
+    - ``PASS`` at ``rho >= min_corr``;
+    - ``DEFECT`` at ``rho < floor``: the replication is broken (a wrong sign, lag,
+      universe or unit), not merely loose; a sign-flipped copy (rho near -1) is one;
+    - ``FAIL`` between them, and whenever fewer than ``min_obs`` periods overlap:
+      too few to pass, and too few to call a defect.
+
+    The thresholds are arguments: the defaults are a starting bar, not any one
+    paper's. ``gate_pass`` is ``verdict == "PASS"``.
+    """
+    for name, v in (("min_corr", min_corr), ("floor", floor)):
+        if not (isinstance(v, (int, float)) and math.isfinite(v) and -1 <= v <= 1):
+            raise GateInputError(f"{name} must be a correlation in [-1, 1], got {v!r}")
+    if floor > min_corr:
+        raise GateInputError(f"floor {floor} is above min_corr {min_corr}: DEFECT would sit above PASS")
+    if isinstance(min_obs, bool) or not isinstance(min_obs, (int, np.integer)) or min_obs < 3:
+        raise GateInputError(f"min_obs must be a whole number >= 3 (two points always correlate +-1), got {min_obs!r}")
+    try:
+        c = correlation(returns, reference, freq, start, end)
+    except ValueError as exc:  # a refused input (dates, timezone, units) cannot give a verdict
+        raise GateInputError(str(exc)) from exc
+    if c.n_overlap == 0:
+        raise GateInputError("the returns and the reference share no finite period — nothing to correlate")
+    if not math.isfinite(c.rho):
+        raise GateInputError(f"no correlation on {c.n_overlap} period(s): fewer than two, or one side is flat")
+    obs_pass = bool(c.n_overlap >= min_obs)
+    if not obs_pass:
+        verdict, note = "FAIL", f"too few overlapping periods ({c.n_overlap} < {min_obs})"
+    elif c.rho >= min_corr:
+        verdict, note = "PASS", f"rho {c.rho:.4f} >= min_corr {min_corr}: the series replicates the reference"
+    elif c.rho < floor:
+        verdict, note = "DEFECT", f"rho {c.rho:.4f} < floor {floor}: the replication is broken, not merely loose"
+    else:
+        verdict, note = "FAIL", f"rho {c.rho:.4f} is between floor {floor} and min_corr {min_corr}"
+    return {
+        "gate": "replicate",
+        "verdict": verdict,
+        "rho": c.rho,
+        "n_overlap": c.n_overlap,
+        "first_date": c.first,
+        "last_date": c.last,
+        "freq": freq,
+        "min_corr": min_corr,
+        "floor": floor,
+        "min_obs": int(min_obs),
+        "obs_pass": obs_pass,
+        "gate_pass": verdict == "PASS",
+        "note": note,
+    }
+
+
 __all__ = [
     "COMPARES",
     "DEFAULT_N_TRIALS",
     "METRICS",
     "PASS_IF",
+    "REPLICATION_VERDICTS",
     "GateInputError",
     "dsr_gate",
     "dsr_gate_from_returns",
@@ -617,4 +692,5 @@ __all__ = [
     "paired_block_bootstrap",
     "parse_n_trials",
     "predreg_gate",
+    "replication_gate",
 ]
