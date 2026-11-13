@@ -15,7 +15,10 @@ The interface, grouped by question:
   :func:`return_moments` (the per-period Sharpe, skew and kurtosis of a return
   series, after the finite and degenerate checks).
 - Newey-West / HAC: :func:`hac_ols`, :func:`newey_west_tstat`,
-  :func:`newey_west_auto_lags`, :func:`factor_regression`.
+  :func:`newey_west_auto_lags`, :func:`factor_regression`. Each takes an
+  optional calendar, ``segments`` (one label per row): lag products stay inside
+  a run of equal labels, so a masked window is a gap, never compressed time
+  (:func:`mask_runs` builds it from a keep mask).
 - Predictive regression: :func:`predictive_regression` (OLS, Stambaugh
   bias-adjusted and Lewellen conditional slopes of r_t on x_{t-1}).
 - Deflated Sharpe Ratio: :func:`deflated_sharpe_ratio`,
@@ -165,7 +168,7 @@ def newey_west_auto_lags(n: int) -> int:
     return int(math.floor(4 * (n / 100.0) ** (2.0 / 9.0)))
 
 
-def hac_ols(y: np.ndarray, x: np.ndarray, lags: int) -> Any:
+def hac_ols(y: np.ndarray, x: np.ndarray, lags: int, segments: np.ndarray | None = None) -> Any:
     """OLS of ``y`` on ``x`` with a Newey-West (Bartlett kernel) HAC covariance — the ONE HAC fit.
 
     statsmodels computes the sandwich (adapter, not reimplementation). The
@@ -174,11 +177,54 @@ def hac_ols(y: np.ndarray, x: np.ndarray, lags: int) -> Any:
     ``tests/test_hac_parity.py`` pins that parity. With it on, t-stats shrink by
     exactly ``sqrt(nobs/(nobs-k))`` (~0.1% for a mean t-stat, ~0.4% for a
     3-factor alpha); adopting it is a policy decision, not a side effect.
-    Returns the statsmodels result.
+
+    ``segments`` is the calendar (TOM-3700): one label per row, a new run of
+    consecutive periods wherever the label changes. The lag-``l`` products
+    ``u_t u_{t-l}`` are summed inside each run only, so they never cross a gap
+    (statsmodels' ``hac-panel`` with the runs as groups, the same Bartlett
+    weights, no correction). One run is the plain HAC fit. A run of ``m`` rows
+    holds no product past lag ``m - 1``: when the longest run is that short,
+    the sum stops there with the Bartlett weights of ``lags`` (statsmodels
+    refuses a lag no run holds), and when every run is one row it is the
+    White (HC0) SE. Returns the statsmodels result.
     """
     import statsmodels.api as sm
+    from statsmodels.stats.sandwich_covariance import weights_bartlett
 
-    return sm.OLS(y, x).fit(cov_type="HAC", cov_kwds={"maxlags": lags, "use_correction": False})
+    if segments is None:
+        return sm.OLS(y, x).fit(cov_type="HAC", cov_kwds={"maxlags": lags, "use_correction": False})
+    s = np.asarray(segments).ravel()
+    longest = int(np.diff(np.flatnonzero(np.r_[True, s[1:] != s[:-1], True])).max())
+    held = min(lags, longest - 1)  # the highest lag some run holds a product at
+    if held == 0:
+        return sm.OLS(y, x).fit(cov_type="HC0")
+    weights = weights_bartlett(lags)[: held + 1]
+    return sm.OLS(y, x).fit(
+        cov_type="hac-panel",
+        cov_kwds={"maxlags": held, "groups": s, "kernel": lambda _: weights, "use_correction": False},
+    )
+
+
+def _segment_runs(segments, finite: np.ndarray) -> np.ndarray:
+    """``segments`` (one label per raw row) as run ids of the finite rows; a dropped row breaks its run.
+
+    A run is a stretch of consecutive rows with one label. A non-finite row the
+    caller drops is a missing period too, so the rows on either side of it land
+    in different runs: dropping it must not glue them into neighbours.
+    """
+    s = np.asarray(segments).ravel()
+    if s.size != finite.size:
+        raise InferenceInputError(
+            f"segments has {s.size} labels but the series has {finite.size} rows — one label per row"
+        )
+    breaks = np.concatenate([[False], s[1:] != s[:-1]]) | ~finite
+    return np.cumsum(breaks)[finite]
+
+
+def mask_runs(keep) -> np.ndarray:
+    """The calendar of a masked series: run ids of the kept rows, a new run after every removed stretch."""
+    keep = np.asarray(keep, dtype=bool).ravel()
+    return np.cumsum(~keep)[keep]
 
 
 def _check_overlap(overlap, lags: int | None) -> None:
@@ -201,6 +247,7 @@ def newey_west_tstat(
     *,
     overlap: int | None = None,
     allow_nonfinite_drop: bool = False,
+    segments=None,
 ) -> dict:
     """Newey-West HAC t-stat on the mean of ``returns`` — the ``nw`` gate calls this one.
 
@@ -227,6 +274,11 @@ def newey_west_tstat(
     ``allow_nonfinite_drop=True`` opts into dropping them, and the returned
     ``n_obs_raw`` / ``n_nonfinite_dropped`` keep that loss visible.
 
+    ``segments`` is the series' calendar (see :func:`hac_ols`), one label per
+    row of ``returns``: the mean is over every finite row, the lag products
+    stay inside each run of consecutive periods. ``lags=None`` still counts
+    ``n`` as the total. A dropped non-finite row breaks its run.
+
     Returns a dict with full-precision floats: ``n_obs``, ``n_obs_raw``,
     ``n_nonfinite_dropped``, ``nw_lags``, ``nw_overlap`` (the ``overlap``
     passed, or ``None``), ``mean_return``, ``nw_se``, ``nw_tstat`` and
@@ -240,6 +292,8 @@ def newey_west_tstat(
     r, n_dropped = require_finite(returns, allow_nonfinite_drop=allow_nonfinite_drop)
     n = int(r.size)
     n_raw = int(np.asarray(returns).size)
+    if segments is not None:
+        segments = _segment_runs(segments, np.isfinite(np.asarray(returns, dtype=float).ravel()))
     if overlap is not None and overlap > n:
         raise InferenceInputError(
             f"overlap={overlap} needs at least {overlap - 1} Newey-West lags, but {n} finite "
@@ -277,7 +331,7 @@ def newey_west_tstat(
     if flat(r):
         return base
 
-    fit = hac_ols(r, np.ones((n, 1)), lags)
+    fit = hac_ols(r, np.ones((n, 1)), lags, segments)
     se = float(fit.bse[0])
     if not math.isfinite(se) or se <= 0:
         return base
@@ -294,7 +348,7 @@ def newey_west_tstat(
     }
 
 
-def factor_regression(y, factors, factor_names: list[str], lags: int | None = None) -> dict:
+def factor_regression(y, factors, factor_names: list[str], lags: int | None = None, *, segments=None) -> dict:
     """OLS of ``y`` on an intercept + ``factors`` with Newey-West HAC SEs (Jensen's alpha).
 
     Fits ``y = alpha + factors @ beta + e`` and returns the betas, Jensen's
@@ -307,6 +361,9 @@ def factor_regression(y, factors, factor_names: list[str], lags: int | None = No
     design, residuals cancelled to noise) yields ``alpha_tstat = None`` rather
     than a spurious number. Refuses an empty factor list (an intercept-only
     fit is not a decomposition), mismatched shapes and NaN/Inf.
+
+    ``segments`` is the calendar (see :func:`hac_ols`): one label per row, the
+    HAC lag products stay inside each run of consecutive periods.
     """
     from scipy.stats import norm
 
@@ -333,6 +390,8 @@ def factor_regression(y, factors, factor_names: list[str], lags: int | None = No
         )
     require_finite(y, what="y")
     require_finite(F, what="factor panel")
+    if segments is not None:
+        segments = _segment_runs(segments, np.ones(n, dtype=bool))
 
     k = k_f + 1  # +1 for the intercept
 
@@ -364,7 +423,7 @@ def factor_regression(y, factors, factor_names: list[str], lags: int | None = No
     base["hac_lags"] = int(lags)
 
     try:
-        fit = hac_ols(y, X, lags)
+        fit = hac_ols(y, X, lags, segments)
     except (np.linalg.LinAlgError, ValueError):
         return base
 
@@ -993,6 +1052,7 @@ __all__ = [
     "gaussian_null",
     "hac_ols",
     "largest_drawdown_episode",
+    "mask_runs",
     "moments",
     "moving_block_indices",
     "multiple_testing",

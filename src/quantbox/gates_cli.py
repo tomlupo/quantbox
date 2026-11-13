@@ -28,6 +28,12 @@ an inclusive window of dates; the file must then be dated. The predreg predictor
 is a level, not a return, so ``--period`` is refused there (TOM-3698). The JSON
 carries the ``window`` it applied.
 
+``episode --episodes 1929-09:1932-06[,START:END...]`` removes those windows instead of the
+largest drawdown (TOM-3700). A bound is a year, a month or a day and covers all of it
+(``1932-06`` keeps June in the window); the file must be dated. ``ex_episode.nw`` is the
+HAC t-stat on the kept rows with its lags restarted at each window, ``full.nw`` the
+unmasked one beside it.
+
 ``replicate`` (TOM-3699) has three verdicts: PASS (exit 0), FAIL and DEFECT (both
 exit 1; ``verdict`` in ``--json`` and on the text line tells them apart). Its
 ``--period`` is the declared frequency of the correlation: both series are
@@ -521,25 +527,77 @@ def bootstrap(
     _emit("bootstrap", as_json, compute, returns, baseline, window=window)
 
 
+def _episode_windows(raw: str) -> list[tuple[str, object, object]]:
+    """``"1929-09:1932-06,2008"`` -> ``[(text, first day, last day), ...]``; a bound covers its whole year/month/day."""
+    import pandas as pd
+
+    out = []
+    for text in (t.strip() for t in raw.split(",")):
+        if not text:
+            continue
+        parts = text.split(":")
+        if len(parts) != 2 or not all(p.strip() for p in parts):
+            raise _input_error(f"--episodes: {text!r} is not START:END (e.g. 1929-09:1932-06)")
+        try:
+            lo, hi = pd.Period(parts[0].strip()).start_time, pd.Period(parts[1].strip()).end_time.normalize()
+        except (ValueError, TypeError) as exc:
+            raise _input_error(f"--episodes: {text!r} has a bound that is not a date ({exc})") from exc
+        out.append((text, lo, hi))
+    if not out:
+        raise _input_error("--episodes is empty: name at least one START:END window")
+    return out
+
+
+def _episode_positions(dates, windows) -> tuple[list[tuple[int, int]], list[dict]]:
+    """Each window as the (first, last) row position of the dated rows inside it, with the dates it removes."""
+    import numpy as np
+    import pandas as pd
+
+    from quantbox.metrics import Window
+
+    rows = pd.Series(np.arange(len(dates)), index=dates)
+    positions, named = [], []
+    for text, lo, hi in windows:
+        try:
+            inside = Window(lo, hi).clip(rows)
+        except ValueError as exc:
+            raise _input_error(f"--episodes {text!r}: {exc}") from exc
+        if inside.empty:
+            raise _input_error(f"--episodes {text!r}: no row of the series is dated inside it")
+        positions.append((int(inside.iloc[0]), int(inside.iloc[-1])))
+        named.append({"window": text, "start_date": inside.index[0], "end_date": inside.index[-1]})
+    return positions, named
+
+
 @gates_app.command("episode")
 def episode(
     returns: str = _RETURNS,
     baseline: str = typer.Option(None, "--baseline", help="baseline series (date-indexed); the episode is ITS"),
     column: str = _COLUMN,
     baseline_column: str = _BASELINE_COLUMN,
+    episodes: str = typer.Option(
+        None,
+        "--episodes",
+        help="START:END date windows to remove instead of the largest drawdown, comma-separated, inclusive, "
+        "non-overlapping "
+        "(1929-09:1932-06 removes Sep 1929 through Jun 1932); the file must be dated",
+    ),
     metric: str = _METRIC,
     compare: str = _COMPARE,
     pass_if: str = _PASS_IF,
     threshold: float = typer.Option(0.0, "--threshold"),
+    lags: int = _LAGS,
     allow_nonfinite_drop: bool = _DROP,
     period: str = _PERIOD,
     start: str = _START,
     end: str = _END,
     as_json: bool = _JSON,
 ):
-    """The leg re-evaluated with the largest drawdown episode excluded."""
+    """The leg re-evaluated with the largest drawdown episode (or --episodes) excluded; HAC t-stat beside it."""
 
     def compute() -> dict:
+        import numpy as np
+
         from quantbox.gates import episode_gate
 
         kw = dict(
@@ -547,17 +605,29 @@ def episode(
             compare=compare,
             pass_if=pass_if,
             threshold=threshold,
+            lags=lags,
             allow_nonfinite_drop=allow_nonfinite_drop,
         )
+        windows = _episode_windows(episodes) if episodes is not None else None
         if baseline is None:
-            r = _series(returns, column, indexed=False, window=window)
-            return episode_gate(r.to_numpy(), **kw)
-        j = _joined(returns, column, baseline, baseline_column, window)
-        out = episode_gate(j["c"].to_numpy(), j["b"].to_numpy(), **kw)
+            r = _series(returns, column, indexed=windows is not None, window=window)
+            frame, args = r.to_frame(), (r.to_numpy(),)
+        else:
+            frame = _joined(returns, column, baseline, baseline_column, window)
+            args = (frame["c"].to_numpy(), frame["b"].to_numpy())
+        # the gate's row positions count the FINITE rows (a dropped row is gone from both series)
+        finite = np.isfinite(frame.to_numpy(dtype=float)).all(axis=1)
+        named = None
+        if windows is not None:
+            kw["episodes"], named = _episode_positions(frame.index[finite], windows)
+        out = episode_gate(*args, **kw)
+        if named is not None:
+            for item, dated in zip(out["episodes"], named, strict=True):
+                item.update(dated)
         ep = out["episode"]
-        if ep is not None and not out["n_nonfinite_dropped"]:
+        if baseline is not None and ep is not None and not out["n_nonfinite_dropped"]:
             for key in ("start", "trough", "end"):
-                ep[f"{key}_date"] = j.index[ep[key]]
+                ep[f"{key}_date"] = frame.index[ep[key]]
         return out
 
     window = _Window(period, start, end)
