@@ -12,7 +12,8 @@ JSON-ready dict with a ``gate_pass`` verdict, and each reachable as
              with a HAC standard error, one-sided.
   bootstrap  Does a CLAIM about a metric (Sharpe, mean, max drawdown) versus a
              baseline survive a paired stationary block bootstrap?
-  episode    Does the claim still hold with the largest drawdown episode removed?
+  episode    Does the claim still hold with the largest drawdown episode (or named
+             windows) removed? The HAC t-stat beside it restarts at each gap.
   predreg    Does a lagged predictor forecast the return once the Stambaugh
              small-sample bias is removed (Lewellen's conditional test too)?
   replicate  Does the series replicate a reference (a paper's, an index's)?
@@ -62,6 +63,7 @@ from .inference import (
     deflated_sharpe_ratio,
     factor_regression,
     largest_drawdown_episode,
+    mask_runs,
     multiple_testing,
     newey_west_tstat,
     predictive_regression,
@@ -540,42 +542,97 @@ def paired_block_bootstrap(
 # ── largest drawdown episode ──────────────────────────────────────────────
 
 
+def _check_episodes(episodes, n: int) -> list[tuple[int, int]]:
+    """``[(start, end), ...]`` as inclusive row positions inside ``0..n-1``; anything else refused."""
+    out = []
+    for item in episodes:
+        try:
+            start, end = item
+        except (TypeError, ValueError) as exc:
+            raise GateInputError(f"an episode is a (start, end) pair of row positions, got {item!r}") from exc
+        for v in (start, end):
+            if isinstance(v, bool) or not isinstance(v, (int, np.integer)):
+                raise GateInputError(f"episode bounds must be whole row positions, got {item!r}")
+        if not 0 <= start <= end < n:
+            raise GateInputError(f"episode {item!r} is not an inclusive window inside rows 0..{n - 1}")
+        out.append((int(start), int(end)))
+    if not out:
+        raise GateInputError("episodes is empty: name at least one (start, end) window, or omit it")
+    return out
+
+
+def _nw_block(s: np.ndarray, lags: int | None, segments: np.ndarray | None) -> dict:
+    """The HAC t-stat on the mean of ``s``, with the number of runs its lag products stayed inside."""
+    nw = newey_west_tstat(s, lags=lags, segments=segments)
+    n_segments = 1 if segments is None else int(np.count_nonzero(np.diff(segments)) + 1)
+    return {
+        "n_obs": nw["n_obs"],
+        "n_segments": n_segments,
+        "nw_lags": nw["nw_lags"],
+        "mean": nw["mean_return"],
+        "nw_se": nw["nw_se"],
+        "nw_tstat": nw["nw_tstat"],
+        "nw_pvalue_twosided": nw["nw_pvalue"],
+    }
+
+
 def episode_gate(
     candidate,
     baseline=None,
     *,
+    episodes: Sequence[tuple[int, int]] | None = None,
     metric: str = "sharpe",
     compare: str = "diff",
     pass_if: str = "above",
     threshold: float = 0.0,
+    lags: int | None = None,
     allow_nonfinite_drop: bool = False,
 ) -> dict:
-    """The claim's leg re-evaluated with the single largest drawdown episode removed.
+    """The claim's leg re-evaluated with the single largest drawdown episode, or named windows, removed.
 
     The episode (:func:`quantbox.inference.largest_drawdown_episode`) is found on
     the BASELINE when one is given (the prereg's "largest baseline drawdown
     episode"), else on the candidate, and its rows are removed from both series.
+    ``episodes=[(start, end), ...]`` (inclusive row positions of the finite
+    rows) names the windows instead (TOM-3700): they replace the largest
+    drawdown, ``episode_source`` is ``"named"`` and ``episode`` is None.
+    ``episodes`` lists what was removed either way.
+
     ``gate_pass`` is the verdict WITHOUT the episode; ``passes_only_with_episode``
     flags the case a prereg relabels. What that relabel is (e.g. "inconclusive")
     is the caller's policy, not this function's. A series with no drawdown has
     nothing to remove: the result equals the full one.
+
+    Beside each leg, ``nw`` is the Newey-West t-stat on the mean of the claim's
+    series (the candidate, or candidate minus baseline): unmasked in ``full``,
+    and in ``ex_episode`` on the kept rows with their calendar, so the HAC lag
+    products restart at every removed window instead of joining its two sides
+    (:func:`quantbox.inference.mask_runs`). It is evidence, not the verdict.
     """
     _check_leg(metric, compare, pass_if, threshold)
+    if lags is not None and (isinstance(lags, bool) or lags < 0):
+        raise GateInputError(f"lags must be >= 0, got {lags!r}")
     c, b, dropped = _paired(candidate, baseline, allow_drop=allow_nonfinite_drop)
     if c.size < 2:
         raise GateInputError(f"need at least 2 observations, got {c.size}")
-    source = "baseline" if b is not None else "returns"
-    episode = largest_drawdown_episode(b if b is not None else c)
     keep = np.ones(c.size, dtype=bool)
-    if episode is not None:
-        keep[episode["start"] : episode["end"] + 1] = False
-        # depth: the positive key the contract reads; the explicit pair beside it (TOM-1627)
-        episode = {**episode, "depth": _depth(episode["depth"]), **drawdown_fields(episode["depth"])}
+    if episodes is not None:
+        source, episode = "named", None
+        windows = _check_episodes(episodes, c.size)
+    else:
+        source = "baseline" if b is not None else "returns"
+        episode = largest_drawdown_episode(b if b is not None else c)
+        windows = [] if episode is None else [(episode["start"], episode["end"])]
+        if episode is not None:
+            # depth: the positive key the contract reads; the explicit pair beside it (TOM-1627)
+            episode = {**episode, "depth": _depth(episode["depth"]), **drawdown_fields(episode["depth"])}
+    for start, end in windows:
+        keep[start : end + 1] = False
     n_left = int(keep.sum())
     if n_left < 2:
+        what = "the named episodes leave" if episodes is not None else "removing the largest drawdown episode leaves"
         raise GateInputError(
-            f"removing the largest drawdown episode leaves {n_left} observation(s) — the episode IS "
-            "the sample, so there is no result without it"
+            f"{what} {n_left} observation(s) — the episode IS the sample, so there is no result without it"
         )
     full = _leg_value(c, b, metric, compare)
     ex = _leg_value(c[keep], b[keep] if b is not None else None, metric, compare)
@@ -583,8 +640,9 @@ def episode_gate(
         raise GateInputError(f"the {metric} leg is undefined (zero variance or a zero baseline)")
     full_pass = _leg_passes(full, pass_if, threshold)
     ex_pass = _leg_passes(ex, pass_if, threshold)
-    full_block = {"value": full, "pass": full_pass, "n_obs": int(c.size)}
-    ex_block = {"value": ex, "pass": ex_pass, "n_obs": n_left}
+    claim = c if b is None else c - b
+    full_block = {"value": full, "pass": full_pass, "n_obs": int(c.size), "nw": _nw_block(claim, lags, None)}
+    ex_block = {"value": ex, "pass": ex_pass, "n_obs": n_left, "nw": _nw_block(claim[keep], lags, mask_runs(keep))}
     if metric == "max_drawdown":  # the drawdowns behind each leg value, both signs named (TOM-1627)
         full_block["drawdowns"] = _drawdowns(c, b)
         ex_block["drawdowns"] = _drawdowns(c[keep], b[keep] if b is not None else None)
@@ -598,6 +656,8 @@ def episode_gate(
         "n_nonfinite_dropped": dropped,
         "episode_source": source,
         "episode": episode,
+        "episodes": [{"start": a, "end": z, "n_removed": z - a + 1} for a, z in windows],
+        "nw_series": "returns" if b is None else "candidate - baseline",
         "full": full_block,
         "ex_episode": ex_block,
         "passes_only_with_episode": bool(full_pass and not ex_pass),
