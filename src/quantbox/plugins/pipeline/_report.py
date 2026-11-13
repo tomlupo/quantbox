@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 from quantbox._lazy import load
-from quantbox.metrics import compute_drawdown_series, compute_rolling_sharpe
+from quantbox.metrics import compute_drawdown_series, compute_rolling_sharpe, period_returns
 
 _TEMPLATE_PATH = Path(__file__).parent / "templates" / "research_report.html"
 
@@ -213,7 +213,7 @@ def _build_monthly_chart(returns: pd.Series) -> dict:
     ret = returns.copy()
     if not isinstance(ret.index, pd.DatetimeIndex):
         ret.index = pd.DatetimeIndex(ret.index)
-    monthly_pct = ((1 + ret).resample("ME").prod() - 1) * 100
+    monthly_pct = period_returns(ret, "ME", keep_partial=True) * 100  # edge months stay in the table
     monthly_df = pd.DataFrame({"ret": monthly_pct, "year": monthly_pct.index.year, "month": monthly_pct.index.month})
     pivot = monthly_df.pivot(index="year", columns="month", values="ret")
     month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]

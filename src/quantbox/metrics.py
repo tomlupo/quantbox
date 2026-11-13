@@ -1,7 +1,8 @@
 """The ONE metrics module: every statistic that DESCRIBES a run is computed here.
 
 Sharpe (and excess Sharpe vs a benchmark), information ratio, tracking error,
-CAGR, volatility, max drawdown, top-N drawdowns, turnover, VaR / CVaR. Every
+CAGR, volatility, max drawdown, top-N drawdowns, turnover, VaR / CVaR, and
+per-bar returns compounded to periods (:func:`period_returns`, TOM-3698). Every
 backtest path, the run metrics, the finding-report export, the validation
 plugins and :mod:`quantbox.performance` (which quantbox-live imports) call
 these functions instead of carrying their own copy (TOM-1448). The one
@@ -42,6 +43,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -56,6 +58,7 @@ from ._removed import removed_names
 __all__ = [
     "DEGENERATE_RTOL",
     "TRADING_DAYS_PER_YEAR",
+    "Window",
     "active_share",
     "annual_turnover",
     "beta",
@@ -72,6 +75,7 @@ __all__ = [
     "information_coefficient",
     "information_ratio",
     "max_drawdown",
+    "period_returns",
     "risk_contributions",
     "sharpe_ratio",
     "top_drawdowns",
@@ -472,6 +476,132 @@ def risk_contributions(
     if not total > 0:
         return pd.Series(np.nan, index=w.index)
     return pd.Series(w.to_numpy() * marginal / total, index=w.index)
+
+
+# ---------------------------------------------------------------------------
+# Period returns (TOM-3698)
+# ---------------------------------------------------------------------------
+
+# pandas period-end alias -> the offset that takes a period end back to its first day
+_PERIOD_BEGIN = {
+    "ME": pd.offsets.MonthBegin(1),
+    "QE": pd.offsets.QuarterBegin(1, startingMonth=1),
+    "YE": pd.offsets.YearBegin(1),
+}
+
+
+@dataclass(frozen=True)
+class Window:
+    """An inclusive window of calendar days, ``start``..``end``; ``None`` leaves that side open.
+
+    Bounds compare by day: ``end="2020-01-31"`` keeps a row stamped 2020-01-31 16:00.
+    A naive bound on a tz-aware index is read in the index's zone.
+    """
+
+    start: Any = None
+    end: Any = None
+
+    def bounds(self, tz: Any = None) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
+        lo, hi = _day(self.start, tz), _day(self.end, tz)
+        if lo is not None and hi is not None and lo > hi:
+            raise ValueError(f"window start {lo.date()} is after its end {hi.date()}")
+        return lo, hi
+
+    def clip(self, series: pd.Series) -> pd.Series:
+        """The rows of ``series`` dated inside the window, in their own order."""
+        idx = _dated(series.index)
+        lo, hi = self.bounds(idx.tz)
+        days = idx.normalize()
+        keep = np.ones(len(idx), dtype=bool)
+        if lo is not None:
+            keep &= days >= lo
+        if hi is not None:
+            keep &= days <= hi
+        return series.set_axis(idx)[keep]
+
+
+def period_returns(
+    returns: pd.Series,
+    freq: str,
+    start: Any = None,
+    end: Any = None,
+    *,
+    keep_partial: bool = False,
+) -> pd.Series:
+    """Per-bar returns compounded to months (``ME``), quarters (``QE``) or years (``YE``)
+    inside the inclusive :class:`Window` ``start``..``end``, stamped at the period end.
+
+    A period counts only when the data shows both of its ends:
+
+    - its opening: ``returns`` (before the window) holds a finite row dated before the
+      period begins, and ``start`` cuts none of the period's business days. A series'
+      first row is where the data begins, not evidence that it was the period's first
+      trading day, so a series' first period is always dropped;
+    - its close: the window's last finite row is on or after the period's last business
+      day (Mon-Fri), so a month ending on a Saturday is complete on its Friday. A holiday
+      on that weekday drops a complete period; a partial one is never kept.
+
+    A counted period with a NaN/Inf day, or with no row at all, is NaN, not 0%. A period
+    uses only rows dated inside it, and the keep test reads no row after the window.
+
+    ``keep_partial=True`` skips these rules: exactly ``(1 + r).resample(freq).prod() - 1``
+    on the window (NaN skipped, an empty period 0.0), which the report's monthly table uses.
+    """
+    # The partial-period masking follows qis perfstats/returns.py to_quarterly_returns
+    # (MIT, Copyright (c) 2024 Artur Sepp): a period is complete only when the input
+    # reaches its last sub-period. No qis code is copied; the test here is by business day.
+    if freq not in _PERIOD_BEGIN:
+        raise ValueError(f"freq must be one of {sorted(_PERIOD_BEGIN)}, got {freq!r}")
+    window = Window(start, end)
+    inside = window.clip(returns)
+    compounded = (1 + inside).resample(freq).prod() - 1
+    if keep_partial:
+        return compounded
+    finite = np.isfinite(inside.to_numpy(dtype=float))
+    every = returns.set_axis(_dated(returns.index))
+    every_finite = np.isfinite(every.to_numpy(dtype=float))
+    if not finite.any():
+        return compounded.iloc[:0]
+    rows = inside.resample(freq).size()
+    nonfinite = pd.Series(~finite, index=inside.index).resample(freq).sum()
+    compounded = compounded.where((rows > 0) & (nonfinite == 0))
+
+    ends = compounded.index
+    day, bday = pd.offsets.Day(1), pd.offsets.BDay(1)
+    begins = ends - _PERIOD_BEGIN[freq]
+    first_bday = ((begins - day) + bday).normalize()
+    last_bday = ((ends + day) - bday).normalize()
+    keep = (begins > every.index[every_finite].min().normalize()) & (
+        last_bday <= inside.index[finite].max().normalize()
+    )
+    lo, _ = window.bounds(ends.tz)
+    if lo is not None:
+        keep &= first_bday >= lo
+    # every rule drops only leading or trailing periods, so the kept ones are one run
+    pos = np.flatnonzero(keep)
+    return compounded.iloc[pos[0] : pos[-1] + 1] if len(pos) else compounded.iloc[:0]
+
+
+def _day(bound: Any, tz: Any) -> pd.Timestamp | None:
+    if bound is None:
+        return None
+    t = pd.Timestamp(bound)
+    if t.tzinfo is None and tz is not None:
+        t = t.tz_localize(tz)
+    elif t.tzinfo is not None:
+        if tz is None:
+            raise ValueError(f"window bound {bound!r} carries a timezone, the series does not")
+        t = t.tz_convert(tz)
+    return t.normalize()
+
+
+def _dated(index: pd.Index) -> pd.DatetimeIndex:
+    if isinstance(index, pd.DatetimeIndex):
+        return index
+    if pd.api.types.is_numeric_dtype(index):
+        # to_datetime would read a row number as epoch nanoseconds: 1970 dates nobody wrote
+        raise ValueError(f"period returns need dates on the index, got a numeric {type(index).__name__}")
+    return pd.DatetimeIndex(index)
 
 
 # ---------------------------------------------------------------------------
