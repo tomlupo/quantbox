@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +46,7 @@ class _Tally:
         self.max_at: str | None = None
         self.mismatches: list[str] = []
 
-    def numbers(self, where: str, a: Any, b: Any, labels: list[str] | None = None) -> None:
+    def numbers(self, where: str, a: Any, b: Any, labels: Sequence[Any] | None = None) -> None:
         x = np.atleast_1d(np.asarray(a, dtype=float))
         y = np.atleast_1d(np.asarray(b, dtype=float))
         nan_x, nan_y = np.isnan(x), np.isnan(y)
@@ -68,8 +69,12 @@ class _Tally:
             self.max_rel, self.max_at = float(rel[i]), self._at(where, labels, i)
 
     @staticmethod
-    def _at(where: str, labels: list[str] | None, i: int) -> str:
-        return f"{where}[{labels[i]}]" if labels is not None else where
+    def _at(where: str, labels: Sequence[Any] | None, i: int) -> str:
+        """*where* at position *i*; a label is formatted only here, for a difference that is reported."""
+        if labels is None:
+            return where
+        label = labels[i]
+        return f"{where}[{label.isoformat() if hasattr(label, 'isoformat') else label}]"
 
 
 def _is_number(v: Any) -> bool:
@@ -126,8 +131,7 @@ def _compare_runs(a: Path, b: Path, tally: _Tally) -> None:
                 f"{len(only_a)} only in A, {len(only_b)} only in B)"
             )
             continue
-        labels = [d.isoformat() for d in x.returns.index]
-        tally.numbers(f"{name}.returns", x.returns.to_numpy(), y.returns.to_numpy(), labels)
+        tally.numbers(f"{name}.returns", x.returns.to_numpy(), y.returns.to_numpy(), x.returns.index)
 
 
 def compare(a: str | Path, b: str | Path, *, rtol: float = DEFAULT_RTOL) -> dict[str, Any]:

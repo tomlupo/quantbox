@@ -38,17 +38,20 @@ what marks it: its failed "Execution timing" axes lead the line's audit, and the
 line's kpis are refused. So a line renders its page from this export and its saved
 results, with no adapter of its own.
 
-Honest labels (TOM-3764). "Total return" is printed with the wealth multiple beside
-it (:func:`quantbox.metrics.total_return_label`: 303.58 is +30358 %, 304.58x wealth),
-never as a bare number that reads as a multiple. A promotion gate's status is never
+Honest labels (TOM-3764). "Total return" stays the number the engine reported (format
+``pct``: 303.58 renders +30357.94 %), and the row after it is the wealth multiple,
+``1 + total_return`` (304.58), so a bare 303.58 is never read as a multiple; both
+are numbers, never a display string. Text outputs (summary.md, the HTML report) print
+:func:`quantbox.metrics.total_return_label` instead ("30358% (304.58x wealth)"). A promotion gate's status is never
 copied from the results file when it can be checked: a gate with a number ``value``
 and a one-comparator ``threshold`` (``>= 0.95``) gets ``pass`` or ``fail`` from that
 comparison, and its threshold is shown as the comparator that HOLDS (``< 0.95`` when
 the bar is missed, the bar kept in the note). A threshold that is not one comparator
 keeps the line's status and the note says it was not checked. For a directory of arms
 written by ``quantbox arms``, a "Fair baseline" table is filled from its
-``arms_summary.json``: the baseline is the ``benchmark`` arm, else the one arm named
-``bench*`` or buy-and-hold; with none (or two) there is no table rather than a guess.
+``arms_summary.json``: the baseline is the ``benchmark`` arm (a ``arm/variant`` name
+names its arm), else the one arm the series draws as the benchmark
+(:func:`_is_benchmark_name`); with none (or two) there is no table rather than a guess.
 """
 
 from __future__ import annotations
@@ -234,6 +237,15 @@ def _date_labels(index: pd.DatetimeIndex) -> list[str]:
     return [d.isoformat() for d in naive]
 
 
+def _is_benchmark_name(name: str) -> bool:
+    """An arm that is a benchmark by its name alone: it says "bench", or it is buy-and-hold.
+
+    The ONE rule for both the series' benchmark line and the fair-baseline table.
+    """
+    key = re.sub(r"[^a-z0-9]", "", name.lower())
+    return "bench" in key or "buyhold" in key or "buyandhold" in key
+
+
 def _series_block(arms: list[Arm], benchmark: str | None = None) -> dict[str, Any]:
     frame = pd.concat({a.name: a.returns for a in arms}, axis=1).sort_index()
     lines = []
@@ -249,7 +261,7 @@ def _series_block(arms: list[Arm], benchmark: str | None = None) -> dict[str, An
                 "name": arm.name,
                 "equity": [_round(v) for v in equity],
                 "drawdown": [_round(v) for v in drawdown],
-                "benchmark": arm.name == benchmark if benchmark else "bench" in arm.name.lower(),
+                "benchmark": arm.name == benchmark if benchmark else _is_benchmark_name(arm.name),
             }
         )
     title = "Equity (growth of 1)"
@@ -307,9 +319,10 @@ def _metrics_block(arms: list[Arm]) -> dict[str, Any] | None:
     for key, label, fmt in _METRIC_ROWS:
         values = [_num(a.metrics.get(key)) for a in arms]
         if any(v is not None for v in values):
-            if key == "total_return":  # a return with its wealth multiple, never a bare 303.58
-                values, fmt = [None if v is None else total_return_label(v) for v in values], "text"
             rows.append({"label": label, "format": fmt, "values": values})
+            if key == "total_return":  # the wealth multiple beside it, so 303.58 never reads as one
+                wealth = [None if v is None else 1 + v for v in values]
+                rows.append({"label": "Wealth multiple (1 + total return)", "format": "num", "values": wealth})
     if not rows:
         return None
     return {"title": "Metrics", "note": "as the engine reported them", "columns": [a.name for a in arms], "rows": rows}
@@ -428,11 +441,16 @@ def _checked_gate(gate: dict[str, Any]) -> dict[str, Any]:
 
 
 def _baseline_name(names: list[str], benchmark: str | None) -> str | None:
-    """The fair-baseline arm: *benchmark*, else the ONE arm named bench* or buy-and-hold, else None."""
+    """The fair-baseline arm of *names* (arms_summary.json's), else None.
+
+    *benchmark* when given: an arm, or an ``arm/variant`` as :func:`load_arms` names a
+    run with variants, which names its arm. Otherwise the ONE arm that is a benchmark
+    by name (:func:`_is_benchmark_name`, the series' rule).
+    """
     if benchmark is not None:
-        return benchmark
-    keys = {n: re.sub(r"[^a-z0-9]", "", n.lower()) for n in names}
-    hits = [n for n, k in keys.items() if k.startswith("bench") or k in ("buyhold", "buyandhold")]
+        arm = benchmark if benchmark in names else benchmark.split("/", 1)[0]
+        return arm if arm in names else None
+    hits = [n for n in names if _is_benchmark_name(n)]
     return hits[0] if len(hits) == 1 else None
 
 
@@ -448,7 +466,7 @@ def _baseline_table(path: Path, benchmark: str | None) -> dict[str, Any] | None:
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     arms = [a for a in summary.get("arms") or [] if a.get("status") == "ok" and isinstance(a.get("metrics"), dict)]
     baseline = _baseline_name([a["name"] for a in arms], benchmark)
-    if baseline is None or baseline not in {a["name"] for a in arms} or len(arms) < 2:
+    if baseline is None or len(arms) < 2:
         return None
 
     def pct(v: Any) -> str | None:
@@ -472,7 +490,7 @@ def _baseline_table(path: Path, benchmark: str | None) -> dict[str, Any] | None:
     return {
         "title": f"Fair baseline: {baseline}",
         "note": f"from {summary.get('batch_id') or path.name}/arms_summary.json, as the engine reported each arm; "
-        "the baseline is the --benchmark arm, else the one arm named bench* or buy-and-hold",
+        "the baseline is the --benchmark arm, else the one arm named as a benchmark (bench, buy-and-hold)",
         "columns": ["arm", "role", "Sharpe", "CAGR", "Max drawdown", "Total return"],
         "rows": rows,
     }

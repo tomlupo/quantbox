@@ -14,11 +14,13 @@ import json
 import shutil
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from quantbox.finding_export import _checked_gate, export_finding_report
 from quantbox.metrics import total_return_label
-from quantbox.plugins.pipeline._report import generate_summary_md
+from quantbox.plugins.pipeline._report import _TEMPLATE_PATH, generate_report_data, generate_summary_md
 
 GOLDEN = Path(__file__).resolve().parent / "fixtures" / "golden_run"
 
@@ -42,15 +44,19 @@ def test_a_total_return_is_printed_with_its_wealth_multiple(total_return, label)
     assert total_return_label(total_return) == label
 
 
-def test_the_metrics_table_labels_total_return_and_leaves_every_other_row_as_numbers():
+def test_the_metrics_table_keeps_total_return_a_number_and_puts_the_wealth_multiple_beside_it():
+    # The card's "numbers unchanged": finding_report.json keeps total_return as the number
+    # it was (format pct), and the wealth multiple is a NEW row next to it, a number too.
     metrics = json.loads((GOLDEN / "metrics.json").read_text())
-    rows = {r["label"]: r for r in export_finding_report(GOLDEN)["metrics"]["rows"]}
-    assert rows["Total return"] == {
-        "label": "Total return",
-        "format": "text",
-        "values": [total_return_label(metrics["total_return"])],
+    rows = export_finding_report(GOLDEN)["metrics"]["rows"]
+    assert rows[0] == {"label": "Total return", "format": "pct", "values": [metrics["total_return"]]}
+    assert rows[1] == {
+        "label": "Wealth multiple (1 + total return)",
+        "format": "num",
+        "values": [pytest.approx(1 + metrics["total_return"])],
     }
-    assert rows["CAGR"] == {"label": "CAGR", "format": "pct", "values": [pytest.approx(metrics["cagr"])]}
+    assert rows[2] == {"label": "CAGR", "format": "pct", "values": [pytest.approx(metrics["cagr"])]}
+    assert all(not isinstance(v, str) for r in rows for v in r["values"])
 
 
 def test_summary_md_prints_total_return_with_its_wealth_multiple():
@@ -177,3 +183,88 @@ def test_benchmark_names_the_fair_baseline(tmp_path):
 )
 def test_there_is_no_fair_baseline_table_rather_than_a_guess(tmp_path, names, summary):
     assert _baseline(export_finding_report(_arms_batch(tmp_path, names, summary=summary))) is None
+
+
+def _with_variants(run_dir: Path, variants: list[str]) -> None:
+    """Turn a copied golden run into a run with *variants* (the files ``_run_arms`` reads)."""
+    returns = pd.read_parquet(run_dir / "returns.parquet")
+    metrics = json.loads((run_dir / "metrics.json").read_text())
+    long = pd.concat([returns.assign(variant=v) for v in variants], ignore_index=True)
+    long[["date", "variant", "returns"]].to_parquet(run_dir / "variant_returns.parquet")
+    pd.DataFrame([{"variant": v, **metrics} for v in variants]).to_parquet(run_dir / "variant_metrics.parquet")
+
+
+def test_a_benchmark_variant_names_its_arm_as_the_fair_baseline(tmp_path):
+    # --benchmark is checked against load_arms' names, "arm/variant" for a run with
+    # variants; arms_summary.json names the arm. The table used to vanish silently.
+    batch = _arms_batch(tmp_path, ["dp-timing", "buyhold"])
+    for arm in ("dp-timing", "buyhold"):
+        (run,) = (batch / arm).iterdir()
+        _with_variants(run, ["main", "benchmark_5050"])
+    table = _baseline(export_finding_report(batch, benchmark="buyhold/benchmark_5050"))
+    assert table is not None
+    assert table["title"] == "Fair baseline: buyhold"
+    assert [r[:2] for r in table["rows"]] == [["dp-timing", "candidate"], ["buyhold", "fair baseline"]]
+
+
+@pytest.mark.parametrize("name", ["spy-bench", "benchmark", "buyhold", "Buy-and-Hold"])
+def test_the_arm_drawn_as_the_benchmark_is_the_fair_baseline(tmp_path, name):
+    # One rule for one concept: the series' dashed benchmark line and the baseline table.
+    payload = export_finding_report(_arms_batch(tmp_path, ["dp-timing", name]))
+    assert {ln["name"]: ln["benchmark"] for ln in payload["series"]["lines"]} == {"dp-timing": False, name: True}
+    assert _baseline(payload)["title"] == f"Fair baseline: {name}"
+
+
+# -- the HTML report strip prints Python's label, not a copy of its rule -------
+
+
+def _report_kwargs(variant_results: dict) -> dict:
+    dates = pd.date_range("2020-01-01", periods=60, freq="D")
+    rets = pd.Series(np.linspace(-0.01, 0.02, len(dates)), index=dates)
+    nav = (1 + rets).cumprod()
+    primary = next(iter(variant_results.values()), None)
+    return dict(
+        run_id="r",
+        asof="2020-03-01",
+        metrics=primary["metrics"] if primary else {"total_return": 303.579388075131},
+        portfolio_daily=nav.rename("portfolio_value").rename_axis("date").reset_index(),
+        returns=rets,
+        weights_history=pd.DataFrame(1.0, index=dates, columns=["A"]),
+        bt_prices=pd.DataFrame(100 * nav.to_numpy(), index=dates, columns=["A"]),
+        strategy_names=list(variant_results) or ["s"],
+        period_start="2020-01-01",
+        period_end="2020-02-29",
+        variant_results=variant_results or None,
+    )
+
+
+def test_the_html_strip_gets_total_return_label_from_python():
+    kwargs = _report_kwargs({})
+    metrics = kwargs["metrics"]
+    rd = generate_report_data(**kwargs)
+    assert rd["metrics"]["_total_return_label"] == "30358% (304.58x wealth)"
+    assert "_total_return_label" not in metrics  # the run's own metrics are not written to
+    template = _TEMPLATE_PATH.read_text(encoding="utf-8")
+    assert "metricsObj._total_return_label" in template
+    assert "x wealth" not in template  # no second copy of total_return_label's rule to drift
+
+
+def test_each_variant_strip_gets_its_own_total_return_label():
+    k = _report_kwargs({})
+    variant = {
+        "returns": k["returns"],
+        "portfolio_daily": k["portfolio_daily"],
+        "weights_history": k["weights_history"],
+        "bt_prices": k["bt_prices"],
+        "strategy_details": {},
+        "config": {},
+    }
+    vr = {
+        "a": {**variant, "name": "a", "metrics": {"total_return": -0.4}},
+        "b": {**variant, "name": "b", "metrics": {"total_return": 1.0}},
+    }
+    rd = generate_report_data(**_report_kwargs(vr))
+    assert {v: m["_total_return_label"] for v, m in rd["variant_metrics"].items()} == {
+        "a": "-40.00% (0.60x wealth)",
+        "b": "100% (2.00x wealth)",
+    }

@@ -142,11 +142,13 @@ Each run writes to `artifacts/<run_id>/`:
   `lab`, `kpis`, `metrics`, `robustness`, `audit` and `tables` in the payload's shapes: its
   tables come before the provenance table, each other section replaces the engine's, and series
   and provenance always come from the runs, so a line needs no report adapter of its own.
-  Labels are honest (TOM-3764): "Total return" carries its wealth multiple (303.58 reads
-  `30358% (304.58x wealth)`); a gate row with a number value and a one-comparator threshold
+  Labels are honest (TOM-3764): "Total return" stays the engine's number and the row after it
+  is the wealth multiple, `1 + total_return` (303.58 is +30358 % and 304.58x; summary.md and
+  report.html print `30358% (304.58x wealth)`); a gate row with a number value and a one-comparator threshold
   gets its pass/fail from that comparison, not from the results file, and shows the comparator
   that holds (`0.829 | < 0.95 | fail`); a `quantbox arms` batch adds a "Fair baseline" table from
-  its `arms_summary.json` (the `--benchmark` arm, else the one arm named bench* or buy-and-hold).
+  its `arms_summary.json` (the `--benchmark` arm, an `arm/variant` naming its arm, else the one arm whose name says
+  bench or buy-and-hold, the same rule that draws the benchmark line).
   The manifest's `reports.finding_report` says whether the run produced it; when the export
   fails, the run's results stand, `produced` is false with the `error`, and `quantbox run`
   prints `FINDING REPORT: NOT PRODUCED` in its summary.

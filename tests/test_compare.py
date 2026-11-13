@@ -159,3 +159,26 @@ def test_cli_refuses_an_input_it_cannot_read(tmp_path, b):
     a = _json_file(tmp_path / "a.json", A)
     res = runner.invoke(app, ["compare", str(a), str(tmp_path / b)])
     assert res.exit_code == 2 and "ERROR:" in res.stderr
+
+
+def test_return_dates_are_labelled_only_where_a_difference_is_reported(tmp_path, monkeypatch):
+    # The reviewer's nit on TOM-3764: one isoformat per return date of every arm, even
+    # when nothing differs. Only the date a difference is reported at is formatted now.
+    calls: list[pd.Timestamp] = []
+    isoformat = pd.Timestamp.isoformat
+
+    def counted(self, *args, **kwargs):
+        calls.append(self)
+        return isoformat(self, *args, **kwargs)
+
+    monkeypatch.setattr(pd.Timestamp, "isoformat", counted)
+    assert compare(GOLDEN, shutil.copytree(GOLDEN, tmp_path / "copy"), rtol=0)["equal"]
+    assert calls == []
+
+    moved = shutil.copytree(GOLDEN, tmp_path / "moved")
+    returns = pd.read_parquet(GOLDEN / "returns.parquet")
+    returns.loc[10, "returns"] = returns.loc[10, "returns"] * (1 + 1e-6)
+    returns.to_parquet(moved / "returns.parquet", index=False)
+    out = compare(GOLDEN, moved, rtol=1e-9)
+    assert out["max_rel_diff_at"] == f"Strategy.returns[{isoformat(pd.Timestamp(returns.loc[10, 'date']))}]"
+    assert 1 <= len(calls) <= 2

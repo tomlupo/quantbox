@@ -1529,6 +1529,7 @@ def generate_report_data(
             m = dict(v.get("metrics") or {})
             cfg = v.get("config") or {}
             m["_strategy_name"] = v.get("strategy_name", "")
+            m["_total_return_label"] = total_return_label(m.get("total_return", 0))
             m["_fees"] = cfg.get("fees")
             # ``primary: true`` in the variant config marks it as the source
             # of the shared diagnostics section. When no variant is flagged,
@@ -1544,7 +1545,9 @@ def generate_report_data(
         "period_end": period_end,
         "execution": execution,
         "strategies": strategy_names,
-        "metrics": metrics,
+        # the strip prints Python's label, never a JS copy of its rule (TOM-3764); a copy,
+        # so the run's own metrics are not written to
+        "metrics": {**metrics, "_total_return_label": total_return_label(metrics.get("total_return", 0))},
         "variant_metrics": variant_metrics,
         "charts": charts,
         "narrative": narrative or {},
