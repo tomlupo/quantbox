@@ -1932,6 +1932,15 @@ def bar_spacing(bars: list[date], at_end: bool) -> int | None:
     return max((b - a).days for a, b in zip(span, span[1:], strict=False))
 
 
+def _financing_ticker(plan: dict) -> str | None:
+    """The ticker a plan (explain@1) reads as its financing rate: `venue.financing.rate.ticker`."""
+    venue = plan.get("venue") if isinstance(plan.get("venue"), dict) else {}
+    financing = venue.get("financing") if isinstance(venue.get("financing"), dict) else {}
+    rate = financing.get("rate") if isinstance(financing.get("rate"), dict) else {}
+    ticker = rate.get("ticker")
+    return ticker if isinstance(ticker, str) else None
+
+
 def check_replication_data(
     report: Report,
     prereg: dict,
@@ -2033,10 +2042,19 @@ def check_replication_data(
         return
     report.read.append(str(data_validation))
 
-    # every instrument the run read belongs to exactly one declared class
+    # every instrument the run read belongs to exactly one declared class. The calendar holds the
+    # weighted tickers only: a declared series the primary's plan reads as `venue.financing.rate`
+    # (it need not carry a weight) is the run's data too, never "not in the run" (TOM-3708)
     member = {t: row["class"] for row in data_classes for t in row["instruments"]}
+    financing = {_financing_ticker(plan) for plan, _ in reads} - {None} - set(instruments)
     unclassed = sorted(set(instruments) - set(member))
-    absent = sorted(set(member) - set(instruments))
+    absent = sorted(set(member) - set(instruments) - financing)
+    # the rows below measure the series the calendar holds; a financing ticker has no span there
+    data_classes = [
+        {**row, "instruments": kept}
+        for row in data_classes
+        if (kept := [t for t in row["instruments"] if t not in financing])
+    ]
     totals = calendar.get("totals") if isinstance(calendar.get("totals"), dict) else {}
     without = totals.get("instruments_without_prices")
     # every number the rows below read must BE there: a missing counter is not a zero
