@@ -182,15 +182,26 @@ def hac_ols(y: np.ndarray, x: np.ndarray, lags: int, segments: np.ndarray | None
     consecutive periods wherever the label changes. The lag-``l`` products
     ``u_t u_{t-l}`` are summed inside each run only, so they never cross a gap
     (statsmodels' ``hac-panel`` with the runs as groups, the same Bartlett
-    weights, no correction). One run is the plain HAC fit. Returns the
-    statsmodels result.
+    weights, no correction). One run is the plain HAC fit. A run of ``m`` rows
+    holds no product past lag ``m - 1``: when the longest run is that short,
+    the sum stops there with the Bartlett weights of ``lags`` (statsmodels
+    refuses a lag no run holds), and when every run is one row it is the
+    White (HC0) SE. Returns the statsmodels result.
     """
     import statsmodels.api as sm
+    from statsmodels.stats.sandwich_covariance import weights_bartlett
 
     if segments is None:
         return sm.OLS(y, x).fit(cov_type="HAC", cov_kwds={"maxlags": lags, "use_correction": False})
+    s = np.asarray(segments).ravel()
+    longest = int(np.diff(np.flatnonzero(np.r_[True, s[1:] != s[:-1], True])).max())
+    held = min(lags, longest - 1)  # the highest lag some run holds a product at
+    if held == 0:
+        return sm.OLS(y, x).fit(cov_type="HC0")
+    weights = weights_bartlett(lags)[: held + 1]
     return sm.OLS(y, x).fit(
-        cov_type="hac-panel", cov_kwds={"maxlags": lags, "groups": segments, "use_correction": False}
+        cov_type="hac-panel",
+        cov_kwds={"maxlags": held, "groups": s, "kernel": lambda _: weights, "use_correction": False},
     )
 
 

@@ -578,7 +578,8 @@ def episode(
     episodes: str = typer.Option(
         None,
         "--episodes",
-        help="START:END date windows to remove instead of the largest drawdown, comma-separated, inclusive "
+        help="START:END date windows to remove instead of the largest drawdown, comma-separated, inclusive, "
+        "non-overlapping "
         "(1929-09:1932-06 removes Sep 1929 through Jun 1932); the file must be dated",
     ),
     metric: str = _METRIC,

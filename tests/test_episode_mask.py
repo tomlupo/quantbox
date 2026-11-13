@@ -179,6 +179,55 @@ def test_factor_alpha_se_restarts_at_the_gap():
     assert plain["alpha"] == out["alpha"] and plain["alpha_se"] != out["alpha_se"]
 
 
+# ── short runs: lag products a run is too short to hold are empty, not an error ──
+
+
+#: the largest drawdown runs from row 1 to row 6, so the kept rows 0 and 7 are two one-row runs
+SINGLES = np.random.default_rng(13).normal(0, 0.02, 8)
+
+
+@pytest.mark.parametrize("lags", [None, 0, 3])
+def test_kept_runs_of_one_row_each_give_the_white_se_in_default_mode(lags):
+    out = g.episode_gate(SINGLES, metric="mean", lags=lags)
+    kept = SINGLES[[0, 7]]
+    assert out["episodes"] == [{"start": 1, "end": 6, "n_removed": 6}]
+    ex = out["ex_episode"]
+    # the leg and the verdict are what they were before the HAC block existed
+    assert (ex["value"], ex["pass"], ex["n_obs"]) == (pytest.approx(kept.mean(), rel=1e-12), True, 2)
+    assert out["gate_pass"] is True
+    # no lag product exists inside a one-row run: the SE is the White (HC0) one
+    assert ex["nw"]["n_segments"] == 2
+    assert ex["nw"]["nw_se"] == pytest.approx(hand_hac(kept, np.ones((2, 1)), 0, [])[0], rel=1e-12)
+
+
+def test_named_windows_that_leave_one_row_runs_compute():
+    r10 = np.random.default_rng(13).normal(0, 0.02, 10)
+    out = g.episode_gate(r10, episodes=[(1, 8)], metric="mean")
+    kept = r10[[0, 9]]
+    assert out["ex_episode"]["nw"]["nw_se"] == pytest.approx(hand_hac(kept, np.ones((2, 1)), 0, [])[0], rel=1e-12)
+
+
+def test_runs_shorter_than_the_lags_keep_the_bartlett_weights_of_the_lags_asked():
+    r = ar1(n=12)
+    seg = np.array([0, 0, 0, 1, 1, 2, 2, 2, 3, 4, 4, 4])  # longest run 3 rows, so lags 2+ are empty past lag 2
+    runs = [slice(0, 3), slice(3, 5), slice(5, 8), slice(8, 9), slice(9, 12)]
+    for lags in (2, 3, 6):
+        out = inference.newey_west_tstat(r, lags=lags, segments=seg)
+        assert out["nw_lags"] == lags
+        assert out["nw_se"] == pytest.approx(hand_hac(r, np.ones((12, 1)), lags, runs)[0], rel=1e-12)
+    X = np.column_stack([np.ones(12), ar1(n=12, seed=2)])
+    fr = inference.factor_regression(r, X[:, 1], ["f"], lags=6, segments=seg)
+    assert fr["alpha_se"] == pytest.approx(hand_hac(r, X, 6, runs)[0], rel=1e-10)
+
+
+def test_overlapping_named_windows_are_refused():
+    # a shared row would be counted twice in n_removed; name each removed row once
+    with pytest.raises(g.GateInputError, match="overlap"):
+        g.episode_gate(ar1(), episodes=[(10, 20), (20, 30)], metric="mean")
+    out = g.episode_gate(ar1(), episodes=[(10, 20), (21, 30)], metric="mean")  # adjacent is fine
+    assert sum(e["n_removed"] for e in out["episodes"]) == 300 - out["ex_episode"]["n_obs"]
+
+
 # ── CLI: --episodes ────────────────────────────────────────────────────────
 
 
@@ -247,3 +296,15 @@ def test_cli_without_episodes_is_unchanged(monthly):
     assert code in (0, 1) and out["episode_source"] == "returns"
     assert out["episode"]["start"] == direct["episode"]["start"]
     assert out["ex_episode"]["value"] == pytest.approx(direct["ex_episode"]["value"], rel=1e-12)
+
+
+def test_cli_end_bound_covers_the_whole_last_day_of_an_intraday_series(tmp_path):
+    stamps = pd.date_range("1932-06-29 10:00", periods=12, freq="6h")  # 29 Jun 10:00 .. 2 Jul 04:00
+    path = tmp_path / "h.csv"
+    pd.DataFrame({"date": stamps, "returns": ar1(n=12)}).to_csv(path, index=False)
+    code, out = _run("--returns", str(path), "--metric", "mean", "--episodes", "1932-06-30:1932-06-30")
+    assert code in (0, 1)
+    (ep,) = out["episodes"]
+    # 30 Jun 04:00, 10:00, 16:00 and 22:00 are all removed, 22:00 included
+    assert (ep["start"], ep["end"], ep["n_removed"]) == (3, 6, 4)
+    assert ep["end_date"].startswith("1932-06-30T22:00") or ep["end_date"].startswith("1932-06-30 22:00")

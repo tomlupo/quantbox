@@ -50,6 +50,7 @@ CLI maps it to exit 2, which must never be read as a pass or as a fail.
 
 from __future__ import annotations
 
+import itertools
 import math
 from collections.abc import Sequence
 
@@ -558,6 +559,12 @@ def _check_episodes(episodes, n: int) -> list[tuple[int, int]]:
         out.append((int(start), int(end)))
     if not out:
         raise GateInputError("episodes is empty: name at least one (start, end) window, or omit it")
+    spans = sorted(out)
+    for (a0, z0), (a1, z1) in itertools.pairwise(spans):
+        if a1 <= z0:
+            raise GateInputError(
+                f"episodes ({a0}, {z0}) and ({a1}, {z1}) overlap: name each removed row once, or join them"
+            )
     return out
 
 
