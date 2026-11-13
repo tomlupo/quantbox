@@ -2,7 +2,9 @@
 
 Sharpe (and excess Sharpe vs a benchmark), information ratio, tracking error,
 CAGR, volatility, max drawdown, top-N drawdowns, turnover, VaR / CVaR, and
-per-bar returns compounded to periods (:func:`period_returns`, TOM-3698). Every
+per-bar returns compounded to periods (:func:`period_returns`, TOM-3698), and the
+correlation with a reference series on a declared frequency (:func:`correlation`,
+TOM-3699). Every
 backtest path, the run metrics, the finding-report export, the validation
 plugins and :mod:`quantbox.performance` (which quantbox-live imports) call
 these functions instead of carrying their own copy (TOM-1448). The one
@@ -44,7 +46,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -58,6 +60,7 @@ from ._removed import removed_names
 __all__ = [
     "DEGENERATE_RTOL",
     "TRADING_DAYS_PER_YEAR",
+    "Correlation",
     "Window",
     "active_share",
     "annual_turnover",
@@ -69,6 +72,7 @@ __all__ = [
     "compute_portfolio_var",
     "compute_rolling_sharpe",
     "compute_var",
+    "correlation",
     "drawdown_fields",
     "hit_rate",
     "icir",
@@ -580,6 +584,72 @@ def period_returns(
     # every rule drops only leading or trailing periods, so the kept ones are one run
     pos = np.flatnonzero(keep)
     return compounded.iloc[pos[0] : pos[-1] + 1] if len(pos) else compounded.iloc[:0]
+
+
+class Correlation(NamedTuple):
+    """Pearson ``rho`` of two return series, and the ``n_overlap`` pairs it was measured on."""
+
+    rho: float
+    n_overlap: int
+    first: pd.Timestamp | None
+    last: pd.Timestamp | None
+
+
+def correlation(
+    returns: pd.Series,
+    reference: pd.Series,
+    freq: str | None = None,
+    start: Any = None,
+    end: Any = None,
+) -> Correlation:
+    """Pearson correlation of ``returns`` with ``reference`` on a declared frequency (TOM-3699).
+
+    ``freq=None`` pairs the rows as given, by date. ``"ME"``, ``"QE"`` or ``"YE"`` first
+    compounds EACH series through :func:`period_returns`, so only periods whose both ends
+    the data shows pair, stamped at the period end. ``start``/``end`` keep an inclusive
+    :class:`Window`, the same way :func:`period_returns` reads them.
+
+    Pairwise masking: a date (or period) where either side is NaN/Inf is left out of
+    both; ``n_overlap`` counts the pairs left, ``first``/``last`` their dates. ``rho`` is
+    NaN with fewer than two pairs or a flat side, never 0.0.
+
+    Both indexes must be dates in one timezone (or both naive), each date once. Pearson is
+    unit-free, but compounding is not: with ``freq`` a return <= -1 is refused, because
+    ``1 + r <= 0`` cannot compound and a percent-unit file (1.5 meaning 1.5%) shows it.
+    A sign-flipped replication gives a rho near -1, not near 1.
+    """
+    sides = []
+    for name, s in (("returns", returns), ("reference", reference)):
+        idx = _dated(s.index)
+        if idx.has_duplicates:
+            raise ValueError(f"{name}: duplicate date {idx[idx.duplicated()][0]} — one row per date")
+        sides.append(s.set_axis(idx).astype(float).sort_index(kind="stable"))
+    r, ref = sides
+    if str(r.index.tz) != str(ref.index.tz):
+        raise ValueError(
+            f"returns are dated in {r.index.tz}, the reference in {ref.index.tz}: "
+            "one timezone (or both naive), or the periods never meet"
+        )
+    if freq is None:
+        r, ref = Window(start, end).clip(r), Window(start, end).clip(ref)
+    else:
+        for name, s in (("returns", r), ("reference", ref)):
+            if (s.to_numpy() <= -1).any():
+                raise ValueError(
+                    f"{name} holds a return <= -1 (-100%), which cannot be compounded to {freq}: "
+                    "percent units? divide by 100"
+                )
+        r, ref = period_returns(r, freq, start, end), period_returns(ref, freq, start, end)
+    pair = pd.concat([r.rename("r"), ref.rename("b")], axis=1, join="inner").sort_index()
+    pair = pair[np.isfinite(pair.to_numpy()).all(axis=1)]
+    n = len(pair)
+    first, last = (pair.index[0], pair.index[-1]) if n else (None, None)
+    a, b = pair["r"].to_numpy(), pair["b"].to_numpy()
+    if n < 2 or _flat(a) or _flat(b):
+        return Correlation(float("nan"), n, first, last)
+    # rounding can land a hair outside [-1, 1]; an identical series is exactly 1.0
+    rho = float(np.clip(np.corrcoef(a, b)[0, 1], -1.0, 1.0))
+    return Correlation(rho, n, first, last)
 
 
 def _day(bound: Any, tz: Any) -> pd.Timestamp | None:

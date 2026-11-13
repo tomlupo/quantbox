@@ -1,4 +1,4 @@
-"""``quantbox gates dsr|nw|factor|bootstrap|episode|predreg`` — the acceptance gates as a CLI.
+"""``quantbox gates dsr|nw|factor|bootstrap|episode|predreg|replicate`` — the acceptance gates as a CLI.
 
 The maths lives in :mod:`quantbox.gates`; this module only reads files,
 calls the gate and maps the result to an exit code:
@@ -27,6 +27,11 @@ baseline, the factor panel and its rf column) through
 an inclusive window of dates; the file must then be dated. The predreg predictor
 is a level, not a return, so ``--period`` is refused there (TOM-3698). The JSON
 carries the ``window`` it applied.
+
+``replicate`` (TOM-3699) has three verdicts: PASS (exit 0), FAIL and DEFECT (both
+exit 1; ``verdict`` in ``--json`` and on the text line tells them apart). Its
+``--period`` is the declared frequency of the correlation: both series are
+compounded to it, and a date or period NaN on either side is masked, not refused.
 """
 
 from __future__ import annotations
@@ -42,7 +47,7 @@ import typer
 gates_app = typer.Typer(
     name="gates",
     help=(
-        "Acceptance gates on a return series: dsr, nw, factor, bootstrap, episode, predreg. "
+        "Acceptance gates on a return series: dsr, nw, factor, bootstrap, episode, predreg, replicate. "
         "Exit 0 pass, 1 fail, 2 could not compute."
     ),
     no_args_is_help=True,
@@ -58,6 +63,7 @@ HEADLINE = {
     "bootstrap": ("probability", "min_probability"),
     "episode": ("ex_episode", "threshold"),
     "predreg": ("pvalue_adjusted_min", "alpha"),
+    "replicate": ("rho", "min_corr"),
 }
 
 
@@ -256,7 +262,8 @@ def _emit(
     else:
         key, bar = HEADLINE[gate]
         value = out[key]["value"] if isinstance(out[key], dict) else out[key]
-        verdict = "PASS" if out["gate_pass"] else "FAIL"
+        # replicate names a third verdict, DEFECT; the exit code still reads gate_pass
+        verdict = out.get("verdict") or ("PASS" if out["gate_pass"] else "FAIL")
         typer.echo(f"{gate}: {verdict} ({key}={value:.6g}, {bar}={out[bar]})")
         for note in notes:
             typer.echo(f"  {note}")
@@ -635,3 +642,39 @@ def predreg(
 
     window = _Window(period, start, end)
     _emit("predreg", as_json, compute, returns, predictor, window=window)
+
+
+@gates_app.command("replicate")
+def replicate(
+    returns: str = _RETURNS,
+    reference: str = typer.Option(
+        ..., "--reference", help="reference return series (a paper's, an index's), date-indexed"
+    ),
+    column: str = _COLUMN,
+    reference_column: str = typer.Option(None, "--reference-column", help="return column of the reference file"),
+    min_corr: float = typer.Option(0.85, "--min-corr", help="PASS at rho >= this"),
+    floor: float = typer.Option(0.70, "--floor", help="DEFECT at rho < this (a broken replication)"),
+    min_obs: int = typer.Option(12, "--min-obs", help="minimum overlapping periods; fewer is FAIL"),
+    period: str = typer.Option(
+        None,
+        "--period",
+        help="the correlation's frequency, ME | QE | YE: both series compounded to it (else the rows as read)",
+    ),
+    start: str = _START,
+    end: str = _END,
+    as_json: bool = _JSON,
+):
+    """Correlation with a reference series: PASS, FAIL, or DEFECT below the floor (pairwise NaN masking)."""
+
+    def compute() -> dict:
+        from quantbox.gates import replication_gate
+
+        # unwindowed dated reads: the gate applies --period/--start/--end through metrics.correlation
+        r = _series(returns, column, indexed=True)
+        ref = _series(reference, reference_column, indexed=True)
+        return replication_gate(
+            r, ref, freq=period, start=start, end=end, min_corr=min_corr, floor=floor, min_obs=min_obs
+        )
+
+    window = _Window(period, start, end)
+    _emit("replicate", as_json, compute, returns, reference, window=window)
