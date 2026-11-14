@@ -23,12 +23,22 @@ print(result['simple_weights'])
 ```
 
 ### Strategy Logic
-1. **Momentum Signal**: 1M and 3M returns, z-scored cross-sectionally
+1. **Momentum Signal**: 1M and 3M returns, z-scored cross-sectionally;
+   ``skip_periods`` leaves the most recent bars out of every window (12-1 momentum)
 2. **Long Leg**: Top N assets by momentum (positive weights)
 3. **Short Leg**: Bottom N assets by momentum (negative weights)
-4. **Volatility Scaling**: Inverse vol weighting for risk parity
+4. **Weighting**: ``inverse_vol`` (default) or ``equal`` within each leg, or ``rank``
+   across the whole cross-section (Asness-Moskowitz-Pedersen 2013)
 5. **Net Exposure**: Configurable (0 = market-neutral, 0.5 = long-biased)
 6. **Rebalancing**: Weekly or monthly
+
+### 12-1 rank-weighted momentum (AMP 2013) on daily bars
+```yaml
+params:
+  momentum_windows: [252]
+  skip_periods: 21
+  weighting: rank
+```
 
 ### Risk Features
 - Trend filter (only long if price > SMA)
@@ -63,14 +73,22 @@ def compute_momentum_signal(
     prices: pd.DataFrame,
     windows: list[int] | None = None,
     weights: list[float] | None = None,
+    skip_periods: int = 0,
 ) -> pd.DataFrame:
     """
     Compute composite momentum signal from multiple lookback windows.
+
+    Each window is a lookback ending at the signal date t. ``skip_periods`` cuts
+    the most recent bars off every window, so the return measured at t is
+    ``P[t - skip] / P[t - window] - 1`` (``window - skip`` bars of return, none
+    after ``t - skip``). 12-1 momentum on daily bars is ``windows=[252]``,
+    ``skip_periods=21``; ``skip_periods=0`` is the plain ``window``-bar return.
 
     Args:
         prices: Price DataFrame (date x ticker)
         windows: Lookback windows in days [21=1M, 63=3M]
         weights: Weights for each window (default: equal weight)
+        skip_periods: Most recent bars left out of every window (default 0)
 
     Returns:
         DataFrame of momentum signals
@@ -79,11 +97,23 @@ def compute_momentum_signal(
         windows = [21, 63]
     if weights is None:
         weights = [1.0 / len(windows)] * len(windows)
+    if isinstance(skip_periods, bool) or not isinstance(skip_periods, (int, np.integer)) or skip_periods < 0:
+        raise ValueError(f"skip_periods must be an integer >= 0, got {skip_periods!r}")
+    if skip_periods and skip_periods >= min(windows):
+        raise ValueError(
+            f"skip_periods ({skip_periods}) must be shorter than every momentum window "
+            f"(shortest {min(windows)}): a window would measure no return"
+        )
+
+    filled = prices.ffill()
+    if skip_periods:
+        # Only bars up to t - skip_periods enter the signal at t (a lag, never a lead).
+        filled = filled.shift(skip_periods)
 
     momentum_signals = []
     for window in windows:
-        # Total return over window
-        ret = prices.ffill().pct_change(periods=window, fill_method=None)
+        # Total return over window, minus the skipped most recent bars
+        ret = filled.pct_change(periods=window - skip_periods, fill_method=None)
         momentum_signals.append(ret)
 
     # Weighted average of momentum signals
@@ -194,6 +224,38 @@ def construct_long_short_weights(
     return weights
 
 
+def construct_rank_weights(
+    signals: pd.DataFrame,
+    net_exposure: float = 0.0,
+) -> pd.DataFrame:
+    """
+    Rank weights across the whole cross-section (Asness, Moskowitz, Pedersen 2013).
+
+    Per date, ``w_i = c * (rank(S_i) - mean_j rank(S_j))`` over the assets with a
+    signal (ties take their average rank), with ``c`` chosen so the long leg is
+    one dollar and the short leg minus one dollar. Every ranked asset holds a
+    position (the one at the mean rank holds zero); ``n_long``/``n_short`` do
+    not apply. ``net_exposure`` scales the legs to ``1 + net_exposure`` long and
+    ``1 - net_exposure`` short, the same tilt as the equal and inverse-vol legs
+    (which are half that size), so 0 is exactly AMP. A date with fewer than two
+    distinct ranks holds nothing. Whole-frame, no loop over dates.
+
+    Args:
+        signals: Momentum signals (date x ticker); NaN = not ranked
+        net_exposure: Target net exposure (0 = market neutral, AMP)
+
+    Returns:
+        DataFrame of weights (positive = long, negative = short)
+    """
+    ranks = signals.rank(axis=1)
+    demeaned = ranks.sub(ranks.mean(axis=1), axis=0)
+    # Rank minus its mean sums to zero, so the positive part equals the negative part.
+    long_sum = demeaned.clip(lower=0).sum(axis=1).replace(0, np.nan)
+    leg = demeaned.where(demeaned <= 0, demeaned * (1 + net_exposure))
+    leg = leg.where(leg >= 0, leg * (1 - net_exposure))
+    return leg.div(long_sum, axis=0).fillna(0.0)
+
+
 def apply_trend_filter(
     weights: pd.DataFrame,
     prices: pd.DataFrame,
@@ -300,6 +362,8 @@ def apply_rebalancing(
 # Strategy Class
 # ============================================================================
 
+_WEIGHTINGS = ("equal", "inverse_vol", "rank")
+
 
 @dataclass
 class MomentumLongShortStrategy:
@@ -343,6 +407,18 @@ class MomentumLongShortStrategy:
                 "enable_vol_targeting": {"description": "Scale the book to target_vol."},
                 "target_vol": {"description": "Annualised volatility target when vol targeting is on."},
                 "max_leverage": {"description": "Cap on gross leverage after vol targeting."},
+                "skip_periods": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Most recent bars left out of every momentum window (12-1 on daily bars: "
+                    "momentum_windows [252], skip_periods 21); 0 = none.",
+                },
+                "weighting": {
+                    "enum": ["equal", "inverse_vol", "rank"],
+                    "description": "Position weighting: inverse_vol or equal within the n_long/n_short legs "
+                    "(each leg (1 +/- net_exposure)/2), or rank across every asset (AMP 2013: rank minus its "
+                    "mean, $1 long and $1 short at net_exposure 0; n_long/n_short do not apply).",
+                },
                 "rebalance_frequency": {"enum": ["D", "W", "M"], "description": "Signal rebalance frequency."},
                 "annualize": {
                     "description": "Bars per year for vol annualisation; null = the pipeline-derived value (fallback 252)."
@@ -356,11 +432,13 @@ class MomentumLongShortStrategy:
     # Momentum parameters
     momentum_windows: list[int] = field(default_factory=lambda: [21, 63])
     momentum_weights: list[float] | None = None
+    skip_periods: int = 0  # most recent bars left out of every window (21 on daily = 12-1)
 
     # Portfolio parameters
     n_long: int = 3
     n_short: int = 3
     net_exposure: float = 0.0  # 0 = market neutral, 0.5 = long biased
+    weighting: str = "inverse_vol"  # "inverse_vol", "equal" or "rank"
 
     # Risk parameters
     vol_lookback: int = 20
@@ -388,6 +466,8 @@ class MomentumLongShortStrategy:
             "purpose": "Market-neutral momentum strategy for crypto",
             "parameters": {
                 "momentum_windows": self.momentum_windows,
+                "skip_periods": self.skip_periods,
+                "weighting": self.weighting,
                 "n_long": self.n_long,
                 "n_short": self.n_short,
                 "net_exposure": self.net_exposure,
@@ -430,6 +510,9 @@ class MomentumLongShortStrategy:
             self.annualize, params, context, owner="MomentumLongShortStrategy.annualize"
         )
 
+        if self.weighting not in _WEIGHTINGS:
+            raise ValueError(f"weighting must be one of {list(_WEIGHTINGS)}, got {self.weighting!r}")
+
         prices = data["prices"]
 
         # Filter out excluded tickers
@@ -443,6 +526,7 @@ class MomentumLongShortStrategy:
             prices,
             self.momentum_windows,
             self.momentum_weights,
+            skip_periods=self.skip_periods,
         )
 
         # 2. Z-score cross-sectionally
@@ -453,13 +537,17 @@ class MomentumLongShortStrategy:
         volatility = returns.rolling(self.vol_lookback).std() * np.sqrt(effective_annualize)
 
         # 4. Construct long-short weights
-        weights = construct_long_short_weights(
-            signals,
-            n_long=self.n_long,
-            n_short=self.n_short,
-            net_exposure=self.net_exposure,
-            volatility=volatility,
-        )
+        if self.weighting == "rank":
+            # Rank the raw momentum: the z-score's clip at +/-3 would tie the extremes.
+            weights = construct_rank_weights(momentum, net_exposure=self.net_exposure)
+        else:
+            weights = construct_long_short_weights(
+                signals,
+                n_long=self.n_long,
+                n_short=self.n_short,
+                net_exposure=self.net_exposure,
+                volatility=volatility if self.weighting == "inverse_vol" else None,
+            )
 
         # 5. Apply trend filter
         if self.enable_trend_filter:
