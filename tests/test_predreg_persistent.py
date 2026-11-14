@@ -19,6 +19,7 @@ import http.client
 import io
 import json
 import os
+import re
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -268,9 +269,10 @@ def _run(files, *argv):
 
 
 def test_the_options_are_in_the_help():
-    out = CliRunner().invoke(app, ["gates", "predreg", "--help"])
+    out = CliRunner().invoke(app, ["gates", "predreg", "--help"], env={"COLUMNS": "200"})
+    text = re.sub(r"\x1b\[[0-9;]*m", "", out.output)  # CI forces rich styling, which splits option names
     for option in ("--q-test", "--q-lags", "--q-max-lags", "--oos-start"):
-        assert option in out.output, option
+        assert option in text, option
 
 
 def test_cli_json_adds_the_keys_as_null_when_not_asked(files):
