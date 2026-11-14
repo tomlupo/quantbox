@@ -288,6 +288,8 @@ def _emit(
             typer.echo(
                 f"  rf: {f['source']} subtracted on {f['n_periods']} dates, {f['first']}..{f['last']} (pin {pin})"
             )
+        if gate == "predreg" and (out["campbell_yogo"] is not None or out["oos"] is not None):
+            typer.echo(f"  {out['note']}")  # the opt-in tests can fail a gate the headline p-value passes
         if window.active:
             typer.echo("  window: " + " ".join(f"{k}={v}" for k, v in window._asdict().items() if v is not None))
     raise typer.Exit(0 if out["gate_pass"] else 1)
@@ -726,6 +728,16 @@ def predreg(
     ),
     alpha: float = typer.Option(0.05, "--alpha", help="family-wise level over the bias-adjusted tests (Bonferroni)"),
     min_obs: int = typer.Option(60, "--min-obs", help="minimum (r_t, x_t-1) pairs"),
+    q_test: bool = typer.Option(
+        False, "--q-test", help="also Campbell-Yogo's Bonferroni Q-test (persistent predictor); must reject too"
+    ),
+    q_lags: int = typer.Option(None, "--q-lags", help="the predictor's AR order for --q-test (default: BIC)"),
+    q_max_lags: int = typer.Option(4, "--q-max-lags", help="largest AR order BIC tries for --q-test"),
+    oos_start: str = typer.Option(
+        None,
+        "--oos-start",
+        help="also Goyal-Welch out-of-sample R² and Clark-West, forecasting from this date on; must pass too",
+    ),
     allow_nonfinite_drop: bool = _DROP,
     period: str = _PERIOD,
     start: str = _START,
@@ -735,13 +747,16 @@ def predreg(
     """Predictive regression r_t on x_t-1: Stambaugh bias-adjusted and Lewellen conditional slopes, one-sided.
 
     Rows must be consecutive periods: a date one file lacks inside the shared span is refused, but a
-    period missing from BOTH files cannot be seen, and the lag would pair across it.
+    period missing from BOTH files cannot be seen, and the lag would pair across it. --q-test and
+    --oos-start add their keys (campbell_yogo, oos) and must pass too; without them nothing changes.
+    --oos-start names the first return forecast: the first row dated on or after it.
     """
 
     def compute() -> dict:
         import pandas as pd
 
         from quantbox.gates import predreg_gate
+        from quantbox.metrics import Window
 
         if period is not None:
             raise _input_error(
@@ -778,6 +793,16 @@ def predreg(
                     f"{path}: {len(missing)} date(s) inside the shared span have no partner in the other file "
                     f"(first {missing[0].isoformat()}) — the lag would pair the wrong periods; align the files first"
                 )
+        first_forecast = None
+        if oos_start is not None:
+            # read like --start: by calendar day, a naive date in the index's zone
+            try:
+                after = len(j) - len(Window(oos_start).clip(j["c"]))
+            except (ValueError, TypeError) as exc:
+                raise _input_error(f"--oos-start {oos_start!r}: {exc}") from exc
+            if after == len(j):
+                raise _input_error(f"--oos-start {oos_start}: no row on or after it (last {j.index[-1].isoformat()})")
+            first_forecast = after
         out = predreg_gate(
             j["c"].to_numpy(),
             j["b"].to_numpy(),
@@ -785,8 +810,14 @@ def predreg(
             alpha=alpha,
             min_obs=min_obs,
             allow_nonfinite_drop=allow_nonfinite_drop,
+            q_test=q_test,
+            q_lags=q_lags,
+            q_max_lags=q_max_lags,
+            oos_start=first_forecast,
         )
         out["first_date"], out["last_date"] = j.index[0], j.index[-1]
+        if out["oos"] is not None:
+            out["oos"]["oos_start_date"] = j.index[first_forecast]
         return out
 
     window = _Window(period, start, end)

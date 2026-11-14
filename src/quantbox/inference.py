@@ -20,7 +20,9 @@ The interface, grouped by question:
   a run of equal labels, so a masked window is a gap, never compressed time
   (:func:`mask_runs` builds it from a keep mask).
 - Predictive regression: :func:`predictive_regression` (OLS, Stambaugh
-  bias-adjusted and Lewellen conditional slopes of r_t on x_{t-1}).
+  bias-adjusted and Lewellen conditional slopes of r_t on x_{t-1}),
+  :func:`campbell_yogo` (the Bonferroni Q-test for a persistent predictor) and
+  :func:`oos_forecast` (Goyal-Welch out-of-sample R², Clark-West test).
 - Deflated Sharpe Ratio: :func:`deflated_sharpe_ratio`,
   :func:`deflated_sharpe_ratio_from_returns`, :func:`expected_max_sr`,
   :func:`sr_estimator_std`, :class:`DSRResult`.
@@ -619,6 +621,312 @@ def predictive_regression(
     }
 
 
+# ── Campbell-Yogo Bonferroni Q-test ────────────────────────────────────────
+#
+# Campbell and Yogo (2006), "Efficient Tests of Stock Return Predictability",
+# JFE 81(1), 27-60, with the step-by-step recipe of their user guide (Campbell
+# and Yogo 2005, "Implementing the Econometric Methods in 'Efficient Tests of
+# Stock Return Predictability'", section 2.2) and its Tables 2-11, copied in
+# ``quantbox._campbell_yogo_tables``. Where the guide is silent the authors'
+# GAUSS replication files decide (``predtest.prg``, ``bic.prg``,
+# ``BonLconf.prg``): the lag order by BIC on a common sample, delta read at the
+# NEAREST tabulated value, and the AR(p) residual (not the AR(1) one) in delta.
+# The DF-GLS statistic is read between two table rows by linear interpolation,
+# the guide's rows being 0.1 apart; the GAUSS code inverts a finer belt instead.
+
+#: The size of the one-sided Bonferroni Q-test that Tables 2-11 fix (alpha_2 = 0.10, two-sided 90%).
+CAMPBELL_YOGO_LEVEL = 0.05
+#: delta grid of the GAUSS lookup (``seqa(-1, .025, 40)``); the paper prints its first point as -0.999.
+_CY_DELTA_GRID = -1.0 + 0.025 * np.arange(40)
+
+
+def _ols(y: np.ndarray, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    coef = np.linalg.lstsq(x, y, rcond=None)[0]
+    return coef, y - x @ coef
+
+
+def _ar_design(x: np.ndarray, p: int) -> np.ndarray:
+    """``[1, x_{t-1}, dx_{t-1}, ..., dx_{t-p+1}]`` for rows ``t = p .. n-1``: an AR(p) in Dickey-Fuller form."""
+    n = x.size
+    # a loop over the p-1 lag ORDERS (columns), not over time
+    diffs = [x[p - j : n - j] - x[p - j - 1 : n - j - 1] for j in range(1, p)]
+    return np.column_stack([np.ones(n - p), x[p - 1 : n - 1], *diffs])
+
+
+def _bic_lags(x: np.ndarray, max_lags: int) -> int:
+    """The AR order in 1..max_lags with the smallest BIC, every order fitted on the same rows (``bic.prg``)."""
+    z = _ar_design(x, max_lags)
+    y, t = x[max_lags:], x.size - max_lags
+    crit = [
+        math.log(float(res @ res) / t) + (p + 1) * math.log(t) / t
+        for p in range(1, max_lags + 1)
+        for res in (_ols(y, z[:, : p + 1])[1],)
+    ]
+    return int(np.argmin(crit)) + 1  # the first minimum, as bic.prg's strict "<"
+
+
+def _cy_c_interval(dfgls: float, delta: float) -> tuple[float, float, float] | None:
+    """``(c_lower, c_upper, tabulated delta)`` from Tables 2-11, or None when DF-GLS is off the tables."""
+    from ._campbell_yogo_tables import C_LOWER, C_UPPER, DELTAS, DFGLS
+
+    d = -abs(delta)  # the tables are for delta < 0; a positive delta mirrors (the predictor's sign flips)
+    dist = np.abs(_CY_DELTA_GRID - d)
+    i = int(np.flatnonzero(dist == dist.min())[-1])  # a tie goes to the delta nearer zero, as BonLconf.prg
+    if not (DFGLS[-1] <= dfgls <= DFGLS[0]):
+        return None
+    grid = DFGLS[::-1]  # np.interp needs it increasing
+    lo = float(np.interp(dfgls, grid, C_LOWER[i, ::-1]))
+    hi = float(np.interp(dfgls, grid, C_UPPER[i, ::-1]))
+    return lo, hi, float(DELTAS[i])
+
+
+def campbell_yogo(returns, predictor, *, lags: int | None = None, max_lags: int = 4) -> dict:
+    """Campbell and Yogo's (2006) Bonferroni Q-test of ``returns[t]`` on ``predictor[t-1]`` for a persistent predictor.
+
+    ``returns`` and ``predictor`` are aligned as in :func:`predictive_regression`
+    (row ``t``: the return over period ``t`` and the predictor at its END; the
+    function lags). The predictor is an AR(p) with largest root
+    ``rho = 1 + c/T``; ``c`` cannot be estimated consistently, so the test
+    takes a confidence interval for it from the DF-GLS statistic (Elliott,
+    Rothenberg and Stock 1996) and the correlation ``delta`` of the return and
+    predictor innovations, and takes the union of the Q-test's 90% intervals for
+    beta over it (Bonferroni). The guide's recipe (section 2.2), step by step:
+
+    1. ``p``: ``lags`` if given, else the BIC order in ``1..max_lags``. The
+       first ``p`` rows are pre-sample, so ``T = len - p`` pairs.
+    2. OLS of r_t on [1, x_{t-1}] (``beta_ols``, its SE), of x_t on
+       [1, x_{t-1}] (SE(rho_hat), ``sigma_v``) and the AR(p) in Dickey-Fuller
+       form (``psi``, residual ``e``); ``sigma_u``, ``sigma_e``, ``delta`` with
+       a ``T - 2`` divisor; ``omega**2 = sigma_e**2 / (1 - sum(psi))**2``.
+    3. DF-GLS: GLS-demean x with ``rho_GLS = 1 - 7/T``, then the t-stat on
+       x_{t-1} in the Dickey-Fuller regression without intercept.
+    4. ``c_interval`` from Tables 2-11 at (DF-GLS, nearest delta);
+       ``rho_interval = 1 + c_interval / T``. Its level is the one the tables
+       pick so the Bonferroni test has size 5%, not the 95% of the paper's Table 4.
+    5. At each end rho: OLS of ``r_t - sigma_ue / (sigma_e omega) (x_t - rho
+       x_{t-1})`` on [1, x_{t-1}], plus the AR(p) correction, ``+/- 1.645
+       sqrt(1 - delta**2) SE(beta_ols)``. ``beta_interval`` runs from the
+       lower end at rho_upper to the upper end at rho_lower (delta <= 0; the
+       other way round for delta > 0): a two-sided 90% interval, i.e. a
+       one-sided 5% test.
+
+    ``reject`` is H1: beta > 0 at that fixed 5% (``beta_interval[0] > 0``); the
+    tables give no other level and no p-value. ``beta_lower_rho1`` is the lower
+    end at rho = 1 (Table 5's last column; None for delta > 0).
+    ``beta_interval_normalized`` multiplies by ``sigma_e / sigma_u``: the units
+    of the paper's Tables 5 (innovations scaled to unit variance), for
+    comparison only. The interval needs DF-GLS inside the tables, [-5, 1]:
+    outside it ``applicable`` is False, the interval keys are None and
+    ``note`` says why (below -5 the predictor is not near a unit root and the
+    conventional t-test is reliable, the paper's footnote 5).
+
+    Refuses (:class:`InferenceInputError`) mismatched lengths, any NaN/Inf
+    (the AR(p) and DF-GLS read an unbroken series, so there is no drop), a lag
+    order that is not a whole number >= 1, fewer than 10 pairs left after
+    the pre-sample, a constant series, and an AR(p) whose lag coefficients
+    sum to 1 (no long-run variance). Rows must be consecutive periods. Full
+    precision; the paper rounds to three decimals.
+    """
+    from scipy.stats import norm
+
+    for name, value in (("lags", lags), ("max_lags", max_lags)):
+        if value is None and name == "lags":
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, np.integer)) or value < 1:
+            raise InferenceInputError(f"{name} must be a whole number >= 1, got {value!r}")
+    r, _ = require_finite(np.asarray(returns, dtype=float).ravel(), what="return")
+    x, _ = require_finite(np.asarray(predictor, dtype=float).ravel(), what="predictor")
+    if r.size != x.size:
+        raise InferenceInputError(
+            f"returns has {r.size} observations and predictor {x.size} — the Q-test needs the same periods in both, "
+            "aligned row by row (the function lags the predictor itself)"
+        )
+    presample = int(lags) if lags is not None else int(max_lags)
+    if r.size - presample < 10:
+        raise InferenceInputError(
+            f"{r.size} periods leave {r.size - presample} pairs after {presample} pre-sample rows; the Q-test needs 10"
+        )
+    if flat(r[presample:], ddof=1) or flat(x, ddof=1):
+        raise InferenceInputError("constant returns or predictor — the slope is not identified")
+    p = int(lags) if lags is not None else _bic_lags(x, int(max_lags))
+    t = r.size - p
+    y, x_now, x_lag = r[p:], x[p:], x[p - 1 : -1]
+    dx = x_now - x_lag
+    lx = np.column_stack([np.ones(t), x_lag])
+    lx_inv = np.linalg.inv(lx.T @ lx)
+    z = _ar_design(x, p)
+
+    v = _ols(x_now, lx)[1]  # AR(1): SE(rho_hat) and sigma_v
+    sv2 = float(v @ v) / (t - 2)
+    se_rho = math.sqrt(sv2 * lx_inv[1, 1])
+    adf, e = _ols(dx, z)  # AR(p) in Dickey-Fuller form: psi and the innovation e
+    psi_sum = float(adf[2:].sum())
+    if abs(1.0 - psi_sum) <= 1e-8:
+        raise InferenceInputError(f"the AR({p}) lag coefficients sum to 1 — the long-run variance omega is undefined")
+
+    rho_gls = 1.0 - 7.0 / t
+    xbar = np.r_[x[p - 1], x_now - rho_gls * x_lag]
+    inter = np.r_[1.0, np.full(t, 1.0 - rho_gls)]
+    mu = float(inter @ xbar) / float(inter @ inter)
+    zbar = z[:, 1:].copy()
+    zbar[:, 0] -= mu
+    g, g_res = _ols(dx, zbar)
+    dfgls = float(g[0] / math.sqrt(float(g_res @ g_res) / (t - p) * np.linalg.inv(zbar.T @ zbar)[0, 0]))
+
+    coef, u = _ols(y, lx)
+    w = np.column_stack([u, e])
+    sigma = w.T @ w / (t - 2)
+    if flat(u, ddof=1) or sigma[1, 1] <= 0:
+        raise InferenceInputError("the returns are an exact function of the predictor — no residual variance")
+    s_uu, s_ee, s_ue = float(sigma[0, 0]), float(sigma[1, 1]), float(sigma[0, 1])
+    delta = s_ue / math.sqrt(s_uu * s_ee)
+    omega2 = s_ee / (1.0 - psi_sum) ** 2
+    beta = float(coef[1])
+    se_beta = math.sqrt(s_uu * lx_inv[1, 1])
+    k = s_ue / math.sqrt(s_ee * omega2)
+    correct = (t - 2) / 2 * k * (omega2 / sv2 - 1.0) * se_rho**2  # zero for an AR(1) up to the divisor
+    half = float(norm.ppf(1 - CAMPBELL_YOGO_LEVEL)) * math.sqrt(1.0 - delta**2) * se_beta
+    scale = math.sqrt(s_ee / s_uu)
+
+    def beta_given(innovation: np.ndarray) -> float:
+        return float(_ols(y - k * innovation, lx)[0][1]) + correct
+
+    out = {
+        "n_obs": t,
+        "ar_lags": p,
+        "lags_by": "given" if lags is not None else f"bic, 1..{int(max_lags)}",
+        "dfgls": dfgls,
+        "delta": delta,
+        "delta_table": None,
+        "sigma_u": math.sqrt(s_uu),
+        "sigma_e": math.sqrt(s_ee),
+        "beta_ols": beta,
+        "beta_ols_se": se_beta,
+        "beta_ols_tstat": beta / se_beta,
+        "c_interval": None,
+        "rho_interval": None,
+        "beta_interval": None,
+        "beta_interval_normalized": None,
+        "beta_lower_rho1": None if delta > 0 else beta_given(dx) - half,
+        "level_onesided": CAMPBELL_YOGO_LEVEL,
+        "reject": None,
+        "applicable": False,
+        "note": None,
+    }
+    found = _cy_c_interval(dfgls, delta)
+    if found is None:
+        out["note"] = (
+            f"DF-GLS {dfgls:.3f} is outside Campbell-Yogo's tables [-5, 1]: below -5 the predictor is not near "
+            "a unit root and the conventional t-test is reliable; above 1 it looks explosive"
+        )
+        return out
+    c_lo, c_hi, out["delta_table"] = found
+    rho_lo, rho_hi = 1 + c_lo / t, 1 + c_hi / t
+    at_lo, at_hi = beta_given(x_now - rho_lo * x_lag), beta_given(x_now - rho_hi * x_lag)
+    lower, upper = (at_hi - half, at_lo + half) if delta <= 0 else (at_lo - half, at_hi + half)
+    out.update(
+        c_interval=[c_lo, c_hi],
+        rho_interval=[rho_lo, rho_hi],
+        beta_interval=[lower, upper],
+        beta_interval_normalized=[scale * lower, scale * upper],
+        reject=bool(lower > 0),
+        applicable=True,
+    )
+    return out
+
+
+# ── out-of-sample R² and the Clark-West test ───────────────────────────────
+
+
+def oos_forecast(returns, predictor, *, start: int) -> dict:
+    """Goyal and Welch's (2008) out-of-sample R² of ``returns[t]`` on ``predictor[t-1]``, with Clark and West's test.
+
+    Alignment as in :func:`predictive_regression`. Row ``start`` is the first
+    return forecast. The forecast of ``returns[t]`` (``t >= start``) is an
+    expanding-window OLS on the pairs ``(returns[s], predictor[s-1])`` for
+    ``1 <= s <= t-1``, evaluated at ``predictor[t-1]``; the benchmark is the
+    prevailing mean of those same returns. Nothing at or after ``t`` enters the
+    forecast of ``t`` (Goyal-Welch: "the OOS forecast uses only the data
+    available up to the time at which the forecast is made").
+
+    Goyal-Welch (2008, RFS 21(4), Equation 6), over ``P`` forecasts:
+
+    - ``r2_oos = 1 - MSE_A / MSE_N`` (Campbell and Thompson's 2008 form);
+    - ``r2_oos_adjusted = 1 - (1 - r2_oos) (P - 1) / (P - 2)``, the
+      ``R-bar²`` their Table 1 reports, with two parameters (intercept and
+      slope). Their printed Equation 6 reads ``R² - (1 - R²) (T - k)/(T - 1)``,
+      which cannot be meant (an R² of zero would read near -100%); this form
+      gives their d/p -2.06 (1892-2005) exactly on their 2007 data vintage;
+    - ``delta_rmse = sqrt(MSE_N) - sqrt(MSE_A)``; ``mse_f = P (MSE_N - MSE_A) / MSE_A``
+      (McCracken 2004; its critical values are nonstandard and not computed here).
+
+    Clark and West (2007, "Approximately Normal Tests for Equal Predictive
+    Accuracy in Nested Models", JoE 138(1)): ``f_t = e_N**2 - (e_A**2 - (f_A -
+    f_N)**2)``, its mean over its classical standard error, one-sided normal
+    p-value (H1: the predictor improves the forecast). The adjustment removes
+    the noise a larger model pays for estimating a zero slope, so CW can
+    reject with a negative ``r2_oos``. One-period forecasts: no HAC.
+
+    The expanding fits are cumulative sums over the pairs (one pass, no loop
+    over time). Refuses mismatched lengths, any NaN/Inf, ``start`` below 3
+    (the first fit needs two pairs) or leaving fewer than 3 forecasts, and a
+    predictor constant over the first training window.
+    """
+    from scipy.stats import norm
+
+    if isinstance(start, bool) or not isinstance(start, (int, np.integer)):
+        raise InferenceInputError(f"start must be a whole row number, got {start!r}")
+    r, _ = require_finite(np.asarray(returns, dtype=float).ravel(), what="return")
+    x, _ = require_finite(np.asarray(predictor, dtype=float).ravel(), what="predictor")
+    if r.size != x.size:
+        raise InferenceInputError(
+            f"returns has {r.size} observations and predictor {x.size} — aligned row by row, the function lags"
+        )
+    n, start = r.size, int(start)
+    if start < 3 or n - start < 3:
+        raise InferenceInputError(
+            f"start={start} with {n} rows: the first forecast needs >= 2 training pairs (start >= 3) "
+            "and the statistics >= 3 forecasts (start <= len - 3)"
+        )
+    if flat(x[: start - 1]):
+        raise InferenceInputError("the predictor is constant over the first training window — no slope to fit")
+    # Pairs k = s - 1: y_k = r[s], z_k = x[s-1], s = 1..n-1. Shifting both by their FIRST value
+    # leaves every OLS forecast unchanged and keeps the cumulative sums well conditioned.
+    yk, zk = r[1:] - r[1], x[:-1] - x[0]
+    m = np.arange(1, n)  # pairs in the window after pair k
+    sy, sz = np.cumsum(yk), np.cumsum(zk)
+    szz, szy = np.cumsum(zk * zk), np.cumsum(zk * yk)
+    j = np.arange(start, n) - 2  # the forecast of r[t] uses pairs 0..t-2
+    mj = m[j]
+    mean_y, mean_z = sy[j] / mj, sz[j] / mj
+    sxx = szz[j] - mj * mean_z**2
+    slope = (szy[j] - mj * mean_z * mean_y) / sxx
+    f_a = mean_y + slope * (x[start - 1 : n - 1] - x[0] - mean_z)
+    f_n = mean_y
+    actual = r[start:] - r[1]
+    e_a, e_n = actual - f_a, actual - f_n
+    mse_a, mse_n = float(np.mean(e_a**2)), float(np.mean(e_n**2))
+    p_count = n - start
+    r2 = 1.0 - mse_a / mse_n
+    cw = e_n**2 - (e_a**2 - (f_a - f_n) ** 2)
+    cw_se = float(np.std(cw, ddof=1)) / math.sqrt(p_count)
+    cw_t = float(np.mean(cw)) / cw_se if cw_se > 0 else math.inf
+    return {
+        "oos_start": start,
+        "n_forecasts": p_count,
+        "n_train_first": start - 1,
+        "mse_model": mse_a,
+        "mse_mean": mse_n,
+        "r2_oos": r2,
+        "r2_oos_adjusted": 1.0 - (1.0 - r2) * (p_count - 1) / (p_count - 2),
+        "delta_rmse": math.sqrt(mse_n) - math.sqrt(mse_a),
+        "mse_f": p_count * (mse_n - mse_a) / mse_a,
+        "clark_west_mean": float(np.mean(cw)),
+        "clark_west_tstat": cw_t,
+        "clark_west_pvalue_onesided": float(norm.sf(cw_t)),
+    }
+
+
 # ── Deflated Sharpe Ratio ──────────────────────────────────────────────────
 #
 # Bailey & López de Prado (2014), "The Deflated Sharpe Ratio", with the Mertens
@@ -1035,6 +1343,7 @@ def largest_drawdown_episode(returns) -> dict | None:
 
 
 __all__ = [
+    "CAMPBELL_YOGO_LEVEL",
     "DEGENERATE_RTOL",
     "DSRResult",
     "EULER_MASCHERONI",
@@ -1045,6 +1354,7 @@ __all__ = [
     "ReturnMoments",
     "bonferroni_alpha",
     "bootstrap",
+    "campbell_yogo",
     "deflated_sharpe_ratio",
     "deflated_sharpe_ratio_from_returns",
     "expected_max_sr",
@@ -1058,6 +1368,7 @@ __all__ = [
     "multiple_testing",
     "newey_west_auto_lags",
     "newey_west_tstat",
+    "oos_forecast",
     "predictive_regression",
     "require_finite",
     "return_moments",
