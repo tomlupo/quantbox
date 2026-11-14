@@ -24,7 +24,9 @@ The interface, grouped by question:
 - Deflated Sharpe Ratio: :func:`deflated_sharpe_ratio`,
   :func:`deflated_sharpe_ratio_from_returns`, :func:`expected_max_sr`,
   :func:`sr_estimator_std`, :class:`DSRResult`.
-- Multiple testing: :func:`multiple_testing` (Bonferroni, Holm),
+- Sharpe difference: :func:`sharpe_difference_test` (Ledoit-Wolf 2008 HAC
+  test of SR(candidate) = SR(baseline) on paired series).
+- Multiple testing: :func:`multiple_testing` (Bonferroni, Holm, BHY),
   :func:`bonferroni_alpha`, :class:`MultipleTestingResult`.
 - Resampling: :func:`bootstrap` (iid or paired stationary block),
   :func:`stationary_bootstrap_indices`, :func:`moving_block_indices`,
@@ -830,13 +832,192 @@ def deflated_sharpe_ratio_from_returns(returns, n_trials: int, *, allow_nonfinit
     return replace(result, n_obs_raw=m.n_obs_raw, n_nonfinite_dropped=m.n_nonfinite_dropped)
 
 
+# ── Sharpe difference (Ledoit-Wolf 2008) ───────────────────────────────────
+#
+# Ledoit & Wolf (2008), "Robust performance hypothesis testing with the Sharpe
+# ratio", J. Empirical Finance 15(5), 850-859, Section 3.1. Delta = SR_c - SR_b
+# is a smooth function f of v = (mu_c, mu_b, g_c, g_b), the means and
+# uncentred second moments of the two series; by the delta method
+# se(Delta) = sqrt(grad f' Psi grad f / T), with Psi the long-run covariance
+# of y_t = (r_c - mu_c, r_b - mu_b, r_c^2 - g_c, r_b^2 - g_b). Psi is the
+# paper's kernel estimate (its Section 4, columns HAC and HACPW): the
+# Quadratic-Spectral kernel with Andrews' (1991, "Heteroskedasticity and
+# Autocorrelation Consistent Covariance Matrix Estimation", Econometrica 59(3))
+# automatic bandwidth from AR(1) fits, the T / (T - 4) correction, and
+# optionally Andrews-Monahan (1992, Econometrica 60(4)) VAR(1) prewhitening.
+# The lag sum is statsmodels' ``S_hac_simple`` (adapter, as in
+# :func:`hac_ols`); its Bartlett weights are swapped for the QS ones because
+# the paper's reference p-values are QS (Bartlett/Newey-West lags give
+# different ones). The idea of offering this test came from the qis library;
+# the code is written from the paper and the authors' published R code, no qis
+# code is copied and qis is not a dependency.
+
+
+_RETURN_UNITS = {"fraction": 100.0, "percent": 1.0}  # the factor to percent, the paper's unit
+
+
+def _quadratic_spectral(x: np.ndarray) -> np.ndarray:
+    """The QS kernel, 25 / (12 pi^2 x^2) * (sin(z) / z - cos(z)) with z = 6 pi x / 5, and 1 at x = 0."""
+    x = np.asarray(x, dtype=float)
+    z = 6 * np.pi * x / 5
+    with np.errstate(divide="ignore", invalid="ignore"):
+        k = 25 / (12 * np.pi**2 * x**2) * (np.sin(z) / z - np.cos(z))
+    return np.where(x == 0, 1.0, k)
+
+
+def _lw_long_run_cov(y: np.ndarray) -> tuple[np.ndarray, float]:
+    """QS-kernel long-run covariance of the rows of ``y`` (mean zero), times T / (T - k), and its bandwidth.
+
+    The bandwidth is Andrews (1991) eq. 6.2 for the QS kernel,
+    ``1.3221 * (alpha(2) * T)^(1/5)``, with ``alpha(2)`` from an AR(1) fit per
+    column, equally weighted (his eq. 6.4). Every lag 1 .. T-1 is summed.
+    """
+    from statsmodels.stats.sandwich_covariance import S_hac_simple
+
+    T, k = y.shape
+    num = den = 0.0
+    for col in y.T:
+        x = np.column_stack([np.ones(T - 1), col[:-1]])
+        coef, *_ = np.linalg.lstsq(x, col[1:], rcond=None)
+        rho, s2 = coef[1], float(np.mean((col[1:] - x @ coef) ** 2))
+        num += 4 * rho**2 * s2**2 / (1 - rho) ** 8
+        den += s2**2 / (1 - rho) ** 4
+    bandwidth = 1.3221 * (num / den * T) ** 0.2
+    weights = _quadratic_spectral(np.arange(T) / bandwidth)
+    psi = S_hac_simple(y, nlags=T - 1, weights_func=lambda _: weights) / T
+    return psi * T / (T - k), float(bandwidth)
+
+
+def _prewhiten(y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Andrews-Monahan (1992) VAR(1) prewhitening: residuals and the recolouring matrix (I - A)^-1.
+
+    The VAR(1) matrix's singular values are capped at 0.97, as in Ledoit and
+    Wolf's code, so (I - A) stays invertible on a near-unit-root column.
+    """
+    coef, *_ = np.linalg.lstsq(y[:-1], y[1:], rcond=None)  # y_t = A y_{t-1} + e_t, A = coef.T
+    u, d, vt = np.linalg.svd(coef.T)
+    a = (u * np.minimum(d, 0.97)) @ vt
+    return y[1:] - y[:-1] @ a.T, np.linalg.inv(np.eye(y.shape[1]) - a)
+
+
+def sharpe_difference_test(
+    candidate,
+    baseline,
+    *,
+    prewhiten: bool = False,
+    unit: str = "fraction",
+    allow_nonfinite_drop: bool = False,
+) -> dict:
+    """Ledoit-Wolf (2008) HAC test of H0: SR(candidate) = SR(baseline) on two PAIRED return series.
+
+    ``candidate`` and ``baseline`` are aligned per-period returns (the same
+    dates in both; a row with a NaN/Inf in either is refused, or dropped from
+    both with ``allow_nonfinite_drop=True``). ``delta`` is
+    ``SR(candidate) - SR(baseline)``, each the per-period ``mean / std``
+    (ddof=1), so a positive ``delta`` means the candidate's Sharpe is higher.
+    Excess returns are the caller's: subtract the risk-free rate first.
+
+    The standard error is the paper's HAC one (see the section comment): it
+    stays valid under fat tails, volatility clustering and autocorrelation,
+    where Jobson-Korkie/Memmel does not. ``prewhiten=False`` is the paper's
+    HAC column, ``prewhiten=True`` its HACPW column. The paper finds HAC liberal in small samples (T = 120 rejects
+    a true null at 5% about 7% of the time); its studentised block bootstrap
+    is the remedy and is not implemented here.
+
+    ``unit`` says what the returns are in: ``"fraction"`` (0.01 = 1%, the
+    package's convention) or ``"percent"`` (1.0 = 1%). The Sharpes do not
+    depend on it, but the paper's HAC does: Andrews' bandwidth weights the
+    four moment columns by their own scale, and the prewhitening cap acts on
+    the VAR's singular values, so the same series in percent and in fractions
+    gets different p-values (the paper's hedge-fund pair: 14.7% in percent,
+    17.9% in fractions). The paper works in percent, so the test always runs
+    in percent: a ``"fraction"`` series is multiplied by 100 first, and the
+    result matches the paper's computation on the same returns. ``unit`` pins
+    the paper's convention; it does not make the HAC scale-free. Returns of a
+    different size (a daily series is about a fifth of a monthly one) still
+    get a different bandwidth than the paper's monthly data would, as in
+    Andrews' unweighted rule itself. An AR(1) coefficient of 1 in a moment
+    column gives a non-finite bandwidth and so ``se`` of ``None``.
+
+    Returns full-precision floats: ``n_obs``, ``n_obs_raw``,
+    ``n_nonfinite_dropped``, ``sharpe_candidate``, ``sharpe_baseline``,
+    ``delta``, ``se``, ``zstat`` (delta / se), ``pvalue`` (two-sided, normal,
+    the paper's), ``pvalue_onesided`` (H1: delta > 0, for a "beats" claim),
+    ``bandwidth`` (the Andrews QS bandwidth, in periods), ``prewhiten`` and ``unit``. Refuses
+    an unknown ``unit``,
+    (:class:`InferenceInputError`) series of different lengths, fewer than
+    6 paired observations (the T - 4 correction needs T > 4 and the
+    prewhitened fit one more), and a series constant to floating-point noise
+    (no Sharpe). A degenerate long-run variance yields ``None`` for ``se``,
+    ``zstat`` and both p-values.
+    """
+    from scipy.stats import norm
+
+    if unit not in _RETURN_UNITS:
+        raise InferenceInputError(f"unit must be one of {tuple(_RETURN_UNITS)}, got {unit!r}")
+    c = np.asarray(candidate, dtype=float).ravel()
+    b = np.asarray(baseline, dtype=float).ravel()
+    if c.size != b.size:
+        raise InferenceInputError(
+            f"candidate has {c.size} observations and baseline {b.size} — a paired test needs the "
+            "same rows in both (align them on dates first)"
+        )
+    both, dropped = require_finite(np.column_stack([c, b]), allow_nonfinite_drop=allow_nonfinite_drop, what="paired")
+    T = int(both.shape[0])
+    if T < 6:
+        raise InferenceInputError(f"need at least 6 paired finite observations, got {T}")
+    for name, col in (("candidate", both[:, 0]), ("baseline", both[:, 1])):
+        if flat(col, ddof=1):
+            raise InferenceInputError(f"zero-variance {name} returns — its Sharpe ratio does not exist")
+
+    sr_c, sr_b = (float(col.mean() / col.std(ddof=1)) for col in both.T)
+    pct = both * _RETURN_UNITS[unit]  # the paper's unit: the HAC below is not scale-free
+    data = np.column_stack([pct, pct**2])
+    mu_c, mu_b, g_c, g_b = data.mean(axis=0)
+    var_c, var_b = g_c - mu_c**2, g_b - mu_b**2  # population variances (the delta-method gradient's)
+    grad = np.array([g_c / var_c**1.5, -g_b / var_b**1.5, -0.5 * mu_c / var_c**1.5, 0.5 * mu_b / var_b**1.5])
+    y = data - data.mean(axis=0)
+    if prewhiten:
+        y_star, recolour = _prewhiten(y)
+        psi_star, bandwidth = _lw_long_run_cov(y_star)
+        psi = recolour @ psi_star @ recolour.T
+    else:
+        psi, bandwidth = _lw_long_run_cov(y)
+
+    delta = sr_c - sr_b
+    out = {
+        "n_obs": T,
+        "n_obs_raw": int(c.size),
+        "n_nonfinite_dropped": dropped,
+        "sharpe_candidate": sr_c,
+        "sharpe_baseline": sr_b,
+        "delta": delta,
+        "se": None,
+        "zstat": None,
+        "pvalue": None,
+        "pvalue_onesided": None,
+        "bandwidth": bandwidth,
+        "prewhiten": bool(prewhiten),
+        "unit": unit,
+    }
+    var_delta = float(grad @ psi @ grad) / T
+    scale = float(np.abs(grad) @ np.abs(psi) @ np.abs(grad)) / T  # zero is tested relatively (DEGENERATE_RTOL)
+    if not (math.isfinite(var_delta) and var_delta > DEGENERATE_RTOL * scale):
+        return out  # e.g. candidate == baseline: the gradient cancels the common moments
+    se = math.sqrt(var_delta)
+    z = delta / se
+    return {**out, "se": se, "zstat": z, "pvalue": float(2.0 * norm.sf(abs(z))), "pvalue_onesided": float(norm.sf(z))}
+
+
 # ── multiple testing ───────────────────────────────────────────────────────
 #
-# Family-wise error control over m tests run on one question (TOM-1646).
-# statsmodels' ``multipletests`` computes the corrections (adapter, not
-# reimplementation); this module owns the refusals and the result shape.
+# Error control over m tests run on one question (TOM-1646): family-wise
+# (Bonferroni, Holm) or the false discovery rate under any dependence (BHY,
+# TOM-3717). statsmodels' ``multipletests`` computes the corrections (adapter,
+# not reimplementation); this module owns the refusals and the result shape.
 
-MULTIPLE_TESTING_METHODS = ("bonferroni", "holm")
+MULTIPLE_TESTING_METHODS = ("bonferroni", "holm", "bhy")
+_STATSMODELS_METHOD = {"bonferroni": "bonferroni", "holm": "holm", "bhy": "fdr_by"}
 
 
 def _check_alpha(alpha) -> float:
@@ -863,15 +1044,15 @@ def bonferroni_alpha(n_tests: int, *, alpha: float = 0.05) -> float:
 
 @dataclass(frozen=True)
 class MultipleTestingResult:
-    """A family of p-values after a family-wise correction, in the INPUT order."""
+    """A family of p-values after a multiple-testing correction, in the INPUT order."""
 
-    method: str  # "bonferroni" or "holm"
-    alpha: float  # the family-wise level
+    method: str  # "bonferroni", "holm" or "bhy"
+    alpha: float  # the family-wise level (bhy: the false discovery rate)
     m: int  # tests in the family
     pvalues: np.ndarray  # the raw p-values, as passed
     adjusted: np.ndarray  # adjusted p-values, capped at 1; reject == (adjusted <= alpha)
-    reject: np.ndarray  # bool: the null of that test is rejected at family-wise alpha
-    per_test_alpha: float | None  # Bonferroni: alpha / m. Holm: None (its level depends on the rank)
+    reject: np.ndarray  # bool: rejected at alpha (FWER for bonferroni/holm, FDR for bhy)
+    per_test_alpha: float | None  # Bonferroni: alpha / m. Holm, BHY: None (the level depends on the rank)
 
 
 def multiple_testing(pvalues, *, alpha: float = 0.05, method: str = "bonferroni") -> MultipleTestingResult:
@@ -887,7 +1068,18 @@ def multiple_testing(pvalues, *, alpha: float = 0.05, method: str = "bonferroni"
     adjusted p-value is the running maximum of ``(m - k + 1) * p_(k)``,
     capped at 1. Neither assumes the tests are independent.
 
-    The contract is ``reject == (adjusted <= alpha)``, for both methods. In
+    ``method="bhy"`` (Benjamini and Yekutieli 2001, "The control of the false
+    discovery rate in multiple testing under dependency", Ann. Statist. 29(4),
+    Theorem 1.3) controls the FALSE DISCOVERY RATE at ``alpha`` (the expected
+    share of rejections that are false), not the family-wise error: it steps
+    up through the sorted p-values against ``k * alpha / (m * c(m))``, with
+    ``c(m) = 1 + 1/2 + ... + 1/m``, which holds under any dependence between
+    the tests. Its adjusted p-value is the running minimum, from the largest
+    down, of ``m * c(m) * p_(k) / k``, capped at 1. It rejects more than Holm
+    when many tests are true discoveries; it is the BHY of Harvey, Liu and
+    Zhu (2016, "... and the Cross-Section of Expected Returns", RFS 29(1)).
+
+    The contract is ``reject == (adjusted <= alpha)``, for every method. In
     exact arithmetic that is the rule above; in floating point a p-value
     within one rounding of its level (``p = 0.1/3`` at ``alpha=0.1``, ``m=3``)
     can fall on either side, and the mask follows the adjusted p-value.
@@ -922,7 +1114,7 @@ def multiple_testing(pvalues, *, alpha: float = 0.05, method: str = "bonferroni"
     # The reject mask is read off the adjusted p-values, not taken from
     # statsmodels' own mask: the two are the same rule in exact arithmetic, and
     # one source keeps them from disagreeing in the last bit at the boundary.
-    _, adjusted, _, _ = multipletests(p, alpha=alpha, method=method)
+    _, adjusted, _, _ = multipletests(p, alpha=alpha, method=_STATSMODELS_METHOD[method])
     adjusted = np.minimum(np.asarray(adjusted, dtype=float), 1.0)
     m = int(p.size)
     return MultipleTestingResult(
@@ -1061,5 +1253,6 @@ __all__ = [
     "predictive_regression",
     "require_finite",
     "return_moments",
+    "sharpe_difference_test",
     "sr_estimator_std",
 ]

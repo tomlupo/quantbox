@@ -1,8 +1,8 @@
 """Acceptance gates on a backtest's return series: thresholds and verdicts only (TOM-1351, TOM-1618).
 
-Seven deterministic gates, seven DIFFERENT questions, each a function returning a
-JSON-ready dict with a ``gate_pass`` verdict, and each reachable as
-``quantbox gates <name> --json`` (see :mod:`quantbox.gates_cli`):
+Eight deterministic gates, eight DIFFERENT questions, each a function returning a
+JSON-ready dict with a ``gate_pass`` verdict, and each but ``sharpe_diff``
+reachable as ``quantbox gates <name> --json`` (see :mod:`quantbox.gates_cli`):
 
   dsr        Is the Sharpe real once deflated for skew, kurtosis AND the number
              of trials tried?
@@ -18,6 +18,9 @@ JSON-ready dict with a ``gate_pass`` verdict, and each reachable as
              small-sample bias is removed (Lewellen's conditional test too)?
   replicate  Does the series replicate a reference (a paper's, an index's)?
              PASS, FAIL, or DEFECT when the correlation is below a floor.
+  sharpe_diff  Which of a declared family of candidates has a higher Sharpe
+             than the baseline (Ledoit-Wolf HAC), after Holm or BHY?
+             Python only (:func:`sharpe_difference_gate`).
 
 Metrics DESCRIBE (:mod:`quantbox.metrics`), inference TESTS
 (:mod:`quantbox.inference`), gates DECIDE. Every statistic here comes from
@@ -70,6 +73,7 @@ from .inference import (
     predictive_regression,
     require_finite,
     return_moments,
+    sharpe_difference_test,
 )
 from .metrics import correlation, drawdown_fields, sharpe_ratio
 from .metrics import max_drawdown as _max_drawdown
@@ -744,6 +748,70 @@ def replication_gate(
     }
 
 
+# ── Sharpe difference over a declared family ──────────────────────────────
+
+
+def sharpe_difference_gate(
+    candidates,
+    baseline,
+    *,
+    method: str = "holm",
+    alpha: float = 0.05,
+    prewhiten: bool = False,
+    unit: str = "fraction",
+    allow_nonfinite_drop: bool = False,
+) -> dict:
+    """Which candidates have a higher Sharpe than ``baseline``, after correcting for the family tried?
+
+    ``candidates`` maps a name to a per-period return series aligned with
+    ``baseline``; that mapping IS the declared family: every variant tried on
+    the question belongs in it, the losers included (dropping one loosens the
+    others' level). Each is tested with
+    :func:`quantbox.inference.sharpe_difference_test` (Ledoit-Wolf 2008 HAC;
+    ``prewhiten`` and ``unit`` are passed through) against H1: SR(candidate) > SR(baseline),
+    one-sided, and the family's p-values are corrected with
+    :func:`quantbox.inference.multiple_testing` (``method="holm"``: family-wise
+    error at ``alpha``; ``"bhy"``: false discovery rate at ``alpha``;
+    ``"bonferroni"``). A candidate ``beats`` the baseline when its adjusted
+    p-value is at most ``alpha``; ``gate_pass`` is any candidate beating it.
+    A candidate whose HAC variance is degenerate (no p-value) is refused,
+    since the family cannot be corrected without it. With
+    ``allow_nonfinite_drop`` each pair drops its own non-finite rows, so two
+    candidates may be tested on different samples; align them first when the
+    family must share one.
+
+    Python only: there is no ``quantbox gates`` subcommand for it yet.
+    """
+    if not isinstance(candidates, dict) or not candidates:
+        raise GateInputError("candidates must be a non-empty mapping of name -> return series (the declared family)")
+    tests = {
+        name: sharpe_difference_test(
+            r, baseline, prewhiten=prewhiten, unit=unit, allow_nonfinite_drop=allow_nonfinite_drop
+        )
+        for name, r in candidates.items()
+    }
+    undefined = [name for name, t in tests.items() if t["pvalue_onesided"] is None]
+    if undefined:
+        raise GateInputError(f"degenerate HAC variance for {undefined} — no p-value, so the family cannot be corrected")
+    family = multiple_testing([t["pvalue_onesided"] for t in tests.values()], alpha=alpha, method=method)
+    per = {
+        name: {**t, "pvalue_adjusted": float(adj), "beats": bool(rej)}
+        for (name, t), adj, rej in zip(tests.items(), family.adjusted, family.reject, strict=True)
+    }
+    beats = [name for name, t in per.items() if t["beats"]]
+    return {
+        "gate": "sharpe_diff",
+        "method": method,
+        "alpha": family.alpha,
+        "m": family.m,
+        "prewhiten": bool(prewhiten),
+        "unit": unit,
+        "candidates": per,
+        "beats": beats,
+        "gate_pass": bool(beats),
+    }
+
+
 __all__ = [
     "COMPARES",
     "DEFAULT_N_TRIALS",
@@ -760,4 +828,5 @@ __all__ = [
     "parse_n_trials",
     "predreg_gate",
     "replication_gate",
+    "sharpe_difference_gate",
 ]
