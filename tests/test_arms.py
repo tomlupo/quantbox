@@ -14,6 +14,7 @@ The contract under test:
 from __future__ import annotations
 
 import json
+import re
 import sys
 import types
 from pathlib import Path
@@ -578,7 +579,8 @@ def test_an_explicit_line_wins_and_a_paper_run_is_not_a_trial(tmp_path):
     paper.write_text(yaml.safe_dump(cfg))
     result = CliRunner().invoke(app, ["run", "-c", str(paper), "--line", str(elsewhere)])
     assert result.exit_code == 2
-    assert "not run.mode: backtest" in " ".join(result.output.replace("│", " ").split())
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)  # CI forces rich styling
+    assert "not run.mode: backtest" in " ".join(plain.replace("│", " ").split())
     assert len(_log_rows(elsewhere)) == 1
 
 
