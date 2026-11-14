@@ -153,6 +153,20 @@ def test_drawdown_episodes_edges():
     assert str(tz["start"].dtype).endswith("UTC]") and tz.loc[0, "peak"] == pd.Timestamp("2024-01-01", tz="UTC")
 
 
+def test_days_under_water_are_wall_clock_days_across_a_clock_change_and_inside_a_day():
+    # Warsaw daily bars: under water 2024-03-26 .. back at the peak 2024-04-06, the
+    # clocks moved on 03-31, the span is 11 calendar days (not a day short)
+    days = pd.date_range("2024-03-25", "2024-04-06", tz="Europe/Warsaw")
+    r = pd.Series(0.0, index=days)
+    r["2024-03-26"], r["2024-04-06"] = -0.10, 0.20
+    ep = metrics.drawdown_episodes(r)
+    assert ep["bars_under_water"].tolist() == [11] and ep["days_under_water"].tolist() == [11.0]
+    # 4h bars: 12 hours under water read half a day, not 0
+    bars = pd.date_range("2024-01-01", periods=5, freq="4h")
+    ep = metrics.drawdown_episodes(pd.Series([0.0, -0.1, 0.0, 0.0, 0.2], index=bars))
+    assert ep["days_under_water"].tolist() == [0.5]
+
+
 @pytest.mark.parametrize(
     ("index", "expected"),
     [

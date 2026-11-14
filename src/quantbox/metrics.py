@@ -306,12 +306,19 @@ def drawdown_episodes(returns: pd.Series) -> pd.DataFrame:
     - ``depth``: the drawdown at the trough, signed (<= 0).
     - ``bars_under_water``: bars below the peak, ``start`` through the bar
       before ``recovery`` (through the last bar while open).
-    - ``days_under_water``: calendar days from ``start`` to ``recovery``, or
-      to the last date while open (time observed under water so far). On
-      daily bars a recovered episode's days equal its bars. NaN when the
-      index holds no dates.
+    - ``days_under_water``: wall-clock days from ``start`` to ``recovery``, or
+      to the last date while open (time observed under water so far);
+      fractional inside a day (12 hours on 4h bars reads 0.5), and a clock
+      change does not shorten it. On calendar-daily bars a recovered
+      episode's days equal its bars; on trading-day bars they include the
+      closed days. NaN when the index holds no dates.
 
-    Days are calendar days, so the column reads the same whatever the bar.
+    Days are measured on the clock, so the column reads the same whatever the bar.
+    Not the same measure as ``max_drawdown_duration_days`` in
+    :func:`compute_backtest_metrics`, whose value this card leaves unchanged:
+    that one runs from the first to the last bar under water (not to the
+    recovery), in whole days, and does not count the starting 1.0 as a peak,
+    so it can read a day or a bar less than the longest episode here.
     Vectorised: the episodes are runs of ``drawdown < 0``, found by numpy.
     """
     r = pd.Series(returns).dropna()
@@ -343,7 +350,9 @@ def drawdown_episodes(returns: pd.Series) -> pd.DataFrame:
         }
     )
     if isinstance(dates, pd.DatetimeIndex):
-        out["days_under_water"] = (at(recovery_pos) - out["start"]).dt.days.astype(float)
+        wall = dates.tz_localize(None) if dates.tz is not None else dates  # local clock: a DST hour is not lost
+        span = pd.Series(wall[recovery_pos] - wall[starts] if len(starts) else wall[:0] - wall[:0])
+        out["days_under_water"] = span.dt.total_seconds().to_numpy() / 86400.0
     else:
         out["days_under_water"] = np.nan
     return out
@@ -942,7 +951,11 @@ def compute_portfolio_cvar(
 
 
 def _max_drawdown_duration(dd: pd.Series) -> int:
-    """Return the longest drawdown duration in calendar days."""
+    """Return the longest drawdown duration in calendar days.
+
+    First to last bar under water, whole days; :func:`drawdown_episodes`'
+    ``days_under_water`` runs to the recovery instead (TOM-3718).
+    """
     in_dd = dd < 0
     if not in_dd.any():
         return 0

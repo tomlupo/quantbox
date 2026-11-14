@@ -296,7 +296,8 @@ def _bars(arms: list[Arm]) -> str:
 
     The engine computes each one from the arm's per-bar returns, the series this
     export reads, so the bar is named from that series' own dates
-    (:func:`quantbox.metrics.sampling_frequency`). Arms on different bars name each, in order.
+    (:func:`quantbox.metrics.sampling_frequency`). Arms on different bars name each
+    distinct bar once, in first-seen order (not one per column).
     """
     bars = list(dict.fromkeys(sampling_frequency(a.returns.dropna().index) for a in arms))
     return "bar unknown" if bars == ["unknown"] else f"{' / '.join(bars)} bars"
