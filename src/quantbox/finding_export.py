@@ -20,7 +20,10 @@ It never recomputes an engine metric: Sharpe, CAGR, drawdown in ``kpis`` and
 (TOM-1627): "Max drawdown" is ``max_drawdown``, signed (<= 0); "Max drawdown
 (depth)" is ``max_drawdown_abs`` (>= 0) — for a run written before run@1 minor 8,
 the magnitude of its recorded ``max_drawdown``. The ``series`` drawdown lines are
-signed fractions, as the renderer's contract defines them.
+signed fractions, as the renderer's contract defines them. Each ``metrics`` row
+names the bar its statistic was computed at — "Sharpe (daily bars)" — read from
+the arm's own return dates (TOM-3718); a Sharpe of daily returns is not a Sharpe
+of monthly ones.
 
 A RESEARCH run (``run.kind: research`` — same-bar under the explicit override,
 docs/adr/0006) is never exported as a backtest: its hero cards do not report
@@ -49,7 +52,7 @@ from typing import Any
 
 import pandas as pd
 
-from .metrics import compute_drawdown_series
+from .metrics import compute_drawdown_series, sampling_frequency
 from .parquet_io import read_parquet
 from .run_history import run_started_at
 from .run_manifest import SCHEMA_ID as RUN_SCHEMA_ID
@@ -288,15 +291,37 @@ def _audit_block(arms: list[Arm]) -> dict[str, Any] | None:
     return {"axes": axes} if axes else None
 
 
+def _bars(arms: list[Arm]) -> str:
+    """The bar every engine statistic was computed at, as a label suffix (TOM-3718).
+
+    The engine computes each one from the arm's per-bar returns, the series this
+    export reads, so the bar is named from that series' own dates
+    (:func:`quantbox.metrics.sampling_frequency`). Arms on different bars name each, in order.
+    """
+    bars = list(dict.fromkeys(sampling_frequency(a.returns.dropna().index) for a in arms))
+    return "bar unknown" if bars == ["unknown"] else f"{' / '.join(bars)} bars"
+
+
 def _metrics_block(arms: list[Arm]) -> dict[str, Any] | None:
+    """The engine's statistics, one row each, its label naming the bar it was sampled at (TOM-3718).
+
+    The renderer refuses a row key it does not know, so the bar goes in the label:
+    "Sharpe (daily bars)". The values are the engine's, never recomputed.
+    """
     rows = []
+    bars = _bars(arms)
     for key, label, fmt in _METRIC_ROWS:
         values = [_num(a.metrics.get(key)) for a in arms]
         if any(v is not None for v in values):
-            rows.append({"label": label, "format": fmt, "values": values})
+            rows.append({"label": _with_bars(label, bars), "format": fmt, "values": values})
     if not rows:
         return None
     return {"title": "Metrics", "note": "as the engine reported them", "columns": [a.name for a in arms], "rows": rows}
+
+
+def _with_bars(label: str, bars: str) -> str:
+    """``Max drawdown (depth)`` + ``daily bars`` -> ``Max drawdown (depth, daily bars)``."""
+    return f"{label[:-1]}, {bars})" if label.endswith(")") else f"{label} ({bars})"
 
 
 def _robustness_block(arms: list[Arm]) -> dict[str, Any] | None:

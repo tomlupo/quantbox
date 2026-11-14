@@ -135,7 +135,7 @@ def test_export_of_a_run_carries_its_returns_metrics_and_provenance():
     # metrics table: one column per arm, the engine's numbers
     table = payload["metrics"]
     assert table["columns"] == [line["name"]]
-    cagr = next(r for r in table["rows"] if r["label"] == "CAGR")
+    cagr = next(r for r in table["rows"] if r["label"] == "CAGR (daily bars)")
     assert cagr["values"] == [pytest.approx(metrics["cagr"])] and cagr["format"] == "pct"
 
     # provenance from the manifest — engine, execution, dataset, funding
@@ -197,7 +197,7 @@ def test_a_variants_run_exports_one_arm_per_variant(tmp_path):
     assert lines["all_a"]["benchmark"] is False
     assert payload["metrics"]["columns"] == ["all_a", "benchmark_5050"]
     vm = pd.read_parquet(run_dir / "variant_metrics.parquet").set_index("variant")
-    sharpe = next(r for r in payload["metrics"]["rows"] if r["label"] == "Sharpe")
+    sharpe = next(r for r in payload["metrics"]["rows"] if r["label"] == "Sharpe (daily bars)")
     assert sharpe["values"] == [
         pytest.approx(vm.loc["all_a", "sharpe"]),
         pytest.approx(vm.loc["benchmark_5050", "sharpe"]),
@@ -217,6 +217,26 @@ def test_a_directory_of_runs_is_one_arm_per_run(tmp_path):
     prov = next(t for t in payload["tables"] if t["title"] == "Run provenance")
     assert prov["columns"] == ["field", "arm_a", "arm_b"]
     assert "run_id" not in payload  # an arms export is not one run
+
+
+def test_every_metrics_row_names_the_bar_its_statistic_was_sampled_at(tmp_path):
+    """TOM-3718: "Sharpe (daily bars)" — read from each arm's return dates; arms on different bars name both."""
+    payload = export_finding_report(GOLDEN)
+    labels = [r["label"] for r in payload["metrics"]["rows"]]
+    assert labels and all(label.endswith("daily bars)") for label in labels), labels
+    assert "Max drawdown (depth, daily bars)" in labels
+    metrics = json.loads((GOLDEN / "metrics.json").read_text())
+    dd = next(r for r in payload["metrics"]["rows"] if r["label"] == "Max drawdown (daily bars)")
+    assert dd["values"] == [pytest.approx(metrics["max_drawdown"])]  # the engine's value, unchanged
+
+    arms = tmp_path / "arms"
+    shutil.copytree(GOLDEN, arms / "daily")
+    weekly = shutil.copytree(GOLDEN, arms / "weekly")
+    returns = pd.read_parquet(weekly / "returns.parquet")
+    returns["date"] = pd.date_range(returns["date"].iloc[0], periods=len(returns), freq="7D")
+    returns.to_parquet(weekly / "returns.parquet", index=False)
+    labels = [r["label"] for r in export_finding_report(arms)["metrics"]["rows"]]
+    assert "Sharpe (daily / weekly bars)" in labels, labels
 
 
 def _with_returns(src: Path, dst: Path, value: float) -> Path:
