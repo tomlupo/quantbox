@@ -1,7 +1,9 @@
 """The ONE metrics module: every statistic that DESCRIBES a run is computed here.
 
 Sharpe (and excess Sharpe vs a benchmark), information ratio, tracking error,
-CAGR, volatility, max drawdown, top-N drawdowns, turnover, VaR / CVaR, and
+CAGR, volatility, max drawdown, top-N drawdowns and the full drawdown episode
+table (:func:`drawdown_episodes`, TOM-3718), the bar a series is sampled at
+(:func:`sampling_frequency`, TOM-3718), turnover, VaR / CVaR, and
 per-bar returns compounded to periods (:func:`period_returns`, TOM-3698), and the
 correlation with a reference series on a declared frequency (:func:`correlation`,
 TOM-3699). Every
@@ -73,6 +75,7 @@ __all__ = [
     "compute_rolling_sharpe",
     "compute_var",
     "correlation",
+    "drawdown_episodes",
     "drawdown_fields",
     "hit_rate",
     "icir",
@@ -81,6 +84,7 @@ __all__ = [
     "max_drawdown",
     "period_returns",
     "risk_contributions",
+    "sampling_frequency",
     "sharpe_ratio",
     "top_drawdowns",
     "total_return_label",
@@ -301,40 +305,119 @@ def max_drawdown(returns: pd.Series | np.ndarray, *, start_is_peak: bool = False
     return float(np.min(compute_drawdown_series(eq)))
 
 
+def drawdown_episodes(returns: pd.Series) -> pd.DataFrame:
+    """Every drawdown episode of the compounded equity, in time order (TOM-3718).
+
+    An episode opens on the first bar the equity closes below its running peak
+    and closes on the first bar back at that peak. The starting equity 1.0
+    counts as a peak, as in :func:`top_drawdowns`, so a loss on the first bar
+    opens an episode. NaN returns are dropped first.
+
+    Columns:
+
+    - ``peak``: last date at the peak the episode is measured from; NaT when
+      that peak is the starting equity.
+    - ``start``: first date under water.
+    - ``trough``: date of the deepest point (the first one, on a tie).
+    - ``recovery``: first date back at the peak; NaT while the episode is open.
+    - ``depth``: the drawdown at the trough, signed (<= 0).
+    - ``bars_under_water``: bars below the peak, ``start`` through the bar
+      before ``recovery`` (through the last bar while open).
+    - ``days_under_water``: wall-clock days from ``start`` to ``recovery``, or
+      to the last date while open (time observed under water so far);
+      fractional inside a day (12 hours on 4h bars reads 0.5), and a clock
+      change does not shorten it. On calendar-daily bars a recovered
+      episode's days equal its bars; on trading-day bars they include the
+      closed days. NaN when the index holds no dates.
+
+    Days are measured on the clock, so the column reads the same whatever the bar.
+    Not the same measure as ``max_drawdown_duration_days`` in
+    :func:`compute_backtest_metrics`, whose value this card leaves unchanged:
+    that one runs from the first to the last bar under water (not to the
+    recovery), in whole days, and does not count the starting 1.0 as a peak,
+    so it can read a day or a bar less than the longest episode here.
+    Vectorised: the episodes are runs of ``drawdown < 0``, found by numpy.
+    """
+    r = pd.Series(returns).dropna()
+    dates = r.index
+    eq = (1.0 + r).cumprod().to_numpy()
+    dd = compute_drawdown_series(np.concatenate([[1.0], eq]))[1:]
+    under = dd < 0
+    opens = under & ~np.concatenate([[False], under[:-1]])
+    closes = under & ~np.concatenate([under[1:], [False]])  # the last bar under water
+    starts, ends = np.flatnonzero(opens), np.flatnonzero(closes)
+    episode = np.cumsum(opens)[under]
+    in_dd = pd.Series(dd[under], index=np.flatnonzero(under))
+    troughs = in_dd.groupby(episode).idxmin().to_numpy(dtype=int)
+    recovered = ends + 1 < len(dd)
+    recovery_pos = np.where(recovered, ends + 1, len(dd) - 1)
+
+    def at(pos: np.ndarray, keep: np.ndarray | None = None) -> pd.Series:
+        s = pd.Series(dates[pos] if len(pos) else dates[:0])
+        return s if keep is None else s.where(keep)
+
+    out = pd.DataFrame(
+        {
+            "peak": at(np.maximum(starts - 1, 0), starts > 0),
+            "start": at(starts),
+            "trough": at(troughs),
+            "recovery": at(recovery_pos, recovered),
+            "depth": dd[troughs].astype(float),
+            "bars_under_water": (ends - starts + 1).astype(int),
+        }
+    )
+    if isinstance(dates, pd.DatetimeIndex):
+        wall = dates.tz_localize(None) if dates.tz is not None else dates  # local clock: a DST hour is not lost
+        span = pd.Series(wall[recovery_pos] - wall[starts] if len(starts) else wall[:0] - wall[:0])
+        out["days_under_water"] = span.dt.total_seconds().to_numpy() / 86400.0
+    else:
+        out["days_under_water"] = np.nan
+    return out
+
+
 def top_drawdowns(returns: pd.Series, n: int = 5) -> pd.DataFrame:
     """The ``n`` deepest non-overlapping drawdown episodes, deepest first.
 
     The starting equity 1.0 counts as a peak. Columns: ``peak`` (last date at
     the peak level; NaT when the peak is the starting equity), ``trough``,
     ``recovery`` (first date back at the peak; NaT if never) and ``depth``
-    (negative fraction).
+    (negative fraction). The rows of :func:`drawdown_episodes`, which also
+    carries each episode's start and time under water.
     """
-    r = pd.Series(returns).dropna()
-    eq = (1.0 + r).cumprod()
-    eq_full = np.concatenate([[1.0], eq.to_numpy()])
-    dd = compute_drawdown_series(eq_full)[1:]
-    dates = r.index
-    rows = []
-    i = 0
-    while i < len(dd):
-        if dd[i] >= 0:
-            i += 1
-            continue
-        start = i
-        while i < len(dd) and dd[i] < 0:
-            i += 1
-        seg = dd[start:i]
-        t = start + int(np.argmin(seg))
-        rows.append(
-            {
-                "peak": dates[start - 1] if start > 0 else pd.NaT,
-                "trough": dates[t],
-                "recovery": dates[i] if i < len(dd) else pd.NaT,
-                "depth": float(seg.min()),
-            }
-        )
-    out = pd.DataFrame(rows, columns=["peak", "trough", "recovery", "depth"])
+    out = drawdown_episodes(returns)[["peak", "trough", "recovery", "depth"]]
     return out.sort_values("depth", kind="stable").head(n).reset_index(drop=True)
+
+
+_NAMED_BARS: tuple[tuple[pd.Timedelta, pd.Timedelta, str], ...] = (
+    (pd.Timedelta(days=1), pd.Timedelta(days=1), "daily"),
+    (pd.Timedelta(days=6), pd.Timedelta(days=8), "weekly"),
+    (pd.Timedelta(days=27), pd.Timedelta(days=35), "monthly"),
+    (pd.Timedelta(days=85), pd.Timedelta(days=95), "quarterly"),
+    (pd.Timedelta(days=360), pd.Timedelta(days=370), "annual"),
+)
+
+
+def sampling_frequency(index: pd.Index) -> str:
+    """The bar a series is sampled at, named from its dates: the median step between them (TOM-3718).
+
+    A statistic is computed at the bar of the returns it reads (a Sharpe of
+    daily returns is not a Sharpe of monthly ones), so a report names it.
+    The median step reads a trading calendar's daily bars (weekend gaps) as
+    daily and a calendar's month ends as monthly. Returns ``daily``,
+    ``weekly``, ``monthly``, ``quarterly`` or ``annual``; any other step as its
+    size (``4h``, ``15min``, ``2d``); ``unknown`` with fewer than two dates or
+    no dates on the index.
+    """
+    if not isinstance(index, pd.DatetimeIndex) or len(index) < 2:
+        return "unknown"
+    step = pd.Series(index.sort_values()).diff().dropna().median()
+    for low, high, name in _NAMED_BARS:
+        if low <= step <= high:
+            return name
+    for unit, suffix in ((pd.Timedelta(days=1), "d"), (pd.Timedelta(hours=1), "h"), (pd.Timedelta(minutes=1), "min")):
+        if step >= unit and step % unit == pd.Timedelta(0):
+            return f"{step // unit}{suffix}"
+    return str(step)
 
 
 def turnover_series(weights: pd.DataFrame, *, from_flat: bool = False) -> pd.Series:
@@ -885,7 +968,11 @@ def compute_portfolio_cvar(
 
 
 def _max_drawdown_duration(dd: pd.Series) -> int:
-    """Return the longest drawdown duration in calendar days."""
+    """Return the longest drawdown duration in calendar days.
+
+    First to last bar under water, whole days; :func:`drawdown_episodes`'
+    ``days_under_water`` runs to the recovery instead (TOM-3718).
+    """
     in_dd = dd < 0
     if not in_dd.any():
         return 0

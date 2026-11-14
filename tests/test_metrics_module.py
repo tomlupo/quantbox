@@ -104,6 +104,90 @@ def test_top_drawdowns_are_non_overlapping_and_deepest_first():
     assert len(metrics.top_drawdowns(r, n=1)) == 1
 
 
+def test_drawdown_episodes_match_the_hand_marked_episodes():
+    """TOM-3718: three episodes marked by hand on business days (a weekend inside the second).
+
+    equity 1.0 -> .90 .81 | 1.053 1.053 | 1.0004 .9504 | 1.1405 | .9124 1.0036 .7527
+    """
+    idx = pd.bdate_range("2024-01-01", periods=10)  # Mon 1 Jan .. Fri 12 Jan
+    r = pd.Series([-0.10, -0.10, 0.30, 0.0, -0.05, -0.05, 0.20, -0.20, 0.10, -0.25], index=idx)
+    ep = metrics.drawdown_episodes(r)
+    assert list(ep.columns) == [
+        "peak", "start", "trough", "recovery", "depth", "bars_under_water", "days_under_water",
+    ]  # fmt: skip
+    d = pd.Timestamp
+    # 1: a loss on the first bar, measured from the starting equity (no peak date)
+    assert pd.isna(ep.loc[0, "peak"])
+    assert (ep.loc[0, "start"], ep.loc[0, "trough"], ep.loc[0, "recovery"]) == (
+        d("2024-01-01"), d("2024-01-02"), d("2024-01-03"),
+    )  # fmt: skip
+    assert ep.loc[0, "depth"] == pytest.approx(0.81 - 1)
+    # 2: Fri 5 Jan to Mon 8 Jan under water, back above on Tue 9 Jan: 2 bars, 4 calendar days
+    assert (ep.loc[1, "peak"], ep.loc[1, "start"], ep.loc[1, "trough"], ep.loc[1, "recovery"]) == (
+        d("2024-01-04"), d("2024-01-05"), d("2024-01-08"), d("2024-01-09"),
+    )  # fmt: skip
+    assert ep.loc[1, "depth"] == pytest.approx(0.95**2 - 1)
+    # 3: still open at the last bar: no recovery, days observed so far
+    assert (ep.loc[2, "peak"], ep.loc[2, "start"], ep.loc[2, "trough"]) == (
+        d("2024-01-09"), d("2024-01-10"), d("2024-01-12"),
+    )  # fmt: skip
+    assert pd.isna(ep.loc[2, "recovery"])
+    assert ep.loc[2, "depth"] == pytest.approx(0.8 * 1.1 * 0.75 - 1)
+    assert ep["bars_under_water"].tolist() == [2, 2, 3]
+    assert ep["days_under_water"].tolist() == [2.0, 4.0, 2.0]
+    # top_drawdowns is the same episodes, deepest first
+    top = metrics.top_drawdowns(r)
+    assert top["trough"].tolist() == [d("2024-01-12"), d("2024-01-02"), d("2024-01-08")]
+    assert top["depth"].tolist() == ep["depth"].iloc[[2, 0, 1]].tolist()
+
+
+def test_drawdown_episodes_edges():
+    assert metrics.drawdown_episodes(pd.Series([], dtype=float)).empty
+    up = pd.Series([0.01, 0.02], index=pd.date_range("2024-01-01", periods=2, tz="UTC"))
+    assert metrics.drawdown_episodes(up).empty
+    # no dates on the index: the bars are counted, the days are not
+    ep = metrics.drawdown_episodes(pd.Series([-0.1, 0.5, -0.1]))
+    assert ep["bars_under_water"].tolist() == [1, 1] and ep["days_under_water"].isna().all()
+    # a timezone stays on every date column
+    tz = metrics.drawdown_episodes(pd.Series([0.1, -0.1, 0.5], index=pd.date_range("2024-01-01", periods=3, tz="UTC")))
+    assert str(tz["start"].dtype).endswith("UTC]") and tz.loc[0, "peak"] == pd.Timestamp("2024-01-01", tz="UTC")
+
+
+def test_days_under_water_are_wall_clock_days_across_a_clock_change_and_inside_a_day():
+    # Warsaw daily bars: under water 2024-03-26 .. back at the peak 2024-04-06, the
+    # clocks moved on 03-31, the span is 11 calendar days (not a day short)
+    days = pd.date_range("2024-03-25", "2024-04-06", tz="Europe/Warsaw")
+    r = pd.Series(0.0, index=days)
+    r["2024-03-26"], r["2024-04-06"] = -0.10, 0.20
+    ep = metrics.drawdown_episodes(r)
+    assert ep["bars_under_water"].tolist() == [11] and ep["days_under_water"].tolist() == [11.0]
+    # 4h bars: 12 hours under water read half a day, not 0
+    bars = pd.date_range("2024-01-01", periods=5, freq="4h")
+    ep = metrics.drawdown_episodes(pd.Series([0.0, -0.1, 0.0, 0.0, 0.2], index=bars))
+    assert ep["days_under_water"].tolist() == [0.5]
+
+
+@pytest.mark.parametrize(
+    ("index", "expected"),
+    [
+        (pd.date_range("2024-01-01", periods=30, freq="D", tz="UTC"), "daily"),
+        (pd.bdate_range("2024-01-01", periods=30), "daily"),  # weekend gaps
+        (pd.date_range("2024-01-05", periods=12, freq="W-FRI"), "weekly"),
+        (pd.date_range("2024-01-31", periods=12, freq="ME"), "monthly"),
+        (pd.date_range("2024-01-31", periods=12, freq="BME"), "monthly"),
+        (pd.date_range("2024-03-31", periods=8, freq="QE"), "quarterly"),
+        (pd.date_range("2020-12-31", periods=5, freq="YE"), "annual"),
+        (pd.date_range("2024-01-01", periods=30, freq="4h"), "4h"),
+        (pd.date_range("2024-01-01", periods=30, freq="15min"), "15min"),
+        (pd.date_range("2024-01-01", periods=30, freq="2D"), "2d"),
+        (pd.date_range("2024-01-01", periods=1), "unknown"),
+        (pd.RangeIndex(10), "unknown"),
+    ],
+)
+def test_sampling_frequency_names_the_bar(index, expected):
+    assert metrics.sampling_frequency(index) == expected
+
+
 def test_turnover_series_conventions():
     w = pd.DataFrame({"A": [0.5, 0.5, 1.0], "B": [0.5, 0.0, 0.0]})
     assert metrics.turnover_series(w, from_flat=True).tolist() == [1.0, 0.5, 0.5]

@@ -1,8 +1,8 @@
 """Acceptance gates on a backtest's return series: thresholds and verdicts only (TOM-1351, TOM-1618).
 
-Seven deterministic gates, seven DIFFERENT questions, each a function returning a
-JSON-ready dict with a ``gate_pass`` verdict, and each reachable as
-``quantbox gates <name> --json`` (see :mod:`quantbox.gates_cli`):
+Nine deterministic gates, nine DIFFERENT questions, each a function returning a
+JSON-ready dict with a ``gate_pass`` verdict, and each but ``sharpe_diff`` and
+``regime`` reachable as ``quantbox gates <name> --json`` (see :mod:`quantbox.gates_cli`):
 
   dsr        Is the Sharpe real once deflated for skew, kurtosis AND the number
              of trials tried?
@@ -18,6 +18,12 @@ JSON-ready dict with a ``gate_pass`` verdict, and each reachable as
              small-sample bias is removed (Lewellen's conditional test too)?
   replicate  Does the series replicate a reference (a paper's, an index's)?
              PASS, FAIL, or DEFECT when the correlation is below a floor.
+  sharpe_diff  Which of a declared family of candidates has a higher Sharpe
+             than the baseline (Ledoit-Wolf HAC), after Holm or BHY?
+             Python only (:func:`sharpe_difference_gate`).
+  regime     Is the Sharpe earned in every bear / normal / bull benchmark
+             regime asked for, or only in some (a Gaussian null per regime,
+             then Holm or BHY)? Python only (:func:`regime_gate`).
 
 Metrics DESCRIBE (:mod:`quantbox.metrics`), inference TESTS
 (:mod:`quantbox.inference`), gates DECIDE. Every statistic here comes from
@@ -58,7 +64,9 @@ import numpy as np
 
 from ._numerics import flat
 from .inference import (
+    DEFAULT_REGIME_QUANTILES,
     LEWELLEN_RHO_BOUND,
+    REGIMES,
     InferenceInputError,
     bootstrap,
     deflated_sharpe_ratio,
@@ -68,8 +76,10 @@ from .inference import (
     multiple_testing,
     newey_west_tstat,
     predictive_regression,
+    regime_sharpe,
     require_finite,
     return_moments,
+    sharpe_difference_test,
 )
 from .metrics import correlation, drawdown_fields, sharpe_ratio
 from .metrics import max_drawdown as _max_drawdown
@@ -744,6 +754,138 @@ def replication_gate(
     }
 
 
+# ── Sharpe difference over a declared family ──────────────────────────────
+
+
+def sharpe_difference_gate(
+    candidates,
+    baseline,
+    *,
+    method: str = "holm",
+    alpha: float = 0.05,
+    prewhiten: bool = False,
+    unit: str = "fraction",
+    allow_nonfinite_drop: bool = False,
+) -> dict:
+    """Which candidates have a higher Sharpe than ``baseline``, after correcting for the family tried?
+
+    ``candidates`` maps a name to a per-period return series aligned with
+    ``baseline``; that mapping IS the declared family: every variant tried on
+    the question belongs in it, the losers included (dropping one loosens the
+    others' level). Each is tested with
+    :func:`quantbox.inference.sharpe_difference_test` (Ledoit-Wolf 2008 HAC;
+    ``prewhiten`` and ``unit`` are passed through) against H1: SR(candidate) > SR(baseline),
+    one-sided, and the family's p-values are corrected with
+    :func:`quantbox.inference.multiple_testing` (``method="holm"``: family-wise
+    error at ``alpha``; ``"bhy"``: false discovery rate at ``alpha``;
+    ``"bonferroni"``). A candidate ``beats`` the baseline when its adjusted
+    p-value is at most ``alpha``; ``gate_pass`` is any candidate beating it.
+    A candidate whose HAC variance is degenerate (no p-value) is refused,
+    since the family cannot be corrected without it. With
+    ``allow_nonfinite_drop`` each pair drops its own non-finite rows, so two
+    candidates may be tested on different samples; align them first when the
+    family must share one.
+
+    Python only: there is no ``quantbox gates`` subcommand for it yet.
+    """
+    if not isinstance(candidates, dict) or not candidates:
+        raise GateInputError("candidates must be a non-empty mapping of name -> return series (the declared family)")
+    tests = {
+        name: sharpe_difference_test(
+            r, baseline, prewhiten=prewhiten, unit=unit, allow_nonfinite_drop=allow_nonfinite_drop
+        )
+        for name, r in candidates.items()
+    }
+    undefined = [name for name, t in tests.items() if t["pvalue_onesided"] is None]
+    if undefined:
+        raise GateInputError(f"degenerate HAC variance for {undefined} — no p-value, so the family cannot be corrected")
+    family = multiple_testing([t["pvalue_onesided"] for t in tests.values()], alpha=alpha, method=method)
+    per = {
+        name: {**t, "pvalue_adjusted": float(adj), "beats": bool(rej)}
+        for (name, t), adj, rej in zip(tests.items(), family.adjusted, family.reject, strict=True)
+    }
+    beats = [name for name, t in per.items() if t["beats"]]
+    return {
+        "gate": "sharpe_diff",
+        "method": method,
+        "alpha": family.alpha,
+        "m": family.m,
+        "prewhiten": bool(prewhiten),
+        "unit": unit,
+        "candidates": per,
+        "beats": beats,
+        "gate_pass": bool(beats),
+    }
+
+
+# ── Sharpe by benchmark regime ────────────────────────────────────────────
+
+
+def regime_gate(
+    returns,
+    benchmark,
+    *,
+    require: Sequence[str] = REGIMES,
+    method: str = "holm",
+    alpha: float = 0.05,
+    quantiles=DEFAULT_REGIME_QUANTILES,
+    thresholds=None,
+    draws: int = 2000,
+    seed: int = 0,
+    allow_nonfinite_drop: bool = False,
+) -> dict:
+    """Is the Sharpe earned in every ``require``-d benchmark regime, or only in some?
+
+    The split and the per-regime p-values are
+    :func:`quantbox.inference.regime_sharpe` (bear / normal / bull by the
+    benchmark's period return; ``quantiles``, ``thresholds``, ``draws``,
+    ``seed`` passed through, and its docstring says what the full-sample
+    thresholds see). The family is every regime with observations; its
+    one-sided p-values (H1: the regime's Sharpe part > 0) are corrected with
+    :func:`quantbox.inference.multiple_testing` (``"holm"`` default,
+    ``"bhy"``, ``"bonferroni"``). A regime is ``positive`` when its adjusted
+    p-value is at most ``alpha``. ``gate_pass`` is every ``require``-d regime
+    positive: the default asks for all three; "not only in bull markets" is
+    ``require=("bear", "normal")``. For ALPHA, pass active or excess returns.
+    Refuses an unknown or repeated regime name in ``require``, an empty
+    ``require``, and a required regime with no observations.
+
+    Python only: there is no ``quantbox gates`` subcommand for it yet.
+    """
+    req = tuple(require) if not isinstance(require, str) else (require,)
+    if not req or len(set(req)) != len(req) or not set(req) <= set(REGIMES):
+        raise GateInputError(f"require must name distinct regimes out of {REGIMES}, got {tuple(require)!r}")
+    split = regime_sharpe(
+        returns,
+        benchmark,
+        quantiles=quantiles,
+        thresholds=thresholds,
+        draws=draws,
+        seed=seed,
+        allow_nonfinite_drop=allow_nonfinite_drop,
+    )
+    tested = [name for name in REGIMES if split["regimes"][name]["pvalue"] is not None]
+    empty = [name for name in req if name not in tested]
+    if empty:
+        raise GateInputError(f"required regime(s) {empty} have no observations at thresholds {split['thresholds']}")
+    family = multiple_testing([split["regimes"][n]["pvalue"] for n in tested], alpha=alpha, method=method)
+    regimes = {name: {**t, "pvalue_adjusted": None, "positive": False} for name, t in split["regimes"].items()}
+    for name, adj, rej in zip(tested, family.adjusted, family.reject, strict=True):
+        regimes[name].update(pvalue_adjusted=float(adj), positive=bool(rej))
+    positive = [name for name in REGIMES if regimes[name]["positive"]]
+    return {
+        "gate": "regime",
+        **{k: v for k, v in split.items() if k != "regimes"},
+        "method": method,
+        "alpha": family.alpha,
+        "m": family.m,
+        "require": list(req),
+        "regimes": regimes,
+        "positive": positive,
+        "gate_pass": all(regimes[name]["positive"] for name in req),
+    }
+
+
 __all__ = [
     "COMPARES",
     "DEFAULT_N_TRIALS",
@@ -759,5 +901,7 @@ __all__ = [
     "paired_block_bootstrap",
     "parse_n_trials",
     "predreg_gate",
+    "regime_gate",
     "replication_gate",
+    "sharpe_difference_gate",
 ]

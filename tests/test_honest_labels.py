@@ -47,15 +47,16 @@ def test_a_total_return_is_printed_with_its_wealth_multiple(total_return, label)
 def test_the_metrics_table_keeps_total_return_a_number_and_puts_the_wealth_multiple_beside_it():
     # The card's "numbers unchanged": finding_report.json keeps total_return as the number
     # it was (format pct), and the wealth multiple is a NEW row next to it, a number too.
+    # Every label names the bar it was sampled at (TOM-3718).
     metrics = json.loads((GOLDEN / "metrics.json").read_text())
     rows = export_finding_report(GOLDEN)["metrics"]["rows"]
-    assert rows[0] == {"label": "Total return", "format": "pct", "values": [metrics["total_return"]]}
+    assert rows[0] == {"label": "Total return (daily bars)", "format": "pct", "values": [metrics["total_return"]]}
     assert rows[1] == {
-        "label": "Wealth multiple (1 + total return)",
+        "label": "Wealth multiple (1 + total return, daily bars)",
         "format": "num",
         "values": [pytest.approx(1 + metrics["total_return"])],
     }
-    assert rows[2] == {"label": "CAGR", "format": "pct", "values": [pytest.approx(metrics["cagr"])]}
+    assert rows[2] == {"label": "CAGR (daily bars)", "format": "pct", "values": [pytest.approx(metrics["cagr"])]}
     assert all(not isinstance(v, str) for r in rows for v in r["values"])
 
 

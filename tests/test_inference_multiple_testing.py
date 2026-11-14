@@ -140,3 +140,36 @@ def test_pvalue_outside_the_unit_interval_is_refused(bad):
 def test_a_two_dimensional_family_is_refused():
     with pytest.raises(InferenceInputError, match="1-D"):
         multiple_testing([[0.01, 0.02], [0.03, 0.04]])
+
+
+# ── BHY: false discovery rate under any dependence (TOM-3717) ─────────────
+#
+# Benjamini & Yekutieli (2001), Theorem 1.3, worked by hand on TEXTBOOK:
+# m = 4, c(4) = 1 + 1/2 + 1/3 + 1/4 = 25/12, m * c(m) = 25/3.
+# Sorted p 0.005, 0.01, 0.03, 0.04 -> (25/3) p_(k) / k = 1/24, 1/24, 1/12, 1/12;
+# the running minimum from the largest down keeps them; back in input order:
+BHY_TEXTBOOK = [1 / 24, 1 / 12, 1 / 12, 1 / 24]
+
+
+def test_bhy_textbook_example_by_hand():
+    out = multiple_testing(TEXTBOOK, method="bhy")
+    np.testing.assert_allclose(out.adjusted, BHY_TEXTBOOK, rtol=1e-12)
+    assert out.reject.tolist() == [True, False, False, True]
+    assert out.method == "bhy" and out.m == 4 and out.per_test_alpha is None
+
+
+@pytest.mark.parametrize("method", ["holm", "bhy"])
+def test_holm_and_bhy_match_statsmodels_multipletests(method):
+    """The cross-check the card names: statsmodels' own fdr_by / holm on a random family."""
+    from statsmodels.stats.multitest import multipletests
+
+    p = np.random.default_rng(3).uniform(0, 0.2, 25)
+    _, ref, _, _ = multipletests(p, alpha=0.1, method={"holm": "holm", "bhy": "fdr_by"}[method])
+    out = multiple_testing(p, alpha=0.1, method=method)
+    np.testing.assert_allclose(out.adjusted, np.minimum(ref, 1.0), rtol=1e-12)
+    assert (out.reject == (out.adjusted <= 0.1)).all()
+
+
+def test_bhy_rejects_more_than_holm_when_many_tests_are_real():
+    p = [0.01] * 8 + [0.5, 0.9]  # Holm: 10 * 0.01 > 0.05 stops at once; BHY: 29.29 * 0.01 / 8 = 0.037
+    assert multiple_testing(p, method="bhy").reject.sum() > multiple_testing(p, method="holm").reject.sum()

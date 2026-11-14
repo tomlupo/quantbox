@@ -180,8 +180,8 @@ def test_the_export_carries_both_rows_and_both_cards_even_for_a_run_written_befo
     payload = export_finding_report(GOLDEN)
 
     rows = {r["label"]: r["values"] for r in payload["metrics"]["rows"]}
-    assert rows["Max drawdown"] == [pytest.approx(metrics_json["max_drawdown"])]
-    assert rows["Max drawdown (depth)"] == [pytest.approx(-metrics_json["max_drawdown"])]
+    assert rows["Max drawdown (daily bars)"] == [pytest.approx(metrics_json["max_drawdown"])]
+    assert rows["Max drawdown (depth, daily bars)"] == [pytest.approx(-metrics_json["max_drawdown"])]
     cards = {k["label"]: k["value"] for k in payload["kpis"]}
     assert cards["Max drawdown"] == pytest.approx(metrics_json["max_drawdown"])
     assert cards["Max drawdown (depth)"] == pytest.approx(-metrics_json["max_drawdown"])
