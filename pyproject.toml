@@ -123,6 +123,7 @@ markers = [
     "pipeline_smoke: end-to-end pipeline tests (slow). Run via `pytest -m pipeline_smoke`.",
     "canonical_reproduction: end-to-end backtests against committed goldens. Run via `pytest -m canonical_reproduction`.",
     "slow: takes multiple seconds — relocated to CI by the pre-push hook, never weakened. Run via `pytest -m slow`.",
+  "network: checks against a published sample it fetches (or reads from a path in an env var); skips when neither is there. Run via `pytest -m network`.",
 ]
 
 [tool.importlinter]
@@ -152,6 +153,7 @@ type = "forbidden"
 as_packages = false
 source_modules = [
   "quantbox",  # the package __init__ only
+  "quantbox._campbell_yogo_tables",  # Campbell-Yogo 2005 Tables 2-11 as printed; inference reads them (TOM-3928)
   "quantbox._lazy",  # the one door from core to an upper layer: a string, loaded at run time
   "quantbox._numerics",
   "quantbox._removed",  # the list of import paths removed in 0.13.0 (TOM-1457)
@@ -442,6 +444,7 @@ as_packages = false
 # The same module list as the `core` contract's source_modules (the test checks it).
 source_modules = [
   "quantbox",
+  "quantbox._campbell_yogo_tables",
   "quantbox._lazy",
   "quantbox._numerics",
   "quantbox._removed",
