@@ -6,6 +6,7 @@ overrides:
   baseline: {}
   signal-ma-20: {plugins.strategies.0.params.signal_ma: 20}
 # Timing is the base's execution block; `execution:` here may only restate it.
-# n_trials: every arm and probe tried for this idea, including ones not listed here
+# Every arm that runs appends a row to trials.jsonl (beside README.md); n_trials is its distinct
+# configs, and `quantbox gates dsr --line .` refuses fewer. Set `n_trials:` here only to count more.
 parallel: {max_workers: 2}
 artifacts: {root: ./artifacts/arms}

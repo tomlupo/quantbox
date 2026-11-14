@@ -211,6 +211,7 @@ source_modules = [
   "quantbox.store",
   "quantbox.strategy_runner",
   "quantbox.strict",  # capability registry; registry and runner import it
+  "quantbox.trials",  # the line's trials.jsonl: cli writes it, gates_cli reads it (TOM-3929)
   "quantbox.validate",
 ]
 forbidden_modules = [
@@ -501,6 +502,7 @@ source_modules = [
   "quantbox.store",
   "quantbox.strategy_runner",
   "quantbox.strict",
+  "quantbox.trials",
   "quantbox.validate",
 ]
 forbidden_modules = ["vectorbt", "numba", "ccxt"]

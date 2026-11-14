@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import sys
 from importlib.resources import files as _res_files
 from pathlib import Path
@@ -340,6 +341,38 @@ def plugins(
         raise typer.BadParameter(f"Unknown action: {action}. Use list, info, schema, or doctor.")
 
 
+_LINE = typer.Option(
+    None,
+    "--line",
+    help="research line whose trials.jsonl gets this command's rows (default: the line holding the config)",
+)
+
+
+def _trial_line(line: str | None, config: str | Path) -> Path | None:
+    """The line this command logs its trials to, or None (quantbox.trials)."""
+    from .trials import TrialLogError, resolve_line
+
+    try:
+        return resolve_line(line, config)
+    except TrialLogError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+def _manifest_pins(manifest: dict[str, Any]) -> dict[str, str | None]:
+    dataset = manifest.get("dataset") or {}
+    return {str(dataset["name"]): dataset.get("sha256")} if dataset.get("name") else {}
+
+
+def _log_trials(line_dir: Path | None, rows: list[dict[str, Any]], out: Any) -> None:
+    """THE writer of the trial log for run, arms and sweep (TOM-3929, quantbox.trials)."""
+    if line_dir is None or not rows:
+        return
+    from .trials import append, count
+
+    path = append(line_dir, rows)
+    print(f"TRIALS: {len(rows)} row(s) -> {path} (n_trials={count(line_dir)})", file=out)
+
+
 @app.command()
 def validate(
     config: str = typer.Option(..., "-c", "--config", help="Path to config YAML"),
@@ -372,8 +405,13 @@ def run(
         False, "--json", help="Print only the run manifest (quantbox/run@1) on stdout; everything else goes to stderr"
     ),
     summary_out: str | None = typer.Option(None, "--summary-out", help="Also write the run manifest to this path"),
+    line: str | None = _LINE,
 ):
-    """Run a trading pipeline from config."""
+    """Run a trading pipeline from config.
+
+    A backtest inside a research line appends one row to the line's trials.jsonl
+    (quantbox.trials); a paper or live run logs nothing.
+    """
     import json as json_mod
 
     with open(config, encoding="utf-8") as f:
@@ -397,6 +435,13 @@ def run(
         print(json_mod.dumps(plan, ensure_ascii=False, indent=2))
         return
 
+    # A trial is a backtest: a paper or live run is not one of the configs a DSR deflates by.
+    is_backtest = (cfg.get("run") or {}).get("mode") == "backtest"
+    if line is not None and not is_backtest:
+        raise typer.BadParameter("--line logs a backtest's trial; this config is not run.mode: backtest")
+    line_dir = _trial_line(line, config) if is_backtest else None
+    trial_cfg = copy.deepcopy(cfg)  # hashed as written: the runner may fill the config in
+
     # --json: stdout carries ONE JSON document, so anything printed during the
     # run (and every human line below) goes to stderr instead.
     out = sys.stderr if as_json else sys.stdout
@@ -404,6 +449,17 @@ def run(
         result = run_from_config(cfg, PluginRegistry.discover(), config_path=config)
 
     manifest_text = (Path(cfg["artifacts"]["root"]) / result.run_id / "run_manifest.json").read_text(encoding="utf-8")
+    if line_dir is not None:
+        from .trials import trial_row
+
+        manifest = json_mod.loads(manifest_text)
+        row = trial_row(
+            "run",
+            trial_cfg,
+            data_pins=_manifest_pins(manifest),
+            sharpe=(manifest.get("metrics") or {}).get("sharpe"),
+        )
+        _log_trials(line_dir, [row], out)
     if summary_out:
         Path(summary_out).write_text(manifest_text, encoding="utf-8")
     if as_json:
@@ -472,6 +528,7 @@ def _check_sweep_funding(dataset: Any, name: str, market_data: dict[str, Any], b
 @app.command()
 def sweep(
     config: str = typer.Option(..., "-c", "--config", help="Path to sweep config YAML"),
+    line: str | None = _LINE,
 ):
     """Run a parameter-grid sweep from a YAML config.
 
@@ -511,7 +568,8 @@ def sweep(
     ``strategy`` may also be ``{source: strategy.py:MyStrategy}`` (path relative to
     the config). Writes ``<output_dir>/grid.parquet`` and
     ``<output_dir>/sweep_manifest.json`` (``quantbox/sweep@1``: strategy, execution
-    timing, n_trials = grid rows).
+    timing, n_trials = grid rows). Inside a research line every grid row is also one
+    row of the line's trials.jsonl (quantbox.trials).
     """
     sweep_mod = load("quantbox.sweep", extra="research")
     run_grid = sweep_mod.run_grid
@@ -519,6 +577,8 @@ def sweep(
     config_path = Path(config).resolve()
     with config_path.open(encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+    line_dir = _trial_line(line, config_path)
+    trial_cfg = copy.deepcopy(cfg)  # hashed as written, whatever the sweep does to its params
 
     # The `execution:` BLOCK goes through the same resolver as `quantbox run`,
     # before any work: a typo (`lag_bar: 0`, `execution: 0`) is refused, never
@@ -597,7 +657,41 @@ def sweep(
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "sweep_manifest.json").write_text(_as_json(sweep_manifest), encoding="utf-8")
+    if line_dir is not None:
+        metric_names = tuple(heatmap.get("metrics") or sweep_mod.DEFAULT_METRICS)
+        _log_trials(
+            line_dir, _sweep_trial_rows(trial_cfg, grid, metric_names, data_cfg["dataset"], config_dir), sys.stdout
+        )
     print(f"SWEEP: {len(grid)} rows  ->  {output_dir}")
+
+
+def _sweep_trial_rows(
+    cfg: dict[str, Any], grid: Any, metric_names: tuple[str, ...], dataset: str, config_dir: Path
+) -> list[dict[str, Any]]:
+    """One trial per grid row: the sweep config minus its grid and outputs, plus the row's point.
+
+    The point is every grid column that is not a metric (the swept params, a strategy
+    slice, the band, the lag), so widening a grid adds trials without renaming the old ones.
+    """
+    from .trials import trial_row
+
+    try:
+        from .dataset_lock import resolve_dataset
+
+        pin = resolve_dataset(dataset, start=config_dir).get("actual_sha256")
+    except Exception:  # noqa: BLE001 — a pin the CLI cannot name is recorded as null, never guessed
+        pin = None
+    fixed = {k: v for k, v in cfg.items() if k not in ("sweep_params", "bands", "output_dir", "heatmap")}
+    point_cols = [c for c in grid.columns if c not in set(metric_names)]
+    rows = []
+    for point, sharpe in zip(
+        grid[point_cols].to_dict(orient="records"),
+        grid["sharpe_ratio"] if "sharpe_ratio" in grid.columns else [None] * len(grid),
+        strict=True,
+    ):
+        arm = ",".join(f"{k}={v}" for k, v in point.items())
+        rows.append(trial_row("sweep", {**fixed, "point": point}, data_pins={dataset: pin}, sharpe=sharpe, arm=arm))
+    return rows
 
 
 def _sweep_strategy(spec: Any, config_dir: Path) -> tuple[dict[str, str], type]:
@@ -631,21 +725,43 @@ def arms(
         None, "--memory-budget-gb", help="Total memory for concurrent arms (overrides parallel.memory_budget_gb)"
     ),
     as_json: bool = typer.Option(False, "--json", help="Print only the batch summary (quantbox/arms@1) on stdout"),
+    line: str | None = _LINE,
 ):
     """Run every arm of an arms file in parallel; write arms_summary.json.
 
     Exits 1 when any arm failed, naming it; the other arms' manifests are kept and linked.
-    File format: the `quantbox.arms` module docstring.
+    File format: the `quantbox.arms` module docstring. Inside a research line every arm
+    that ran is one row of the line's trials.jsonl (quantbox.trials); a failed arm has no result.
     """
     import json as json_mod
 
     arms_mod = load("quantbox.arms", extra="research")
+    line_dir = _trial_line(line, config)
 
     out = sys.stderr if as_json else sys.stdout
+    spec = arms_mod.load_arms(config)
+    arm_cfgs = dict(arms_mod.expand_arms(spec))  # hashed as expanded, before any run touches them
     with contextlib.redirect_stdout(out):
-        summary = arms_mod.run_arms(
-            arms_mod.load_arms(config), max_workers=max_workers, memory_budget_gb=memory_budget_gb
-        )
+        summary = arms_mod.run_arms(spec, max_workers=max_workers, memory_budget_gb=memory_budget_gb)
+    if line_dir is not None:
+        from .trials import trial_row
+
+        batch_dir = Path(summary["path"]).parent
+        rows = []
+        for arm in summary["arms"]:
+            if arm["status"] != "ok":
+                continue
+            manifest = json_mod.loads((batch_dir / arm["manifest"]).read_text(encoding="utf-8"))
+            rows.append(
+                trial_row(
+                    "arms",
+                    arm_cfgs[arm["name"]],
+                    data_pins=_manifest_pins(manifest),
+                    sharpe=(arm["metrics"] or {}).get("sharpe"),
+                    arm=arm["name"],
+                )
+            )
+        _log_trials(line_dir, rows, out)
     if as_json:
         print(json_mod.dumps(summary, indent=2))
     else:
