@@ -29,6 +29,28 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.24.0 (2026-11-14)
+
+### Feat
+
+- **strategies**: vol_matched_buy_hold takes vol_power and rv_window ME for c/RV2 weights (TOM-3701) (#356)
+- **report**: honest total-return and gate labels, a fair-baseline table, quantbox compare, --rf on dsr/nw (TOM-3764)
+- **line**: repin names README evidence scripts that ran on another engine (TOM-3709) (#353)
+- **gates**: episode --episodes with a HAC t-stat that restarts at each gap (TOM-3700) (#351) (#355)
+- **gates**: metrics.correlation and quantbox gates replicate (TOM-3699) (#350)
+- **strategies**: vol_matched_buy_hold vol_power and rv_window ME, Moreira-Muir c / RV2 (TOM-3701)
+- **gates**: episode --episodes and a HAC t-stat whose lags restart at each gap (TOM-3700)
+- **metrics**: period_returns and quantbox gates --period/--start/--end (TOM-3698) (#349)
+- **gates**: metrics.correlation and quantbox gates replicate (TOM-3699)
+- **metrics**: period_returns and quantbox gates --period/--start/--end (TOM-3698)
+
+### Fix
+
+- **report**: total return stays a number in finding_report.json, one benchmark rule, labels from Python (TOM-3764)
+- **preflight**: a declared financing series is part of the run (TOM-3708) (#352)
+- **strategies**: vol_matched_buy_hold refuses a zero-RV2 month, a partly loaded c_window and unknown params (TOM-3701)
+- **inference**: panel HAC on runs shorter than the lags; refuse overlapping episodes (TOM-3700)
+
 ## v0.23.0 (2026-11-10)
 
 ### Feat

@@ -1,7 +1,10 @@
 """The ONE metrics module: every statistic that DESCRIBES a run is computed here.
 
 Sharpe (and excess Sharpe vs a benchmark), information ratio, tracking error,
-CAGR, volatility, max drawdown, top-N drawdowns, turnover, VaR / CVaR. Every
+CAGR, volatility, max drawdown, top-N drawdowns, turnover, VaR / CVaR, and
+per-bar returns compounded to periods (:func:`period_returns`, TOM-3698), and the
+correlation with a reference series on a declared frequency (:func:`correlation`,
+TOM-3699). Every
 backtest path, the run metrics, the finding-report export, the validation
 plugins and :mod:`quantbox.performance` (which quantbox-live imports) call
 these functions instead of carrying their own copy (TOM-1448). The one
@@ -42,7 +45,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -56,6 +60,8 @@ from ._removed import removed_names
 __all__ = [
     "DEGENERATE_RTOL",
     "TRADING_DAYS_PER_YEAR",
+    "Correlation",
+    "Window",
     "active_share",
     "annual_turnover",
     "beta",
@@ -66,15 +72,18 @@ __all__ = [
     "compute_portfolio_var",
     "compute_rolling_sharpe",
     "compute_var",
+    "correlation",
     "drawdown_fields",
     "hit_rate",
     "icir",
     "information_coefficient",
     "information_ratio",
     "max_drawdown",
+    "period_returns",
     "risk_contributions",
     "sharpe_ratio",
     "top_drawdowns",
+    "total_return_label",
     "tracking_error",
     "turnover_series",
 ]
@@ -255,6 +264,22 @@ def drawdown_fields(drawdown: float) -> dict[str, float]:
     """
     signed = float(drawdown)
     return {"max_drawdown": signed, "max_drawdown_abs": abs(signed)}
+
+
+def total_return_label(total_return: float) -> str:
+    """A total return as a reader cannot misread it: the return AND the wealth multiple.
+
+    ``total_return`` is a simple return over the run (303.58 = +30358 %); the wealth
+    it leaves is ``1 + total_return`` (304.58x). Printed alone, 303.58 reads as a
+    multiple and is one off (TOM-3764). Percent to 0 decimals from +-100 % up, else 2:
+    ``total_return_label(303.579) == "30358% (304.58x wealth)"``,
+    ``total_return_label(-0.4) == "-40.00% (0.60x wealth)"``. A non-finite value is "n/a".
+    """
+    tr = float(total_return)
+    if not np.isfinite(tr):
+        return "n/a"
+    pct = f"{tr * 100:.0f}%" if abs(tr) >= 1 else f"{tr * 100:.2f}%"
+    return f"{pct} ({1 + tr:.2f}x wealth)"
 
 
 def max_drawdown(returns: pd.Series | np.ndarray, *, start_is_peak: bool = False) -> float:
@@ -472,6 +497,198 @@ def risk_contributions(
     if not total > 0:
         return pd.Series(np.nan, index=w.index)
     return pd.Series(w.to_numpy() * marginal / total, index=w.index)
+
+
+# ---------------------------------------------------------------------------
+# Period returns (TOM-3698)
+# ---------------------------------------------------------------------------
+
+# pandas period-end alias -> the offset that takes a period end back to its first day
+_PERIOD_BEGIN = {
+    "ME": pd.offsets.MonthBegin(1),
+    "QE": pd.offsets.QuarterBegin(1, startingMonth=1),
+    "YE": pd.offsets.YearBegin(1),
+}
+
+
+@dataclass(frozen=True)
+class Window:
+    """An inclusive window of calendar days, ``start``..``end``; ``None`` leaves that side open.
+
+    Bounds compare by day: ``end="2020-01-31"`` keeps a row stamped 2020-01-31 16:00.
+    A naive bound on a tz-aware index is read in the index's zone.
+    """
+
+    start: Any = None
+    end: Any = None
+
+    def bounds(self, tz: Any = None) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
+        lo, hi = _day(self.start, tz), _day(self.end, tz)
+        if lo is not None and hi is not None and lo > hi:
+            raise ValueError(f"window start {lo.date()} is after its end {hi.date()}")
+        return lo, hi
+
+    def clip(self, series: pd.Series) -> pd.Series:
+        """The rows of ``series`` dated inside the window, in their own order."""
+        idx = _dated(series.index)
+        lo, hi = self.bounds(idx.tz)
+        days = idx.normalize()
+        keep = np.ones(len(idx), dtype=bool)
+        if lo is not None:
+            keep &= days >= lo
+        if hi is not None:
+            keep &= days <= hi
+        return series.set_axis(idx)[keep]
+
+
+def period_returns(
+    returns: pd.Series,
+    freq: str,
+    start: Any = None,
+    end: Any = None,
+    *,
+    keep_partial: bool = False,
+) -> pd.Series:
+    """Per-bar returns compounded to months (``ME``), quarters (``QE``) or years (``YE``)
+    inside the inclusive :class:`Window` ``start``..``end``, stamped at the period end.
+
+    A period counts only when the data shows both of its ends:
+
+    - its opening: ``returns`` (before the window) holds a finite row dated before the
+      period begins, and ``start`` cuts none of the period's business days. A series'
+      first row is where the data begins, not evidence that it was the period's first
+      trading day, so a series' first period is always dropped;
+    - its close: the window's last finite row is on or after the period's last business
+      day (Mon-Fri), so a month ending on a Saturday is complete on its Friday. A holiday
+      on that weekday drops a complete period; a partial one is never kept.
+
+    A counted period with a NaN/Inf day, or with no row at all, is NaN, not 0%. A period
+    uses only rows dated inside it, and the keep test reads no row after the window.
+
+    ``keep_partial=True`` skips these rules: exactly ``(1 + r).resample(freq).prod() - 1``
+    on the window (NaN skipped, an empty period 0.0), which the report's monthly table uses.
+    """
+    # The partial-period masking follows qis perfstats/returns.py to_quarterly_returns
+    # (MIT, Copyright (c) 2024 Artur Sepp): a period is complete only when the input
+    # reaches its last sub-period. No qis code is copied; the test here is by business day.
+    if freq not in _PERIOD_BEGIN:
+        raise ValueError(f"freq must be one of {sorted(_PERIOD_BEGIN)}, got {freq!r}")
+    window = Window(start, end)
+    inside = window.clip(returns)
+    compounded = (1 + inside).resample(freq).prod() - 1
+    if keep_partial:
+        return compounded
+    finite = np.isfinite(inside.to_numpy(dtype=float))
+    every = returns.set_axis(_dated(returns.index))
+    every_finite = np.isfinite(every.to_numpy(dtype=float))
+    if not finite.any():
+        return compounded.iloc[:0]
+    rows = inside.resample(freq).size()
+    nonfinite = pd.Series(~finite, index=inside.index).resample(freq).sum()
+    compounded = compounded.where((rows > 0) & (nonfinite == 0))
+
+    ends = compounded.index
+    day, bday = pd.offsets.Day(1), pd.offsets.BDay(1)
+    begins = ends - _PERIOD_BEGIN[freq]
+    first_bday = ((begins - day) + bday).normalize()
+    last_bday = ((ends + day) - bday).normalize()
+    keep = (begins > every.index[every_finite].min().normalize()) & (
+        last_bday <= inside.index[finite].max().normalize()
+    )
+    lo, _ = window.bounds(ends.tz)
+    if lo is not None:
+        keep &= first_bday >= lo
+    # every rule drops only leading or trailing periods, so the kept ones are one run
+    pos = np.flatnonzero(keep)
+    return compounded.iloc[pos[0] : pos[-1] + 1] if len(pos) else compounded.iloc[:0]
+
+
+class Correlation(NamedTuple):
+    """Pearson ``rho`` of two return series, and the ``n_overlap`` pairs it was measured on."""
+
+    rho: float
+    n_overlap: int
+    first: pd.Timestamp | None
+    last: pd.Timestamp | None
+
+
+def correlation(
+    returns: pd.Series,
+    reference: pd.Series,
+    freq: str | None = None,
+    start: Any = None,
+    end: Any = None,
+) -> Correlation:
+    """Pearson correlation of ``returns`` with ``reference`` on a declared frequency (TOM-3699).
+
+    ``freq=None`` pairs the rows as given, by date. ``"ME"``, ``"QE"`` or ``"YE"`` first
+    compounds EACH series through :func:`period_returns`, so only periods whose both ends
+    the data shows pair, stamped at the period end. ``start``/``end`` keep an inclusive
+    :class:`Window`, the same way :func:`period_returns` reads them.
+
+    Pairwise masking: a date (or period) where either side is NaN/Inf is left out of
+    both; ``n_overlap`` counts the pairs left, ``first``/``last`` their dates. ``rho`` is
+    NaN with fewer than two pairs or a flat side, never 0.0.
+
+    Both indexes must be dates in one timezone (or both naive), each date once. Pearson is
+    unit-free, but compounding is not: with ``freq`` a return <= -1 is refused, because
+    ``1 + r <= 0`` cannot compound and a percent-unit file (1.5 meaning 1.5%) shows it.
+    A sign-flipped replication gives a rho near -1, not near 1.
+    """
+    sides = []
+    for name, s in (("returns", returns), ("reference", reference)):
+        idx = _dated(s.index)
+        if idx.has_duplicates:
+            raise ValueError(f"{name}: duplicate date {idx[idx.duplicated()][0]} — one row per date")
+        sides.append(s.set_axis(idx).astype(float).sort_index(kind="stable"))
+    r, ref = sides
+    if str(r.index.tz) != str(ref.index.tz):
+        raise ValueError(
+            f"returns are dated in {r.index.tz}, the reference in {ref.index.tz}: "
+            "one timezone (or both naive), or the periods never meet"
+        )
+    if freq is None:
+        r, ref = Window(start, end).clip(r), Window(start, end).clip(ref)
+    else:
+        for name, s in (("returns", r), ("reference", ref)):
+            if (s.to_numpy() <= -1).any():
+                raise ValueError(
+                    f"{name} holds a return <= -1 (-100%), which cannot be compounded to {freq}: "
+                    "percent units? divide by 100"
+                )
+        r, ref = period_returns(r, freq, start, end), period_returns(ref, freq, start, end)
+    pair = pd.concat([r.rename("r"), ref.rename("b")], axis=1, join="inner").sort_index()
+    pair = pair[np.isfinite(pair.to_numpy()).all(axis=1)]
+    n = len(pair)
+    first, last = (pair.index[0], pair.index[-1]) if n else (None, None)
+    a, b = pair["r"].to_numpy(), pair["b"].to_numpy()
+    if n < 2 or _flat(a) or _flat(b):
+        return Correlation(float("nan"), n, first, last)
+    # rounding can land a hair outside [-1, 1]; an identical series is exactly 1.0
+    rho = float(np.clip(np.corrcoef(a, b)[0, 1], -1.0, 1.0))
+    return Correlation(rho, n, first, last)
+
+
+def _day(bound: Any, tz: Any) -> pd.Timestamp | None:
+    if bound is None:
+        return None
+    t = pd.Timestamp(bound)
+    if t.tzinfo is None and tz is not None:
+        t = t.tz_localize(tz)
+    elif t.tzinfo is not None:
+        if tz is None:
+            raise ValueError(f"window bound {bound!r} carries a timezone, the series does not")
+        t = t.tz_convert(tz)
+    return t.normalize()
+
+
+def _dated(index: pd.Index) -> pd.DatetimeIndex:
+    if isinstance(index, pd.DatetimeIndex):
+        return index
+    if pd.api.types.is_numeric_dtype(index):
+        # to_datetime would read a row number as epoch nanoseconds: 1970 dates nobody wrote
+        raise ValueError(f"period returns need dates on the index, got a numeric {type(index).__name__}")
+    return pd.DatetimeIndex(index)
 
 
 # ---------------------------------------------------------------------------

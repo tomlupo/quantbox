@@ -1,6 +1,6 @@
 """Acceptance gates on a backtest's return series: thresholds and verdicts only (TOM-1351, TOM-1618).
 
-Six deterministic gates, six DIFFERENT questions, each a function returning a
+Seven deterministic gates, seven DIFFERENT questions, each a function returning a
 JSON-ready dict with a ``gate_pass`` verdict, and each reachable as
 ``quantbox gates <name> --json`` (see :mod:`quantbox.gates_cli`):
 
@@ -12,9 +12,12 @@ JSON-ready dict with a ``gate_pass`` verdict, and each reachable as
              with a HAC standard error, one-sided.
   bootstrap  Does a CLAIM about a metric (Sharpe, mean, max drawdown) versus a
              baseline survive a paired stationary block bootstrap?
-  episode    Does the claim still hold with the largest drawdown episode removed?
+  episode    Does the claim still hold with the largest drawdown episode (or named
+             windows) removed? The HAC t-stat beside it restarts at each gap.
   predreg    Does a lagged predictor forecast the return once the Stambaugh
              small-sample bias is removed (Lewellen's conditional test too)?
+  replicate  Does the series replicate a reference (a paper's, an index's)?
+             PASS, FAIL, or DEFECT when the correlation is below a floor.
 
 Metrics DESCRIBE (:mod:`quantbox.metrics`), inference TESTS
 (:mod:`quantbox.inference`), gates DECIDE. Every statistic here comes from
@@ -47,6 +50,7 @@ CLI maps it to exit 2, which must never be read as a pass or as a fail.
 
 from __future__ import annotations
 
+import itertools
 import math
 from collections.abc import Sequence
 
@@ -60,13 +64,14 @@ from .inference import (
     deflated_sharpe_ratio,
     factor_regression,
     largest_drawdown_episode,
+    mask_runs,
     multiple_testing,
     newey_west_tstat,
     predictive_regression,
     require_finite,
     return_moments,
 )
-from .metrics import drawdown_fields, sharpe_ratio
+from .metrics import correlation, drawdown_fields, sharpe_ratio
 from .metrics import max_drawdown as _max_drawdown
 
 DEFAULT_N_TRIALS: tuple[int, ...] = (1, 5, 10, 20, 50, 100)
@@ -538,42 +543,103 @@ def paired_block_bootstrap(
 # ── largest drawdown episode ──────────────────────────────────────────────
 
 
+def _check_episodes(episodes, n: int) -> list[tuple[int, int]]:
+    """``[(start, end), ...]`` as inclusive row positions inside ``0..n-1``; anything else refused."""
+    out = []
+    for item in episodes:
+        try:
+            start, end = item
+        except (TypeError, ValueError) as exc:
+            raise GateInputError(f"an episode is a (start, end) pair of row positions, got {item!r}") from exc
+        for v in (start, end):
+            if isinstance(v, bool) or not isinstance(v, (int, np.integer)):
+                raise GateInputError(f"episode bounds must be whole row positions, got {item!r}")
+        if not 0 <= start <= end < n:
+            raise GateInputError(f"episode {item!r} is not an inclusive window inside rows 0..{n - 1}")
+        out.append((int(start), int(end)))
+    if not out:
+        raise GateInputError("episodes is empty: name at least one (start, end) window, or omit it")
+    spans = sorted(out)
+    for (a0, z0), (a1, z1) in itertools.pairwise(spans):
+        if a1 <= z0:
+            raise GateInputError(
+                f"episodes ({a0}, {z0}) and ({a1}, {z1}) overlap: name each removed row once, or join them"
+            )
+    return out
+
+
+def _nw_block(s: np.ndarray, lags: int | None, segments: np.ndarray | None) -> dict:
+    """The HAC t-stat on the mean of ``s``, with the number of runs its lag products stayed inside."""
+    nw = newey_west_tstat(s, lags=lags, segments=segments)
+    n_segments = 1 if segments is None else int(np.count_nonzero(np.diff(segments)) + 1)
+    return {
+        "n_obs": nw["n_obs"],
+        "n_segments": n_segments,
+        "nw_lags": nw["nw_lags"],
+        "mean": nw["mean_return"],
+        "nw_se": nw["nw_se"],
+        "nw_tstat": nw["nw_tstat"],
+        "nw_pvalue_twosided": nw["nw_pvalue"],
+    }
+
+
 def episode_gate(
     candidate,
     baseline=None,
     *,
+    episodes: Sequence[tuple[int, int]] | None = None,
     metric: str = "sharpe",
     compare: str = "diff",
     pass_if: str = "above",
     threshold: float = 0.0,
+    lags: int | None = None,
     allow_nonfinite_drop: bool = False,
 ) -> dict:
-    """The claim's leg re-evaluated with the single largest drawdown episode removed.
+    """The claim's leg re-evaluated with the single largest drawdown episode, or named windows, removed.
 
     The episode (:func:`quantbox.inference.largest_drawdown_episode`) is found on
     the BASELINE when one is given (the prereg's "largest baseline drawdown
     episode"), else on the candidate, and its rows are removed from both series.
+    ``episodes=[(start, end), ...]`` (inclusive row positions of the finite
+    rows) names the windows instead (TOM-3700): they replace the largest
+    drawdown, ``episode_source`` is ``"named"`` and ``episode`` is None.
+    ``episodes`` lists what was removed either way.
+
     ``gate_pass`` is the verdict WITHOUT the episode; ``passes_only_with_episode``
     flags the case a prereg relabels. What that relabel is (e.g. "inconclusive")
     is the caller's policy, not this function's. A series with no drawdown has
     nothing to remove: the result equals the full one.
+
+    Beside each leg, ``nw`` is the Newey-West t-stat on the mean of the claim's
+    series (the candidate, or candidate minus baseline): unmasked in ``full``,
+    and in ``ex_episode`` on the kept rows with their calendar, so the HAC lag
+    products restart at every removed window instead of joining its two sides
+    (:func:`quantbox.inference.mask_runs`). It is evidence, not the verdict.
     """
     _check_leg(metric, compare, pass_if, threshold)
+    if lags is not None and (isinstance(lags, bool) or lags < 0):
+        raise GateInputError(f"lags must be >= 0, got {lags!r}")
     c, b, dropped = _paired(candidate, baseline, allow_drop=allow_nonfinite_drop)
     if c.size < 2:
         raise GateInputError(f"need at least 2 observations, got {c.size}")
-    source = "baseline" if b is not None else "returns"
-    episode = largest_drawdown_episode(b if b is not None else c)
     keep = np.ones(c.size, dtype=bool)
-    if episode is not None:
-        keep[episode["start"] : episode["end"] + 1] = False
-        # depth: the positive key the contract reads; the explicit pair beside it (TOM-1627)
-        episode = {**episode, "depth": _depth(episode["depth"]), **drawdown_fields(episode["depth"])}
+    if episodes is not None:
+        source, episode = "named", None
+        windows = _check_episodes(episodes, c.size)
+    else:
+        source = "baseline" if b is not None else "returns"
+        episode = largest_drawdown_episode(b if b is not None else c)
+        windows = [] if episode is None else [(episode["start"], episode["end"])]
+        if episode is not None:
+            # depth: the positive key the contract reads; the explicit pair beside it (TOM-1627)
+            episode = {**episode, "depth": _depth(episode["depth"]), **drawdown_fields(episode["depth"])}
+    for start, end in windows:
+        keep[start : end + 1] = False
     n_left = int(keep.sum())
     if n_left < 2:
+        what = "the named episodes leave" if episodes is not None else "removing the largest drawdown episode leaves"
         raise GateInputError(
-            f"removing the largest drawdown episode leaves {n_left} observation(s) — the episode IS "
-            "the sample, so there is no result without it"
+            f"{what} {n_left} observation(s) — the episode IS the sample, so there is no result without it"
         )
     full = _leg_value(c, b, metric, compare)
     ex = _leg_value(c[keep], b[keep] if b is not None else None, metric, compare)
@@ -581,8 +647,9 @@ def episode_gate(
         raise GateInputError(f"the {metric} leg is undefined (zero variance or a zero baseline)")
     full_pass = _leg_passes(full, pass_if, threshold)
     ex_pass = _leg_passes(ex, pass_if, threshold)
-    full_block = {"value": full, "pass": full_pass, "n_obs": int(c.size)}
-    ex_block = {"value": ex, "pass": ex_pass, "n_obs": n_left}
+    claim = c if b is None else c - b
+    full_block = {"value": full, "pass": full_pass, "n_obs": int(c.size), "nw": _nw_block(claim, lags, None)}
+    ex_block = {"value": ex, "pass": ex_pass, "n_obs": n_left, "nw": _nw_block(claim[keep], lags, mask_runs(keep))}
     if metric == "max_drawdown":  # the drawdowns behind each leg value, both signs named (TOM-1627)
         full_block["drawdowns"] = _drawdowns(c, b)
         ex_block["drawdowns"] = _drawdowns(c[keep], b[keep] if b is not None else None)
@@ -596,10 +663,84 @@ def episode_gate(
         "n_nonfinite_dropped": dropped,
         "episode_source": source,
         "episode": episode,
+        "episodes": [{"start": a, "end": z, "n_removed": z - a + 1} for a, z in windows],
+        "nw_series": "returns" if b is None else "candidate - baseline",
         "full": full_block,
         "ex_episode": ex_block,
         "passes_only_with_episode": bool(full_pass and not ex_pass),
         "gate_pass": bool(ex_pass),
+    }
+
+
+# ── replication against a reference series ────────────────────────────────
+
+#: replication_gate's verdicts; only PASS is ``gate_pass``
+REPLICATION_VERDICTS = ("PASS", "FAIL", "DEFECT")
+
+
+def replication_gate(
+    returns,
+    reference,
+    *,
+    freq: str | None = None,
+    start=None,
+    end=None,
+    min_corr: float = 0.85,
+    floor: float = 0.70,
+    min_obs: int = 12,
+) -> dict:
+    """Does ``returns`` replicate ``reference``? PASS, FAIL or DEFECT on the correlation (TOM-3699).
+
+    The statistic is :func:`quantbox.metrics.correlation` on ``freq`` inside
+    ``start``..``end`` (dated Series, pairwise NaN masking). The verdict:
+
+    - ``PASS`` at ``rho >= min_corr``;
+    - ``DEFECT`` at ``rho < floor``: the replication is broken (a wrong sign, lag,
+      universe or unit), not merely loose; a sign-flipped copy (rho near -1) is one;
+    - ``FAIL`` between them, and whenever fewer than ``min_obs`` periods overlap:
+      too few to pass, and too few to call a defect.
+
+    The thresholds are arguments: the defaults are a starting bar, not any one
+    paper's. ``gate_pass`` is ``verdict == "PASS"``.
+    """
+    for name, v in (("min_corr", min_corr), ("floor", floor)):
+        if not (isinstance(v, (int, float)) and math.isfinite(v) and -1 <= v <= 1):
+            raise GateInputError(f"{name} must be a correlation in [-1, 1], got {v!r}")
+    if floor > min_corr:
+        raise GateInputError(f"floor {floor} is above min_corr {min_corr}: DEFECT would sit above PASS")
+    if isinstance(min_obs, bool) or not isinstance(min_obs, (int, np.integer)) or min_obs < 3:
+        raise GateInputError(f"min_obs must be a whole number >= 3 (two points always correlate +-1), got {min_obs!r}")
+    try:
+        c = correlation(returns, reference, freq, start, end)
+    except ValueError as exc:  # a refused input (dates, timezone, units) cannot give a verdict
+        raise GateInputError(str(exc)) from exc
+    if c.n_overlap == 0:
+        raise GateInputError("the returns and the reference share no finite period — nothing to correlate")
+    if not math.isfinite(c.rho):
+        raise GateInputError(f"no correlation on {c.n_overlap} period(s): fewer than two, or one side is flat")
+    obs_pass = bool(c.n_overlap >= min_obs)
+    if not obs_pass:
+        verdict, note = "FAIL", f"too few overlapping periods ({c.n_overlap} < {min_obs})"
+    elif c.rho >= min_corr:
+        verdict, note = "PASS", f"rho {c.rho:.4f} >= min_corr {min_corr}: the series replicates the reference"
+    elif c.rho < floor:
+        verdict, note = "DEFECT", f"rho {c.rho:.4f} < floor {floor}: the replication is broken, not merely loose"
+    else:
+        verdict, note = "FAIL", f"rho {c.rho:.4f} is between floor {floor} and min_corr {min_corr}"
+    return {
+        "gate": "replicate",
+        "verdict": verdict,
+        "rho": c.rho,
+        "n_overlap": c.n_overlap,
+        "first_date": c.first,
+        "last_date": c.last,
+        "freq": freq,
+        "min_corr": min_corr,
+        "floor": floor,
+        "min_obs": int(min_obs),
+        "obs_pass": obs_pass,
+        "gate_pass": verdict == "PASS",
+        "note": note,
     }
 
 
@@ -608,6 +749,7 @@ __all__ = [
     "DEFAULT_N_TRIALS",
     "METRICS",
     "PASS_IF",
+    "REPLICATION_VERDICTS",
     "GateInputError",
     "dsr_gate",
     "dsr_gate_from_returns",
@@ -617,4 +759,5 @@ __all__ = [
     "paired_block_bootstrap",
     "parse_n_trials",
     "predreg_gate",
+    "replication_gate",
 ]

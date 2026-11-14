@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 from quantbox._lazy import load
-from quantbox.metrics import compute_drawdown_series, compute_rolling_sharpe
+from quantbox.metrics import compute_drawdown_series, compute_rolling_sharpe, period_returns, total_return_label
 
 _TEMPLATE_PATH = Path(__file__).parent / "templates" / "research_report.html"
 
@@ -54,7 +54,7 @@ def generate_summary_md(
     m = metrics
     strategies_str = ", ".join(strategy_names) if strategy_names else "—"
     rows = [
-        ("Total Return", _pct(m.get("total_return", 0))),
+        ("Total return", total_return_label(m.get("total_return", 0))),  # with its wealth multiple (TOM-3764)
         ("CAGR", _pct(m.get("cagr", 0))),
         ("Sharpe Ratio", _f2(m.get("sharpe", 0))),
         ("Sortino Ratio", _f2(m.get("sortino", 0))),
@@ -213,7 +213,7 @@ def _build_monthly_chart(returns: pd.Series) -> dict:
     ret = returns.copy()
     if not isinstance(ret.index, pd.DatetimeIndex):
         ret.index = pd.DatetimeIndex(ret.index)
-    monthly_pct = ((1 + ret).resample("ME").prod() - 1) * 100
+    monthly_pct = period_returns(ret, "ME", keep_partial=True) * 100  # edge months stay in the table
     monthly_df = pd.DataFrame({"ret": monthly_pct, "year": monthly_pct.index.year, "month": monthly_pct.index.month})
     pivot = monthly_df.pivot(index="year", columns="month", values="ret")
     month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -659,7 +659,7 @@ def _build_per_variant_table_chart(variant_results: dict[str, dict[str, Any]]) -
     cols = [
         ("Variant", lambda n, r: n),
         ("Strategy", lambda n, r: r.get("strategy_name", "")),
-        ("Total Return", lambda n, r: f"{r['metrics'].get('total_return', 0) * 100:.1f}%"),
+        ("Total Return", lambda n, r: total_return_label(r["metrics"].get("total_return", 0))),
         ("CAGR", lambda n, r: f"{r['metrics'].get('cagr', 0) * 100:.1f}%"),
         ("Sharpe", lambda n, r: f"{r['metrics'].get('sharpe', 0):.2f}"),
         ("Sortino", lambda n, r: f"{r['metrics'].get('sortino', 0):.2f}"),
@@ -1529,6 +1529,7 @@ def generate_report_data(
             m = dict(v.get("metrics") or {})
             cfg = v.get("config") or {}
             m["_strategy_name"] = v.get("strategy_name", "")
+            m["_total_return_label"] = total_return_label(m.get("total_return", 0))
             m["_fees"] = cfg.get("fees")
             # ``primary: true`` in the variant config marks it as the source
             # of the shared diagnostics section. When no variant is flagged,
@@ -1544,7 +1545,9 @@ def generate_report_data(
         "period_end": period_end,
         "execution": execution,
         "strategies": strategy_names,
-        "metrics": metrics,
+        # the strip prints Python's label, never a JS copy of its rule (TOM-3764); a copy,
+        # so the run's own metrics are not written to
+        "metrics": {**metrics, "_total_return_label": total_return_label(metrics.get("total_return", 0))},
         "variant_metrics": variant_metrics,
         "charts": charts,
         "narrative": narrative or {},

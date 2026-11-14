@@ -1,4 +1,4 @@
-"""``quantbox gates dsr|nw|factor|bootstrap|episode|predreg`` — the acceptance gates as a CLI.
+"""``quantbox gates dsr|nw|factor|bootstrap|episode|predreg|replicate`` — the acceptance gates as a CLI.
 
 The maths lives in :mod:`quantbox.gates`; this module only reads files,
 calls the gate and maps the result to an exit code:
@@ -20,6 +20,33 @@ A returns file that sits in a run directory whose ``run_manifest.json`` says
 marked: ``run_kind: "research"`` and ``research_note`` in ``--json``, and a
 RESEARCH line under the verdict. The gate maths is unchanged; what the series
 is not — a backtest — is said where the verdict is read.
+
+``--period ME|QE|YE`` compounds every RETURN series a gate reads (the returns, a
+baseline, the factor panel and its rf column) through
+:func:`quantbox.metrics.period_returns` before the gate, and ``--start/--end`` keep
+an inclusive window of dates; the file must then be dated. The predreg predictor
+is a level, not a return, so ``--period`` is refused there (TOM-3698). The JSON
+carries the ``window`` it applied.
+
+``episode --episodes 1929-09:1932-06[,START:END...]`` removes those windows instead of the
+largest drawdown (TOM-3700). A bound is a year, a month or a day and covers all of it
+(``1932-06`` keeps June in the window); the file must be dated. ``ex_episode.nw`` is the
+HAC t-stat on the kept rows with its lags restarted at each window, ``full.nw`` the
+unmasked one beside it.
+
+``dsr`` and ``nw`` take ``--rf dataset:<name>:<column>`` (TOM-3764): that column of a
+pinned by-name RETURNS dataset (``quantbox.dataset.served_returns_column``: the
+lock's bytes, the returns as stored) is the per-period risk-free rate. It gets the
+same ``--period/--start/--end`` as the returns and is subtracted on the returns' own
+dates, period t from period t (the bill's return over the period the strategy
+earned; nothing later). The returns file must then be dated; a return date with no
+rate is refused (exit 2), never dropped or filled. A tz-naive date on either side is
+read as UTC. ``--json`` carries ``rf`` (the source, the dataset's pin and the periods).
+
+``replicate`` (TOM-3699) has three verdicts: PASS (exit 0), FAIL and DEFECT (both
+exit 1; ``verdict`` in ``--json`` and on the text line tells them apart). Its
+``--period`` is the declared frequency of the correlation: both series are
+compounded to it, and a date or period NaN on either side is masked, not refused.
 """
 
 from __future__ import annotations
@@ -28,14 +55,14 @@ import json
 import math
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import typer
 
 gates_app = typer.Typer(
     name="gates",
     help=(
-        "Acceptance gates on a return series: dsr, nw, factor, bootstrap, episode, predreg. "
+        "Acceptance gates on a return series: dsr, nw, factor, bootstrap, episode, predreg, replicate. "
         "Exit 0 pass, 1 fail, 2 could not compute."
     ),
     no_args_is_help=True,
@@ -51,6 +78,7 @@ HEADLINE = {
     "bootstrap": ("probability", "min_probability"),
     "episode": ("ex_episode", "threshold"),
     "predreg": ("pvalue_adjusted_min", "alpha"),
+    "replicate": ("rho", "min_corr"),
 }
 
 
@@ -83,14 +111,14 @@ def _read_frame(path: str, *, indexed: bool):
     # as epoch nanoseconds and the two files would pair POSITIONALLY on fabricated 1970 dates.
     if not isinstance(frame.index, pd.DatetimeIndex) and pd.api.types.is_numeric_dtype(frame.index):
         raise _input_error(
-            f"{p}: a paired gate needs dates — the first column (or the parquet index) must be a date, "
+            f"{p}: a paired or windowed gate needs dates — the first column (or the parquet index) must be a date, "
             f"got a numeric {type(frame.index).__name__} ({frame.index.dtype})"
         )
     # one spelling of a date per row, whatever the file wrote ("2020-01-01" vs "... 00:00:00")
     try:
         frame.index = pd.to_datetime(frame.index, format="mixed")
     except (ValueError, TypeError) as exc:
-        raise _input_error(f"{p}: the first column must be a date index for a paired gate ({exc})") from exc
+        raise _input_error(f"{p}: the first column must be a date index for a paired or windowed gate ({exc})") from exc
     _refuse_duplicate_dates(frame.index, p)
     return frame
 
@@ -154,20 +182,52 @@ def _pick_column(frame, column: str | None, path: str) -> str:
     )
 
 
-def _series(path: str, column: str | None, *, indexed: bool):
-    frame = _read_frame(path, indexed=indexed)
+class _Window(NamedTuple):
+    """``--period``, ``--start``, ``--end`` as one command gave them; all None = the file as read."""
+
+    period: str | None = None
+    start: str | None = None
+    end: str | None = None
+
+    @property
+    def active(self) -> bool:
+        return any(v is not None for v in self)
+
+    def apply(self, s):
+        """A return series compounded to ``period`` inside the window, or only cut to it."""
+        if not self.active:
+            return s
+        from quantbox.metrics import Window, period_returns
+
+        try:
+            if self.period is None:
+                return Window(self.start, self.end).clip(s)
+            return period_returns(s, self.period, self.start, self.end)
+        except ValueError as exc:
+            raise _input_error(f"--period/--start/--end: {exc}") from exc
+
+
+_NO_WINDOW = _Window()
+
+
+def _series(path: str, column: str | None, *, indexed: bool, window: _Window = _NO_WINDOW):
+    # a window needs the dates, so a windowed read is a dated read, in date order
+    frame = _read_frame(path, indexed=indexed or window.active)
+    if window.active:
+        frame = frame.sort_index(kind="stable")
     col = _pick_column(frame, column, path)
     try:
-        return frame[col].astype(float)
+        s = frame[col].astype(float)
     except (ValueError, TypeError) as exc:
         raise _input_error(f"column {col!r} of {path} is not numeric ({exc})") from exc
+    return window.apply(s)
 
 
-def _joined(returns: str, column: str | None, baseline: str, baseline_column: str | None):
+def _joined(returns: str, column: str | None, baseline: str, baseline_column: str | None, window: _Window = _NO_WINDOW):
     import pandas as pd
 
-    c = _series(returns, column, indexed=True).rename("c")
-    b = _series(baseline, baseline_column, indexed=True).rename("b")
+    c = _series(returns, column, indexed=True, window=window).rename("c")
+    b = _series(baseline, baseline_column, indexed=True, window=window).rename("b")
     joined = pd.concat([c, b], axis=1, join="inner").sort_index()
     if joined.empty:
         raise _input_error(f"{returns} and {baseline} share no dates — nothing to pair")
@@ -195,7 +255,9 @@ def _research_notes(*paths: str | None) -> list[str]:
     return notes
 
 
-def _emit(gate: str, as_json: bool, compute: Callable[[], dict], *inputs: str | None) -> None:
+def _emit(
+    gate: str, as_json: bool, compute: Callable[[], dict], *inputs: str | None, window: _Window = _NO_WINDOW
+) -> None:
     from quantbox.gates import GateInputError
 
     try:
@@ -208,15 +270,26 @@ def _emit(gate: str, as_json: bool, compute: Callable[[], dict], *inputs: str | 
     if notes:
         out["run_kind"] = "research"
         out["research_note"] = " | ".join(notes)
+    if window.active:
+        out["window"] = window._asdict()
     if as_json:
         typer.echo(json.dumps(out, indent=2, default=_jsonable))
     else:
         key, bar = HEADLINE[gate]
         value = out[key]["value"] if isinstance(out[key], dict) else out[key]
-        verdict = "PASS" if out["gate_pass"] else "FAIL"
+        # replicate names a third verdict, DEFECT; the exit code still reads gate_pass
+        verdict = out.get("verdict") or ("PASS" if out["gate_pass"] else "FAIL")
         typer.echo(f"{gate}: {verdict} ({key}={value:.6g}, {bar}={out[bar]})")
         for note in notes:
             typer.echo(f"  {note}")
+        if isinstance(out.get("rf"), dict):
+            f = out["rf"]
+            pin = (f.get("sha256") or "unpinned")[:12]
+            typer.echo(
+                f"  rf: {f['source']} subtracted on {f['n_periods']} dates, {f['first']}..{f['last']} (pin {pin})"
+            )
+        if window.active:
+            typer.echo("  window: " + " ".join(f"{k}={v}" for k, v in window._asdict().items() if v is not None))
     raise typer.Exit(0 if out["gate_pass"] else 1)
 
 
@@ -246,6 +319,64 @@ _METRIC = typer.Option(
 _COMPARE = typer.Option("diff", "--compare", help="diff (candidate - baseline) | ratio (candidate / baseline)")
 _PASS_IF = typer.Option("above", "--pass-if", help="above | below the threshold, STRICTLY")
 _BASELINE_COLUMN = typer.Option(None, "--baseline-column", help="return column of the baseline file")
+_PERIOD = typer.Option(
+    None,
+    "--period",
+    help="compound per-bar returns to ME | QE | YE first; a period counts only when the data shows both its ends",
+)
+_START = typer.Option(None, "--start", help="first date kept, inclusive (the file must be dated)")
+_END = typer.Option(None, "--end", help="last date kept, inclusive (the file must be dated)")
+
+_RF = typer.Option(
+    None,
+    "--rf",
+    help="risk-free per period, dataset:<name>:<column> of a pinned returns dataset (e.g. dataset:sbbi:TBill_30d); "
+    "subtracted from --returns on its own dates before the gate (the file must be dated)",
+)
+
+
+def _utc(index):
+    """*index* as tz-aware UTC dates; a naive date is read as UTC (quantbox's convention)."""
+    import pandas as pd
+
+    index = pd.DatetimeIndex(index)
+    return index.tz_localize("UTC") if index.tz is None else index.tz_convert("UTC")
+
+
+def _excess(returns: str, column: str | None, rf: str, window: _Window):
+    """The returns minus the ``--rf`` dataset column on the same dates, and what was subtracted."""
+    parts = rf.split(":")
+    if len(parts) != 3 or parts[0] != "dataset" or not parts[1] or not parts[2]:
+        raise _input_error(f"--rf must be dataset:<name>:<column>, got {rf!r}")
+    from quantbox.dataset import served_returns_column
+
+    # date order, not file order: the HAC standard error weights NEIGHBOURING rows
+    r = _series(returns, column, indexed=True, window=window).sort_index(kind="stable")
+    try:
+        rate, resolution = served_returns_column(parts[1], parts[2])
+    except Exception as exc:  # noqa: BLE001 — a dataset that cannot be read is "could not compute" (exit 2)
+        raise _input_error(f"--rf {rf}: {type(exc).__name__}: {exc}") from exc
+    rate.index = _utc(rate.index)
+    rate = window.apply(rate)
+    aligned = rate.reindex(_utc(r.index))
+    missing = aligned.isna().to_numpy()
+    if missing.any():
+        dates = [d.date().isoformat() for d in aligned.index[missing][:5]]
+        raise _input_error(
+            f"--rf {rf}: no rate on {int(missing.sum())} of {len(r)} return dates (first {dates}); "
+            "a return is never paired with another period's rate — cut the window or compound with --period"
+        )
+    excess = r - aligned.to_numpy()
+    info = {
+        "source": rf,
+        "dataset": parts[1],
+        "column": parts[2],
+        "sha256": resolution.get("sha256"),
+        "n_periods": len(excess),
+        "first": aligned.index[0].date().isoformat() if len(excess) else None,
+        "last": aligned.index[-1].date().isoformat() if len(excess) else None,
+    }
+    return excess, info
 
 
 @gates_app.command("dsr")
@@ -261,6 +392,10 @@ def dsr(
     trials_sr_std: float = typer.Option(None, "--trials-sr-std", help="per-period std of the trials' Sharpes"),
     periods: int = typer.Option(None, "--periods", help="periods per year; REQUIRED with --sharpe"),
     threshold: float = typer.Option(0.95, "--threshold", help="DSR acceptance bar, in (0,1)"),
+    period: str = _PERIOD,
+    start: str = _START,
+    end: str = _END,
+    rf: str = _RF,
     as_json: bool = _JSON,
 ):
     """Deflated Sharpe Ratio across a trial-count range (verdict at the most deflated end)."""
@@ -273,8 +408,16 @@ def dsr(
         if returns is not None:
             if any(v is not None for v in summary):
                 raise _input_error("--returns is exclusive with --sharpe/--skew/--kurtosis/--n-obs")
-            r = _series(returns, column, indexed=False)
+            if rf is not None:
+                r, rf_info = _excess(returns, column, rf, window)
+                out = dsr_gate_from_returns(r.to_numpy(), allow_nonfinite_drop=allow_nonfinite_drop, **kw)
+                return {**out, "rf": rf_info}
+            r = _series(returns, column, indexed=False, window=window)
             return dsr_gate_from_returns(r.to_numpy(), allow_nonfinite_drop=allow_nonfinite_drop, **kw)
+        if rf is not None:
+            raise _input_error("--rf is subtracted from a return series: it needs --returns, not --sharpe")
+        if window.active:
+            raise _input_error("--period/--start/--end shape a return series: they need --returns, not --sharpe")
         if sharpe is None:
             raise _input_error("give --returns <file>, or --sharpe with --skew, --kurtosis, --n-obs and --periods")
         missing = [n for n, v in zip(("--skew", "--kurtosis", "--n-obs"), summary[1:], strict=True) if v is None]
@@ -292,7 +435,8 @@ def dsr(
             raise _input_error(f"--periods must be positive, got {periods}")
         return dsr_gate(sr=sharpe / math.sqrt(periods), T=n_obs, skew=skew, kurtosis=kurtosis, **kw)
 
-    _emit("dsr", as_json, compute, returns)
+    window = _Window(period, start, end)
+    _emit("dsr", as_json, compute, returns, window=window)
 
 
 @gates_app.command("nw")
@@ -304,6 +448,10 @@ def nw(
     min_oos_periods: int = typer.Option(252, "--min-oos-periods"),
     oos_periods: int = typer.Option(None, "--oos-periods", help="test only the LAST N finite observations"),
     lags: int = _LAGS,
+    period: str = _PERIOD,
+    start: str = _START,
+    end: str = _END,
+    rf: str = _RF,
     as_json: bool = _JSON,
 ):
     """Newey-West HAC t-stat on the mean, plus a minimum out-of-sample window."""
@@ -311,8 +459,12 @@ def nw(
     def compute() -> dict:
         from quantbox.gates import nw_gate
 
-        r = _series(returns, column, indexed=False)
-        return nw_gate(
+        rf_info = None
+        if rf is not None:
+            r, rf_info = _excess(returns, column, rf, window)
+        else:
+            r = _series(returns, column, indexed=False, window=window)
+        out = nw_gate(
             r.to_numpy(),
             lags=lags,
             t_threshold=t_threshold,
@@ -320,8 +472,10 @@ def nw(
             oos_periods=oos_periods,
             allow_nonfinite_drop=allow_nonfinite_drop,
         )
+        return {**out, "rf": rf_info} if rf_info else out
 
-    _emit("nw", as_json, compute, returns)
+    window = _Window(period, start, end)
+    _emit("nw", as_json, compute, returns, window=window)
 
 
 @gates_app.command("factor")
@@ -337,6 +491,9 @@ def factor(
     t_threshold: float = typer.Option(2.0, "--t-threshold"),
     min_obs: int = typer.Option(60, "--min-obs"),
     lags: int = _LAGS,
+    period: str = _PERIOD,
+    start: str = _START,
+    end: str = _END,
     as_json: bool = _JSON,
 ):
     """Jensen's alpha after factor controls, HAC standard error, one-sided."""
@@ -347,7 +504,7 @@ def factor(
         from quantbox.gates import factor_gate
         from quantbox.inference import require_finite
 
-        strat = _series(returns, column, indexed=True).rename("__y__")
+        strat = _series(returns, column, indexed=True, window=window).rename("__y__")
         panel = _read_frame(factors, indexed=True)
         if factor_columns is not None:
             names = [c.strip() for c in factor_columns.split(",") if c.strip()]
@@ -372,6 +529,9 @@ def factor(
             if factor_columns is not None and rf_column in names:
                 raise _input_error(f"--rf column {rf_column!r} is also listed as a factor")
             names = [c for c in names if c != rf_column]
+        if window.active:  # factor and rf columns are returns too: the same periods as the strategy
+            shaped = names + ([rf_column] if rf_column is not None else [])
+            panel = pd.concat({c: window.apply(panel[c].astype(float)) for c in shaped}, axis=1)
         parts = [strat, panel[names]]
         if rf_column is not None:
             parts.append(panel[[rf_column]].rename(columns={rf_column: "__rf__"}))
@@ -396,7 +556,8 @@ def factor(
             out["rf"] = rf_column
         return out
 
-    _emit("factor", as_json, compute, returns)
+    window = _Window(period, start, end)
+    _emit("factor", as_json, compute, returns, window=window)
 
 
 @gates_app.command("bootstrap")
@@ -414,6 +575,9 @@ def bootstrap(
     seed: int = typer.Option(0, "--seed"),
     min_probability: float = typer.Option(0.95, "--min-probability", help="P(leg holds) that counts as support"),
     allow_nonfinite_drop: bool = _DROP,
+    period: str = _PERIOD,
+    start: str = _START,
+    end: str = _END,
     as_json: bool = _JSON,
 ):
     """Paired stationary block bootstrap: P(candidate-vs-baseline leg holds) over resamples."""
@@ -421,7 +585,7 @@ def bootstrap(
     def compute() -> dict:
         from quantbox.gates import paired_block_bootstrap
 
-        j = _joined(returns, column, baseline, baseline_column)
+        j = _joined(returns, column, baseline, baseline_column, window)
         out = paired_block_bootstrap(
             j["c"].to_numpy(),
             j["b"].to_numpy(),
@@ -438,7 +602,50 @@ def bootstrap(
         out["first_date"], out["last_date"] = j.index[0], j.index[-1]
         return out
 
-    _emit("bootstrap", as_json, compute, returns, baseline)
+    window = _Window(period, start, end)
+    _emit("bootstrap", as_json, compute, returns, baseline, window=window)
+
+
+def _episode_windows(raw: str) -> list[tuple[str, object, object]]:
+    """``"1929-09:1932-06,2008"`` -> ``[(text, first day, last day), ...]``; a bound covers its whole year/month/day."""
+    import pandas as pd
+
+    out = []
+    for text in (t.strip() for t in raw.split(",")):
+        if not text:
+            continue
+        parts = text.split(":")
+        if len(parts) != 2 or not all(p.strip() for p in parts):
+            raise _input_error(f"--episodes: {text!r} is not START:END (e.g. 1929-09:1932-06)")
+        try:
+            lo, hi = pd.Period(parts[0].strip()).start_time, pd.Period(parts[1].strip()).end_time.normalize()
+        except (ValueError, TypeError) as exc:
+            raise _input_error(f"--episodes: {text!r} has a bound that is not a date ({exc})") from exc
+        out.append((text, lo, hi))
+    if not out:
+        raise _input_error("--episodes is empty: name at least one START:END window")
+    return out
+
+
+def _episode_positions(dates, windows) -> tuple[list[tuple[int, int]], list[dict]]:
+    """Each window as the (first, last) row position of the dated rows inside it, with the dates it removes."""
+    import numpy as np
+    import pandas as pd
+
+    from quantbox.metrics import Window
+
+    rows = pd.Series(np.arange(len(dates)), index=dates)
+    positions, named = [], []
+    for text, lo, hi in windows:
+        try:
+            inside = Window(lo, hi).clip(rows)
+        except ValueError as exc:
+            raise _input_error(f"--episodes {text!r}: {exc}") from exc
+        if inside.empty:
+            raise _input_error(f"--episodes {text!r}: no row of the series is dated inside it")
+        positions.append((int(inside.iloc[0]), int(inside.iloc[-1])))
+        named.append({"window": text, "start_date": inside.index[0], "end_date": inside.index[-1]})
+    return positions, named
 
 
 @gates_app.command("episode")
@@ -447,16 +654,29 @@ def episode(
     baseline: str = typer.Option(None, "--baseline", help="baseline series (date-indexed); the episode is ITS"),
     column: str = _COLUMN,
     baseline_column: str = _BASELINE_COLUMN,
+    episodes: str = typer.Option(
+        None,
+        "--episodes",
+        help="START:END date windows to remove instead of the largest drawdown, comma-separated, inclusive, "
+        "non-overlapping "
+        "(1929-09:1932-06 removes Sep 1929 through Jun 1932); the file must be dated",
+    ),
     metric: str = _METRIC,
     compare: str = _COMPARE,
     pass_if: str = _PASS_IF,
     threshold: float = typer.Option(0.0, "--threshold"),
+    lags: int = _LAGS,
     allow_nonfinite_drop: bool = _DROP,
+    period: str = _PERIOD,
+    start: str = _START,
+    end: str = _END,
     as_json: bool = _JSON,
 ):
-    """The leg re-evaluated with the largest drawdown episode excluded."""
+    """The leg re-evaluated with the largest drawdown episode (or --episodes) excluded; HAC t-stat beside it."""
 
     def compute() -> dict:
+        import numpy as np
+
         from quantbox.gates import episode_gate
 
         kw = dict(
@@ -464,20 +684,33 @@ def episode(
             compare=compare,
             pass_if=pass_if,
             threshold=threshold,
+            lags=lags,
             allow_nonfinite_drop=allow_nonfinite_drop,
         )
+        windows = _episode_windows(episodes) if episodes is not None else None
         if baseline is None:
-            r = _series(returns, column, indexed=False)
-            return episode_gate(r.to_numpy(), **kw)
-        j = _joined(returns, column, baseline, baseline_column)
-        out = episode_gate(j["c"].to_numpy(), j["b"].to_numpy(), **kw)
+            r = _series(returns, column, indexed=windows is not None, window=window)
+            frame, args = r.to_frame(), (r.to_numpy(),)
+        else:
+            frame = _joined(returns, column, baseline, baseline_column, window)
+            args = (frame["c"].to_numpy(), frame["b"].to_numpy())
+        # the gate's row positions count the FINITE rows (a dropped row is gone from both series)
+        finite = np.isfinite(frame.to_numpy(dtype=float)).all(axis=1)
+        named = None
+        if windows is not None:
+            kw["episodes"], named = _episode_positions(frame.index[finite], windows)
+        out = episode_gate(*args, **kw)
+        if named is not None:
+            for item, dated in zip(out["episodes"], named, strict=True):
+                item.update(dated)
         ep = out["episode"]
-        if ep is not None and not out["n_nonfinite_dropped"]:
+        if baseline is not None and ep is not None and not out["n_nonfinite_dropped"]:
             for key in ("start", "trough", "end"):
-                ep[f"{key}_date"] = j.index[ep[key]]
+                ep[f"{key}_date"] = frame.index[ep[key]]
         return out
 
-    _emit("episode", as_json, compute, returns, baseline)
+    window = _Window(period, start, end)
+    _emit("episode", as_json, compute, returns, baseline, window=window)
 
 
 @gates_app.command("predreg")
@@ -494,6 +727,9 @@ def predreg(
     alpha: float = typer.Option(0.05, "--alpha", help="family-wise level over the bias-adjusted tests (Bonferroni)"),
     min_obs: int = typer.Option(60, "--min-obs", help="minimum (r_t, x_t-1) pairs"),
     allow_nonfinite_drop: bool = _DROP,
+    period: str = _PERIOD,
+    start: str = _START,
+    end: str = _END,
     as_json: bool = _JSON,
 ):
     """Predictive regression r_t on x_t-1: Stambaugh bias-adjusted and Lewellen conditional slopes, one-sided.
@@ -507,7 +743,12 @@ def predreg(
 
         from quantbox.gates import predreg_gate
 
-        r = _series(returns, column, indexed=True)
+        if period is not None:
+            raise _input_error(
+                "--period compounds returns, and the predictor is a level (log D/P), not a return: "
+                "give predreg per-period files; --start/--end alone cut both"
+            )
+        r = _series(returns, column, indexed=True, window=window)
         panel = _read_frame(predictor, indexed=True)
         numeric = [str(c) for c in panel.select_dtypes("number").columns]
         if predictor_column is None and len(numeric) != 1:
@@ -522,6 +763,7 @@ def predreg(
             x = panel[pcol].astype(float)
         except (ValueError, TypeError) as exc:
             raise _input_error(f"column {pcol!r} of {predictor} is not numeric ({exc})") from exc
+        x = window.apply(x)
         j = pd.concat([r.rename("c"), x.rename("b")], axis=1, join="inner").sort_index()
         if j.empty:
             raise _input_error(f"{returns} and {predictor} share no dates — nothing to pair")
@@ -547,4 +789,41 @@ def predreg(
         out["first_date"], out["last_date"] = j.index[0], j.index[-1]
         return out
 
-    _emit("predreg", as_json, compute, returns, predictor)
+    window = _Window(period, start, end)
+    _emit("predreg", as_json, compute, returns, predictor, window=window)
+
+
+@gates_app.command("replicate")
+def replicate(
+    returns: str = _RETURNS,
+    reference: str = typer.Option(
+        ..., "--reference", help="reference return series (a paper's, an index's), date-indexed"
+    ),
+    column: str = _COLUMN,
+    reference_column: str = typer.Option(None, "--reference-column", help="return column of the reference file"),
+    min_corr: float = typer.Option(0.85, "--min-corr", help="PASS at rho >= this"),
+    floor: float = typer.Option(0.70, "--floor", help="DEFECT at rho < this (a broken replication)"),
+    min_obs: int = typer.Option(12, "--min-obs", help="minimum overlapping periods; fewer is FAIL"),
+    period: str = typer.Option(
+        None,
+        "--period",
+        help="the correlation's frequency, ME | QE | YE: both series compounded to it (else the rows as read)",
+    ),
+    start: str = _START,
+    end: str = _END,
+    as_json: bool = _JSON,
+):
+    """Correlation with a reference series: PASS, FAIL, or DEFECT below the floor (pairwise NaN masking)."""
+
+    def compute() -> dict:
+        from quantbox.gates import replication_gate
+
+        # unwindowed dated reads: the gate applies --period/--start/--end through metrics.correlation
+        r = _series(returns, column, indexed=True)
+        ref = _series(reference, reference_column, indexed=True)
+        return replication_gate(
+            r, ref, freq=period, start=start, end=end, min_corr=min_corr, floor=floor, min_obs=min_obs
+        )
+
+    window = _Window(period, start, end)
+    _emit("replicate", as_json, compute, returns, reference, window=window)

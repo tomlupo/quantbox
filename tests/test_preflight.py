@@ -2110,6 +2110,64 @@ def test_a_run_record_of_an_unknown_major_refuses(replication):
     _only_refusal(replication.run(), "data-validation", "quantbox/data-validation@2")
 
 
+FINANCED = REPLICATION.replace(
+    "      - {class: bond, type: index, instruments: [BND]}\n",
+    "      - {class: bond, type: index, instruments: [BND]}\n"
+    "      - {class: financing, type: index, instruments: [LT12TRUU]}\n",
+)
+
+
+def _financed_by(lab: Lab, ticker: str) -> None:
+    """The primary's plan reads `ticker` as its financing rate (explain@1 `venue.financing`)."""
+    lab.plan["venue"]["financing"] = {
+        "rate": {"ticker": ticker},
+        "borrow_spread_bps": 0.0,
+        "lend_spread_bps": 0.0,
+        "day_count": "ACT/365",
+    }
+
+
+def test_a_declared_financing_series_is_part_of_the_run(replication):
+    """TOM-3708: the run's calendar holds the weighted tickers only, so a series read as
+    `venue.financing.rate` (it need not carry a weight) is not in calendar.instruments.
+    Declared in `data.classes`, it is the run's data, not a declared instrument gone missing."""
+    _write(replication.readme, _readme(FINANCED))
+    _financed_by(replication, "LT12TRUU")
+    replication.commit()
+    report = replication.run()
+    assert report.exit_code == 0, report.rows
+    assert "every one in a declared class" in _rows(report, preflight.PASS)["data-validation"]
+
+
+def test_a_financing_ticker_inside_a_paper_class_is_measured_on_the_run_series(replication):
+    """The class keeps its traded series for coverage; the financing ticker has no calendar span."""
+    text = REPLICATION.replace("instruments: [BND]}", "instruments: [BND, LT12TRUU]}")
+    _write(replication.readme, _readme(text))
+    _financed_by(replication, "LT12TRUU")
+    replication.commit()
+    report = replication.run()
+    assert report.exit_code == 0, report.rows
+    assert (
+        "bond: paper 1 index from 1926-07-01, data 1 index 1926-07-31..2024-12-31"
+        in _rows(report, preflight.PASS)["data-coverage"]
+    )
+
+
+def test_a_declared_series_neither_traded_nor_the_financing_rate_still_refuses(replication):
+    text = FINANCED.replace("instruments: [LT12TRUU]}", "instruments: [LT12TRUU, XTRA]}")
+    _write(replication.readme, _readme(text))
+    _financed_by(replication, "LT12TRUU")
+    replication.commit()
+    _only_refusal(replication.run(), "data-validation", "declared instrument(s) ['XTRA'] are not in the run")
+
+
+def test_a_financing_series_no_plan_names_still_refuses(replication):
+    """Only the primary's own plan makes a declared series its financing rate."""
+    _write(replication.readme, _readme(FINANCED))
+    replication.commit()
+    _only_refusal(replication.run(), "data-validation", "declared instrument(s) ['LT12TRUU'] are not in the run")
+
+
 WEEKDAY = (
     REPLICATION.replace("sample: {start: 1926-07, end: 2015-12}", "sample: {start: 2015-01, end: 2020-12}")
     .replace("post_sample: {start: 2016-01, end: 2024-12}", "post_sample: {start: 2021-01, end: 2024-03}")
