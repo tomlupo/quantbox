@@ -31,6 +31,8 @@ The interface, grouped by question:
 - Resampling: :func:`bootstrap` (iid or paired stationary block),
   :func:`stationary_bootstrap_indices`, :func:`moving_block_indices`,
   :func:`gaussian_null`.
+- Regime split: :func:`regime_sharpe` (the Sharpe split additively over
+  bear / normal / bull benchmark-quantile regimes, a Gaussian null per part).
 - Drawdown episodes: :func:`largest_drawdown_episode`.
 
 Conventions, stated once:
@@ -1192,6 +1194,174 @@ def gaussian_null(
     return np.array([statistic(rng.normal(0, scale, size=n)) for _ in range(draws)])
 
 
+# ── regime split of the Sharpe ─────────────────────────────────────────────
+#
+# Where in the market the Sharpe was earned (TOM-3716). The idea, regimes cut
+# at the bottom and top quantiles of the benchmark's period returns and the
+# Sharpe split additively over them, is qis's regime classifier
+# (ArturSepp/QuantInvestStrats, MIT); no qis code is copied and qis is not a
+# dependency.
+
+REGIMES = ("bear", "normal", "bull")
+DEFAULT_REGIME_QUANTILES = (1 / 6, 5 / 6)
+
+
+def _regime_thresholds(benchmark: np.ndarray, quantiles, thresholds) -> tuple[float, float]:
+    """The (bear, bull) cut-offs: ``thresholds`` as given, else the full-sample ``quantiles`` of ``benchmark``."""
+    pair = quantiles if thresholds is None else thresholds
+    if isinstance(pair, str) or np.ndim(pair) != 1 or len(pair) != 2:
+        raise InferenceInputError(f"quantiles and thresholds are (bear, bull) pairs, got {pair!r}")
+    if thresholds is None:
+        lo_q, hi_q = (float(q) for q in quantiles)
+        if not 0.0 < lo_q < hi_q < 1.0:
+            raise InferenceInputError(f"quantiles must satisfy 0 < bear < bull < 1, got {tuple(quantiles)!r}")
+        lo, hi = (float(v) for v in np.quantile(benchmark, [lo_q, hi_q]))
+    else:
+        lo, hi = (float(v) for v in thresholds)
+    if not (math.isfinite(lo) and math.isfinite(hi) and lo < hi):
+        raise InferenceInputError(
+            f"the bear threshold must be below the bull threshold, got ({lo!r}, {hi!r}) — "
+            "a benchmark this tied has no three regimes at these quantiles"
+        )
+    return lo, hi
+
+
+def _regime_part(x: np.ndarray, mask: np.ndarray) -> float:
+    """Regime ``mask``'s additive part of the per-period Sharpe of ``x``: ``sum(x[mask]) / (T * std(x, ddof=1))``."""
+    return float(x[mask].sum() / (x.size * x.std(ddof=1)))
+
+
+def regime_sharpe(
+    returns,
+    benchmark,
+    *,
+    quantiles=DEFAULT_REGIME_QUANTILES,
+    thresholds=None,
+    draws: int = 2000,
+    seed: int = 0,
+    allow_nonfinite_drop: bool = False,
+) -> dict:
+    """The per-period Sharpe of ``returns`` split ADDITIVELY over bear / normal / bull benchmark regimes.
+
+    ``returns`` and ``benchmark`` are aligned per-period series (the same rows;
+    a row with a NaN/Inf in either is refused, or dropped from both with
+    ``allow_nonfinite_drop=True``). The period is the caller's: resample both
+    (to months, quarters) before calling for regimes of that length. For a
+    claim about ALPHA, pass active or excess returns, not the raw strategy.
+
+    Regimes. Row t is ``"bear"`` when ``benchmark[t] <= bear threshold``,
+    ``"bull"`` when ``benchmark[t] >= bull threshold``, ``"normal"`` otherwise:
+    a row's label uses that row's benchmark return and nothing from any other
+    row EXCEPT the thresholds. By default the thresholds are the FULL-SAMPLE
+    ``quantiles`` of the benchmark (``np.quantile``, linear; 1/6 and 5/6, a
+    sixth of the rows in each tail), so they see every period, future ones
+    included: the split is an ex-post attribution, never a signal to trade on.
+    Pass ``thresholds=(bear, bull)`` fixed in advance to use no full-sample
+    information at all (``quantiles`` is then ignored).
+
+    The split. With ``s`` the full-sample std (ddof=1) and ``T`` the rows,
+    regime k's part is ``sum(returns[t in k]) / (T * s)`` = ``share_k * mean_k / s``,
+    so the three parts sum to the full Sharpe ``mean / s`` (to float rounding).
+    A part is the regime's contribution to the full-sample Sharpe, not the
+    Sharpe of that regime alone (``sharpe`` in each regime's entry).
+
+    The null, a Gaussian one PER REGIME. Each part is tested one-sided (H1:
+    part > 0) against :func:`gaussian_null`: ``draws`` zero-mean normal series
+    of length T whose rows in regime k have regime k's own sample std (the
+    full-sample ``s`` for a regime of one row or a flat one), each split on
+    the SAME labels and studentised by its own full-sample std, as the
+    observed part is. Regime-dependent volatility (a wilder bear market) is
+    so in the null; a single full-sample std would make a high-volatility
+    regime's part look significant too often. ``pvalue`` is
+    ``(1 + #{null part >= part}) / (1 + draws)``, never 0. Within a regime
+    the null is iid normal: it ignores autocorrelation and fat tails, and so
+    is liberal on a serially dependent or heavy-tailed series.
+
+    Returns full-precision floats: ``n_obs``, ``n_obs_raw``,
+    ``n_nonfinite_dropped``, ``sharpe`` (full, per period), ``thresholds``
+    (bear, bull), ``threshold_source`` (``"full_sample_quantiles"`` or
+    ``"given"``), ``quantiles`` (None when given), ``draws``, ``seed``, and
+    ``regimes``: per name in :data:`REGIMES`, ``n_obs``, ``share``, ``mean``,
+    ``std``, ``sharpe``, ``benchmark_mean``, ``sharpe_part``, ``null_std`` and
+    ``pvalue``. An empty regime (given thresholds; or ``normal`` on a tied,
+    discrete benchmark, whose tails then hold every row) has
+    ``sharpe_part`` 0.0 and None for the rest; ``std`` and ``sharpe`` are None
+    below two rows or on a flat regime. Refuses (:class:`InferenceInputError`)
+    series of different lengths, fewer than 3 paired observations, flat
+    returns, quantiles outside 0 < bear < bull < 1, thresholds not strictly
+    increasing (each must be a pair), and ``draws`` below 2.
+    """
+    if isinstance(draws, bool) or not isinstance(draws, (int, np.integer)) or draws < 2:
+        raise InferenceInputError(f"draws must be a whole number >= 2, got {draws!r}")
+    r = np.asarray(returns, dtype=float).ravel()
+    b = np.asarray(benchmark, dtype=float).ravel()
+    if r.size != b.size:
+        raise InferenceInputError(
+            f"returns has {r.size} observations and benchmark {b.size} — the split needs the same rows "
+            "in both (align them on dates first)"
+        )
+    both, dropped = require_finite(np.column_stack([r, b]), allow_nonfinite_drop=allow_nonfinite_drop, what="paired")
+    r, b = np.ascontiguousarray(both[:, 0]), np.ascontiguousarray(both[:, 1])
+    T = int(r.size)
+    if T < 3:
+        raise InferenceInputError(f"need at least 3 paired finite observations, got {T}")
+    full = return_moments(r)  # refuses flat returns
+    s = float(r.std(ddof=1))
+    lo, hi = _regime_thresholds(b, quantiles, thresholds)
+    masks = {"bear": b <= lo, "bull": b >= hi}
+    masks["normal"] = ~(masks["bear"] | masks["bull"])
+
+    sds = {k: None if m.sum() < 2 or flat(r[m], ddof=1) else float(r[m].std(ddof=1)) for k, m in masks.items()}
+    sigma = np.empty(T)  # the null's per-row std: its regime's own, the full-sample one where that is undefined
+    for k, m in masks.items():
+        sigma[m] = s if sds[k] is None else sds[k]
+
+    rng = np.random.default_rng(seed)
+    regimes = {}
+    for name in REGIMES:
+        m = masks[name]
+        n = int(m.sum())
+        part = _regime_part(r, m)
+        if n == 0:
+            regimes[name] = {
+                "n_obs": 0,
+                "share": 0.0,
+                "mean": None,
+                "std": None,
+                "sharpe": None,
+                "benchmark_mean": None,
+                "sharpe_part": 0.0,
+                "null_std": None,
+                "pvalue": None,
+            }
+            continue
+        rk, sd = r[m], sds[name]
+        null = gaussian_null(lambda z, m=m: _regime_part(z * sigma, m), T, 1.0, draws=draws, rng=rng)
+        regimes[name] = {
+            "n_obs": n,
+            "share": n / T,
+            "mean": float(rk.mean()),
+            "std": sd,
+            "sharpe": None if sd is None else float(rk.mean() / sd),
+            "benchmark_mean": float(b[m].mean()),
+            "sharpe_part": part,
+            "null_std": float(null.std(ddof=1)),
+            "pvalue": float((1 + np.count_nonzero(null >= part)) / (1 + draws)),
+        }
+    return {
+        "n_obs": T,
+        "n_obs_raw": T + dropped,
+        "n_nonfinite_dropped": dropped,
+        "sharpe": full.sr_period,
+        "thresholds": (lo, hi),
+        "threshold_source": "full_sample_quantiles" if thresholds is None else "given",
+        "quantiles": None if thresholds is not None else tuple(float(q) for q in quantiles),
+        "draws": int(draws),
+        "seed": int(seed),
+        "regimes": regimes,
+    }
+
+
 # ── drawdown episodes ──────────────────────────────────────────────────────
 
 
@@ -1227,6 +1397,7 @@ def largest_drawdown_episode(returns) -> dict | None:
 
 
 __all__ = [
+    "DEFAULT_REGIME_QUANTILES",
     "DEGENERATE_RTOL",
     "DSRResult",
     "EULER_MASCHERONI",
@@ -1234,6 +1405,7 @@ __all__ = [
     "LEWELLEN_RHO_BOUND",
     "MULTIPLE_TESTING_METHODS",
     "MultipleTestingResult",
+    "REGIMES",
     "ReturnMoments",
     "bonferroni_alpha",
     "bootstrap",
@@ -1251,6 +1423,7 @@ __all__ = [
     "newey_west_auto_lags",
     "newey_west_tstat",
     "predictive_regression",
+    "regime_sharpe",
     "require_finite",
     "return_moments",
     "sharpe_difference_test",
