@@ -16,6 +16,8 @@ JSON-ready dict with a ``gate_pass`` verdict, and each reachable as
              windows) removed? The HAC t-stat beside it restarts at each gap.
   predreg    Does a lagged predictor forecast the return once the Stambaugh
              small-sample bias is removed (Lewellen's conditional test too)?
+             On request also Campbell-Yogo's Q-test for a persistent predictor
+             and Goyal-Welch's out-of-sample R² with the Clark-West test.
   replicate  Does the series replicate a reference (a paper's, an index's)?
              PASS, FAIL, or DEFECT when the correlation is below a floor.
 
@@ -61,12 +63,14 @@ from .inference import (
     LEWELLEN_RHO_BOUND,
     InferenceInputError,
     bootstrap,
+    campbell_yogo,
     deflated_sharpe_ratio,
     factor_regression,
     largest_drawdown_episode,
     mask_runs,
     multiple_testing,
     newey_west_tstat,
+    oos_forecast,
     predictive_regression,
     require_finite,
     return_moments,
@@ -324,6 +328,10 @@ def predreg_gate(
     alpha: float = 0.05,
     min_obs: int = 60,
     allow_nonfinite_drop: bool = False,
+    q_test: bool = False,
+    q_lags: int | None = None,
+    q_max_lags: int = 4,
+    oos_start: int | None = None,
 ) -> dict:
     """Does ``predictor[t-1]`` predict ``returns[t]`` (H1: beta > 0) once the Stambaugh bias is removed?
 
@@ -340,6 +348,24 @@ def predreg_gate(
     two tests after the fact cannot buy significance. ``predict_pass`` is any
     rejection; the gate also needs ``n_obs >= min_obs``. To test beta < 0,
     negate the predictor.
+
+    Two more questions on request (TOM-3928); each one asked must also pass,
+    so asking can only make the verdict stricter:
+
+    - ``q_test``: Campbell and Yogo's (2006) Bonferroni Q-test
+      (:func:`quantbox.inference.campbell_yogo`, AR order ``q_lags`` or BIC
+      up to ``q_max_lags``). ``q_test_pass`` is its one-sided rejection at
+      the 5% its tables fix, whatever ``alpha`` is. Outside its tables
+      (DF-GLS not in [-5, 1]) it does not apply: ``q_test_pass`` is None and
+      the verdict stands on the rest.
+    - ``oos_start``: Goyal and Welch's (2008) out-of-sample R² from row
+      ``oos_start`` on, with Clark and West's (2007) test
+      (:func:`quantbox.inference.oos_forecast`). ``oos_pass`` is the
+      Clark-West one-sided p-value below ``alpha``.
+
+    Neither enters the Bonferroni family above, so ``predict_pass`` and
+    ``pvalue_adjusted_min`` read exactly as without them. Not asked, their
+    keys are None and every other key is unchanged.
     """
     if isinstance(min_obs, bool) or not isinstance(min_obs, (int, np.integer)) or min_obs <= 0:
         raise GateInputError(f"min_obs must be a positive whole number, got {min_obs!r}")
@@ -360,6 +386,23 @@ def predreg_gate(
         note = "no bias-adjusted test rejects beta <= 0"
     else:
         note = "no bias-adjusted test rejects beta <= 0; gamma >= 0, so the conditional bound does not apply"
+    q = campbell_yogo(returns, predictor, lags=q_lags, max_lags=q_max_lags) if q_test else None
+    q_pass = q["reject"] if q is not None else None
+    oos = oos_forecast(returns, predictor, start=oos_start) if oos_start is not None else None
+    oos_pass = bool(oos["clark_west_pvalue_onesided"] < family.alpha) if oos is not None else None
+    if q is not None:
+        if q_pass is None:
+            note += f"; Campbell-Yogo does not apply ({q['note']})"
+        else:
+            lo, hi = q["beta_interval"]
+            note += (
+                f"; Campbell-Yogo 90% beta interval [{lo:.4g}, {hi:.4g}] {'rejects' if q_pass else 'keeps'} beta <= 0"
+            )
+    if oos is not None:
+        note += (
+            f"; out-of-sample R² {oos['r2_oos']:.2%} over {oos['n_forecasts']} forecasts, Clark-West p "
+            f"{oos['clark_west_pvalue_onesided']:.3g} ({'passes' if oos_pass else 'fails'})"
+        )
     return {
         "gate": "predreg",
         **fit,
@@ -371,7 +414,11 @@ def predreg_gate(
         "predict_pass": predict_pass,
         "min_obs": int(min_obs),
         "obs_pass": obs_pass,
-        "gate_pass": bool(predict_pass and obs_pass),
+        "campbell_yogo": q,
+        "q_test_pass": q_pass,
+        "oos": oos,
+        "oos_pass": oos_pass,
+        "gate_pass": bool(predict_pass and obs_pass and q_pass is not False and oos_pass is not False),
         "note": note,
     }
 

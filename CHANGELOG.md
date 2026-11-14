@@ -29,6 +29,14 @@ First tagged release. Core framework with full plugin architecture.
 [0.2.0]: https://github.com/tomlupo/quantbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomlupo/quantbox/releases/tag/v0.1.0
 
+## v0.25.0 (2026-11-14)
+
+### Feat
+
+- **momentum_long_short**: skip_periods and rank weighting (TOM-3927) (#360)
+- **gates**: predreg handles persistent predictors, Campbell-Yogo Q-test and out-of-sample R² (TOM-3928) (#361)
+- **gates**: dsr counts trials from the line's run log, trials.jsonl written by run, arms and sweep (TOM-3929) (#362)
+
 ## v0.24.0 (2026-11-14)
 
 ### Feat

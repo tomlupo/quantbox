@@ -401,6 +401,14 @@ Timing is batch-level: the arms file's `execution:` block is the same block
 `artifacts` is refused. `quantbox sweep` records its timing and `n_trials`
 (one per grid row) in `<output_dir>/sweep_manifest.json`.
 
+Inside a research line (the nearest directory above the config whose `README.md`
+carries a fenced `prereg:` block, or `--line <dir>`), every backtest `quantbox run`,
+every arm that ran and every sweep row appends one row to the line's `trials.jsonl`
+(format and hash: the `quantbox.trials` module docstring). The line's n_trials is
+its distinct `config_sha256` values, so re-running a config is not a new trial.
+`quantbox gates dsr --line <dir>` deflates by that count and refuses an
+`--n-trials` below it (exit 2); without `--line` the gate is unchanged.
+
 A `source: path/to/strategy.py:Class` strategy works in a single run, as an
 arm, in a variant (`variants[].strategy.source`) and in a sweep
 (`strategy: {source: ...}`, path relative to the sweep config). In the runner
