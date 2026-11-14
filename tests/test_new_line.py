@@ -180,6 +180,22 @@ def test_new_line_writes_the_model_c_skeleton(tmp_path, fake_qb, datasets_root):
     assert "{{" not in "".join(p.read_text() for p in target.rglob("*") if p.is_file())
 
 
+def test_a_new_line_is_a_trial_log_line_and_points_at_the_log(tmp_path, fake_qb, datasets_root):
+    """TOM-3929: run/arms/sweep inside the scaffold append to its trials.jsonl, and the
+    README and arms.yaml say so instead of asking for a hand count."""
+    from quantbox.trials import LOG_NAME, find_line
+
+    _scaffold(tmp_path, fake_qb)
+    target = tmp_path / "demo"
+    assert find_line(target / "tests") == target.resolve()
+    readme = (target / "README.md").read_text()
+    n_trials = next(ln for ln in readme.splitlines() if ln.strip().startswith("n_trials:"))
+    assert LOG_NAME in n_trials and "gates dsr --line" in n_trials
+    arms = (target / "arms.yaml").read_text()
+    assert LOG_NAME in arms and "gates dsr --line" in arms
+    assert LOG_NAME not in (target / ".gitignore").read_text()  # the log is committed with the line
+
+
 def test_new_line_validates_against_the_registry(tmp_path, fake_qb, datasets_root):
     """The base config is not a sketch: `quantbox validate` accepts it as written."""
     from quantbox.validate import validate_config
@@ -280,7 +296,8 @@ _REPLICATION_FILL = [
     ("<number>", "20"),
     ("<number>", "7"),
     ("<number in (0, 1]>", "0.95"),
-    ("<every arm and probe, including earlier configs for the same idea>", "2"),
+    # TOM-3929: the placeholder points at the trial log instead of asking for a hand count
+    ("<at least the distinct configs in trials.jsonl; `uv run quantbox gates dsr --line .` reads it>", "2"),
     ("<key>", "min_rebalances"),
     ("<number>", "12"),
 ]

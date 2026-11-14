@@ -110,6 +110,8 @@ quantbox compare <a> <b> [--rtol 1e-9] [--json]
                                    # two JSON files, runs or arms dirs: equal within rtol, the max rel diff and where
 quantbox gates dsr|nw --returns <file> --rf dataset:<name>:<column>
                                    # the gate on returns minus a pinned dataset's risk-free column, same dates
+quantbox gates dsr --returns <file> --line <line dir>
+                                   # n_trials from the line's trials.jsonl (run/arms/sweep append to it)
 quantbox config explain <config> --json  # what a run WOULD do (quantbox/explain@1), nothing simulated
 quantbox approve --run-dir <path>  # write approval file for a run's orders
 quantbox new line <slug>           # scaffold a pinned research line (docs/playbooks/research-line.md)

@@ -82,7 +82,7 @@ prereg:
     min_probability: <number in (0, 1]>
   ex_largest_episode:
     relabel_to: inconclusive
-  n_trials: <every arm and probe, including earlier configs for the same idea>
+  n_trials: <at least the distinct configs in trials.jsonl; `uv run quantbox gates dsr --line .` reads it>
   liveness:                       # every key of system.yaml `liveness`, never looser
     <key>: <number>
 ```

@@ -480,3 +480,163 @@ def test_the_engine_warning_carries_the_arm_as_prefix_and_field(caplog):
         "ENGINE: outside any arm",
     ]
     assert [getattr(r, "arm", None) for r in caplog.records] == ["net3bp", "net3bp", None]
+
+
+# ----------------------------------------------------------------------
+# The line's trial log: run, arms and sweep append to trials.jsonl (TOM-3929)
+# ----------------------------------------------------------------------
+
+_PREREG_README = "# a line\n\n```yaml\nprereg:\n  id: h1\n```\n"
+
+
+def _log_rows(line: Path) -> list[dict]:
+    from quantbox.trials import LOG_NAME
+
+    return [json.loads(raw) for raw in (line / LOG_NAME).read_text().splitlines()]
+
+
+def test_outside_a_line_nothing_is_logged(tmp_path):
+    _write_base(tmp_path)
+    arms_path = _write_arms(tmp_path, {"overrides": {"only": {"plugins.strategies.0.params.frac": 0.5}}})
+    result = CliRunner().invoke(app, ["arms", "-c", str(arms_path), "--max-workers", "1"])
+    assert result.exit_code == 0, result.output
+    assert not list(tmp_path.rglob("trials.jsonl"))
+    assert "TRIALS:" not in result.output
+
+
+def test_every_arm_logs_one_trial_and_a_rerun_is_not_a_new_trial(tmp_path):
+    from quantbox.trials import count
+
+    (tmp_path / "README.md").write_text(_PREREG_README)
+    _write_base(tmp_path)
+    arms_path = _write_arms(tmp_path, {"grid": {"plugins.strategies.0.params.frac": [0.5, 1.0]}})
+    for _ in range(2):
+        result = CliRunner().invoke(app, ["arms", "-c", str(arms_path), "--max-workers", "1"])
+        assert result.exit_code == 0, result.output
+    rows = _log_rows(tmp_path)
+    assert [r["arm"] for r in rows] == ["frac=0.5", "frac=1.0"] * 2
+    assert {r["command"] for r in rows} == {"arms"}
+    assert count(tmp_path) == 2  # four rows, two configs
+    summary = json.loads(Path(result.output.split("SUMMARY:")[1].split()[0]).read_text())
+    for row, arm in zip(rows[2:], summary["arms"], strict=True):
+        manifest = _manifest(Path(summary["path"]), arm)
+        assert row["metric"] == {"sharpe": manifest["metrics"]["sharpe"]}
+        assert row["data_pins"] == {manifest["dataset"]["name"]: manifest["dataset"]["sha256"]}
+    assert "TRIALS: 2 row(s)" in result.output and "n_trials=2" in result.output
+
+
+def test_a_failed_arm_has_no_result_to_log(tmp_path):
+    (tmp_path / "README.md").write_text(_PREREG_README)
+    _write_base(tmp_path)
+    arms_path = _write_arms(
+        tmp_path,
+        {
+            "overrides": {
+                "good": {"plugins.strategies.0.params.frac": 0.5},
+                "broken": {"plugins.strategies.0.params.frac": "not-a-number"},
+            }
+        },
+    )
+    result = CliRunner().invoke(app, ["arms", "-c", str(arms_path), "--max-workers", "1"])
+    assert result.exit_code == 1
+    assert [r["arm"] for r in _log_rows(tmp_path)] == ["good"]
+
+
+def test_a_run_logs_one_trial_and_the_same_config_as_an_arm_is_the_same_trial(tmp_path):
+    from quantbox.trials import count
+
+    line = tmp_path / "line"
+    line.mkdir()
+    (line / "README.md").write_text(_PREREG_README)
+    base_path = _write_base(line)
+    result = CliRunner().invoke(app, ["run", "-c", str(base_path), "--json"])
+    assert result.exit_code == 0, result.output
+    json.loads(result.stdout)  # --json: the trial line went to stderr, stdout is still ONE document
+    (row,) = _log_rows(line)
+    assert row["command"] == "run" and "arm" not in row
+    manifest = json.loads(result.stdout)
+    assert row["metric"] == {"sharpe": manifest["metrics"]["sharpe"]}
+
+    # the baseline arm IS that config: its own artifacts root and stamped n_trials are not the trial
+    arms_path = _write_arms(line, {"overrides": {"baseline": {}, "half": {"plugins.strategies.0.params.frac": 0.5}}})
+    assert CliRunner().invoke(app, ["arms", "-c", str(arms_path), "--max-workers", "1"]).exit_code == 0
+    rows = _log_rows(line)
+    assert rows[1]["arm"] == "baseline" and rows[1]["config_sha256"] == row["config_sha256"]
+    assert count(line) == 2
+
+
+def test_an_explicit_line_wins_and_a_paper_run_is_not_a_trial(tmp_path):
+    base_path = _write_base(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    assert CliRunner().invoke(app, ["run", "-c", str(base_path), "--line", str(elsewhere)]).exit_code == 0
+    assert len(_log_rows(elsewhere)) == 1
+
+    cfg = yaml.safe_load(base_path.read_text())
+    cfg["run"]["mode"] = "paper"
+    paper = tmp_path / "paper.yaml"
+    paper.write_text(yaml.safe_dump(cfg))
+    result = CliRunner().invoke(app, ["run", "-c", str(paper), "--line", str(elsewhere)])
+    assert result.exit_code == 2
+    assert "not run.mode: backtest" in " ".join(result.output.replace("│", " ").split())
+    assert len(_log_rows(elsewhere)) == 1
+
+
+def test_every_sweep_row_is_a_trial_and_widening_the_grid_keeps_the_old_ones(tmp_path, fake_quantbox_datasets):
+    from quantbox.trials import count
+
+    (tmp_path / "README.md").write_text(_PREREG_README)
+    (tmp_path / "frac_strategy.py").write_text(_SOURCE_STRATEGY)
+    cfg = {
+        "strategy": {"source": "frac_strategy.py:FracMomentum"},
+        "data": {"dataset": "toy", "frames": ["prices"]},
+        "base_params": {},
+        "sweep_params": {"frac": [0.5, 1.0]},
+        "bands": [0.0],
+        "backtest": {"fees": 0.0},
+        "output_dir": "out",
+    }
+    path = tmp_path / "sweep.yaml"
+    path.write_text(yaml.safe_dump(cfg))
+    result = CliRunner().invoke(app, ["sweep", "-c", str(path)])
+    assert result.exit_code == 0, (result.output, result.exception)
+    rows = _log_rows(tmp_path)
+    grid = pd.read_parquet(tmp_path / "out" / "grid.parquet")
+    assert [r["command"] for r in rows] == ["sweep", "sweep"]
+    assert [r["metric"]["sharpe"] for r in rows] == pytest.approx(list(grid["sharpe_ratio"]))
+    assert rows[0]["arm"].startswith("frac=0.5") and rows[0]["data_pins"] == {"toy": None}
+
+    cfg["sweep_params"]["frac"] = [0.5, 1.0, 0.25]
+    path.write_text(yaml.safe_dump(cfg))
+    assert CliRunner().invoke(app, ["sweep", "-c", str(path)]).exit_code == 0
+    assert count(tmp_path) == 3  # five rows: the two old points again, one new
+
+
+def test_proof_forty_runs_then_dsr_refuses_one_trial_and_deflates_by_forty(tmp_path):
+    """The card's proof. Before: `gates dsr --n-trials 1` is accepted whatever was run.
+    After: with --line it exits 2 naming the 40 logged trials, and the log's own verdict
+    is the old verdict at --n-trials 40."""
+    (tmp_path / "README.md").write_text(_PREREG_README)
+    _write_base(tmp_path)
+    fracs = [round(0.025 * k, 3) for k in range(1, 41)]
+    arms_path = _write_arms(tmp_path, {"grid": {"plugins.strategies.0.params.frac": fracs}})
+    result = CliRunner().invoke(app, ["arms", "-c", str(arms_path), "--max-workers", "1", "--json"])
+    assert result.exit_code == 0, result.output
+    summary = json.loads(result.stdout)
+    best = max(summary["arms"], key=lambda a: a["metrics"]["sharpe"])
+    manifest = _manifest(Path(summary["path"]), best)
+    returns = str(Path(summary["path"]).parent / best["name"] / best["run_id"] / manifest["files"]["returns"])
+    dsr = ["gates", "dsr", "--returns", returns]
+
+    before = CliRunner().invoke(app, [*dsr, "--n-trials", "1", "--json"])
+    assert before.exit_code in (0, 1), before.output  # computed, as today: nothing checks the claim
+    refused = CliRunner().invoke(app, [*dsr, "--n-trials", "1", "--line", str(tmp_path)])
+    assert refused.exit_code == 2, refused.output
+    assert "40 logged trials" in refused.output
+
+    logged = CliRunner().invoke(app, [*dsr, "--line", str(tmp_path), "--json"])
+    old = CliRunner().invoke(app, [*dsr, "--n-trials", "40", "--json"])
+    assert logged.exit_code == old.exit_code
+    got = json.loads(logged.stdout)
+    assert got.pop("trial_log")["n_logged"] == 40
+    assert got == json.loads(old.stdout)

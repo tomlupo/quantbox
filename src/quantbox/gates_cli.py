@@ -290,6 +290,8 @@ def _emit(
             )
         if window.active:
             typer.echo("  window: " + " ".join(f"{k}={v}" for k, v in window._asdict().items() if v is not None))
+        if isinstance(out.get("trial_log"), dict):
+            typer.echo(f"  trials: {out['trial_log']['n_logged']} logged in {out['trial_log']['path']}")
     raise typer.Exit(0 if out["gate_pass"] else 1)
 
 
@@ -379,6 +381,36 @@ def _excess(returns: str, column: str | None, rf: str, window: _Window):
     return excess, info
 
 
+def _dsr_trials(n_trials: str | None, line: str | None) -> tuple[str, dict | None]:
+    """The trial counts `gates dsr` deflates by, and the trial log they were checked against.
+
+    Without ``--line`` this is ``--n-trials`` or the gates' default range, as before TOM-3929.
+    """
+    from quantbox.gates import DEFAULT_N_TRIALS, parse_n_trials
+
+    if line is None:
+        return (",".join(map(str, DEFAULT_N_TRIALS)) if n_trials is None else n_trials), None
+    from quantbox.trials import LOG_NAME, TrialLogError, count
+
+    path = Path(line) / LOG_NAME
+    try:
+        logged = count(line)
+    except TrialLogError as exc:
+        raise _input_error(str(exc)) from exc
+    if logged < 1:
+        raise _input_error(f"{path} logs no trial yet: nothing to take n_trials from")
+    info = {"path": str(path), "n_logged": logged}
+    if n_trials is None:
+        return str(logged), info
+    given = max(parse_n_trials(n_trials))
+    if given < logged:
+        raise _input_error(
+            f"--n-trials {n_trials} deflates by at most {given} trials, but {path} logs {logged} distinct "
+            f"configs: n_trials is at least the {logged} logged trials"
+        )
+    return n_trials, info
+
+
 @gates_app.command("dsr")
 def dsr(
     returns: str = typer.Option(None, "--returns", help="per-period return series, .csv or .parquet"),
@@ -388,7 +420,15 @@ def dsr(
     skew: float = typer.Option(None, "--skew", help="per-period skew (summary path)"),
     kurtosis: float = typer.Option(None, "--kurtosis", help="per-period PEARSON kurtosis, 3.0 = normal"),
     n_obs: int = typer.Option(None, "--n-obs", help="observation count (summary path)"),
-    n_trials: str = typer.Option("1,5,10,20,50,100", "--n-trials", "--trials", help="trial counts; verdict at MAX"),
+    n_trials: str = typer.Option(
+        None,
+        "--n-trials",
+        "--trials",
+        help="trial counts; verdict at MAX [default: 1,5,10,20,50,100, or the --line log]",
+    ),
+    line: str = typer.Option(
+        None, "--line", help="research line: n_trials from its trials.jsonl; a --n-trials below the log is refused"
+    ),
     trials_sr_std: float = typer.Option(None, "--trials-sr-std", help="per-period std of the trials' Sharpes"),
     periods: int = typer.Option(None, "--periods", help="periods per year; REQUIRED with --sharpe"),
     threshold: float = typer.Option(0.95, "--threshold", help="DSR acceptance bar, in (0,1)"),
@@ -398,13 +438,24 @@ def dsr(
     rf: str = _RF,
     as_json: bool = _JSON,
 ):
-    """Deflated Sharpe Ratio across a trial-count range (verdict at the most deflated end)."""
+    """Deflated Sharpe Ratio across a trial-count range (verdict at the most deflated end).
+
+    ``--line <dir>`` reads n_trials from the line's trials.jsonl (the distinct configs
+    quantbox run/arms/sweep logged, :mod:`quantbox.trials`): with no ``--n-trials`` the
+    verdict is at the logged count; a ``--n-trials`` whose maximum is below it is refused
+    (exit 2), one at or above it is used as given.
+    """
 
     def compute() -> dict:
+        trials, trial_log = _dsr_trials(n_trials, line)
+        out = gate(trials)
+        return {**out, "trial_log": trial_log} if trial_log else out
+
+    def gate(trials: str) -> dict:
         from quantbox.gates import dsr_gate, dsr_gate_from_returns
 
         summary = [sharpe, skew, kurtosis, n_obs]
-        kw = dict(n_trials=n_trials, periods=periods, threshold=threshold, trials_sr_std=trials_sr_std)
+        kw = dict(n_trials=trials, periods=periods, threshold=threshold, trials_sr_std=trials_sr_std)
         if returns is not None:
             if any(v is not None for v in summary):
                 raise _input_error("--returns is exclusive with --sharpe/--skew/--kurtosis/--n-obs")
