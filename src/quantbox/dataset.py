@@ -18,6 +18,7 @@ __all__ = [
     "finite_numbers",
     "load_pinned_dataset",
     "served_prices",
+    "served_returns_column",
     "total_return_index",
     "unique_rows",
 ]
@@ -251,6 +252,19 @@ def served_prices(resolution: dict[str, Any]) -> pd.DataFrame:
     finite or a true null whatever arithmetic made it. quantbox reads it itself, so a
     dataset a research line froze needs no quantbox-datasets install.
     """
+    serve, name = resolution["serve"], resolution["name"]
+    frame = _served_table(resolution)
+    if serve["kind"] == "returns":
+        served = total_return_index(frame, serve.get("frequency"), name=name)
+    else:
+        served = finite_numbers(frame, name, "prices").sort_index()
+    # The guarantee is checked where the frame leaves, after every transform: compounding
+    # finite returns can still overflow to inf.
+    return finite_numbers(served, name, "served prices")
+
+
+def _served_table(resolution: dict[str, Any]) -> pd.DataFrame:
+    """A ``serve`` block's table as the pinned bytes hold it: date-indexed, narrowed to ``serve.columns``."""
     from quantbox.dataset_lock import DatasetServeError, served_bytes
     from quantbox.parquet_io import read_parquet_bytes
 
@@ -266,13 +280,36 @@ def served_prices(resolution: dict[str, Any]) -> pd.DataFrame:
             raise DatasetServeError(f"dataset {name!r}: serve.columns {absent} are not in {serve['file']}")
         frame = frame[serve["columns"]]
     unique_rows(frame, name, serve["table"])
-    if serve["kind"] == "returns":
-        served = total_return_index(frame, serve.get("frequency"), name=name)
-    else:
-        served = finite_numbers(frame, name, "prices").sort_index()
-    # The guarantee is checked where the frame leaves, after every transform: compounding
-    # finite returns can still overflow to inf.
-    return finite_numbers(served, name, "served prices")
+    return frame
+
+
+def served_returns_column(name: str, column: str, lock: str | None = None) -> tuple[pd.Series, dict[str, Any]]:
+    """One column of a by-name RETURNS dataset as its per-bar simple returns, and the resolution.
+
+    The pinned bytes are read as the ``serve`` block declares them (:func:`served_prices`
+    reads the same table), but the returns are given as stored, not through the
+    total-return index, so a risk-free rate subtracted from a strategy's returns
+    (``quantbox gates dsr|nw --rf dataset:<name>:<column>``, TOM-3764) is the
+    dataset's own number. Refused (:class:`~quantbox.dataset_lock.DatasetServeError`):
+    a dataset with no ``serve`` block, one served as prices (a price level is not a
+    per-period rate), a column it does not serve, a value that is not a finite number.
+    A true null (before the series starts) stays NaN; the caller decides what that means.
+    """
+    from quantbox.dataset_lock import DatasetServeError
+
+    resolution = _resolve_pinned(name, lock)
+    serve = resolution.get("serve")
+    if serve is None:
+        raise DatasetServeError(f"dataset {name!r} has no manifest serve block; quantbox cannot read a column of it")
+    if serve["kind"] != "returns":
+        raise DatasetServeError(
+            f"dataset {name!r} is served as {serve['kind']!r}, not returns: a price level is not a per-period rate"
+        )
+    frame = _served_table(resolution)
+    if column not in frame.columns:
+        raise DatasetServeError(f"dataset {name!r} serves no column {column!r}; it serves {list(frame.columns)}")
+    values = finite_numbers(frame[[column]], name, "returns")
+    return values[column].astype(float).sort_index(), resolution
 
 
 @dataclass(frozen=True)

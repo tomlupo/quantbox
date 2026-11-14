@@ -1018,6 +1018,37 @@ def preflight(ctx: typer.Context):
     raise SystemExit(module.main(list(ctx.args)))
 
 
+@app.command("compare")
+def compare_cmd(
+    a: str = typer.Argument(help="A JSON file, a run directory, or a directory of arms"),
+    b: str = typer.Argument(help="The same kind as A"),
+    rtol: float = typer.Option(1e-9, "--rtol", help="The largest relative difference that still counts as equal"),
+    as_json: bool = typer.Option(False, "--json", help="Print the verdict as JSON (quantbox/compare@1)"),
+):
+    """Whether two results agree within --rtol: every number, how many differ, the largest relative difference.
+
+    Two JSON files are paired leaf by leaf; two run or arms directories arm by arm,
+    each arm's engine metrics and its returns by date (manifests are not compared).
+    Exit 0 equal within rtol, 1 not equal, 2 refused input.
+    """
+    compare = load("quantbox.compare", extra="research")
+
+    try:
+        result = compare.compare(a, b, rtol=rtol)
+    except (FileNotFoundError, ValueError) as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise SystemExit(2) from exc
+    if as_json:
+        print(_as_json(result))
+    else:
+        typer.echo(compare.headline(result))
+        for line in result["mismatches"][:10]:
+            typer.echo(f"  {line}")
+        if len(result["mismatches"]) > 10:
+            typer.echo(f"  ... {len(result['mismatches']) - 10} more (--json lists them all)")
+    raise SystemExit(0 if result["equal"] else 1)
+
+
 def main():
     # A command that needs an extra which is not installed (a research or trade
     # library on a base install) ends on one line naming the extra, not a

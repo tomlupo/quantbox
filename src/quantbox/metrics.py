@@ -87,6 +87,7 @@ __all__ = [
     "sampling_frequency",
     "sharpe_ratio",
     "top_drawdowns",
+    "total_return_label",
     "tracking_error",
     "turnover_series",
 ]
@@ -267,6 +268,22 @@ def drawdown_fields(drawdown: float) -> dict[str, float]:
     """
     signed = float(drawdown)
     return {"max_drawdown": signed, "max_drawdown_abs": abs(signed)}
+
+
+def total_return_label(total_return: float) -> str:
+    """A total return as a reader cannot misread it: the return AND the wealth multiple.
+
+    ``total_return`` is a simple return over the run (303.58 = +30358 %); the wealth
+    it leaves is ``1 + total_return`` (304.58x). Printed alone, 303.58 reads as a
+    multiple and is one off (TOM-3764). Percent to 0 decimals from +-100 % up, else 2:
+    ``total_return_label(303.579) == "30358% (304.58x wealth)"``,
+    ``total_return_label(-0.4) == "-40.00% (0.60x wealth)"``. A non-finite value is "n/a".
+    """
+    tr = float(total_return)
+    if not np.isfinite(tr):
+        return "n/a"
+    pct = f"{tr * 100:.0f}%" if abs(tr) >= 1 else f"{tr * 100:.2f}%"
+    return f"{pct} ({1 + tr:.2f}x wealth)"
 
 
 def max_drawdown(returns: pd.Series | np.ndarray, *, start_is_peak: bool = False) -> float:

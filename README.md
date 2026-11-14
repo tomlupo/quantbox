@@ -106,6 +106,10 @@ quantbox run --json -c <config>    # print only the run manifest (quantbox/run@1
 quantbox report export <run-or-arms-dir> --format qute-research/finding-report@1 [-o out.json]
         [--extra <line-results>.json] [--benchmark <arm>]
                                    # the data the qute-research finding page renders
+quantbox compare <a> <b> [--rtol 1e-9] [--json]
+                                   # two JSON files, runs or arms dirs: equal within rtol, the max rel diff and where
+quantbox gates dsr|nw --returns <file> --rf dataset:<name>:<column>
+                                   # the gate on returns minus a pinned dataset's risk-free column, same dates
 quantbox config explain <config> --json  # what a run WOULD do (quantbox/explain@1), nothing simulated
 quantbox approve --run-dir <path>  # write approval file for a run's orders
 quantbox new line <slug>           # scaffold a pinned research line (docs/playbooks/research-line.md)
@@ -138,6 +142,13 @@ Each run writes to `artifacts/<run_id>/`:
   `lab`, `kpis`, `metrics`, `robustness`, `audit` and `tables` in the payload's shapes: its
   tables come before the provenance table, each other section replaces the engine's, and series
   and provenance always come from the runs, so a line needs no report adapter of its own.
+  Labels are honest (TOM-3764): "Total return" stays the engine's number and the row after it
+  is the wealth multiple, `1 + total_return` (303.58 is +30358 % and 304.58x; summary.md and
+  report.html print `30358% (304.58x wealth)`); a gate row with a number value and a one-comparator threshold
+  gets its pass/fail from that comparison, not from the results file, and shows the comparator
+  that holds (`0.829 | < 0.95 | fail`); a `quantbox arms` batch adds a "Fair baseline" table from
+  its `arms_summary.json` (the `--benchmark` arm, an `arm/variant` naming its arm, else the one arm whose name says
+  bench or buy-and-hold, the same rule that draws the benchmark line).
   The manifest's `reports.finding_report` says whether the run produced it; when the export
   fails, the run's results stand, `produced` is false with the `error`, and `quantbox run`
   prints `FINDING REPORT: NOT PRODUCED` in its summary.

@@ -40,19 +40,36 @@ The series and the provenance always come from the runs, and a RESEARCH run keep
 what marks it: its failed "Execution timing" axes lead the line's audit, and the
 line's kpis are refused. So a line renders its page from this export and its saved
 results, with no adapter of its own.
+
+Honest labels (TOM-3764). "Total return" stays the number the engine reported (format
+``pct``: 303.58 renders +30357.94 %), and the row after it is the wealth multiple,
+``1 + total_return`` (304.58), so a bare 303.58 is never read as a multiple; both
+are numbers, never a display string. Text outputs (summary.md, the HTML report) print
+:func:`quantbox.metrics.total_return_label` instead ("30358% (304.58x wealth)"). A promotion gate's status is never
+copied from the results file when it can be checked: a gate with a number ``value``
+and a one-comparator ``threshold`` (``>= 0.95``) gets ``pass`` or ``fail`` from that
+comparison, and its threshold is shown as the comparator that HOLDS (``< 0.95`` when
+the bar is missed, the bar kept in the note). A threshold that is not one comparator
+keeps the line's status and the note says it was not checked. For a directory of arms
+written by ``quantbox arms``, a "Fair baseline" table is filled from its
+``arms_summary.json``: the baseline is the ``benchmark`` arm (a ``arm/variant`` name
+names its arm), else the one arm the series draws as the benchmark
+(:func:`_is_benchmark_name`); with none (or two) there is no table rather than a guess.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import operator
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
-from .metrics import compute_drawdown_series, sampling_frequency
+from .metrics import compute_drawdown_series, sampling_frequency, total_return_label
 from .parquet_io import read_parquet
 from .run_history import run_started_at
 from .run_manifest import SCHEMA_ID as RUN_SCHEMA_ID
@@ -223,6 +240,15 @@ def _date_labels(index: pd.DatetimeIndex) -> list[str]:
     return [d.isoformat() for d in naive]
 
 
+def _is_benchmark_name(name: str) -> bool:
+    """An arm that is a benchmark by its name alone: it says "bench", or it is buy-and-hold.
+
+    The ONE rule for both the series' benchmark line and the fair-baseline table.
+    """
+    key = re.sub(r"[^a-z0-9]", "", name.lower())
+    return "bench" in key or "buyhold" in key or "buyandhold" in key
+
+
 def _series_block(arms: list[Arm], benchmark: str | None = None) -> dict[str, Any]:
     frame = pd.concat({a.name: a.returns for a in arms}, axis=1).sort_index()
     lines = []
@@ -238,7 +264,7 @@ def _series_block(arms: list[Arm], benchmark: str | None = None) -> dict[str, An
                 "name": arm.name,
                 "equity": [_round(v) for v in equity],
                 "drawdown": [_round(v) for v in drawdown],
-                "benchmark": arm.name == benchmark if benchmark else "bench" in arm.name.lower(),
+                "benchmark": arm.name == benchmark if benchmark else _is_benchmark_name(arm.name),
             }
         )
     title = "Equity (growth of 1)"
@@ -315,6 +341,11 @@ def _metrics_block(arms: list[Arm]) -> dict[str, Any] | None:
         values = [_num(a.metrics.get(key)) for a in arms]
         if any(v is not None for v in values):
             rows.append({"label": _with_bars(label, bars), "format": fmt, "values": values})
+            if key == "total_return":  # the wealth multiple beside it, so 303.58 never reads as one
+                wealth = [None if v is None else 1 + v for v in values]
+                rows.append(
+                    {"label": _with_bars("Wealth multiple (1 + total return)", bars), "format": "num", "values": wealth}
+                )
     if not rows:
         return None
     return {"title": "Metrics", "note": "as the engine reported them", "columns": [a.name for a in arms], "rows": rows}
@@ -400,6 +431,99 @@ def _provenance_table(arms: list[Arm]) -> dict[str, Any]:
     }
 
 
+#: A gate threshold quantbox can check against the value: ONE comparator and a number.
+_COMPARATOR = re.compile(r"^\s*(>=|<=|>|<|≥|≤)\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)\s*$")
+_OPS = {">=": operator.ge, ">": operator.gt, "<=": operator.le, "<": operator.lt}
+#: The comparator that holds when the bar's does not: value < bar when value >= bar fails.
+_NEGATED = {">=": "<", ">": "<=", "<=": ">", "<": ">="}
+
+
+def _checked_gate(gate: dict[str, Any]) -> dict[str, Any]:
+    """*gate* with its status derived from ``value`` against ``threshold`` (module docstring).
+
+    Pass when the comparator holds, fail when it does not; the threshold shown is the
+    comparator that holds and the note keeps the bar and the status the line wrote,
+    when it differs. A gate that cannot be checked is returned with a note saying so.
+    """
+    threshold, value = gate.get("threshold"), gate.get("value")
+    match = _COMPARATOR.match(threshold) if isinstance(threshold, str) else None
+    number = None if isinstance(value, bool) else _num(value)
+    note = gate.get("note")
+    if match is None or number is None:
+        why = f"threshold {threshold!r} is not one comparator" if match is None else f"value {value!r} is not a number"
+        said = f"status as the line wrote it ({why}; not checked)"
+        return {**gate, "note": f"{said}. {note}" if note else said}
+    op = {"≥": ">=", "≤": "<="}.get(match.group(1), match.group(1))
+    bar = match.group(2)
+    holds = _OPS[op](number, float(bar))
+    status = "pass" if holds else "fail"
+    said = [] if holds else [f"needs {op} {bar}"]
+    if str(gate.get("status", "")).strip().lower() != status:
+        said.append(f"the line wrote {gate.get('status')!r}")
+    prefix = "; ".join(said)
+    shown = f"{op} {bar}" if holds else f"{_NEGATED[op]} {bar}"
+    out = {**gate, "status": status, "threshold": shown}
+    if prefix:
+        out["note"] = f"{prefix}. {note}" if note else prefix
+    return out
+
+
+def _baseline_name(names: list[str], benchmark: str | None) -> str | None:
+    """The fair-baseline arm of *names* (arms_summary.json's), else None.
+
+    *benchmark* when given: an arm, or an ``arm/variant`` as :func:`load_arms` names a
+    run with variants, which names its arm. Otherwise the ONE arm that is a benchmark
+    by name (:func:`_is_benchmark_name`, the series' rule).
+    """
+    if benchmark is not None:
+        arm = benchmark if benchmark in names else benchmark.split("/", 1)[0]
+        return arm if arm in names else None
+    hits = [n for n in names if _is_benchmark_name(n)]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _baseline_table(path: Path, benchmark: str | None) -> dict[str, Any] | None:
+    """The "Fair baseline" table from an arms batch's ``arms_summary.json``; None when there is none.
+
+    One row per arm the batch ran (``status: ok``), the baseline's role named, with the
+    engine's own Sharpe, CAGR, max drawdown and total return as ``quantbox arms`` recorded them.
+    """
+    summary_path = path / "arms_summary.json"
+    if not summary_path.is_file():
+        return None
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    arms = [a for a in summary.get("arms") or [] if a.get("status") == "ok" and isinstance(a.get("metrics"), dict)]
+    baseline = _baseline_name([a["name"] for a in arms], benchmark)
+    if baseline is None or len(arms) < 2:
+        return None
+
+    def pct(v: Any) -> str | None:
+        f = _num(v)
+        return None if f is None else f"{f * 100:.2f}%"
+
+    rows = []
+    for a in arms:
+        m = a["metrics"]
+        tr = _num(m.get("total_return"))
+        rows.append(
+            [
+                a["name"],
+                "fair baseline" if a["name"] == baseline else "candidate",
+                _num(m.get("sharpe")),
+                pct(m.get("cagr")),
+                pct(m.get("max_drawdown")),
+                None if tr is None else total_return_label(tr),
+            ]
+        )
+    return {
+        "title": f"Fair baseline: {baseline}",
+        "note": f"from {summary.get('batch_id') or path.name}/arms_summary.json, as the engine reported each arm; "
+        "the baseline is the --benchmark arm, else the one arm named as a benchmark (bench, buy-and-hold)",
+        "columns": ["arm", "role", "Sharpe", "CAGR", "Max drawdown", "Total return"],
+        "rows": rows,
+    }
+
+
 def _load_extra(path: str | Path) -> dict[str, Any]:
     """A line's results file: some of :data:`EXTRA_SECTIONS`, none empty; anything else is refused."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -456,13 +580,20 @@ def export_finding_report(
     ):
         if block is not None:
             payload[key] = block
-    payload["tables"] = [*line.pop("tables", []), _provenance_table(arms)]
+    baseline = _baseline_table(Path(path), benchmark)
+    payload["tables"] = [*([baseline] if baseline else []), *line.pop("tables", []), _provenance_table(arms)]
     research_axes = (payload.get("audit") or {}).get("axes", [])
     if research_axes and "kpis" in line:
         raise ValueError(f"{extra}: a RESEARCH run's hero cards are the engine's; drop kpis from the results file")
     if research_axes and "audit" in line:
         line["audit"] = {**line["audit"], "axes": [*research_axes, *line["audit"].get("axes", [])]}
     payload.update(line)
+    gates = (payload.get("audit") or {}).get("gates")
+    if gates:
+        payload["audit"] = {
+            **payload["audit"],
+            "gates": [_checked_gate(g) if isinstance(g, dict) else g for g in gates],
+        }
     return payload
 
 

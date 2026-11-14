@@ -34,6 +34,15 @@ largest drawdown (TOM-3700). A bound is a year, a month or a day and covers all 
 HAC t-stat on the kept rows with its lags restarted at each window, ``full.nw`` the
 unmasked one beside it.
 
+``dsr`` and ``nw`` take ``--rf dataset:<name>:<column>`` (TOM-3764): that column of a
+pinned by-name RETURNS dataset (``quantbox.dataset.served_returns_column``: the
+lock's bytes, the returns as stored) is the per-period risk-free rate. It gets the
+same ``--period/--start/--end`` as the returns and is subtracted on the returns' own
+dates, period t from period t (the bill's return over the period the strategy
+earned; nothing later). The returns file must then be dated; a return date with no
+rate is refused (exit 2), never dropped or filled. A tz-naive date on either side is
+read as UTC. ``--json`` carries ``rf`` (the source, the dataset's pin and the periods).
+
 ``replicate`` (TOM-3699) has three verdicts: PASS (exit 0), FAIL and DEFECT (both
 exit 1; ``verdict`` in ``--json`` and on the text line tells them apart). Its
 ``--period`` is the declared frequency of the correlation: both series are
@@ -273,6 +282,12 @@ def _emit(
         typer.echo(f"{gate}: {verdict} ({key}={value:.6g}, {bar}={out[bar]})")
         for note in notes:
             typer.echo(f"  {note}")
+        if isinstance(out.get("rf"), dict):
+            f = out["rf"]
+            pin = (f.get("sha256") or "unpinned")[:12]
+            typer.echo(
+                f"  rf: {f['source']} subtracted on {f['n_periods']} dates, {f['first']}..{f['last']} (pin {pin})"
+            )
         if window.active:
             typer.echo("  window: " + " ".join(f"{k}={v}" for k, v in window._asdict().items() if v is not None))
     raise typer.Exit(0 if out["gate_pass"] else 1)
@@ -312,6 +327,57 @@ _PERIOD = typer.Option(
 _START = typer.Option(None, "--start", help="first date kept, inclusive (the file must be dated)")
 _END = typer.Option(None, "--end", help="last date kept, inclusive (the file must be dated)")
 
+_RF = typer.Option(
+    None,
+    "--rf",
+    help="risk-free per period, dataset:<name>:<column> of a pinned returns dataset (e.g. dataset:sbbi:TBill_30d); "
+    "subtracted from --returns on its own dates before the gate (the file must be dated)",
+)
+
+
+def _utc(index):
+    """*index* as tz-aware UTC dates; a naive date is read as UTC (quantbox's convention)."""
+    import pandas as pd
+
+    index = pd.DatetimeIndex(index)
+    return index.tz_localize("UTC") if index.tz is None else index.tz_convert("UTC")
+
+
+def _excess(returns: str, column: str | None, rf: str, window: _Window):
+    """The returns minus the ``--rf`` dataset column on the same dates, and what was subtracted."""
+    parts = rf.split(":")
+    if len(parts) != 3 or parts[0] != "dataset" or not parts[1] or not parts[2]:
+        raise _input_error(f"--rf must be dataset:<name>:<column>, got {rf!r}")
+    from quantbox.dataset import served_returns_column
+
+    # date order, not file order: the HAC standard error weights NEIGHBOURING rows
+    r = _series(returns, column, indexed=True, window=window).sort_index(kind="stable")
+    try:
+        rate, resolution = served_returns_column(parts[1], parts[2])
+    except Exception as exc:  # noqa: BLE001 — a dataset that cannot be read is "could not compute" (exit 2)
+        raise _input_error(f"--rf {rf}: {type(exc).__name__}: {exc}") from exc
+    rate.index = _utc(rate.index)
+    rate = window.apply(rate)
+    aligned = rate.reindex(_utc(r.index))
+    missing = aligned.isna().to_numpy()
+    if missing.any():
+        dates = [d.date().isoformat() for d in aligned.index[missing][:5]]
+        raise _input_error(
+            f"--rf {rf}: no rate on {int(missing.sum())} of {len(r)} return dates (first {dates}); "
+            "a return is never paired with another period's rate — cut the window or compound with --period"
+        )
+    excess = r - aligned.to_numpy()
+    info = {
+        "source": rf,
+        "dataset": parts[1],
+        "column": parts[2],
+        "sha256": resolution.get("sha256"),
+        "n_periods": len(excess),
+        "first": aligned.index[0].date().isoformat() if len(excess) else None,
+        "last": aligned.index[-1].date().isoformat() if len(excess) else None,
+    }
+    return excess, info
+
 
 @gates_app.command("dsr")
 def dsr(
@@ -329,6 +395,7 @@ def dsr(
     period: str = _PERIOD,
     start: str = _START,
     end: str = _END,
+    rf: str = _RF,
     as_json: bool = _JSON,
 ):
     """Deflated Sharpe Ratio across a trial-count range (verdict at the most deflated end)."""
@@ -341,8 +408,14 @@ def dsr(
         if returns is not None:
             if any(v is not None for v in summary):
                 raise _input_error("--returns is exclusive with --sharpe/--skew/--kurtosis/--n-obs")
+            if rf is not None:
+                r, rf_info = _excess(returns, column, rf, window)
+                out = dsr_gate_from_returns(r.to_numpy(), allow_nonfinite_drop=allow_nonfinite_drop, **kw)
+                return {**out, "rf": rf_info}
             r = _series(returns, column, indexed=False, window=window)
             return dsr_gate_from_returns(r.to_numpy(), allow_nonfinite_drop=allow_nonfinite_drop, **kw)
+        if rf is not None:
+            raise _input_error("--rf is subtracted from a return series: it needs --returns, not --sharpe")
         if window.active:
             raise _input_error("--period/--start/--end shape a return series: they need --returns, not --sharpe")
         if sharpe is None:
@@ -378,6 +451,7 @@ def nw(
     period: str = _PERIOD,
     start: str = _START,
     end: str = _END,
+    rf: str = _RF,
     as_json: bool = _JSON,
 ):
     """Newey-West HAC t-stat on the mean, plus a minimum out-of-sample window."""
@@ -385,8 +459,12 @@ def nw(
     def compute() -> dict:
         from quantbox.gates import nw_gate
 
-        r = _series(returns, column, indexed=False, window=window)
-        return nw_gate(
+        rf_info = None
+        if rf is not None:
+            r, rf_info = _excess(returns, column, rf, window)
+        else:
+            r = _series(returns, column, indexed=False, window=window)
+        out = nw_gate(
             r.to_numpy(),
             lags=lags,
             t_threshold=t_threshold,
@@ -394,6 +472,7 @@ def nw(
             oos_periods=oos_periods,
             allow_nonfinite_drop=allow_nonfinite_drop,
         )
+        return {**out, "rf": rf_info} if rf_info else out
 
     window = _Window(period, start, end)
     _emit("nw", as_json, compute, returns, window=window)

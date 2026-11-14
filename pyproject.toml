@@ -1,6 +1,6 @@
 [project]
 name = "quantbox"
-version = "0.23.0"
+version = "0.24.0"
 description = "Quant research & trading core with plugin marketplace (entry points)."
 requires-python = ">=3.11"
 # The base install is what the CORE layer imports (ADR-0010 decision 4,
@@ -234,6 +234,7 @@ forbidden_modules = [
   "quantbox.adapters.**",
   "quantbox.arms",
   "quantbox.bt",
+  "quantbox.compare",  # `quantbox compare`: reads runs through finding_export.load_arms (TOM-3764)
   "quantbox.engine.vectorbt",
   "quantbox.finding_export",
   "quantbox.line",
@@ -299,6 +300,7 @@ forbidden_modules = [
   "quantbox.adapters.**",
   "quantbox.arms",
   "quantbox.bt",
+  "quantbox.compare",  # `quantbox compare`: reads runs through finding_export.load_arms (TOM-3764)
   "quantbox.engine.vectorbt",
   "quantbox.finding_export",
   "quantbox.line",
@@ -345,6 +347,7 @@ source_modules = [
   "quantbox.adapters.**",
   "quantbox.arms",
   "quantbox.bt",
+  "quantbox.compare",  # `quantbox compare`: reads runs through finding_export.load_arms (TOM-3764)
   "quantbox.engine.vectorbt",  # the vectorbt adapter behind the core seam
   "quantbox.finding_export",
   "quantbox.line",
@@ -410,6 +413,7 @@ forbidden_modules = [
   "quantbox.adapters.**",
   "quantbox.arms",
   "quantbox.bt",
+  "quantbox.compare",  # `quantbox compare`: reads runs through finding_export.load_arms (TOM-3764)
   "quantbox.engine.vectorbt",
   "quantbox.finding_export",
   "quantbox.line",
@@ -500,7 +504,7 @@ forbidden_modules = ["vectorbt", "numba", "ccxt"]
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.23.0"
+version = "0.24.0"
 version_files = [
     "pyproject.toml:version",
     "src/quantbox/__init__.py:__version__",
